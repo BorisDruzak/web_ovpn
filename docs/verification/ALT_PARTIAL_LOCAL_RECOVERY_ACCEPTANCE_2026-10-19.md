@@ -121,6 +121,54 @@ installed controller files and 3776 historical files. No synthetic home director
 was used. The employee confirmed a working desktop and input; the web-access
 agent's real business scenario remains functionally unaccepted.
 
+## Additional components after first login
+
+The operator subsequently requested the complete software set and KRFB on the
+same workstation. The original nine-component Setup and its profile were not
+rewritten. Four distinct native component plans were reviewed and applied once:
+CryptoPro CSP, CAdES, GosPlugin and KRFB. Their original jobs completed
+successfully, with compliant / installed_verified results and respectively
+92, 80, 102 and 80 contiguous events. The GosPlugin web job independently showed
+completion and all 102 events. One earlier blocked GosPlugin plan was never
+applied; the replacement plan was prepared after package activity ended.
+
+Independent package checks confirmed CSP 5.0.13600-7, CAdES 2.0.15700-1,
+GosPlugin 1.3.42.0-1 and KRFB 26.04.3-alt1. The CSP license utility reported a
+permanent client license matching the protected configured license. No license
+serial was included in the retained redacted evidence. The actual user's browser
+profile contained the CryptoPro and current GosPlugin extensions with empty
+disable-reason lists. Their native messaging manifests and executable paths were
+present. The missing CryptoPro desktop launcher was copied from the installed
+package into the existing correctly owned desktop without replacing user files.
+These checks do not establish a successful signature with a real certificate or
+token, or the web-access agent's business workflow.
+
+KRFB's network prerequisite was established on this workstation with a dedicated
+persistent host rule rejecting non-loopback TCP port 5900 for IPv4 and IPv6.
+Other host rules and network infrastructure were not changed. After all earlier
+component jobs ended, the idle ordinary worker was paused under the existing
+lifecycle lock with empty-queue and recovery checks. The unchanged published
+native component CLI and worker ran the sole KRFB job with a per-process network
+confirmation backed by fresh kernel-rule evidence. The ordinary worker was
+restored after the one-shot worker and original job finished. No global network
+admission flag, raw Ansible dispatch or controller source change was introduced.
+
+An already running user-launched KRFB process predated the protected configuration
+and retained its old password in memory. The first actual RFB authentication
+failed. After verifying there were no connected VNC clients, only that exact KRFB
+process was gracefully restarted; the approved configuration was preserved across
+its shutdown. The existing Plasma and RDP session remained intact. A subsequent
+RFB 3.8 challenge-response through pinned SSH authenticated successfully, returned
+the existing 1600-by-900 framebuffer and transferred a one-pixel raw update that
+was immediately discarded. No input, password or desktop image was retained.
+Direct network connection to port 5900 was rejected. KRFB autostart and protected
+configuration were verified; pre-login screen sharing was not tested or claimed.
+
+Post-component comparison again matched all 283 installed controller source files
+and all 3776 historical baseline files. UNKNOWN records and consumed recovery
+receipts remained unchanged. The controller's profile-selection correction is a
+separate pending change; these workstation results do not claim that it is deployed.
+
 ## Temporary remote support
 
 The operator separately authorized temporary XRDP through an SSH tunnel. This
