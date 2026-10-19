@@ -120,7 +120,7 @@ def collect(*, root=Path('/'), runner=None, owner=0):
     if len(value) > 128 or str(uuid.UUID(machine_uuid)) != machine_uuid or uuid.UUID(machine_uuid).int == 0:
         raise ValueError('Invalid workstation UUID')
     hostname = runner(['/usr/bin/hostname', '-s']).lower()
-    if not re.fullmatch(r'(?:lin|alt|win|deb)-[a-z][0-9]?-(?:pc[1-9][0-9]*)', hostname):
+    if not re.fullmatch(r'(?=.{1,15}$)(?:lin|alt|win|deb)-[a-z]+[0-9]?-(?:pc[1-9][0-9]*)', hostname):
         raise ValueError('Invalid workstation hostname')
     files = {path: _file(root, path, private=private, owner=owner) for path, private in AUTH_FILES.items()}
     tools = {}

@@ -12,7 +12,9 @@ def fixture(root):
     (root/'var/lib/alt-deploy-recovery').mkdir(parents=True,mode=0o700)
     return root
 
-def test_fixed_inspection_is_readonly_and_identity_bound(tmp_path):
+@pytest.mark.parametrize('hostname', [REQUEST['hostname'], 'alt-arh1-pc1'])
+def test_fixed_inspection_is_readonly_and_identity_bound(tmp_path, monkeypatch, hostname):
+    monkeypatch.setitem(REQUEST, 'hostname', hostname)
     from alt_deploy.setup_recovery_successor_probe import inspect
     root=fixture(tmp_path);before={str(p):p.read_bytes() for p in root.rglob('*') if p.is_file()}
     proof=inspect(REQUEST,root=root,owner=os.getuid())

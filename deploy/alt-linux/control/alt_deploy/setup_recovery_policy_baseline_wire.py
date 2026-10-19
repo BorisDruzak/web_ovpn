@@ -69,7 +69,7 @@ try:
             or type(bound['schema_version']) is not int or bound['schema_version']!=1
             or not isinstance(bound['failed_run_id'],str) or not re.fullmatch('setup-run-[0-9a-f]{32}',bound['failed_run_id'])
             or any(not sha(bound[key]) for key in ('claim_sha256','snapshot_sha256','source_sha256'))
-            or not isinstance(bound['hostname'],str) or not re.fullmatch(r'(?:lin|alt|win|deb)-[a-z][0-9]?-(?:pc[1-9][0-9]*)',bound['hostname'])):raise ValueError()
+            or not isinstance(bound['hostname'],str) or not re.fullmatch(r'(?=.{1,15}$)(?:lin|alt|win|deb)-[a-z]+[0-9]?-(?:pc[1-9][0-9]*)',bound['hostname'])):raise ValueError()
     for key in ('computer_guid','machine_uuid'):
         if not isinstance(bound[key],str) or str(uuid.UUID(bound[key]))!=bound[key] or uuid.UUID(bound[key]).int==0:raise ValueError()
     facts=bound['facts']

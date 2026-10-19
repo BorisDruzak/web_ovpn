@@ -97,13 +97,23 @@ def test_ldap_escape_and_bounded_strict_ldif():
             api.parse_ldif(invalid)
 
 
-def test_computer_check_searches_whole_domain():
+@pytest.mark.parametrize('hostname', ['alt-a1-pc3', 'alt-arh1-pc1', 'win-office-pc12'])
+def test_computer_check_searches_whole_domain(hostname):
     api = directory_api()
     calls = []
-    result = api.ADDirectory(lambda **kw: calls.append(kw) or '').computer('alt-a1-pc3')
-    assert result == {'hostname': 'alt-a1-pc3', 'exists': False, 'objects': []}
+    result = api.ADDirectory(lambda **kw: calls.append(kw) or '').computer(hostname)
+    assert result == {'hostname': hostname, 'exists': False, 'objects': []}
     assert calls[0]['base'] == 'DC=sosnadmin,DC=local'
-    assert calls[0]['ldap_filter'] == '(&(objectClass=computer)(sAMAccountName=alt-a1-pc3$))'
+    assert calls[0]['ldap_filter'] == '(&(objectClass=computer)(sAMAccountName=' + hostname + '$))'
+
+
+@pytest.mark.parametrize('hostname', ['alt-arh1-pc01', 'alt-arh11-pc1', 'alt-abcdefgh-pc12', 'alt-arh1-pc1.example', 'alt-arh1-pc1)(x=*)'])
+def test_invalid_computer_name_never_reaches_directory(hostname):
+    def forbidden(**kwargs):
+        pytest.fail('invalid hostname reached LDAP')
+    with pytest.raises(ControlError) as caught:
+        directory_api().ADDirectory(forbidden).computer(hostname)
+    assert caught.value.code == 'hostname_invalid'
 
 
 def test_transport_gssapi_fixed_command_and_sealed_environment(tmp_path):

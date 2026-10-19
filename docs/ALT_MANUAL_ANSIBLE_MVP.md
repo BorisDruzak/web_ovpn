@@ -88,7 +88,7 @@ hostname.
 The hostname is lower-case and must follow:
 
 ~~~text
-^(lin|alt|win|deb)-[a-z][0-9]?-(pc[1-9][0-9]*)$
+^(?=.{1,15}$)(lin|alt|win|deb)-[a-z]+[0-9]?-(pc[1-9][0-9]*)$
 ~~~
 
 For example: alt-a1-pc3, lin-b-pc2, win-k3-pc1.

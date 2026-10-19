@@ -85,7 +85,8 @@ CONFIGURE_RESULT_PHASES = frozenset(
 )
 CONFIGURE_ERROR_FIELDS = frozenset({"code", "class", "safe_message"})
 
-HOSTNAME_RE = re.compile(r"^(lin|alt|win|deb)-[a-z][0-9]?-(pc[1-9][0-9]*)$")
+# Match AD lookup and standalone recovery collectors; keep the NetBIOS limit.
+HOSTNAME_RE = re.compile(r"^(?=.{1,15}$)(lin|alt|win|deb)-[a-z]+[0-9]?-(pc[1-9][0-9]*)$")
 HOSTNAME_MODES = frozenset({"verify", "change_confirmed"})
 UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"

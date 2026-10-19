@@ -13,7 +13,7 @@ BASE_DN = 'DC=sosnadmin,DC=local'
 MAX_BYTES = 262144
 MAX_RESULTS = 256
 LOGIN_RE = re.compile(r'^[a-z0-9][a-z0-9._-]{0,62}$')
-HOST_RE = re.compile(r'^(lin|alt|win|deb)-[a-z][0-9]?-(pc[1-9][0-9]*)$')
+HOST_RE = re.compile(r'^(?=.{1,15}$)(lin|alt|win|deb)-[a-z]+[0-9]?-(pc[1-9][0-9]*)$')
 USER_ATTRIBUTES = ('dn', 'objectClass', 'sAMAccountName', 'userPrincipalName',
                    'displayName', 'department', 'objectGUID', 'objectSid',
                    'userAccountControl', 'msDS-User-Account-Control-Computed', 'accountExpires')

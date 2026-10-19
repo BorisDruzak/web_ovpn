@@ -37,7 +37,7 @@ preview is non-mutating: it validates the request and registration only. It
 does not test the target hostname, DNS, NTP or AD connectivity.
 
 The request contains no passwords, service credentials or key values. Its hostname must match
-^(lin|alt|win|deb)-[a-z][0-9]?-(pc[1-9][0-9]*)$, for example alt-a1-pc3.
+^(?=.{1,15}$)(lin|alt|win|deb)-[a-z]+[0-9]?-(pc[1-9][0-9]*)$, for example alt-a1-pc3 or alt-arh1-pc1 (at most 15 characters).
 Use hostname_mode verify to require that the installed hostname already equals
 final_hostname. Use hostname_mode change_confirmed only when an approved rename
 is required. The computer OU is always

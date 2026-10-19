@@ -20,7 +20,11 @@ def fixture(root):
     return backup, request, collect
 
 
-def test_protected_backup_retains_exact_bytes_and_metadata_without_secret_output(tmp_path):
+@pytest.mark.parametrize('hostname', [HOST, 'alt-arh1-pc1'])
+def test_protected_backup_retains_exact_bytes_and_metadata_without_secret_output(tmp_path, monkeypatch, hostname):
+    import test_setup_recovery_facts as facts
+    monkeypatch.setattr(facts, 'HOST', hostname)
+    monkeypatch.setattr(__import__(__name__), 'HOST', hostname)
     backup, request, collect = fixture(tmp_path)
     originals = {p: (tmp_path/p.lstrip('/')).read_bytes() for p in backup.AUTH_FILES}
     receipt = backup.create(request, collect=collect, root=tmp_path, owner=os.geteuid())

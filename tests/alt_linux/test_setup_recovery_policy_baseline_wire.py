@@ -24,8 +24,13 @@ def fixture(root):
     return wire,request,sources
 
 
-def test_baseline_bootstrap_dispatches_only_fixed_read_only_worker(tmp_path):
-    wire,request,sources=fixture(tmp_path);script,encoded=wire.build(sources,request)
+@pytest.mark.parametrize('hostname', ['alt-a1-pc3', 'alt-arh1-pc1'])
+def test_baseline_bootstrap_dispatches_only_fixed_read_only_worker(tmp_path, hostname):
+    wire,request,sources=fixture(tmp_path)
+    bound=request['backup_request']
+    bound['hostname']=bound['facts']['hostname']=request['metadata']['hostname']=hostname
+    bound['snapshot_sha256']=digest(bound['facts'])
+    script,encoded=wire.build(sources,request)
     assert len(('sudo -n /usr/bin/python3 -I -B -c '+shlex.quote(script)).encode())<8192
     assert 'SYNTHETIC_MODULE' not in script
     result=run(script,encoded)

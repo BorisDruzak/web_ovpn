@@ -74,7 +74,9 @@ def test_initial_facts_freeze_getent_executable_before_any_recovery(tmp_path):
     assert facts['tools']['nss_sss']['present'] is True and facts['tools']['nss_sss']['sha256']
 
 
-def test_collect_keeps_only_fixed_file_hashes_and_never_returns_secret_bytes(tmp_path):
+@pytest.mark.parametrize('hostname', [HOST, 'alt-arh1-pc1'])
+def test_collect_keeps_only_fixed_file_hashes_and_never_returns_secret_bytes(tmp_path, monkeypatch, hostname):
+    monkeypatch.setattr(__import__(__name__), 'HOST', hostname)
     probe, calls, _, runner = scenario(tmp_path)
     before = {path: (tmp_path / path.lstrip('/')).read_bytes() for path in probe.AUTH_FILES}
     document = collect(probe, tmp_path, runner)

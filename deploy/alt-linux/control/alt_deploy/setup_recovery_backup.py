@@ -36,7 +36,7 @@ def _request(request):
             or any(not isinstance(request[key], str) or not re.fullmatch('[0-9a-f]{64}', request[key])
                    for key in ('claim_sha256', 'snapshot_sha256', 'source_sha256'))
             or not isinstance(request['hostname'], str)
-            or not re.fullmatch(r'(?:lin|alt|win|deb)-[a-z][0-9]?-(?:pc[1-9][0-9]*)', request['hostname'])):
+            or not re.fullmatch(r'(?=.{1,15}$)(?:lin|alt|win|deb)-[a-z]+[0-9]?-(?:pc[1-9][0-9]*)', request['hostname'])):
         raise ValueError('Invalid fixed backup request')
     for key in ('computer_guid', 'machine_uuid'):
         if str(uuid.UUID(request[key])) != request[key] or uuid.UUID(request[key]).int == 0:

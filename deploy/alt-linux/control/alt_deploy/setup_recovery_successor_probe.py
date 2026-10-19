@@ -48,7 +48,7 @@ def inspect(request,*,root=Path('/'),owner=0):
             or not isinstance(pair['failed_run_id'],str) or not re.fullmatch('setup-run-[0-9a-f]{32}',pair['failed_run_id'])):raise ValueError
     for value in (pair['computer_guid'],request['machine_uuid']):
         if str(uuid.UUID(value))!=value or uuid.UUID(value).int==0:raise ValueError
-    if not isinstance(request['hostname'],str) or not re.fullmatch(r'(?:lin|alt|win|deb)-[a-z][0-9]?-(?:pc[1-9][0-9]*)',request['hostname']):raise ValueError
+    if not isinstance(request['hostname'],str) or not re.fullmatch(r'(?=.{1,15}$)(?:lin|alt|win|deb)-[a-z]+[0-9]?-(?:pc[1-9][0-9]*)',request['hostname']):raise ValueError
     if (_identity_file(root/'sys/class/dmi/id/product_uuid',owner)!=request['machine_uuid']
             or _identity_file(root/'proc/sys/kernel/hostname',owner) not in (request['hostname'],request['hostname']+'.sosnadmin.local')):raise ValueError('Wrong machine')
     parent=root/'var/lib/alt-deploy-recovery';_parents(parent.parent,root,owner)

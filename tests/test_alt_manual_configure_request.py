@@ -317,7 +317,9 @@ def test_configure_request_rejects_untrusted_input(
 
 @pytest.mark.parametrize(
     "hostname",
-    ["alt_ws_001", "alt-a11-pc3", "ubuntu-a1-pc3", "alt-a1-pc0"],
+    ["alt_ws_001", "alt-a11-pc3", "ubuntu-a1-pc3", "alt-a1-pc0",
+     "alt-arh1-pc01", "alt-arh1-pc1.example", "alt-arh-1-pc1",
+     "alt-abcdefgh-pc12"],
 )
 def test_configure_request_rejects_hostname_outside_operational_grammar(
     hostname: str,
@@ -329,6 +331,13 @@ def test_configure_request_rejects_hostname_outside_operational_grammar(
         ConfigureRequest.from_mapping(payload, expected_uuid=MACHINE_UUID)
 
     assert exc.value.code == "hostname_invalid"
+
+
+@pytest.mark.parametrize("hostname", ["alt-arh1-pc1", "lin-arh-pc12", "win-office-pc12", "deb-a1-pc3"])
+def test_configure_request_accepts_department_hostname(hostname):
+    payload = valid_request()
+    payload["final_hostname"] = hostname
+    assert ConfigureRequest.from_mapping(payload, expected_uuid=MACHINE_UUID).final_hostname == hostname
 
 
 def test_configure_request_rejects_selected_uuid_mismatch() -> None:
