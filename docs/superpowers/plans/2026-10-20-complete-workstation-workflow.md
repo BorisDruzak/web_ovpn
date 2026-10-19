@@ -61,12 +61,12 @@ Run controller/native tests in a clean Linux environment as the non-root service
 
 **Interfaces:** Registry component `software.vkworkspace`, artifact key `vkworkspace`, role `software_vkworkspace`, executable `/opt/vkworkspace/vkworkspace`, launcher `vkworkspace.desktop`; existing package verification recipe and normal component plan/apply/verify remain the interface.
 
-- [ ] Write failing tests for exact package `vkworkspace` / `26.4.0.141207-1.el8` / `x86_64`, artifact SHA `386b314d8a31ec06330e60ea842268304c98e39be343fb95ea5907a8d896cdc9`, and unchanged legacy profile declarations. Add corruption, symlink, metadata drift, insufficient-space, existing-data and already-installed cases; a no-op must not run the installer.
-- [ ] Run `python -m pytest -q tests/alt_linux/test_software_vkworkspace.py tests/alt_linux/test_component_catalog.py tests/alt_linux/test_component_catalog_boundary.py` and retain the relevant RED failures.
-- [ ] Register the fixed RPM beneath `/opt/alt-deploy-control/artifacts/vkworkspace/`. Allow optional bounded integer artifact fields `download_size_bytes=377133320` and `installed_size_bytes=1164975020`; do not add a user-supplied artifact path. Add bounded target filesystem-space evidence: when `/opt` and `/var/tmp` share a filesystem require free bytes at least download plus installed size plus 536870912; otherwise require installed size plus that reserve on `/opt` and download size plus that reserve on staging. Skip this pre-transaction budget for a verified no-op; do not make already-installed compliance depend on free installation space.
-- [ ] Implement the role with exact identity/hash preflight, the existing approved apt transaction pattern, independent package/executable verification and package-owned launcher. Never automatically remove/roll back the vendor RPM: its uninstall script can delete user configuration. Add the launcher mapping so it is selected only by profiles containing this component.
-- [ ] Run the Task 1 tests plus `python -m pytest -q tests/alt_linux/test_component_probe_script.py tests/alt_linux/test_component_ansible_runtime.py`; verify zero role changes for already-correct software and no credentials in synthetic-sentinel output.
-- [ ] Commit `feat(workstations): add verified VK WorkSpace component`.
+- [x] Write failing tests for exact package `vkworkspace` / `26.4.0.141207-1.el8` / `x86_64`, artifact SHA `386b314d8a31ec06330e60ea842268304c98e39be343fb95ea5907a8d896cdc9`, and unchanged legacy profile declarations. Add corruption, symlink, metadata drift, insufficient-space, existing-data and already-installed cases; a no-op must not run the installer.
+- [x] Run `python -m pytest -q tests/alt_linux/test_software_vkworkspace.py tests/alt_linux/test_component_catalog.py tests/alt_linux/test_component_catalog_boundary.py` and retain the relevant RED failures.
+- [x] Register the fixed RPM beneath `/opt/alt-deploy-control/artifacts/vkworkspace/`. Allow optional bounded integer artifact fields `download_size_bytes=377133320` and `installed_size_bytes=1164975020`; do not add a user-supplied artifact path. Add bounded target filesystem-space evidence: when `/opt` and `/var/tmp` share a filesystem require free bytes at least download plus installed size plus 536870912; otherwise require installed size plus that reserve on `/opt` and download size plus that reserve on staging. Skip this pre-transaction budget for a verified no-op; do not make already-installed compliance depend on free installation space.
+- [x] Implement the role with exact identity/hash preflight, the existing approved apt transaction pattern, independent package/executable verification and package-owned launcher. Never automatically remove/roll back the vendor RPM: its uninstall script can delete user configuration. Add the launcher mapping so it is selected only by profiles containing this component.
+- [x] Run the Task 1 tests plus `python -m pytest -q tests/alt_linux/test_component_probe_script.py tests/alt_linux/test_component_ansible_runtime.py`; verify zero role changes for already-correct software and no credentials in synthetic-sentinel output.
+- [x] Commit `feat(workstations): add verified VK WorkSpace component`.
 
 ## Task 2: Add direct VNC policy and safe KRFB runtime verification
 
@@ -166,6 +166,15 @@ Run controller/native tests in a clean Linux environment as the non-root service
 - [x] Update the selected PC's owned policy with a private before-copy and exact JSON verification; no browser restart or extension uninstall. The observed file was already zero bytes, so make the resulting policy valid with the retained GosPlugin entry. Do not overwrite unrelated policy files. Record file verification separately from browser-cache refresh/human acceptance.
 - [x] Commit `fix(workstations): stop forcing the selected CryptoPro extension`; full controller release remains Task 7.
 
+## Task 10: Correct verified intermediate-anchor cleanup
+
+**Added by the operator's certificate correction request on 2026-10-20.** The supplied guc2022.crt has the exact existing root fingerprint; preserve a single catalog entry and document the DER/PEM identity. The pilot certificate-only repair completed and the operator confirmed applications work.
+
+- [x] Reproduce the wrong local cleanup path with a failing test. Guard the actual managed anchor path with exact pinned SHA, root ownership, regular-file type, private-write-safe mode and absence of symlinks; preserve unknown, non-anchor and distribution files.
+- [x] Run focused CA tests and real Ansible fixture cases for absent/correct/mismatched/linked/mixed candidates and an unchanged second run. All guards complete before any cleanup.
+- [x] Document guc2022 in the operator list without duplicating the existing certificate; retain current live technical and human acceptance separately from the pending controller release.
+- [x] Commit the bounded CA fix; release it with the remaining approved workflow in Task 7, preserving UNKNOWN and native gates.
+
 ## Task 7: Clean ALT/browser acceptance and guarded release
 
 **Files:** Modify `deploy/alt-linux/install-control-plane.sh`, `install-control-plane-lib.sh` and associated installer/backup readiness tests only where needed to ship/validate new fixed assets. Add `docs/verification/ALT_COMPLETE_WORKFLOW_ACCEPTANCE_2026-10-20.md`; keep private manifests, identifiers, logs and artifact copies under the ignored operational evidence directory.
@@ -188,4 +197,4 @@ Run controller/native tests in a clean Linux environment as the non-root service
 - Canonical profile, policy binding and protected initial domain path: Task 4; real-login eligibility, claims, queue, expired receipt, restart and legacy compatibility: Task 5.
 - Web/MCP/skill, sanitized logs, permissions and read-only views: Task 6; isolated real acceptance, exact CI, backup/deployment and documentation: Task 7.
 - All five Review Focus cases have explicit tests in their owning tasks. Later tasks consume the names and JSON contracts defined above; no task authorizes an old job replay or source deployment before verification.
-- Implementation method remains native execution in this chat, approved on 2026-10-20 with direct VNC and Task 0 AD admission/diagnostics. Later explicit amendments add Tasks 8–9; execution order is 0, 9, 1, 2, 8, 3, 4, 5, 6, 7. The already completed workstation application/DNS/VNC work is separate from the controller implementation.
+- Implementation method remains native execution in this chat, approved on 2026-10-20 with direct VNC and Task 0 AD admission/diagnostics. Later explicit amendments add Tasks 8–9; execution order is 0, 9, 1, 10, 2, 8, 3, 4, 5, 6, 7. The already completed workstation application/DNS/VNC work is separate from the controller implementation.
