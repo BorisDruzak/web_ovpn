@@ -352,7 +352,9 @@ def first_join(uri, ou, command):
             # A later native stage can fail after the AD write/keytab bind.
             # Trust-only reconciliation must not turn this into acceptance.
             if DIAGNOSTICS and DIAGNOSTICS.current()['code'] in ('first_join_ok', 'first_join_internal_error'):
-                diagnostic_result('native_execution', diagnostic_module().native_failure_code(result.stdout + result.stderr), result.returncode)
+                # Only the net child can establish the directory writer's
+                # return code. The enclosing script may fail after losing it.
+                diagnostic_result('native_execution', diagnostic_module().native_failure_code(result.stdout + result.stderr))
             raise ValueError('Native first-join configuration did not complete')
         # Fresh trust and a real machine AS exchange are both required.
         phase('trust_verify')

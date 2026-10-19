@@ -212,3 +212,40 @@ def test_bound_native_completion_and_machine_check_can_report_success(tmp_path, 
     assert m.main() == 0
     value = d.read_public(BINDING, root=root)
     assert value['code'] == 'first_join_ok' and value['directory_effect'] == 'returned_success'
+
+
+@pytest.mark.parametrize('child_status,effect', [
+    (None, 'uncertain'), (0, 'returned_success'), (1, 'returned_failure')])
+def test_outer_native_failure_cannot_invent_writer_completion(tmp_path, monkeypatch, child_status, effect):
+    m, d = helper(), diagnostics()
+    root = tmp_path/'evidence'
+    m.DIAGNOSTICS = d.Diagnostics(BINDING, root=root)
+    m.DIAGNOSTIC_BINDING = BINDING
+    monkeypatch.setattr(m, 'diagnostic_module', lambda: d)
+    monkeypatch.setattr(m, 'SYSTEM_KEYTAB', str(tmp_path/'absent.keytab'))
+    source = tmp_path/'system-auth-source'
+    source.write_text('net_cmd="/usr/bin/net"\n# target-server:\n')
+    monkeypatch.setattr(m, 'trusted_file', lambda path: source)
+    monkeypatch.setattr(m, 'adapt_system_auth', lambda text, wrapper: text)
+    temporary = m.tempfile.TemporaryDirectory
+    monkeypatch.setattr(m.tempfile, 'TemporaryDirectory', lambda **kw: temporary(prefix=kw['prefix'], dir=tmp_path))
+    monkeypatch.setattr(m, 'ldap', lambda *args: '')
+    calls = []
+    def native(argv, **kwargs):
+        if argv[0] == '/usr/bin/rpm': return SimpleNamespace(returncode=0, stdout='4.21.10', stderr='')
+        if argv == ['/usr/bin/net', 'ads', 'testjoin']: return SimpleNamespace(returncode=1, stdout='', stderr='')
+        if argv == ['/usr/sbin/system-auth', 'status']: return SimpleNamespace(returncode=0, stdout='local', stderr='')
+        calls.append(argv)
+        if child_status is not None:
+            child = d.Diagnostics(BINDING, root=root)
+            child.intent('native_execution')
+            child.result('native_execution', code='first_join_ok' if child_status == 0 else 'first_join_native_access_denied', returncode=child_status)
+        return SimpleNamespace(returncode=1, stdout='SENTINEL-private-wrapper-output', stderr='')
+    monkeypatch.setattr(m, 'run', native)
+    command = ['system-auth', 'write', 'ad', 'example.test', 'vm-test', 'EXAMPLE', 'join-user', '--createcomputer=TEST', '--gpo']
+    with pytest.raises(ValueError, match='Native first-join configuration did not complete') as error:
+        m.first_join('ldap://dc.example.test', 'OU=TEST,DC=example,DC=test', command)
+    m.diagnostic_error(error.value)
+    value = m.DIAGNOSTICS.publish()
+    assert value['directory_effect'] == effect
+    assert len(calls) == 1 and 'SENTINEL' not in json.dumps(value)
