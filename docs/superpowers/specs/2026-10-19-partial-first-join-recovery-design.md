@@ -1,8 +1,8 @@
 # Partial first-join diagnostics and local-authentication recovery
 
-Status: proposed written specification; implementation and live recovery have
-not started. The operator approved investigation and this recovery scope in the
-current chat. This document needs written-spec review before implementation.
+Status: written specification approved by the operator in the current chat on
+2026-10-19. Implementation and live recovery have not started. The next artifact
+is the implementation plan for review, using native execution in this chat.
 
 ## Outcome and boundaries
 
