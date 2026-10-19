@@ -231,6 +231,55 @@ def test_maintenance_covers_only_distinct_failed_successor_and_its_pair(partial_
     assert SetupJobRepository(setup.settings).get(old.job_id).state == 'unknown_requires_review'
 
 
+@pytest.mark.parametrize('entrypoint', ['jobs', 'readiness'])
+@pytest.mark.parametrize('fault', ['none', 'foreign_lease', 'missing_review'])
+def test_operator_maintenance_reads_validate_reviewed_ancestor_leases(partial_failure, monkeypatch, entrypoint, fault):
+    import io
+    import json
+    from alt_deploy import cli, setup_maintenance_review_bridge
+    from alt_deploy.controller_readiness import ControllerReadinessChecker
+    from alt_deploy.setup_jobs import legacy_execution_reservations
+    from alt_deploy.setup_plans import private_create
+    from alt_deploy_backup.setup_closed_failure import ClosedFailureEvidence
+    from alt_deploy_backup.setup_maintenance_coverage import MaintenanceCoverage
+    from test_setup_partial_observation import observer
+
+    _, job, _, _, _ = dispatch_followup(partial_failure, fail=True, absent=True)
+    setup, old, machine, user, state, current, date = partial_failure
+    fresh, *_ = observer((setup, job, machine, user, state, current, date))
+    service = MaintenanceCoverage(setup.settings,
+        observer=lambda selected: fresh.observe(ClosedFailureEvidence(setup.settings).load(selected.job_id), mode='partial_ad'),
+        clock=setup.clock)
+    plan = service.plan()
+    service.confirm(plan['plan_id'], plan['sha256'])
+    monkeypatch.setattr(setup_maintenance_review_bridge, 'review_service', lambda settings: service)
+    root = setup.settings.state_root
+    if fault == 'missing_review':
+        (root/'setup-job-reviews'/(old.job_id+'.json')).unlink()
+    elif fault == 'foreign_lease':
+        lease = legacy_execution_reservations(setup.settings)[0]
+        private_create(root/'legacy-setup-reservations'/('b'*32+'.json'),
+            dict(lease, reservation_id='b'*32, run_id='setup-run-'+'b'*32, supersedes=[]))
+    before = retained(root)
+    if entrypoint == 'jobs':
+        output = io.StringIO()
+        assert cli.main(['--json', 'jobs', 'active'], settings=setup.settings,
+                        stdout=io.StringIO(), stderr=io.StringIO()) != 0
+        code = cli.main(['--json', 'jobs', 'active', '--maintenance-review', plan['sha256']],
+                        settings=setup.settings, stdout=output, stderr=io.StringIO())
+        if fault == 'none':
+            assert code == 0, output.getvalue()
+            assert json.loads(output.getvalue())['count'] == 0
+        else:
+            assert code != 0
+    else:
+        assert not ControllerReadinessChecker(setup.settings).active_jobs_empty()
+        assert ControllerReadinessChecker(setup.settings, maintenance_review=plan['sha256']).active_jobs_empty() == (fault == 'none')
+    assert retained(root) == before
+    assert SetupJobRepository(setup.settings).get(old.job_id).state == 'unknown_requires_review'
+    assert SetupJobRepository(setup.settings).get(job.job_id).state == 'unknown_requires_review'
+
+
 def test_ordinary_new_job_advances_assignment_and_preserves_predecessor_bytes(partial_failure):
     plan, job, outcome, before, computer = dispatch_followup(partial_failure)
     setup, old, machine, *_ = partial_failure

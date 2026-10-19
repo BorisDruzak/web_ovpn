@@ -34,6 +34,19 @@ Create, verify and rehearse a fresh controller backup with
 `alt-deploy-backup COMMAND [BACKUP_ID] --maintenance-review SHA256`. Use the normal
 guarded installer with the actual backup ID and review SHA; keep all checks enabled.
 
+Before starting the installer, run its read-only job and readiness checks from
+the same trusted candidate and configured service environment:
+
+```sh
+python3 -m alt_deploy.cli --json jobs active --maintenance-review SHA256
+python3 -m alt_deploy.cli --json controller readiness --maintenance-review SHA256
+```
+
+Both checks validate existing predecessor reviews before excluding their old
+legacy runs. The current unreviewed failures still require the exact maintenance
+scope; missing review evidence or an uncovered reservation blocks maintenance.
+Do not delete historical reservations to make these checks pass.
+
 Rehearse the exact helper on a disposable disconnected ALT clone with matching
 native hashes. Remove all NICs before first boot and verify fresh VM identity.
 Use loopback SSH, pinned keys and throwaway fixture credentials. Prove fresh

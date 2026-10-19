@@ -161,7 +161,10 @@ class ControllerReadinessChecker:
             if self.maintenance_review is not None:
                 from .setup_maintenance_review_bridge import review_service
                 exclusion = review_service(self.settings).exclusions(self.maintenance_review)
-            if any(r['reservation_id'] not in exclusion['lease_ids'] for r in unresolved_legacy_reservations(self.settings)):
+            from .setup_retry import reviewed_legacy_runs
+            reviewed_runs = reviewed_legacy_runs(self.settings)
+            if any(r['run_id'] not in reviewed_runs and r['reservation_id'] not in exclusion['lease_ids']
+                   for r in unresolved_legacy_reservations(self.settings)):
                 return False
         except (ControlError, OSError, ValueError):
             return False

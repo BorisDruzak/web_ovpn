@@ -641,7 +641,10 @@ def main(
             if parsed.maintenance_review is not None:
                 from .setup_maintenance_review_bridge import review_service
                 exclusion = review_service(active_settings).exclusions(parsed.maintenance_review)
-            if any(r['reservation_id'] not in exclusion['lease_ids'] for r in unresolved_legacy_reservations(active_settings)):
+            from .setup_retry import reviewed_legacy_runs
+            reviewed_runs = reviewed_legacy_runs(active_settings)
+            if any(r['run_id'] not in reviewed_runs and r['reservation_id'] not in exclusion['lease_ids']
+                   for r in unresolved_legacy_reservations(active_settings)):
                 raise ControlError('setup_previous_run_unresolved',
                                    'Legacy Setup/Configure execution requires review', 4)
             active_jobs = [
