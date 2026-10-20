@@ -133,7 +133,13 @@ exit 2
         self._fake_script(
             "sudo",
             "case \" $* \" in\n"
-            "  *\" -m pytest \"*) exit \"${INSTALLER_TEST_RC:-0}\" ;;\n"
+            "  *\" -m pytest \"*)\n"
+            "    if [[ ${INSTALLER_REAL_PYTEST:-0} == 1 ]]; then\n"
+            "      while [[ ${1:-} != -- ]]; do (( $# )) || exit 2; shift; done\n"
+            "      shift\n"
+            "      exec \"$@\"\n"
+            "    fi\n"
+            "    exit \"${INSTALLER_TEST_RC:-0}\" ;;\n"
             "  *\" jobs active \"*) printf '%s\\n' \"$INSTALLER_JOBS_JSON\"; exit \"${INSTALLER_JOBS_RC:-0}\" ;;\n"
             "  *\" vault check \"*) exit \"${INSTALLER_VAULT_RC:-0}\" ;;\n"
             "  *\" controller permissions \"*) exit \"${INSTALLER_PERMISSIONS_RC:-0}\" ;;\n"

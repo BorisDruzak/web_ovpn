@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -71,7 +73,8 @@ def test_repository_verification_runs_as_service_user(tmp_path: Path) -> None:
     assert len(calls) == 1
     assert calls[0][:6] == ["sudo", "-n", "-H", "-u", "altserver", "--"]
     assert calls[0][6] == str(sandbox.fake_bin / "python3")
-    assert calls[0][7:] == [
+    assert calls[0][7] == "-c"
+    assert calls[0][9:] == [
         "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests/alt_linux"
     ]
     assert sandbox.protected_snapshot() == before
@@ -86,6 +89,59 @@ def test_repository_test_failure_blocks_before_mutation(tmp_path: Path) -> None:
 
     assert result.returncode == 23
     assert_pre_mutation_failure(sandbox, result, before)
+
+
+@pytest.mark.parametrize("test_exit_code", [0, 23])
+def test_repository_nested_compiler_preserves_readonly_source_and_cleans_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, test_exit_code: int,
+) -> None:
+    if os.geteuid() == 0:
+        pytest.skip("read-only source requires a non-root test actor")
+    monkeypatch.delenv("PYTHONPYCACHEPREFIX", raising=False)
+    sandbox = InstallerSandbox.create(tmp_path)
+    before = sandbox.protected_snapshot()
+    readonly = tmp_path / "published-source"
+    readonly.mkdir()
+    module = readonly / "payload.py"
+    module.write_text("VALUE = 42\n", encoding="utf-8")
+    module.chmod(0o444)
+    readonly.chmod(0o555)
+    test_module = tmp_path / "test-runner"
+    test_module.mkdir()
+    receipt = tmp_path / "compiler-receipt.json"
+    (test_module / "pytest.py").write_text(
+        "import json, os, py_compile\nfrom pathlib import Path\n"
+        "compiled = py_compile.compile(os.environ['INSTALLER_READONLY_MODULE'], doraise=True)\n"
+        "cache = Path(os.environ['PYTHONPYCACHEPREFIX'])\n"
+        "Path(os.environ['INSTALLER_COMPILE_RECEIPT']).write_text(json.dumps({"
+        "'compiled': compiled, 'cache': str(cache), 'mode': cache.stat().st_mode & 0o777,"
+        "'uid': cache.stat().st_uid}))\n"
+        "raise SystemExit(int(os.environ['INSTALLER_COMPILE_EXIT']))\n",
+        encoding="utf-8",
+    )
+    sandbox._fake_script(
+        "python3",
+        "if [[ ${1:-} == -c || ( ${1:-} == -m && ${2:-} == pytest ) ]]; then\n"
+        f"  exec {shlex.quote(sys.executable)} \"$@\"\nfi\nexit 0\n",
+    )
+    try:
+        result = sandbox._run_function(
+            "run_repository_verification", INSTALLER_REAL_PYTEST="1",
+            PYTHONPATH=str(test_module), INSTALLER_READONLY_MODULE=str(module),
+            INSTALLER_COMPILE_RECEIPT=str(receipt), INSTALLER_COMPILE_EXIT=str(test_exit_code),
+        )
+        assert result.returncode == test_exit_code, result.stderr
+        evidence = json.loads(receipt.read_text(encoding="utf-8"))
+        cache = Path(evidence["cache"])
+        assert Path(evidence["compiled"]).is_relative_to(cache)
+        assert evidence["mode"] == 0o700 and evidence["uid"] == os.getuid()
+        assert not cache.exists()
+        assert not (readonly / "__pycache__").exists()
+        assert module.read_bytes() == b"VALUE = 42\n"
+        assert sandbox.protected_snapshot() == before
+        assert InstallerSandbox.mutation_commands(sandbox.commands()) == []
+    finally:
+        readonly.chmod(0o700)
 
 
 def test_active_jobs_block_before_mutation(tmp_path: Path) -> None:

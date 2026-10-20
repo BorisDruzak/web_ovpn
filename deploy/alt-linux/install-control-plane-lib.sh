@@ -374,10 +374,15 @@ run_repository_verification() {
 
     (
         cd "${REPO_ROOT}"
-        # User-session fixtures must exercise a real non-root account. Keep
-        # the published source read-only and propagate every test failure.
-        sudo -n -H -u altserver -- "${python_bin}" \
-            -m pytest -q -p no:cacheprovider tests/alt_linux
+        # Keep imports and nested py_compile writes outside the published tree.
+        # The private cache belongs only to this unprivileged test subprocess.
+        sudo -n -H -u altserver -- "${python_bin}" -c '
+import os, subprocess, sys, tempfile
+with tempfile.TemporaryDirectory(prefix="alt-deploy-test-python-") as cache:
+    environment = dict(os.environ, PYTHONPYCACHEPREFIX=cache)
+    result = subprocess.run([sys.executable, *sys.argv[1:]], env=environment)
+raise SystemExit(result.returncode)
+' -m pytest -q -p no:cacheprovider tests/alt_linux
     )
 }
 
