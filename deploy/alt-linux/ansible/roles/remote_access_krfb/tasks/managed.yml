@@ -1,0 +1,84 @@
+---
+- name: Require the internally claimed complete-workstation user phase
+  ansible.builtin.assert:
+    that:
+      - alt_setup_workflow_context is defined
+      - alt_setup_workflow_context is mapping
+      - alt_setup_workflow_context.kind == 'complete_workstation'
+      - alt_setup_workflow_context.phase == 'user'
+      - alt_setup_krfb_runtime_evidence is defined
+      - alt_setup_krfb_runtime_evidence is mapping
+      - alt_setup_krfb_runtime_evidence.schema_version == 1
+      - alt_setup_krfb_runtime_evidence.request.context == alt_setup_workflow_context
+      - alt_setup_krfb_runtime_evidence.request.machine_uuid == alt_setup_workflow_context.machine_uuid
+      - alt_setup_krfb_runtime_evidence.request.source_sha256 == alt_setup_workflow_context.source_sha256
+      - alt_setup_krfb_runtime_evidence.request.policy_sha256 == alt_setup_workflow_context.policy_sha256
+      - alt_setup_krfb_runtime_evidence.program is string
+      - alt_setup_krfb_runtime_evidence.program | length > 0
+      - alt_setup_krfb_runtime_evidence.program | length < 120000
+      - (alt_setup_krfb_runtime_evidence.program | hash('sha256')) == alt_setup_krfb_runtime_evidence.program_sha256
+    fail_msg: The claimed KRFB user-phase context is unavailable
+  no_log: true
+
+- name: Render only the fixed complete-workstation KRFB templates
+  ansible.builtin.set_fact:
+    alt_setup_krfb_configuration: "{{ lookup('ansible.builtin.template', 'krfbrc-managed.j2') }}"
+    alt_setup_krfb_autostart: "{{ lookup('ansible.builtin.template', 'org.sosn.krfb.desktop.j2') }}"
+  no_log: true
+
+- name: Require unchanged private templates after the user-phase claim
+  ansible.builtin.assert:
+    that:
+      - alt_setup_krfb_runtime_evidence.request.configuration == alt_setup_krfb_configuration
+      - alt_setup_krfb_runtime_evidence.request.autostart == alt_setup_krfb_autostart
+      - (alt_setup_krfb_configuration | hash('sha256')) == alt_setup_krfb_runtime_evidence.request.configuration_template_sha256
+      - (alt_setup_krfb_autostart | hash('sha256')) == alt_setup_krfb_runtime_evidence.request.autostart_template_sha256
+    fail_msg: The approved KRFB templates changed after phase admission
+  no_log: true
+
+- name: Inspect the fixed KRFB package executable installed in the system phase
+  ansible.builtin.stat:
+    path: /usr/bin/krfb
+    follow: false
+  register: alt_setup_krfb_executable
+  no_log: true
+
+- name: Require the protected KRFB executable before user effects
+  ansible.builtin.assert:
+    that:
+      - alt_setup_krfb_executable.stat.exists
+      - alt_setup_krfb_executable.stat.isreg
+      - not alt_setup_krfb_executable.stat.islnk
+      - alt_setup_krfb_executable.stat.uid == 0
+      - alt_setup_krfb_executable.stat.executable
+      - alt_setup_krfb_executable.stat.mode[-2] in ['0', '1', '4', '5']
+      - alt_setup_krfb_executable.stat.mode[-1] in ['0', '1', '4', '5']
+    fail_msg: The system phase must install the protected KRFB package first
+  no_log: true
+
+- name: Execute only the fixed claimed KRFB user transaction
+  ansible.builtin.command:
+    argv: [/usr/bin/python3, -I, -B, -c, "{{ alt_setup_krfb_runtime_evidence.program }}"]
+    stdin: "{{ alt_setup_krfb_runtime_evidence.request | to_json }}"
+    stdin_add_newline: false
+  register: alt_setup_krfb_runtime_apply
+  changed_when: false
+  failed_when: false
+  no_log: true
+  diff: false
+
+- name: Require configured KRFB pending independent controller RFB proof
+  ansible.builtin.assert:
+    that:
+      - alt_setup_krfb_runtime_apply.rc == 0
+      - (alt_setup_krfb_runtime_apply.stdout | from_json).schema_version == 1
+      - (alt_setup_krfb_runtime_apply.stdout | from_json).status == 'ok'
+      - (alt_setup_krfb_runtime_apply.stdout | from_json).result.status in ['configured', 'noop']
+      - (alt_setup_krfb_runtime_apply.stdout | from_json).result.requires_direct_probe is sameas true
+    fail_msg: KRFB user transaction requires review of its original claim
+  no_log: true
+
+- name: Retain safe KRFB result without claiming full remote-access readiness
+  ansible.builtin.set_fact:
+    alt_setup_krfb_user_result: "{{ (alt_setup_krfb_runtime_apply.stdout | from_json).result }}"
+  no_log: true

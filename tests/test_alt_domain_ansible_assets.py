@@ -207,7 +207,7 @@ def test_software_phase_is_restored_before_domain_verification() -> None:
 
 
 def test_krfb_role_targets_one_explicit_user_and_never_starts_a_process() -> None:
-    text = (ROLES / "remote_access_krfb/tasks/main.yml").read_text()
+    text = (ROLES / "remote_access_krfb/tasks/legacy.yml").read_text()
 
     assert "assigned_domain_user" in text and "getent" in text
     assert "no_log: true" in text
@@ -226,8 +226,8 @@ def test_krfb_template_has_vault_placeholders_not_password_literals() -> None:
 
 
 def test_krfb_role_requires_exact_user_home_and_network_confirmation() -> None:
-    tasks = yaml.safe_load((ROLES / "remote_access_krfb/tasks/main.yml").read_text())
-    rendered = (ROLES / "remote_access_krfb/tasks/main.yml").read_text()
+    tasks = yaml.safe_load((ROLES / "remote_access_krfb/tasks/legacy.yml").read_text())
+    rendered = (ROLES / "remote_access_krfb/tasks/legacy.yml").read_text()
 
     network_gate = next(
         task for task in tasks if task["name"] == "Require confirmed restricted KRFB access"
@@ -288,7 +288,7 @@ def test_krfb_role_requires_exact_user_home_and_network_confirmation() -> None:
 
 
 def test_krfb_role_uses_fixed_package_and_protected_outputs() -> None:
-    tasks = yaml.safe_load((ROLES / "remote_access_krfb/tasks/main.yml").read_text())
+    tasks = yaml.safe_load((ROLES / "remote_access_krfb/tasks/legacy.yml").read_text())
 
     package = next(task for task in tasks if task["name"] == "Install the fixed KRFB package")
     assert package["ansible.builtin.package"] == {"name": "krfb", "state": "present"}

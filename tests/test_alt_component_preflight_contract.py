@@ -157,7 +157,7 @@ def test_invalid_last_repository_component_fails_before_component_execution(cata
     ("pilot.user", "pilot.user@other.local", False),
 ])
 def test_krfb_requires_sssd_qualified_identity_before_mutation(assigned, resolved, accepted):
-    tasks = yaml.safe_load((ROOT / "roles/remote_access_krfb/tasks/main.yml").read_text())
+    tasks = yaml.safe_load((ROOT / "roles/remote_access_krfb/tasks/legacy.yml").read_text())
     normalize = next(task for task in tasks if task["name"] == "Normalize the assigned user to the fixed domain UPN")
     env = environment()
     upn = env.from_string(normalize["ansible.builtin.set_fact"]["krfb_assigned_upn"]).render(assigned_domain_user=assigned)
