@@ -332,3 +332,17 @@ class VaultHealthChecker:
                 details={"checks": checks},
             )
         return {"status": "ok", "checks": checks}
+
+    def full_workflow_policy(self) -> dict:
+        """Return only validated resolver addresses; never expose decrypted YAML."""
+        try:
+            from .component_catalog import _StrictLoader
+            from .final_dns_policy import validate
+            import yaml
+            if not all(self._build_checks().values()):raise ValueError
+            document=yaml.load(self._decrypt(),Loader=_StrictLoader)
+            if not isinstance(document,dict):raise ValueError
+            return validate(document['vault_workstation_final_dns_servers'])
+        except Exception:
+            raise ControlError('full_workflow_policy_unavailable',
+                               'Protected final DNS policy is unavailable',7) from None
