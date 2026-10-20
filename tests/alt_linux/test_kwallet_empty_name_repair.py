@@ -120,3 +120,201 @@ def test_file_hash_drift_during_read_is_not_accepted_as_defect_evidence(wallet,m
     monkeypatch.setattr(m.os,'read',read)
     with pytest.raises(m.WalletError):inspect(m,f)
     assert changed is True
+
+
+@pytest.mark.parametrize('case',['normal','reused','source_changed','state_symlink'])
+def test_private_whole_wallet_backup_is_verified_before_any_daemon_or_file_effect(wallet,case):
+    m=helper();f=wallet;evidence=inspect(m,f)
+    (f['root']/'var/lib').mkdir(parents=True)
+    namespace=f['root']/'var/lib/alt-kwallet-empty-name-repair'
+    if case=='source_changed':(f['directory']/'.kwl').write_bytes(b'NEW-EMPLOYEE-CONTENT')
+    if case=='state_symlink':
+        other=f['root']/'foreign';other.mkdir();namespace.symlink_to(other,target_is_directory=True)
+    before=files(f['directory']);config=f['config'].read_bytes()
+    if case in ('source_changed','state_symlink'):
+        with pytest.raises(m.WalletError):m.create_backup(evidence,'a'*64,root=f['root'])
+    else:
+        directory=m.create_backup(evidence,'a'*64,root=f['root'])
+        assert stat.S_IMODE(directory.stat().st_mode)==0o700
+        assert (directory/'kwalletrc').read_bytes()==config
+        for name,value in evidence.files.items():
+            path=directory/'wallets'/name
+            assert path.read_bytes()==value['data']
+            assert stat.S_IMODE(path.stat().st_mode)==0o600
+        import json
+        manifest=json.loads((directory/'manifest.json').read_text())
+        assert manifest['snapshot_sha256']==evidence.snapshot_sha256
+        assert manifest['helper']['pid']==os.getpid() and manifest['helper']['start_ticks']>0
+        assert 'SENTINEL' not in (directory/'manifest.json').read_text()
+        assert set(manifest['files'])==set(evidence.files)
+        if case=='reused':
+            frozen=files(directory)
+            with pytest.raises(m.WalletError,match='kwallet_claim_consumed'):m.create_backup(evidence,'a'*64,root=f['root'])
+            assert files(directory)==frozen
+    assert files(f['directory'])==before and f['config'].read_bytes()==config
+
+
+@pytest.fixture
+def wallet_daemons(wallet):
+    f=wallet;processes={}
+    for pid,name in [(102,'kwalletd6'),(103,'ksecretd')]:
+        binary=f['root']/'usr/bin'/name;binary.write_text('trusted package executable');binary.chmod(0o755)
+        processes[name]=f['process'](pid,'/usr/bin/'+name,f['env'],f'/user.slice/user-{f["uid"]}.slice/user@{f["uid"]}.service')
+    return dict(f,daemons=processes)
+
+
+@pytest.mark.parametrize('case',['normal','other_program','duplicate','wrong_bus','changed_birth','timeout','session_changed'])
+def test_only_proven_selected_wallet_daemons_receive_sigterm_once(wallet_daemons,monkeypatch,case):
+    import signal,select
+    m=helper();f=wallet_daemons;context=f['context']
+    m._revalidate=lambda value:None
+    if case=='duplicate':f['process'](104,'/usr/bin/kwalletd6',f['env'],'/another/group')
+    if case=='wrong_bus':
+        p=f['daemons']['kwalletd6']/'environ';p.write_bytes(p.read_bytes().replace(b'/bus',b'/other-bus'))
+    if case in ('duplicate','wrong_bus'):
+        with pytest.raises(m.WalletError):m.observe_daemons(context,root=f['root'])
+        return
+    evidence=m.observe_daemons(context,root=f['root'])
+    assert len(evidence.records)==2 and 'SENTINEL' not in repr(evidence)
+    opened=[];closed=[];sent=[];original_close=os.close
+    monkeypatch.setattr(os,'pidfd_open',lambda pid,flags:opened.append(pid) or pid+1000)
+    monkeypatch.setattr(os,'close',lambda fd:closed.append(fd) if fd in (1102,1103) else original_close(fd))
+    monkeypatch.setattr(os,'kill',lambda *_:pytest.fail('No existing process may be selected by PID alone'))
+    def send(fd,sig,*args):
+        assert sig==signal.SIGTERM and fd in (1102,1103)
+        sent.append(fd)
+        if case!='timeout':(f['root']/('proc/'+str(fd-1000)+'/exe')).unlink()
+    monkeypatch.setattr(signal,'pidfd_send_signal',send)
+    monkeypatch.setattr(select,'select',lambda ready,*args:(ready if sent and case!='timeout' else [],[],[]))
+    if case=='changed_birth':
+        p=f['daemons']['kwalletd6']/'stat';p.write_text(p.read_text().replace('10200','10201'))
+    elif case=='other_program':
+        p=f['daemons']['kwalletd6']/'exe';p.unlink();p.symlink_to('/usr/bin/plasmashell')
+    elif case=='session_changed':
+        def bad(_):raise m.SessionError('graphical_session_unverified')
+        m._revalidate=bad
+    before=files(f['directory'])
+    if case=='normal':m.stop_daemons(context,evidence,root=f['root'])
+    else:
+        with pytest.raises(m.WalletError):m.stop_daemons(context,evidence,root=f['root'])
+    assert len(sent)==(2 if case in ('normal','timeout') else 0)
+    assert len(opened)==len(closed) and files(f['directory'])==before
+
+
+def test_real_same_user_no_replace_renames_preserve_wallet_bytes_modes_and_other_files(wallet,monkeypatch):
+    m=helper();f=wallet;evidence=inspect(m,f);m._revalidate=lambda *_:None
+    original=files(f['directory']);config=f['config'].read_bytes()
+    result=m.apply_wallet_files(evidence,'a'*64,root=f['root'])
+    assert result['status']=='applied'
+    for source,target in [('.kwl','recovered-wallet.kwl'),('.salt','recovered-wallet.salt'),
+                          ('_attributes.json','recovered-wallet_attributes.json')]:
+        assert not (f['directory']/source).exists()
+        assert (f['directory']/target).read_bytes()==original[source][0]
+        assert stat.S_IMODE((f['directory']/target).stat().st_mode)==original[source][1]
+    assert (f['directory']/'other-wallet.kwl').read_bytes()==original['other-wallet.kwl'][0]
+    assert f['config'].read_bytes()==config.replace(b'Default Wallet=\n',b'Default Wallet=recovered-wallet\n')
+    assert stat.S_IMODE(f['config'].stat().st_mode)==0o600
+    assert inspect(m,f).disposition=='noop'
+    assert 'SENTINEL' not in str(result)
+
+
+@pytest.mark.parametrize('fault',['first_rename','second_rename','third_rename','config_exchange','verify_after_exchange',
+    'target_race','source_edit','new_daemon','rollback_conflict','configuration_race'])
+def test_failed_file_transition_rolls_back_only_proven_owned_state(wallet,monkeypatch,fault):
+    m=helper();f=wallet;evidence=inspect(m,f);m._revalidate=lambda *_:None
+    before={p.name:p.read_bytes() for p in f['directory'].iterdir()};oldconfig=f['config'].read_bytes()
+    original=m._rename_at2;calls=0;injected=False
+    def rename(oldfd,old,newfd,new,flags):
+        nonlocal calls,injected
+        calls+=1
+        trigger={'first_rename':1,'second_rename':2,'third_rename':3,'config_exchange':4}.get(fault)
+        if not injected and trigger==calls:injected=True;raise OSError('PRIVATE-SECRET-SENTINEL')
+        if not injected and fault=='target_race' and calls==2:
+            injected=True;(f['directory']/'recovered-wallet.salt').write_bytes(b'FOREIGN-COLLISION');(f['directory']/'recovered-wallet.salt').chmod(0o600)
+        if not injected and fault=='source_edit' and calls==2:
+            injected=True;(f['directory']/'recovered-wallet.kwl').write_bytes(b'NEW-USER-DATA');raise OSError('stop')
+        if not injected and fault=='rollback_conflict' and calls==2:
+            injected=True;(f['directory']/'.kwl').write_bytes(b'NEW-USER-SOURCE');raise OSError('stop')
+        if not injected and fault=='configuration_race' and calls==4:
+            injected=True;f['config'].write_bytes(oldconfig+b'# concurrent user setting\n')
+        result=original(oldfd,old,newfd,new,flags)
+        if not injected and fault=='verify_after_exchange' and calls==4:
+            injected=True;raise OSError('PRIVATE-SECRET-SENTINEL')
+        return result
+    monkeypatch.setattr(m,'_rename_at2',rename)
+    if fault=='new_daemon':
+        original_observe=m.observe_daemons;checks=0
+        def observe(*a,**kw):
+            nonlocal checks
+            checks+=1
+            if checks>=2:return m.DaemonEvidence('f'*64,({'pid':777},))
+            return original_observe(*a,**kw)
+        monkeypatch.setattr(m,'observe_daemons',observe)
+    with pytest.raises(m.WalletError) as caught:m.apply_wallet_files(evidence,'a'*64,root=f['root'])
+    assert 'SENTINEL' not in str(caught.value)
+    if fault in ('source_edit','rollback_conflict','new_daemon'):
+        assert str(caught.value)=='kwallet_rollback_unverified'
+        if fault=='source_edit':assert (f['directory']/'recovered-wallet.kwl').read_bytes()==b'NEW-USER-DATA'
+        if fault=='rollback_conflict':assert (f['directory']/'.kwl').read_bytes()==b'NEW-USER-SOURCE'
+    else:
+        assert str(caught.value)=='kwallet_rollback_verified'
+        for name,value in before.items():assert (f['directory']/name).read_bytes()==value
+        assert f['config'].read_bytes()==oldconfig+(b'# concurrent user setting\n' if fault=='configuration_race' else b'')
+        if fault=='target_race':assert (f['directory']/'recovered-wallet.salt').read_bytes()==b'FOREIGN-COLLISION'
+
+
+def test_writer_refuses_to_touch_wallet_with_root_privilege(wallet,monkeypatch):
+    m=helper();f=wallet;evidence=inspect(m,f);before=files(f['root'])
+    monkeypatch.setattr(os,'geteuid',lambda:0)
+    with pytest.raises(m.WalletError,match='kwallet_writer_identity_unverified'):
+        m.apply_wallet_files(evidence,'a'*64,root=f['root'])
+    assert files(f['root'])==before
+
+
+def test_real_owned_writer_child_is_recorded_before_permission_to_change_files(wallet,monkeypatch):
+    m=helper();f=wallet;evidence=inspect(m,f);m._revalidate=lambda *_:None
+    (f['root']/'var/lib').mkdir(parents=True)
+    backup=m.create_backup(evidence,'a'*64,root=f['root'])
+    result=m.run_writer(evidence,'a'*64,backup,root=f['root'])
+    assert result['status']=='applied'
+    import json
+    record=json.loads((backup/'writer.json').read_text())
+    assert record['child']['uid']==f['uid'] and record['child']['gid']==f['gid']
+    assert record['child']['parent_pid']==os.getpid() and record['child']['start_ticks']>0
+    assert stat.S_IMODE((backup/'writer.json').stat().st_mode)==0o600
+    assert 'SENTINEL' not in json.dumps(record)
+    assert json.loads((backup/'file-result.json').read_text())['result']==result
+    assert inspect(m,f).disposition=='noop'
+
+
+def test_writer_receipt_failure_cannot_release_the_child_to_mutate(wallet,monkeypatch):
+    m=helper();f=wallet;evidence=inspect(m,f);m._revalidate=lambda *_:None
+    (f['root']/'var/lib').mkdir(parents=True)
+    backup=m.create_backup(evidence,'a'*64,root=f['root']);before=files(f['directory'])
+    original=m._private_file
+    def fail(path,data):
+        if path.name=='writer.json':raise OSError('PRIVATE-PASSWORD-SENTINEL')
+        original(path,data)
+    monkeypatch.setattr(m,'_private_file',fail)
+    with pytest.raises(m.WalletError) as caught:m.run_writer(evidence,'a'*64,backup,root=f['root'])
+    assert 'SENTINEL' not in str(caught.value) and files(f['directory'])==before
+
+
+@pytest.mark.parametrize('case',['ok','false','timeout','unexpected'])
+def test_dbus_check_uses_actual_gui_environment_and_finite_deadline(wallet,monkeypatch,case):
+    m=helper();f=wallet;calls=[]
+    from types import SimpleNamespace
+    def run(context,argv,*,timeout):
+        assert context==f['context'] and context.environment['KDE_SESSION_VERSION']=='6'
+        assert context.limits
+        calls.append((argv,timeout))
+        if case=='timeout':raise m.SessionError('graphical_command_timeout')
+        return SimpleNamespace(returncode=0,stdout={'ok':'b true\n','false':'b false\n','unexpected':'PRIVATE-SECRET-SENTINEL'}[case])
+    monkeypatch.setattr(m,'run_session_command',run,raising=False)
+    if case=='ok':
+        result=m.verify_wallet_bus(f['context'])
+        assert result['enabled'] is True and 0<=result['latency_ms']<1000
+    else:
+        with pytest.raises(m.WalletError,match='kwallet_dbus_unverified'):m.verify_wallet_bus(f['context'])
+    assert calls==[(['/usr/bin/busctl','--user','--timeout=5','call','org.kde.kwalletd6',
+                    '/modules/kwalletd6','org.kde.KWallet','isEnabled'],7)]
