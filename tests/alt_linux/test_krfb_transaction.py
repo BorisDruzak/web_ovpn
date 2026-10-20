@@ -120,7 +120,7 @@ def test_uncertain_effects_keep_claim_and_never_repeat_or_kill_new_process(deskt
         if fault=='write_failure':raise RuntimeError('PRIVATE-PASSWORD-SENTINEL')
     monkeypatch.setattr(module,'stop_krfb',stop)
     monkeypatch.setattr(module,'write_user_configuration',write)
-    if fault=='launch_failure':monkeypatch.setattr(module,'launch_krfb',lambda *_:(_ for _ in ()).throw(RuntimeError('PRIVATE-SECRET-SENTINEL')))
+    if fault=='launch_failure':monkeypatch.setattr(module,'launch_krfb',lambda *_,**_kw:(_ for _ in ()).throw(RuntimeError('PRIVATE-SECRET-SENTINEL')))
     if fault=='writer_receipt_failure':
         original=module._write_private
         def fail(path,data):
@@ -198,6 +198,38 @@ def test_listener_startup_timeout_never_relaunches_or_stops_the_new_child(deskto
     assert result['status']=='unknown' and trace==['write','launch']
     assert json.loads((directory/'launch.json').read_text())['child']['pid']==104
     assert not (directory/'launch-confirmed.json').exists()
+
+
+@pytest.mark.parametrize('fault',['foreign_scope','foreign_birth','foreign_pid','receipt_failure'])
+def test_launch_confirmation_cannot_adopt_a_different_process_or_unrecorded_dispatch(desktop,monkeypatch,fault):
+    f=desktop;module,request,initial,directory,trace=transaction_fixture(f,monkeypatch,running=False)
+    original_launch=module.launch_krfb
+    if fault=='receipt_failure':
+        original_record=module._private_record
+        def publish(path,name,value):
+            if name=='launch.json':raise OSError('durability failure')
+            return original_record(path,name,value)
+        monkeypatch.setattr(module,'_private_record',publish)
+    def launch(*args,**kwargs):
+        identity=original_launch(*args,**kwargs)
+        process=f['root']/'proc/104'
+        if fault=='foreign_scope':(process/'cgroup').write_text('0::/foreign.scope\n')
+        if fault=='foreign_birth':
+            path=process/'stat';path.write_text(path.read_text().replace('10400','10401'))
+        if fault=='foreign_pid':
+            (process/'exe').unlink()
+            human=f['process'](105,'/usr/bin/krfb',f['env'],'/human.scope')
+            (human/'fd').mkdir();(human/'fd/7').symlink_to('socket:[1999]')
+        return identity
+    monkeypatch.setattr(module,'launch_krfb',launch)
+    result=apply(module,request,f)
+    assert result['status']=='unknown' and result['code']=='krfb_runtime_outcome_unverified'
+    assert trace==(['write'] if fault=='receipt_failure' else ['write','launch'])
+    assert not (directory/'launch-confirmed.json').exists()
+    frozen=tree(directory)
+    with pytest.raises(module.KRFBSessionError,match='krfb_runtime_claim_consumed'):apply(module,request,f)
+    assert tree(directory)==frozen
+    if fault=='foreign_pid':assert (f['root']/'proc/105/exe').is_symlink()
 
 
 @pytest.mark.parametrize('case',['symlink','hardlink','mode'])
