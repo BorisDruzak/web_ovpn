@@ -45,17 +45,24 @@ def test_plan_binds_complete_policy_original_identity_and_system_budget(full_set
     assert calls==[] and not setup.settings.lock_file.exists()
 
 
-@pytest.mark.parametrize('fault',['remote_optout','missing_policy','dns_backend','missing_dns_evidence','missing_admission'])
+@pytest.mark.parametrize('fault',['remote_optout','missing_policy','dns_backend','missing_dns_evidence','missing_admission',
+                                 'vnc_backend','missing_vnc_evidence','vnc_external_blocker'])
 def test_complete_plan_cannot_opt_out_or_hide_missing_policy_or_unknown_backend(full_setup,monkeypatch,fault):
     setup,machine,user,state,policy,options,calls,admission=full_setup
     if fault=='missing_policy':monkeypatch.setattr(VaultHealthChecker,'full_workflow_policy',lambda self:(_ for _ in ()).throw(ControlError('full_workflow_policy_unavailable','Safe',7)))
     if fault=='dns_backend':state['components']['network.final_dns'].update(checks={'ready':False},error_code='final_dns_backend_unverified')
     if fault=='missing_dns_evidence':state['components']['network.final_dns'].pop('final_dns')
     if fault=='missing_admission':setup.join_admission=None
+    if fault=='vnc_backend':state['components']['remote.vnc_policy'].update(error_code='probe_failed')
+    if fault=='missing_vnc_evidence':state['components'].pop('remote.vnc_policy')
+    if fault=='vnc_external_blocker':state['components']['remote.vnc_policy']['checks']['external_policy_clear']=False
     with pytest.raises(ControlError) as caught:setup.plan(UUID,user['login'],OU,'workstation-full-v1','none' if fault=='remote_optout' else 'krfb')
     assert caught.value.code=={'remote_optout':'configure_request_invalid','missing_policy':'full_workflow_policy_unavailable',
                               'dns_backend':'full_workflow_dns_backend_unverified','missing_dns_evidence':'full_workflow_dns_backend_unverified',
-                              'missing_admission':'full_workflow_admission_unverified'}[fault]
+                              'missing_admission':'full_workflow_admission_unverified',
+                              'vnc_backend':'full_workflow_vnc_backend_unverified',
+                              'missing_vnc_evidence':'full_workflow_vnc_backend_unverified',
+                              'vnc_external_blocker':'full_workflow_vnc_backend_unverified'}[fault]
     assert calls==[] and not (setup.settings.state_root/'setup-plan-runs').exists()
 
 

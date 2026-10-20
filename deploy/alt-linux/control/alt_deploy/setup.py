@@ -236,6 +236,12 @@ class SetupService:
                     or not package_health_ready(facts)):
                 raise fail('setup_probe_invalid', 'Full Setup component preflight cannot verify machine or package activity')
             if workflow is not None:
+                vnc=facts['components'].get('remote.vnc_policy')
+                if (not isinstance(vnc,dict) or vnc.get('error_code') is not None
+                        or vnc.get('checks',{}).get('backend_verified') is not True
+                        or vnc.get('checks',{}).get('external_policy_clear') is not True):
+                    raise fail('full_workflow_vnc_backend_unverified',
+                               'The complete workflow requires readable firewall policy before admission')
                 try:
                     import hashlib
                     from .final_dns_runtime import validate_observation

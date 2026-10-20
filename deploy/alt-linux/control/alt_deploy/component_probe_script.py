@@ -410,6 +410,8 @@ def inspect_component(root, recipe, user, home, name, call):
         if rc:raise ValueError('policy identity unverified')
         observation = namespace['observe_policy'](root,machine_uuid,hostname.strip(),recipe['source_sha256'],run=call)
         fact['checks']['ready'] = observation['ready']
+        fact['checks']['backend_verified'] = True
+        fact['checks']['external_policy_clear'] = observation['legacy']['external_policy_clear']
     elif kind == 'system_base':
         session = recipe['session']
         fact['checks']['ready'] = (all(package(p, call) is not None for p in recipe['packages'])

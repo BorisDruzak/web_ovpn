@@ -28,3 +28,9 @@ def test_manual_bootstrap_validates_key_and_ansible_sudo() -> None:
     assert 'visudo -cf' in source
     assert 'runuser -u "${ANSIBLE_USER}" -- sudo -n true' in source
     assert 'ALT\\ Workstation\\ K\\ 11\\.' in source
+
+
+def test_bootstrap_prepares_firewall_observation_before_registration() -> None:
+    source=BOOTSTRAP.read_text(encoding='utf-8')
+    dependencies=source.split('apt-get install -y',1)[1].split('echo "Creating Ansible user..."',1)[0]
+    assert 'nftables' in dependencies.split()

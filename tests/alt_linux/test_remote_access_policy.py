@@ -364,10 +364,10 @@ def test_component_policy_observation_requires_preparation_not_application_readi
     # The common collector already binds identity, while this recipe also
     # observes it afresh and cannot equate an open port with authenticated KRFB.
     fact=inspect_component(tmp_path,query,{},None,None,run)
-    assert fact['checks']=={'ready':False}
+    assert fact['checks']=={'ready':False,'backend_verified':True,'external_policy_clear':True}
     module.apply_policy(tmp_path,request(observe(module,tmp_path,run)),run=run)
     fact=inspect_component(tmp_path,query,{},None,None,run)
-    assert fact['checks']=={'ready':True}
+    assert fact['checks']=={'ready':True,'backend_verified':True,'external_policy_clear':True}
     assert 'authenticated' not in fact['checks']
 
 

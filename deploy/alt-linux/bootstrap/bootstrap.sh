@@ -201,6 +201,7 @@ apt-get install -y \
     python3 \
     openssh-server \
     sudo \
+    nftables \
     curl
 
 echo "Creating Ansible user..."

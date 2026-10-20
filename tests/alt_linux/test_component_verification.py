@@ -26,6 +26,8 @@ def evidence(catalog):
                                   'source': {'status': 'approved_p11'}, 'simulation': {}}, 'components': {}}
     for component in catalog.components():
         fact = {'schema_version': 1, 'checks': {'ready': True}, 'error_code': None}
+        if component['verification']['recipe']=='vnc_policy':
+            fact['checks'].update(backend_verified=True,external_policy_clear=True)
         artifact = catalog.artifact(component['id'])
         if artifact:
             if artifact['source'] == 'alt-repository':
