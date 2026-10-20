@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .ad_directory import fail
 from .full_workflow import archived_workflow
-from .setup_phases import WorkflowPhaseStore
+from .setup_phases import WorkflowPhaseStore,PHASE_CODES
 from .setup_plans import digest,private_create,private_read
 from .setup_events import SetupEventStore
 from .setup_phase_probe import WorkflowReadinessProbe
@@ -120,8 +120,7 @@ class WorkflowPhaseExecutor:
     def _independent_proof(self,job,phase,claim,ready,payload):
         """Recollect only a classified RFB timeout, never the original effects."""
         from .workflow_read_deadline import read_deadline,read_timeout
-        from .krfb_runtime import DIRECT_POLICY,probe_krfb,RFB_CODES
-        from .setup_waiting import WAIT_CODES
+        from .krfb_runtime import DIRECT_POLICY,probe_krfb
         import json,sys
         started=time.monotonic()
         stages={'readiness','authority','components','directory','policy','wallet','dns','vnc_policy',
@@ -129,7 +128,7 @@ class WorkflowPhaseExecutor:
         def log(attempt,stage,code):
             # Fixed enums and existing authority digests only. Never exception
             # text, target output, private preparation or environment values.
-            safe=code if code is None or code in WAIT_CODES|RFB_CODES else 'workflow_readiness_unverified'
+            safe=code if code is None or code in PHASE_CODES else 'workflow_readiness_unverified'
             print(json.dumps({'kind':'workflow_independent_proof','job_id':job.job_id,'phase':phase,
                 'claim_sha256':digest(claim),'plan_sha256':job.status['plan_sha256'],
                 'source_sha256':payload['source_sha256'],'attempt':attempt,'stage':stage,
@@ -145,7 +144,17 @@ class WorkflowPhaseExecutor:
                         raise fail('workflow_identity_changed','The original phase identity or graphical session changed')
                     stage='components_result'
                     expected={c['id'] for c in payload['components']} - {'network.final_dns'}
-                    if any(proof['verification']['components'][i]['status']!='compliant' for i in expected):
+                    rejected=False
+                    for identifier in sorted(expected):
+                        result=proof['verification']['components'].get(identifier)
+                        status=result.get('status') if isinstance(result,dict) else None
+                        if status=='compliant':continue
+                        rejected=True
+                        safe_status=status if status in ('unknown','missing','drifted','blocked','not_selected') else 'unknown'
+                        print(json.dumps({'kind':'workflow_component_verification_rejected',
+                            'job_id':job.job_id,'phase':phase,'component_id':identifier,'status':safe_status}),
+                            file=sys.stderr,flush=True)
+                    if rejected:
                         raise fail('workflow_user_verification_failed','Fresh user and system component verification failed')
                     stage='direct_vnc'
                     machine=self.readiness.setup.machines.resolve(job.machine_uuid)

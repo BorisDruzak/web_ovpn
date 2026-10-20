@@ -106,7 +106,7 @@ def test_lost_or_failed_phase_reply_burns_claim_once_without_private_output(phas
 
 
 @pytest.mark.parametrize('fault',['none','changed_after_claim','bad_result','missing_events','changed_after_apply',
-    'timeout_once','timeout_always','auth_failure','session_changed','boot_changed','generic_failure','late_proof'])
+    'timeout_once','timeout_always','auth_failure','session_changed','boot_changed','generic_failure','late_proof','shortcut_drift'])
 def test_fixed_final_dns_executor_rechecks_readiness_and_requires_exact_completion(phase_job,monkeypatch,capsys,fault):
     from alt_deploy.setup_phase_execution import WorkflowPhaseExecutor
     from alt_deploy.setup_events import SetupEventStore
@@ -132,8 +132,10 @@ def test_fixed_final_dns_executor_rechecks_readiness_and_requires_exact_completi
                 if fault=='late_proof':now[0]=200
             if fault=='changed_after_claim':current['observation']['dns_sha256']='0'*64
             if fault=='changed_after_apply' and len(observations)>1:current['scope']['computer_sid']+='-1'
-            return current,{'dns':{'status':'ok','observation':{}},
-                'verification':{'components':{c['id']:{'status':'compliant'} for c in j.request['plan']['payload']['components']}}}
+            verification={'components':{c['id']:{'status':'compliant'} for c in j.request['plan']['payload']['components']}}
+            if fault=='shortcut_drift' and len(observations)>1:
+                verification['components']['desktop.shortcuts']={'status':'drifted','private_detail':'PRIVATE-SENTINEL'}
+            return current,{'dns':{'status':'ok','observation':{}},'verification':verification}
         def run(settings,j,p,c,command,**options):
             calls.append(command);variables=private_read(j.job_dir/'phase-final_dns-vars.json')
             assert command[-1].endswith('/playbooks/05-setup-workflow-phase.yml')
@@ -159,12 +161,22 @@ def test_fixed_final_dns_executor_rechecks_readiness_and_requires_exact_completi
         if fault=='late_proof':monkeypatch.setattr('alt_deploy.workflow_read_deadline.time.monotonic',lambda:now[0])
         if fault in ('none','timeout_once'):assert executor.run(job,'final_dns',claim)['status']=='applied_verified'
         else:
-            with pytest.raises(ControlError):executor.run(job,'final_dns',claim)
+            with pytest.raises(ControlError) as caught:executor.run(job,'final_dns',claim)
+            if fault=='shortcut_drift':assert caught.value.code=='workflow_user_verification_failed'
         assert len(calls)==(0 if fault=='changed_after_claim' else 1)
         if fault=='timeout_once':assert len(observations)==3
         elif fault=='timeout_always':assert len(observations)==4
         elif fault in ('auth_failure','generic_failure','session_changed','boot_changed'):assert len(observations)==2
-        assert 'SENTINEL' not in capsys.readouterr().err
+        stderr=capsys.readouterr().err
+        assert 'SENTINEL' not in stderr
+        if fault=='shortcut_drift':
+            import json
+            messages=[json.loads(line) for line in stderr.splitlines()]
+            rejected=[m for m in messages if m['kind']=='workflow_component_verification_rejected']
+            assert len(rejected)==1 and rejected[0]['component_id']=='desktop.shortcuts'
+            assert rejected[0]['status']=='drifted' and rejected[0]['job_id']==job.job_id
+            assert messages[-1]['code']=='workflow_user_verification_failed'
+            assert len(observations)==2
 
 
 @pytest.mark.parametrize('outcome',['success','rollback','no_gui'])
