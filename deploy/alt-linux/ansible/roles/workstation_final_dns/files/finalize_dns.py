@@ -154,6 +154,7 @@ class Snapshot:
     files:dict=field(repr=False)
     attributes:dict=field(repr=False)
     resolver_source:Path|None=field(default=None,repr=False)
+    persistent_exists:bool=True
 
 
 def _observe(request,*,root=Path('/'),call=run,_owned_rollback=None):
@@ -185,7 +186,7 @@ def _observe(request,*,root=Path('/'),call=run,_owned_rollback=None):
             if len(matches)!=1:raise DnsError('final_dns_backend_unverified')
             filename=matches[0]
         elif rc!=10:raise DnsError('final_dns_backend_unverified')
-        records={};source=None
+        records={};source=None;persistent_exists=True
         if connection and filename not in ('','--'):
             if not re.fullmatch('/etc/NetworkManager/system-connections/[A-Za-z0-9_. -]+[.]nmconnection',filename):raise ValueError
             path=inside(root,filename);data,info=read(path,root,private=True);cfg=keyfile(data)
@@ -205,8 +206,15 @@ def _observe(request,*,root=Path('/'),call=run,_owned_rollback=None):
             if controlled!=('yes' if connection else 'no') or settings.get('SYSTEMD_CONTROLLED','no').lower()!='no':
                 raise DnsError('final_dns_backend_unverified')
             records[str(options_path.relative_to(root))]=(options,oinfo)
-            path=inside(root,'/etc/net/ifaces/'+interface+'/resolv.conf');data,info=read(path,root)
-            persistent=resolvers(data);backend='nm_etcnet' if connection else 'etcnet'
+            path=inside(root,'/etc/net/ifaces/'+interface+'/resolv.conf')
+            try:data,info=read(path,root)
+            except FileNotFoundError:
+                # NM/Etcnet DHCP profiles need not have a static resolver input.
+                # Absence is a bound preimage, never permission to overwrite.
+                if not connection or settings.get('BOOTPROTO') not in ('dhcp','dhcp4'):
+                    raise DnsError('final_dns_backend_unverified') from None
+                data=b'';info=path.parent.stat();persistent_exists=False
+            persistent=resolvers(data) if persistent_exists else [];backend='nm_etcnet' if connection else 'etcnet'
             if not connection:
                 # Adopt only the already registered exact interface source.
                 source=inside(root,'/run/resolvconf/interfaces/'+interface)
@@ -225,20 +233,22 @@ def _observe(request,*,root=Path('/'),call=run,_owned_rollback=None):
                             or file_identity(sinfo)!=file_identity(prior[1])):
                         raise DnsError('final_dns_configuration_changed')
                 records[str(source.relative_to(root))]=(sdata,sinfo)
-        records[str(path.relative_to(root))]=(data,info)
+        records[str(path.relative_to(root))]=(data,info if persistent_exists else None)
         # ALT resolvconf intentionally hardlinks its generated active file.
         # This exception is observation-only; no operation writes this file.
         active_path=inside(root,'/etc/resolv.conf');dns=resolvers(read(active_path,root,allow_hardlinks=True)[0])
-        config_hash=digest(canonical({k:{'sha256':digest(d),'uid':i.st_uid,'gid':i.st_gid,'mode':stat.S_IMODE(i.st_mode),
+        config_hash=digest(canonical({k:({'absent':True,'parent_inode':info.st_ino,'parent_device':info.st_dev,
+            'parent_uid':info.st_uid,'parent_gid':info.st_gid,'parent_mode':info.st_mode} if i is None else
+            {'sha256':digest(d),'uid':i.st_uid,'gid':i.st_gid,'mode':stat.S_IMODE(i.st_mode),
             'inode':i.st_ino,'device':i.st_dev,'mtime_ns':i.st_mtime_ns,'ctime_ns':i.st_ctime_ns,
-            'attributes':{a:digest(b) for a,b in attributes(root/k).items()}}
+            'attributes':{a:digest(b) for a,b in attributes(root/k).items()}})
             for k,(d,i) in records.items()}))
         public={'schema_version':1,'machine_uuid':machine,'hostname':request['hostname'],'boot_id':boot,
             'backend':backend,'interface':interface,'connection_uuid':connection,'servers':dns,
             'persistent_servers':persistent,'configuration_sha256':config_hash,
             'network_sha256':network_identity(call,interface)}
         public['snapshot_sha256']=digest(canonical(public))
-        return Snapshot(public,path,data,info,records,attributes(path),source)
+        return Snapshot(public,path,data,info,records,attributes(path) if persistent_exists else {},source,persistent_exists)
     except DnsError:raise
     except Exception:raise DnsError('final_dns_backend_unverified') from None
 
@@ -250,6 +260,8 @@ def observe(request,*,root=Path('/'),call=run):
 
 def rewrite(snapshot,servers):
     servers=validate(servers)['servers'];text=snapshot.content.decode('utf-8')
+    if not snapshot.persistent_exists:
+        return ''.join('nameserver '+s+'\n' for s in servers).encode()
     newline='\r\n' if '\r\n' in text else '\n'
     if snapshot.public['backend']!='nm_keyfile':
         output=[];inserted=False
@@ -321,6 +333,51 @@ def exchange(path,old,new,info,root,expected_attributes,*,journal=None,stage='ap
         finally:os.close(parent)
         return os.fstat(fd)
     finally:os.close(fd)
+
+
+def publish_absent(snapshot,data,root,journal):
+    """Publish one owned DHCP resolver input with kernel no-replace semantics."""
+    path=snapshot.path;parent=path.parent.stat();prior=snapshot.info
+    keys=('st_dev','st_ino','st_mode','st_uid','st_gid')
+    if any(getattr(parent,k)!=getattr(prior,k) for k in keys):
+        raise DnsError('final_dns_configuration_changed')
+    fd,name=tempfile.mkstemp(prefix='.alt-dns-',dir=path.parent);temporary=Path(name)
+    try:
+        os.fchmod(fd,0o644)
+        if os.geteuid()==0:os.fchown(fd,prior.st_uid,prior.st_gid)
+        with os.fdopen(fd,'wb',closefd=False) as stream:stream.write(data);stream.flush();os.fsync(fd)
+        record(journal,'apply-create.json',{'schema_version':1,'path':str(path.relative_to(root)),
+            'prior_absent':True,'replacement_sha256':digest(data),'replacement_inode':os.fstat(fd).st_ino})
+        rename=getattr(ctypes.CDLL(None,use_errno=True),'renameat2',None)
+        if rename is None or rename(-100,os.fsencode(temporary),-100,os.fsencode(path),1):
+            raise DnsError('final_dns_configuration_changed')
+        parentfd=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+        try:os.fsync(parentfd)
+        finally:os.close(parentfd)
+        return os.fstat(fd)
+    finally:os.close(fd)
+
+
+def restore_absent(path,data,info,root,journal):
+    """Retain the exact created input in an exclusive rollback slot; unlink nothing."""
+    current,observed=read(path,root)
+    if current!=data or file_identity(observed)!=file_identity(info) or attributes(path):
+        raise DnsError('final_dns_configuration_changed')
+    slot=path.parent/('.alt-dns-rollback-'+uuid.uuid4().hex)
+    record(journal,'rollback-remove.json',{'schema_version':1,'path':str(path.relative_to(root)),
+        'retained_slot':str(slot.relative_to(root)),'replacement_inode':info.st_ino,'replacement_sha256':digest(data)})
+    rename=getattr(ctypes.CDLL(None,use_errno=True),'renameat2',None)
+    if rename is None or rename(-100,os.fsencode(path),-100,os.fsencode(slot),1):
+        raise DnsError('final_dns_configuration_changed')
+    moved,moved_info=read(slot,root)
+    keys=('st_dev','st_ino','st_uid','st_gid','st_mode','st_nlink','st_size','st_mtime_ns')
+    if moved!=data or attributes(slot) or any(getattr(moved_info,k)!=getattr(info,k) for k in keys):
+        # A racing editor's data is preserved and restored without overwriting.
+        rename(-100,os.fsencode(slot),-100,os.fsencode(path),1)
+        raise DnsError('final_dns_configuration_changed')
+    parentfd=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    try:os.fsync(parentfd)
+    finally:os.close(parentfd)
 
 
 def activate(snapshot,data,call):
@@ -396,6 +453,7 @@ def apply(request,expected,context,*,root=Path('/'),call=run,verify=None):
             record(directory,'manifest.json',{'schema_version':1,'path':'/'+str(before.path.relative_to(root)),
                 'sha256':digest(before.content),'uid':before.info.st_uid,'gid':before.info.st_gid,
                 'mode':stat.S_IMODE(before.info.st_mode),'configuration_sha256':before.public['configuration_sha256'],
+                'persistent_exists':before.persistent_exists,
                 'attributes':{k:v.hex() for k,v in before.attributes.items()}})
             check=verify or verify_dns
             check(before,phase='before',request=request,root=root,call=call)
@@ -405,7 +463,9 @@ def apply(request,expected,context,*,root=Path('/'),call=run,verify=None):
             try:
                 file_changed=new!=before.content
                 changed=file_changed or before.public['servers']!=request['servers']
-                if file_changed:new_info=exchange(before.path,before.content,new,before.info,root,before.attributes,journal=directory)
+                if file_changed:
+                    new_info=(exchange(before.path,before.content,new,before.info,root,before.attributes,journal=directory)
+                        if before.persistent_exists else publish_absent(before,new,root,directory))
                 else:new_info=before.info
                 if changed:activate(before,new,call)
                 after=observe(request,root=root,call=call)
@@ -425,10 +485,13 @@ def apply(request,expected,context,*,root=Path('/'),call=run,verify=None):
                         same_connection(before,current)
                         if current.content!=new or current.attributes!=before.attributes:raise ValueError
                         # Only our exact replacement inode may be rolled back.
-                        if file_changed:exchange(before.path,new,before.content,new_info,root,before.attributes,journal=directory,stage='rollback')
+                        if file_changed:
+                            if before.persistent_exists:exchange(before.path,new,before.content,new_info,root,before.attributes,journal=directory,stage='rollback')
+                            else:restore_absent(before.path,new,new_info,root,directory)
                         activate(before,before.content,call)
                     restored=observe(request,root=root,call=call)
-                    if (restored.content!=before.content or restored.public['servers']!=before.public['servers']
+                    if (restored.persistent_exists!=before.persistent_exists
+                            or restored.content!=before.content or restored.public['servers']!=before.public['servers']
                             or restored.public['network_sha256']!=before.public['network_sha256']):raise ValueError
                     check(restored,phase='rollback',request=request,root=root,call=call)
                     result={'status':'rolled_back_verified','changed':False,'code':code}

@@ -260,3 +260,71 @@ def test_atomic_exchange_preserves_a_concurrent_edit_and_never_claims_success(ne
     if fault=='bytes':assert displaced[0].read_bytes().endswith(b'# concurrent edit at exchange\n')
     elif fault=='mode':assert displaced[0].stat().st_mode&0o777==0o640
     else:assert os.getxattr(displaced[0],'user.synthetic.race')==b'concurrent-attribute'
+
+@pytest.mark.parametrize('network',['nm_etcnet'],indirect=True)
+@pytest.mark.parametrize('case',['success','rollback','activation_failure','appeared','foreign_replacement'])
+def test_dhcp_etcnet_without_persistent_resolver_is_guarded(network,case):
+    m=helper();f=network;f['persistent'].unlink()
+    before=files(f['root']);initial=m.observe(f['request'],root=f['root'],call=f['call'])
+    assert initial.public['backend']=='nm_etcnet' and initial.public['persistent_servers']==[]
+    assert not f['persistent'].exists() and files(f['root'])==before
+    activations=[]
+    def call(args,**kwargs):
+        if args[:3]==['nmcli','device','reapply']:
+            activations.append(args)
+            if case=='activation_failure' and len(activations)==1:return 1,''
+            if not f['persistent'].exists():
+                f['active'].write_text('search example.test\nnameserver 192.0.2.11\n');return 0,''
+        return f['call'](args,**kwargs)
+    def verify(value,*,phase,**kwargs):
+        if phase=='after' and case in ('rollback','foreign_replacement'):
+            if case=='foreign_replacement':
+                foreign=f['persistent'].with_suffix('.foreign');foreign.write_text('nameserver 192.0.2.99\n')
+                foreign.replace(f['persistent'])
+            raise m.DnsError('final_dns_lookup_failed')
+    if case=='appeared':f['persistent'].write_text('nameserver 192.0.2.99\n')
+    result=m.apply(f['request'],initial.public['snapshot_sha256'],f['context'],root=f['root'],call=call,verify=verify)
+    if case=='success':
+        assert result=={'status':'applied_verified','changed':True,'code':'final_dns_applied'}
+        assert f['persistent'].read_text()=='nameserver 192.0.2.53\n'
+        assert f['persistent'].stat().st_mode&0o777==0o644
+        assert m.observe(f['request'],root=f['root'],call=call).public['persistent_servers']==['192.0.2.53']
+    elif case in ('rollback','activation_failure'):
+        assert result['status']=='rolled_back_verified' and not f['persistent'].exists()
+        assert m.observe(f['request'],root=f['root'],call=call).public==initial.public
+    else:
+        assert result['status']=='outcome_unverified' and '192.0.2.99' in f['persistent'].read_text()
+    assert f['options'].read_bytes()==before['etc/net/ifaces/eth0/options'][0]
+    assert not any('down' in a or 'modify' in a for a,_ in f['calls'])
+
+
+@pytest.mark.parametrize('network',['nm_etcnet'],indirect=True)
+def test_missing_etcnet_resolver_is_supported_only_for_proven_dhcp(network):
+    m=helper();f=network;f['persistent'].unlink()
+    f['options'].write_text(f['options'].read_text().replace('BOOTPROTO=dhcp','BOOTPROTO=static'))
+    with pytest.raises(m.DnsError):m.observe(f['request'],root=f['root'],call=f['call'])
+
+@pytest.mark.parametrize('network',['nm_etcnet'],indirect=True)
+@pytest.mark.parametrize('fault',['appeared','parent','rollback_race'])
+def test_absent_resolver_atomic_publication_preserves_concurrent_state(network,monkeypatch,fault):
+    m=helper();f=network;f['persistent'].unlink();value=m.observe(f['request'],root=f['root'],call=f['call'])
+    namespace=f['root']/'journal';namespace.mkdir(mode=0o700)
+    data=m.rewrite(value,f['request']['servers']);libc=m.ctypes.CDLL(None,use_errno=True)
+    if fault=='parent':
+        f['persistent'].parent.chmod(0o750)
+        with pytest.raises(m.DnsError):m.publish_absent(value,data,f['root'],namespace)
+        assert not f['persistent'].exists();return
+    def rename(*args):
+        if fault=='appeared':f['persistent'].write_text('nameserver 192.0.2.99\n')
+        else:
+            foreign=f['persistent'].with_suffix('.foreign');foreign.write_text('nameserver 192.0.2.99\n')
+            foreign.replace(f['persistent'])
+        return libc.renameat2(*args)
+    if fault=='rollback_race':info=m.publish_absent(value,data,f['root'],namespace)
+    monkeypatch.setattr(m.ctypes,'CDLL',lambda *a,**k:type('Libc',(),{'renameat2':staticmethod(rename)})())
+    with pytest.raises(m.DnsError):
+        if fault=='appeared':m.publish_absent(value,data,f['root'],namespace)
+        else:m.restore_absent(value.path,data,info,f['root'],namespace)
+    # The concurrent resolver remains available or retained; it is never lost.
+    assert any(b'192.0.2.99' in p.read_bytes() for p in f['persistent'].parent.iterdir() if p.is_file())
+    if fault=='appeared':assert f['persistent'].read_text()=='nameserver 192.0.2.99\n'
