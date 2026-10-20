@@ -9,6 +9,16 @@ from pathlib import Path
 import pytest
 
 
+def test_complete_workflow_reference_and_tool_help_use_original_job():
+    import mcp.openvpn_mcp_server as server
+    tools=server.TOOLS
+    assert 'workstation-full-v1' in tools['openvpn_workstations_plan']['description']
+    assert 'read-only' in tools['openvpn_workstations_job_status']['description'].lower()
+    skill=(Path(server.__file__).parent/'skills/openvpn-control/SKILL.md').read_text()
+    assert 'workstation-full-v1' in skill and 'final_dns' in skill and '5900' in skill
+    assert 'choose the returned `office-standard-v1`' not in skill
+
+
 def workstation_cases():
     identity = str(uuid.UUID(int=1001))
     request = {'request_id': str(uuid.UUID(int=1002))}

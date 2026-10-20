@@ -33,8 +33,17 @@ def safe_code(code):
 
 def error_details(code, *, uncertain=False):
     code = safe_code(code)
+    workflow_actions={
+        'krfb_clients_connected':'Завершите подключение VNC-клиента, если требуется перенастройка KRFB. Приложения и чужой сеанс не закрываются автоматически.',
+        'certificates_importer_active':'Дождитесь завершения импорта сертификатов. Контроллер повторно прочитает готовность исходного задания.',
+        'graphical_session_unavailable':'Выполните настоящий графический вход выбранного сотрудника. Worker продолжит исходное задание.',
+        'graphical_session_ambiguous':'Проверьте несколько графических сеансов выбранного сотрудника; нужен один однозначный сеанс.',
+        'workflow_final_verification_unavailable':'Восстановите доступность ПК и сеанса для свежей проверки. Применённые этапы повторяться не будут.',
+        'final_dns_rolled_back':'Подтверждён откат DNS. Проверьте доступность резолвера и журнал финализации; повтор Setup или join не требуется.'}
     if uncertain:
         category, action = 'uncertain_outcome', 'Проверьте исходное задание или квитанцию. Повторный запуск запрещён до штатного review.'
+    elif code in workflow_actions:
+        category,action='workflow',workflow_actions[code]
     elif any(value in code for value in ('permission', 'scope', 'auth_required', 'denied')):
         category, action = 'authorization', 'Проверьте права учётной записи.'
     elif any(value in code for value in ('transport', 'source_', 'observer_', 'not_configured', 'host_key', 'gateway_timeout')):

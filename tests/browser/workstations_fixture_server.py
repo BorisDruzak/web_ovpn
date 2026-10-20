@@ -13,6 +13,13 @@ from pathlib import Path
 MACHINE, USER, COMPUTER = (str(uuid.UUID(int=n)) for n in (1001, 1002, 1003))
 JOB = 'job-20261015T000000Z-12345678'
 MAC = '02:00:00:00:00:11'
+PHASES=[{'id':'system','component_ids':['remote.vnc_policy','system.base','domain.ready','desktop.plasma',
+    'software.browser','software.onlyoffice','software.nextcloud','software.directum','software.cryptopro',
+    'software.cades','software.gosplugin','software.vkworkspace','certificates.government'],'budget_seconds':21600},
+    {'id':'user','component_ids':['remote.krfb','desktop.kwallet_repair','desktop.shortcuts'],'budget_seconds':5400},
+    {'id':'final_dns','component_ids':['network.final_dns'],'budget_seconds':300}]
+WORKFLOW={'kind':'complete_workstation','phases':PHASES,'policy':{
+    'vnc':{'port':5900,'scope':'direct','authentication':'password_required'},'final_dns':{'servers':['192.0.2.53']}}}
 
 
 def now():
@@ -36,6 +43,7 @@ class Controller:
                          'dns_hostname': 'synthetic-pc.example.invalid', 'state': 'enabled'}
         self.machine = {'uuid': MACHINE, 'hostname': 'Тестовый ПК', 'mac': MAC, 'registration_state': 'ready', 'domain_assignment': None}
         self.started = now()
+        self.waiting_reason=None;self.last_plan_parameters=None
         self.plan_sha, self.job_plan_id = 'c' * 64, 'setup-' + 'c' * 64
 
     def call(self, operation, p, **kwargs):
@@ -58,22 +66,29 @@ class Controller:
         if operation == 'assignments.show': return {'assignment': None}
         if operation == 'catalog.list':
             return {'ous': [{'id': 'b' * 64, 'name': 'Тестовые компьютеры'}],
-                'profiles': [{'id': 'office-standard-v1', 'name': 'Офисный комплект без электронной подписи'}],
-                'components': [{'id': 'software.onlyoffice', 'name': 'Офисный редактор'}]}
+                'profiles': [{'id':'office-standard-v1','name':'Прежний профиль'},
+                    {'id':'workstation-full-v1','version':1,'name':'Полный комплект',
+                     'components':[name for phase in PHASES for name in phase['component_ids']]}],
+                'components': [{'id':name,'name':name} for phase in PHASES for name in phase['component_ids']]}
         if operation in ('plans.create', 'component_plans.create'):
             component = operation == 'component_plans.create'
+            if not component:
+                if p['software_profile']!='workstation-full-v1' or p['remote_access_profile']!='krfb':raise AssertionError('Wizard downgraded the complete preset')
+                self.last_plan_parameters=copy.deepcopy(p)
             self.plan_sha = hashlib.sha256((json.dumps(p, sort_keys=True) + now().isoformat()).encode()).hexdigest()
             return {'plan_id': ('setup-component-' if component else 'setup-') + self.plan_sha, 'sha256': self.plan_sha,
                 'created_at': now().isoformat(), 'expires_at': (now() + timedelta(minutes=5)).isoformat(), 'machine': self.machine,
                 'user': {} if component else next(row for row in self.users if row['object_guid'] == p['user_guid']),
-                'profile': {'id': 'office-standard-v1', 'name': 'Офисный комплект'}, 'components': [{'id': 'software.onlyoffice', 'version': 1}],
+                'profile': {'id': 'workstation-full-v1', 'name': 'Полный комплект'},
+                'components': [{'id':name,'version':1} for phase in PHASES for name in phase['component_ids']],
+                'workflow':copy.deepcopy(WORKFLOW),
                 'changes': ['Установить офисный редактор по опубликованному каталогу'], 'warnings': ['Первый вход сотрудника выполняется отдельно'],
                 'deferred_actions': ['Проверить запуск приложения пользователем']}
         if operation == 'plans.apply':
             self.apply_count += 1; self.state = 'queued'
             self.job_plan_id = p['plan_id']
             return {'job_id': JOB, 'state': 'queued', 'machine_uuid': MACHINE, 'plan_id': p['plan_id'], 'plan_sha256': p['sha256']}
-        if operation == 'jobs.verify': self.verify_count += 1; self.state = 'successful'
+        if operation == 'jobs.verify': self.verify_count += 1
         if operation == 'jobs.cancel': self.state = 'failed'
         if operation in ('jobs.list', 'jobs.status', 'jobs.verify', 'jobs.cancel'):
             job = {'job_id': JOB, 'machine_uuid': MACHINE, 'state': self.state, 'recorded_state': self.state, 'stage': 'configuration',
@@ -83,10 +98,19 @@ class Controller:
                     {'state': self.state, 'stage': 'configuration', 'at': (self.started + timedelta(seconds=1)).isoformat()}],
                 'components': {'software.onlyoffice': {'version': 1, 'changed': True, 'verification': {'version': 1, 'status': 'compliant',
                     'installation_status': 'installed_verified', 'acceptance_status': 'functional_verification_required', 'operator_action': 'functional_acceptance'}}}}
+            job['claimed']=self.state!='queued'
+            current='final_dns' if self.state in ('successful','degraded') else 'user'
+            job['workflow']={'schema_version':1,'kind':'complete_workstation','phase':current,'waiting_reason':self.waiting_reason,
+                'phases':{row['id']:{'state':('successful' if self.state=='successful' or row['id']=='system' else
+                    'degraded' if self.state=='degraded' and row['id']=='final_dns' else
+                    self.state if row['id']==current else 'pending'),
+                    'component_ids':row['component_ids'],'budget_seconds':row['budget_seconds'],
+                    'error_code':'final_dns_rolled_back' if self.state=='degraded' and row['id']=='final_dns' else None,
+                    'admission_sequence':None} for row in PHASES}}
             return {'jobs': [job], 'total': 1, 'next_offset': 1} if operation == 'jobs.list' else {'job': job}
         if operation == 'jobs.events':
             events = [{'sequence': number, 'job_id': JOB, 'timestamp': (self.started + timedelta(milliseconds=number)).isoformat(),
-                'component_id': 'software.onlyoffice', 'component_version': 1, 'task_id': 'component', 'type': 'task_ok',
+                'component_id': 'software.onlyoffice' if number<=140 else 'remote.krfb' if number<=190 else 'network.final_dns', 'component_version': 1, 'task_id': 'component', 'type': 'task_ok',
                 'stage': 'configuration', 'code': 'ok', 'changed': number % 2 == 0} for number in range(1, 206)]
             rows = events[p.get('after', 0):p.get('after', 0) + min(100, p.get('limit', 100))]
             return {'events': rows, 'total': len(events), 'next_sequence': rows[-1]['sequence'] if rows else len(events)}
@@ -139,16 +163,25 @@ def main():
         with get_sessionmaker()() as db:
             owner = db.get(InventoryAsset, card_id).assigned_person_name
         return {'calls': controller.calls, 'apply_count': controller.apply_count, 'verify_count': controller.verify_count,
+                'last_plan_parameters':controller.last_plan_parameters,
                 'inventory_asset_id': card_id, 'manual_owner': owner}
     @panel.app.post('/__fixture/refresh')
     def refresh(): return reconcile()
     @panel.app.post('/__fixture/job/{value}')
     def job(value: str):
-        if value not in ('queued', 'running', 'waiting_first_login', 'waiting_reboot', 'successful', 'failed', 'unknown_requires_review'):
+        if value not in ('queued', 'running', 'waiting_first_login', 'waiting_reboot', 'successful', 'degraded','failed', 'unknown_requires_review'):
             from fastapi import HTTPException
             raise HTTPException(422)
         controller.state = value
+        controller.waiting_reason=None
         return {'state': value}
+    @panel.app.post('/__fixture/wait/{value}')
+    def waiting(value:str):
+        if value not in ('krfb_clients_connected','certificates_importer_active','graphical_session_unavailable'):
+            from fastapi import HTTPException
+            raise HTTPException(422)
+        controller.state='waiting_first_login';controller.waiting_reason=value
+        return {'waiting_reason':value}
     import uvicorn
     uvicorn.run(panel.app, host='127.0.0.1', port=args.port)
 

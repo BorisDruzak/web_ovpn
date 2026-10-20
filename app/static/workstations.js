@@ -9,6 +9,32 @@
   const STAGE = {created:'Создано',queued:'Очередь',preflight:'Предварительная проверка',domain_join:'Присоединение к домену',
     domain_core_verify:'Проверка домена',configuration:'Настройка',apply:'Установка компонента',verify:'Проверка',
     download:'Загрузка',upgrade:'Обновление',identity:'Идентификация',network:'Сетевые проверки',complete:'Завершение',transaction:'Транзакция'};
+  const PHASE={system:'Система, домен и программы',user:'Настройки пользователя',final_dns:'Завершение DNS'};
+  function completeSetup(){return {software_profile:'workstation-full-v1',remote_access_profile:'krfb'};}
+  function completePreset(catalog){
+    const rows=(catalog?.profiles||[]).filter(row=>row.id===completeSetup().software_profile);
+    if(rows.length!==1||rows[0].version!==1||!Array.isArray(rows[0].components)||!rows[0].components.includes('remote.krfb'))
+      throw new Error('Полный комплект недоступен на контроллере. Требуется его обновление; установка прежнего профиля не начата.');
+    return rows[0];
+  }
+  function stageLabel(stage){
+    const found=/^workflow\.(user|final_dns)\.(queued|preflight|apply|verify|waiting|complete|outcome_unverified)$/.exec(stage||'');
+    return found?PHASE[found[1]]+' · '+({queued:'Очередь',preflight:'Проверка допуска',apply:'Применение',verify:'Проверка',waiting:'Ожидание',complete:'Завершено',outcome_unverified:'Исход не подтверждён'})[found[2]]:STAGE[stage]||stage;
+  }
+  function workflowMessage(workflow){
+    if(!workflow)return '';
+    const reasons={graphical_session_unavailable:'Нужен настоящий графический вход выбранного сотрудника.',
+      user_session_unavailable:'Нужен графический вход выбранного сотрудника.',
+      graphical_session_ambiguous:'Обнаружено несколько сеансов сотрудника. Выберите один рабочий сеанс и дождитесь новой проверки.',
+      krfb_clients_connected:'Подключён VNC-клиент. Завершите подключение, чтобы продолжить необходимую настройку KRFB.',
+      certificates_importer_active:'Выполняется импорт сертификатов. Контроллер дождётся его завершения.',
+      workflow_package_manager_busy:'Пакетный менеджер занят. Дождитесь завершения текущей операции.',
+      workflow_target_processes_unverified:'Завершение прежнего процесса изменения не подтверждено. Требуется диагностика.',
+      workflow_final_verification_unavailable:'Этапы применены; ожидается свежая проверка доступности ПК, сеанса и компонентов.'};
+    if(workflow.waiting_reason)return reasons[workflow.waiting_reason]||'Продолжение ожидает подтверждённой готовности ПК. Код: '+workflow.waiting_reason;
+    if(workflow.phases?.final_dns?.state==='degraded')return 'Изменение DNS не прошло проверку; подтверждён откат. Настройка завершена с замечанием.';
+    return PHASE[workflow.phase]||'';
+  }
   const FINDING = {network_only:'Нет подтверждённого соответствия AD',ad_only:'Объект есть только в AD',inventory_unconfirmed:'Связь с инвентаризацией не подтверждена',
     network_identity_ambiguous:'Неоднозначная сетевая идентичность',ad_computer_ambiguous:'Несколько объектов компьютера AD',employee_conflict:'Конфликт назначений сотрудника',
     employee_unusable:'Учётная запись сотрудника недоступна для настройки',employee_identity_changed:'Идентичность сотрудника изменилась',
@@ -186,7 +212,10 @@
       return machineRead;
     }
     on(one('[data-refresh-devices]'),'click',()=>Promise.all([devices(),selectableMachines()]));on(one('[data-more-devices]'),'click',()=>devices(false));
-    async function catalog(){const value=await request('/catalog');options(one('[name=ou_id]'),value.ous,row=>row.name);options(one('[name=software_profile]'),value.profiles,row=>row.name||row.id);options(one('[name=component_id]'),value.components,row=>row.name||row.id);}
+    let completeAvailable=false;
+    async function catalog(){const value=await request('/catalog');options(one('[name=ou_id]'),value.ous,row=>row.name);options(one('[name=component_id]'),value.components,row=>row.name||row.id);
+      try{const preset=completePreset(value);completeAvailable=true;notice('[data-complete-preset]','Единый полный комплект: '+preset.components.map(id=>(value.components||[]).find(row=>row.id===id)?.name||id).join(', '));}
+      catch(exc){completeAvailable=false;notice('[data-complete-preset]',exc.message);throw exc;}}
     on(one('[name=kind]'),'change',()=>{const component=one('[name=kind]').value==='component';all('[data-full-option]').forEach(node=>node.hidden=component);all('[data-component-option]').forEach(node=>node.hidden=!component);});
     function setupRequirements(){const component=one('[name=kind]')?.value==='component';
       ['ou_id','software_profile'].forEach(name=>{const select=one('[name='+name+']');if(select){select.required=!component;select.disabled=component;}});
@@ -198,8 +227,9 @@
       const form=new FormData(evt.currentTarget),component=form.get('kind')==='component',button=root.querySelector('button[form=ws-setup-form]');
       const selected=component?null:employee();let payload={machine_uuid:form.get('machine_uuid')};
       if(!payload.machine_uuid)throw new Error('Выберите зарегистрированный готовый компьютер.');
+      if(!component&&!completeAvailable)throw new Error('Полный комплект недоступен. Обновите контроллер и каталог.');
       payload=component?{...payload,component_id:form.get('component_id')}:{...payload,user_login:selected.login,user_guid:selected.object_guid,user_sid:selected.object_sid,
-        ou_id:form.get('ou_id'),software_profile:form.get('software_profile'),remote_access_profile:form.get('remote_access_profile')};
+        ou_id:form.get('ou_id'),...completeSetup()};
       button.disabled=true;button.textContent='Проверяем состояние ПК…';chooseStep('plan');one('[data-plan-result]').replaceChildren(el('p','Готовим защищённый план. Установка ещё не выполняется.'));
       try{const result=await action(component?'/component-plans':'/plans',payload);const target=one('[data-plan-result]');target.replaceChildren(anchor('Открыть готовый план и проверить изменения','/workstations/plans/'+encodeURIComponent(result.plan_id)));chooseStep('confirm');}finally{button.disabled=false;button.textContent='Подготовить план';}
     });
@@ -222,7 +252,7 @@
       jobOffset=data.next_offset;one('[data-more-jobs]').hidden=jobOffset>=data.total;}
     on(one('[data-refresh-jobs]'),'click',()=>jobs());on(one('[data-more-jobs]'),'click',()=>jobs(false));
     function appendEvent(target,event){const row=el('li'),time=el('time',new Date(event.timestamp).toLocaleString('ru-RU'));time.dateTime=event.timestamp;
-      row.append(time,el('span',[event.sequence?'№ '+event.sequence:null,event.component_id,STAGE[event.stage]||event.stage,EVENT[event.type]||ACTION[event.action]||event.action,
+      row.append(time,el('span',[event.sequence?'№ '+event.sequence:null,event.component_id,stageLabel(event.stage),EVENT[event.type]||ACTION[event.action]||event.action,
         STATE[event.status]||({succeeded:'Завершено',success:'Получено',unknown:'UNKNOWN',error:'Ошибка',running:'Выполняется'})[event.status]||event.status,
         event.changed===true?'Изменено':event.changed===false?'Без изменений':null].filter(Boolean).join(' · ')));
       if(event.task_id||event.code||event.actor)row.append(el('small',[event.task_id,event.code,event.actor].filter(Boolean).join(' · '),'mono'));
@@ -234,18 +264,21 @@
       const refresh=async()=>{
         const data=await request('/jobs/'+encodeURIComponent(jobId));currentJob=data.job;
         notice('[data-job-state]',currentJob.state==='queued'?jobMessage(currentJob):STATE[currentJob.state]||'Состояние не опубликовано');
+        notice('[data-workflow-wait]',workflowMessage(currentJob.workflow));
+        const phases=one('[data-workflow-phases]');if(phases){phases.replaceChildren();Object.entries(currentJob.workflow?.phases||{}).forEach(([id,row])=>{
+          phases.append(el('li',(PHASE[id]||id)+' · '+(STATE[row.state]||({pending:'Ожидает предыдущего этапа'})[row.state]||row.state)+(row.error_code?' · '+row.error_code:'')));});}
         const guidance={waiting_first_login:'Войдите на ПК под выбранным сотрудником. Затем запросите проверку результата.',
           waiting_reboot:'Согласуйте и выполните перезагрузку отдельно. Затем запросите проверку результата.',
           unknown_requires_review:'Исход не подтверждён. Повторный запуск запрещён до штатного review.',
           failed:'Изучите этап ошибки и безопасный журнал перед подготовкой нового плана.'};
-        notice('[data-job-action]',currentJob.operator_action_required?(guidance[currentJob.state]||jobMessage(currentJob))+(currentJob.error_code?' · '+currentJob.error_code:''):'');
+        notice('[data-job-action]',currentJob.operator_action_required?(currentJob.workflow&&currentJob.state==='waiting_first_login'?'После настоящего входа контроллер продолжит это же задание автоматически.':guidance[currentJob.state]||jobMessage(currentJob))+(currentJob.error_code?' · '+currentJob.error_code:''):'');
         await summary();
         const history=one('[data-stage-history]');history.replaceChildren();(currentJob.history||[]).forEach((stage,index,rows)=>{const next=rows[index+1],duration=next?Math.max(0,Math.round((Date.parse(next.at)-Date.parse(stage.at))/1000)):null;
-          history.append(el('li',(STAGE[stage.stage]||stage.stage)+' · '+(STATE[stage.state]||stage.state)+' · '+new Date(stage.at).toLocaleString('ru-RU')+(duration!==null?' · '+duration+' с':'')));});
+          history.append(el('li',stageLabel(stage.stage)+' · '+(STATE[stage.state]||stage.state)+' · '+new Date(stage.at).toLocaleString('ru-RU')+(duration!==null?' · '+duration+' с':'')));});
         table(one('[data-job-components]'),['Компонент','Изменения','Установка','Техническая проверка','Проверка пользователем'],Object.entries(currentJob.components||{}).map(([id,value])=>[
           id,value.changed===true?'Изменено':value.changed===false?'Без изменений':'Нет сведений',verificationLabel(value.verification?.installation_status),
           verificationLabel(value.verification?.status||value.verification?.acceptance_status),value.verification?.acceptance_status==='technical_verified'?'Отдельная проверка пользователем не требуется':verificationLabel(value.verification?.acceptance_status)]));
-        if(one('[data-cancel-job]'))one('[data-cancel-job]').disabled=currentJob.state!=='queued';
+        if(one('[data-cancel-job]'))one('[data-cancel-job]').disabled=currentJob.state!=='queued'||currentJob.claimed;
         let page;do{page=await request('/jobs/'+encodeURIComponent(jobId)+'/events?after='+cursor.after+'&limit=1000');const result=cursor.consume(page);
           if(result.gap){notice('[data-event-evidence]','Обнаружен пропуск или несогласованная история. Сведения нельзя считать полными; загрузите события сначала.');return;}
           result.events.forEach(event=>appendEvent(one('[data-job-events]'),event));try{sessionStorage.setItem(storageKey,String(cursor.after));}catch(_){}
@@ -296,5 +329,5 @@
     document.addEventListener('visibilitychange',()=>pollers.forEach(value=>value.wake()));window.addEventListener('pagehide',()=>pollers.forEach(value=>value.stop()),{once:true});
   }
   if(typeof document!=='undefined'){const boot=()=>document.querySelectorAll('[data-workstations]').forEach(mount);if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();}
-  return {EventCursor,Poller,jobMessage,verificationLabel,canApply,findingDetails,readReadyMachines,mount};
+  return {EventCursor,Poller,jobMessage,verificationLabel,canApply,findingDetails,readReadyMachines,completeSetup,completePreset,workflowMessage,stageLabel,mount};
 });

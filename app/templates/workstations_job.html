@@ -4,13 +4,15 @@
 <section class="panel"><a href="/workstations?view=jobs">← К заданиям</a><h2>Выполнение настройки</h2><p class="mono ws-wrap">{{ job_id }}</p>
   <p data-job-state class="ws-current" role="status" aria-live="polite">Загружаем состояние…</p>
   <p data-job-action class="alert warn" hidden></p>
+  <p data-workflow-wait role="status" aria-live="polite" hidden></p>
+  <ol data-workflow-phases class="ws-history" aria-label="Этапы полного сценария"></ol>
   <ol data-stage-history class="ws-history" aria-label="История этапов"></ol>
   <div data-job-components></div>
   <div class="toolbar">{% if capabilities.diagnose %}<button data-verify-job class="button secondary" type="button">Проверить результат</button>{% endif %}
     {% if capabilities.apply %}<button data-cancel-job class="button danger" type="button" disabled>Отменить до запуска</button>{% endif %}
     <button data-restart-events class="button secondary" type="button">Загрузить события сначала</button>
   </div>
-  <p class="muted">Опрос состояния не запускает проверку ПК. Перезагрузка и первый вход выполняются отдельно оператором.</p>
+  <p class="muted">Опрос страницы только читает историю. После согласованной перезагрузки и настоящего входа сотрудника worker продолжает этапы полного сценария в том же задании. «Проверить результат» не запускает установку повторно.</p>
 </section>
 <section class="panel"><h2>Хронология задач</h2><p data-event-evidence role="status"></p><ol data-job-events class="ws-events"></ol>
   {% if capabilities.diagnose %}<a class="button secondary" href="/api/v1/workstations/journal/export?job_id={{ job_id }}">Скачать страницу полного журнала</a>{% endif %}

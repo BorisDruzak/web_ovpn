@@ -6,6 +6,14 @@ import pytest
 from test_workstations_reconcile import database, NOW
 
 
+@pytest.mark.parametrize('code,word',[('krfb_clients_connected','VNC'),('certificates_importer_active','сертификат'),
+    ('graphical_session_unavailable','вход'),('final_dns_rolled_back','откат')])
+def test_workflow_diagnostics_give_stage_specific_actions(code,word):
+    from app.workstations.journal import error_details
+    result=error_details(code)
+    assert word in result['next_action']
+    assert 'новый план' not in result['next_action'].lower()
+
 def test_journal_exports_only_reviewed_fields_with_matching_cursor(database):
     from app.workstations.journal import JournalService
     from app.workstations.models import WorkstationRequest

@@ -26,8 +26,10 @@
   <p data-component-option class="muted" hidden>Добавление компонента использует существующее назначение компьютера и не меняет сотрудника.</p>
   <div class="ws-grid" aria-label="Параметры настройки">
     <label data-full-option>Подразделение компьютеров (OU)<select name="ou_id" form="ws-setup-form"><option value="">Загрузка согласованных OU…</option></select></label>
-    <label data-full-option>Комплект программ<select name="software_profile" form="ws-setup-form"><option value="">Загрузка профилей…</option></select></label>
-    <label data-full-option>Удалённый доступ<select name="remote_access_profile" form="ws-setup-form"><option value="none">Без удалённого доступа</option><option value="krfb">KRFB — при выполнении штатных условий</option></select></label>
+    <div data-full-option><input type="hidden" name="software_profile" value="workstation-full-v1" form="ws-setup-form">
+      <input type="hidden" name="remote_access_profile" value="krfb" form="ws-setup-form">
+      <p data-complete-preset role="status">Загружаем единый полный комплект…</p>
+      <p class="muted">KRFB входит в комплект: прямой VNC на порту 5900 с отдельным паролем, после входа сотрудника. Сертификаты завершаются в его профиле; DNS меняется последним по защищённой политике контроллера.</p></div>
     <label data-component-option hidden>Компонент<select name="component_id" form="ws-setup-form"><option value="">Выберите компонент</option></select></label>
   </div>
   <div class="toolbar"><button class="button primary" type="submit" form="ws-setup-form">Подготовить план</button><p class="muted">Подготовка плана проверяет состояние ПК. Установка начнётся после подтверждения готового плана.</p></div>

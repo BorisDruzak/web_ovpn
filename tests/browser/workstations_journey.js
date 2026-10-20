@@ -4,8 +4,10 @@ module.exports = async (page, output) => {
   const base='http://127.0.0.1:18881';
   const check=(condition,message)=>{if(!condition)throw new Error(message);};
   const counts=async()=>page.request.get(base+'/__fixture/state').then(response=>response.json());
-  const consoleErrors=[],apiFailures=[],eventOffsets=[];
-  const listener=message=>{if(message.type()==='error')consoleErrors.push(message.text());};
+  const consoleErrors=[],apiFailures=[],eventOffsets=[];let lostReply=false,expectedTransportErrors=0;
+  const listener=message=>{if(message.type()==='error'){
+    if(lostReply&&message.text().includes('net::ERR_FAILED'))expectedTransportErrors++;
+    else consoleErrors.push(message.text());}};
   const responses=response=>{if(response.url().includes('/api/v1/workstations')&&response.status()>=400)apiFailures.push(response.status());
     if(response.url().includes('/events?'))eventOffsets.push(new URL(response.url()).searchParams.get('after'));};
   page.on('console',listener);page.on('response',responses);
@@ -32,7 +34,10 @@ module.exports = async (page, output) => {
       check(await page.getByLabel('Зарегистрированный компьютер').inputValue()==='00000000-0000-0000-0000-0000000003e9','Loading table pages cleared the selected PC');
     }
     await page.getByLabel('Подразделение компьютеров (OU)').selectOption({label:'Тестовые компьютеры'});
-    await page.getByLabel('Комплект программ').selectOption({label:'Офисный комплект без электронной подписи'});
+    await page.locator('[data-complete-preset]').filter({hasText:'software.cryptopro'}).waitFor();
+    check(await page.locator('select[name=software_profile], select[name=remote_access_profile]').count()===0,'Ordinary wizard exposes a legacy profile choice');
+    check(await page.locator('[name=software_profile]').inputValue()==='workstation-full-v1','Canonical profile missing');
+    check(await page.locator('[name=remote_access_profile]').inputValue()==='krfb','KRFB is not mandatory');
     await page.getByRole('searchbox').fill('Тестовый');
     await page.getByRole('button',{name:'Найти сотрудника',exact:true}).click();
     await page.getByRole('radio').nth(1).waitFor();
@@ -43,9 +48,20 @@ module.exports = async (page, output) => {
     await page.getByRole('button',{name:'Подготовить план',exact:true}).click();
     await page.getByRole('link',{name:'Открыть готовый план и проверить изменения'}).click();
     const planUrl=page.url(),before=await counts();
+    check(before.last_plan_parameters.software_profile==='workstation-full-v1'&&before.last_plan_parameters.remote_access_profile==='krfb','Wizard request downgraded');
+    check((await page.locator('[data-plan]').textContent()).includes('final_dns'),'Complete plan phases missing');
+    check((await page.locator('main').textContent()).includes('192.0.2.53'),'Concrete DNS policy missing');
     check(await page.getByRole('button',{name:'Поставить в очередь',exact:true}).isDisabled(),'Unconfirmed plan was enabled');
     await page.getByRole('checkbox',{name:'Подтверждаю показанный план'}).check();
+    // Let the POST reach the real panel, then lose its browser reply. Reloading
+    // the same plan must recover the original receipt without a second POST.
+    lostReply=true;
+    await page.route('**/api/v1/workstations/plans/*/apply',async route=>{await route.fetch();await route.abort('failed');});
     await page.getByRole('button',{name:'Поставить в очередь',exact:true}).click();
+    await page.locator('[data-error]').filter({hasText:'workstations_browser_transport_unavailable'}).waitFor();
+    await page.unroute('**/api/v1/workstations/plans/*/apply');
+    await page.goto(planUrl);
+    await page.getByRole('link',{name:'Открыть исходное задание',exact:true}).first().click();
     await page.waitForURL('**/workstations/jobs/**');
     await page.waitForFunction(()=>document.querySelectorAll('[data-job-events] li').length===205);
     const jobUrl=page.url();
@@ -55,6 +71,7 @@ module.exports = async (page, output) => {
     check((await page.locator('[data-job-state]').textContent()).includes('место 1'),'Queue position missing');
     check((await page.locator('[data-job-components]').textContent()).includes('Технически проверено'),'Technical verification missing');
     check((await page.locator('[data-job-components]').textContent()).includes('Нужна проверка пользователем'),'Functional gate was hidden');
+    check((await page.locator('[data-workflow-phases]').textContent()).includes('Завершение DNS'),'Phase progress missing');
     await page.goto(planUrl);
     check(await page.getByRole('button',{name:'Поставить в очередь',exact:true}).isDisabled(),'Reload enabled a consumed plan');
     await page.getByRole('link',{name:'Открыть исходное задание',exact:true}).first().click();
@@ -73,8 +90,19 @@ module.exports = async (page, output) => {
       await page.request.post(base+'/__fixture/job/'+state);
       await page.waitForFunction(value=>document.querySelector('[data-job-state]').textContent.toLowerCase().includes(value.toLowerCase()),text);
     }
+    for(const [code,text] of [['krfb_clients_connected','VNC-клиент'],['certificates_importer_active','импорт сертификатов'],['graphical_session_unavailable','графический вход']]){
+      await page.request.post(base+'/__fixture/wait/'+code);
+      await page.waitForFunction(value=>document.querySelector('[data-workflow-wait]').textContent.includes(value),text);
+    }
+    await page.request.post(base+'/__fixture/job/degraded');
+    await page.waitForFunction(()=>document.querySelector('[data-workflow-wait]').textContent.includes('откат'));
+    await page.request.post(base+'/__fixture/job/waiting_first_login');
     check((await counts()).verify_count===before.verify_count,'State polling ran verification');
     await page.getByRole('button',{name:'Проверить результат',exact:true}).click();
+    await page.locator('[data-operation]').filter({hasText:'Операция завершена'}).waitFor();
+    check((await counts()).apply_count===before.apply_count+1,'Explicit verification repeated apply');
+    check((await page.locator('[data-job-state]').textContent()).includes('первый вход'),'Explicit verification dispatched a phase');
+    await page.request.post(base+'/__fixture/job/successful');
     await page.waitForFunction(()=>document.querySelector('[data-job-state]').textContent.includes('Настройка завершена'));
     check((await counts()).verify_count===before.verify_count+1,'Explicit verification was not executed once');
     check((await counts()).apply_count===before.apply_count+1,'Watching or reopening replayed apply');
@@ -118,7 +146,8 @@ module.exports = async (page, output) => {
     check(apiFailures.length===0,'Unexpected workstation HTTP error');check(consoleErrors.length===0,'Browser console error');
     return {passed:true,viewports:['1360x900','390x844'],apply_delta:(await counts()).apply_count-before.apply_count,verify_delta:(await counts()).verify_count-before.verify_count,
       published_events:205,event_pages:[0,100,200],journal_rendered:await page.locator('[data-journal] li').count(),
-      manual_inventory_owner_preserved:true,console_errors:consoleErrors.length,http_errors:apiFailures.length,job_url:jobUrl};
+      manual_inventory_owner_preserved:true,lost_apply_reply_recovered:true,expected_transport_errors:expectedTransportErrors,
+      console_errors:consoleErrors.length,http_errors:apiFailures.length,job_url:jobUrl};
   } finally {page.removeListener('console',listener);page.removeListener('response',responses);}
 };
 

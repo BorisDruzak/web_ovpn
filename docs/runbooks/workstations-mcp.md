@@ -68,14 +68,31 @@ Read the preview receipt, then confirm its `preview_id`, exact
 state and protected assignment. Ending a link also needs revision/reason and
 retains history. One employee may have several PCs.
 
-Plan with the selected existing identity and approved OU/profile IDs.
+Plan with the selected existing identity and approved OU IDs. For ordinary
+Setup use `software_profile=workstation-full-v1` and
+`remote_access_profile=krfb`. A missing canonical preset blocks this path;
+do not substitute an old office profile. Legacy catalog/API entries remain
+available for retained history and explicit compatible operations.
 Component plans use the existing native assignment. Review the returned plan,
 scope, warnings, deferred actions and TTL. Apply with its exact `plan_id`,
 `sha256`, `kind` and a new retained `request_id`; native guards remain binding.
 Setup executes one PC globally at a time while operators may read concurrently.
 Follow the original operation and job, including stage history, event pages,
 queue position, technical outcome and functional acceptance requirements.
-Reads never trigger verification; verification is an explicit operation.
+Read the safe workflow declaration (system/user/final_dns, component IDs,
+budgets and concrete DNS/direct-VNC policy) before applying. The original job
+continues after the required actual reboot and genuine selected-user graphical
+login. The worker admits each later phase once under the common sequential
+queue; a PC waiting for its user does not block another ready PC. Reads and
+explicit verification never dispatch phases. Report the specific waiting reason,
+including connected VNC viewers or an active certificate importer.
+
+Direct password-authenticated VNC is `<workstation-address>:5900`; SSH tunneling
+is optional. KRFB shares the employee's existing desktop, not a pre-login
+desktop. System CA trust follows CSP installation; user NSS/CryptoPro trust is
+finalized after login, including the pinned organization root for the cloud.
+Final DNS runs last using protected policy; a verified rollback is degraded,
+an uncertain result is UNKNOWN. Neither permits a repeat Setup/join.
 
 Retain every mutation's request UUID **before** sending it. If the first reply
 is lost, `operation(operation_id=<original request_id>)` reads its receipt;

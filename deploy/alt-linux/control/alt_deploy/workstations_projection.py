@@ -30,6 +30,75 @@ def public_machine(value):
     return result
 
 
+def _invalid_workflow():
+    return fail('workstations_projection_invalid','The public workflow declaration is invalid')
+
+
+def _phase_components(value):
+    if (not isinstance(value,list) or not 1<=len(value)<=256 or len(set(value))!=len(value)
+            or any(not isinstance(item,str) or not re.fullmatch('[a-z][a-z0-9_.-]{0,127}',item) for item in value)):
+        raise _invalid_workflow()
+    return copy.deepcopy(value)
+
+
+def public_workflow_plan(value):
+    from .full_workflow import BUDGETS
+    from .final_dns_policy import validate
+    from .krfb_runtime import DIRECT_POLICY
+    try:
+        if (not isinstance(value,dict) or value.get('kind')!='complete_workstation'
+                or type(value.get('schema_version')) is not int or value['schema_version']!=1):raise ValueError
+        policy=value['policy']
+        if (not isinstance(policy,dict) or set(policy)!={'vnc','final_dns'} or policy['vnc']!=DIRECT_POLICY
+                or not isinstance(policy['vnc'],dict) or set(policy['vnc'])!=set(DIRECT_POLICY)
+                or type(policy['vnc']['port']) is not int
+                or not isinstance(policy['final_dns'],dict) or set(policy['final_dns'])!={'servers'}):raise ValueError
+        dns=validate(policy['final_dns']['servers'])
+        if dns!=policy['final_dns']:raise ValueError
+        phases=value['phases']
+        if not isinstance(phases,list) or len(phases)!=3:raise ValueError
+        rows=[];components=[]
+        for (name,budget),row in zip(BUDGETS.items(),phases):
+            if (not isinstance(row,dict) or set(row)!={'id','component_ids','budget_seconds'} or row['id']!=name
+                    or type(row['budget_seconds']) is not int or row['budget_seconds']!=budget):raise ValueError
+            selected=_phase_components(row['component_ids']);components+=selected
+            rows.append({'id':name,'component_ids':selected,'budget_seconds':budget})
+        if len(set(components))!=len(components):raise ValueError
+        return {'kind':'complete_workstation','phases':rows,'policy':{'vnc':copy.deepcopy(DIRECT_POLICY),'final_dns':dns}}
+    except Exception:raise _invalid_workflow() from None
+
+
+def public_workflow_job(value):
+    from .full_workflow import BUDGETS
+    from .setup_phases import PHASE_CODES
+    from .setup_waiting import WAIT_CODES
+    from .setup_jobs import STATES
+    try:
+        if (not isinstance(value,dict) or set(value)!={'schema_version','kind','phase','waiting_reason','phases'}
+                or type(value['schema_version']) is not int or value['schema_version']!=1
+                or value['kind']!='complete_workstation' or value['phase'] not in BUDGETS
+                or value['waiting_reason'] is not None and value['waiting_reason'] not in WAIT_CODES|{'workflow_final_verification_unavailable'}
+                or not isinstance(value['phases'],dict) or set(value['phases'])!=set(BUDGETS)):raise ValueError
+        phases={};components=[]
+        for name,budget in BUDGETS.items():
+            row=value['phases'][name]
+            if (not isinstance(row,dict) or set(row)!={'state','component_ids','budget_seconds','error_code','admission_sequence'}
+                    or row['state'] not in STATES|{'pending'} or type(row['budget_seconds']) is not int or row['budget_seconds']!=budget
+                    or row['error_code'] is not None and row['error_code'] not in PHASE_CODES
+                    or row['admission_sequence'] is not None and (type(row['admission_sequence']) is not int or row['admission_sequence']<1)):raise ValueError
+            selected=_phase_components(row['component_ids']);components+=selected
+            phases[name]=dict(row,component_ids=selected)
+        if len(set(components))!=len(components):raise ValueError
+        return dict(value,phases=phases)
+    except Exception:raise _invalid_workflow() from None
+
+
+def public_job(value):
+    result=fields(value,JOB_FIELDS)
+    if 'workflow' in value:result['workflow']=public_workflow_job(value['workflow'])
+    return result
+
+
 def public_plan(plan):
     payload = plan['payload']
     components = [payload['component']] if 'component' in payload else payload.get('components', [])
@@ -52,6 +121,8 @@ def public_plan(plan):
             value['preflight']['error_code'] = code
     if 'computer_ou' in payload:
         value['ou_id'] = digest(payload['computer_ou'])
+    if 'workflow' in payload:
+        value['workflow']=public_workflow_plan(payload['workflow'])
     return value
 
 
@@ -68,10 +139,10 @@ def project(operation, data):
     if operation == 'assignments.show':
         return {'assignment': fields(data['assignment'], ASSIGNMENT_FIELDS) if data['assignment'] is not None else None}
     if operation in ('jobs.status', 'jobs.verify'):
-        return dict(fields(data, ('schema_version', 'status', 'operation')), job=fields(data['job'], JOB_FIELDS))
+        return dict(fields(data, ('schema_version', 'status', 'operation')), job=public_job(data['job']))
     if operation == 'jobs.list':
         return dict(fields(data, ('schema_version', 'status', 'operation', 'total', 'next_offset')),
-                    jobs=[fields(row, JOB_FIELDS) for row in data['jobs']])
+                    jobs=[public_job(row) for row in data['jobs']])
     if operation == 'plans.apply':
         return fields(data, ('schema_version', 'operation', 'job_id', 'machine_uuid', 'state', 'plan_id', 'plan_sha256'))
     # Other cases are constructed exclusively by the typed backend (catalog,

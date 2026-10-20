@@ -11,6 +11,14 @@
     <dt>Профиль</dt><dd>{{ profile.name or profile.id or 'Отдельный компонент' }}</dd>
     <dt>Действует до</dt><dd><time>{{ plan.expires_at }}</time></dd></dl>
   <h3>Компоненты</h3><ul>{% for component in plan.components %}<li>{{ component.id }} · версия {{ component.version }}</li>{% else %}<li>Нет опубликованных сведений о компонентах.</li>{% endfor %}</ul>
+  {% if plan.get('workflow') %}{% set workflow = plan.workflow %}
+  <h3>Полный сценарий</h3>
+  <ol>{% for phase in workflow.phases %}<li>{{ {'system':'Система, домен и программы', 'user':'Настройки после входа сотрудника', 'final_dns':'Завершение DNS'}.get(phase.id, phase.id) }} · лимит {{ phase.budget_seconds }} с
+    <ul>{% for component in phase.component_ids %}<li>{{ component }}</li>{% endfor %}</ul></li>{% endfor %}</ol>
+  <p>Прямой VNC: адрес ПК:{{ workflow.policy.vnc.port }}, обязательный отдельный пароль KRFB. Нужен настоящий графический сеанс сотрудника.</p>
+  <p>Финальные DNS: {{ workflow.policy.final_dns.servers|join(', ') }}. Применяются после пользовательского этапа с проверкой AD, сети и возможностью подтверждённого отката.</p>
+  <p>Системное доверие сертификатам устанавливается после CryptoPro. Хранилища NSS и CryptoPro выбранного пользователя проверяются после его входа. Проверка подписания в приложении остаётся отдельным действием пользователя.</p>
+  {% endif %}
   {% if component_plan %}<p>Действие: {{ {'noop': 'Изменения не требуются', 'install': 'Установка', 'repair': 'Исправление'}.get(plan.get('action'), 'Установка заблокирована') }}</p>{% endif %}
   {% if blocked %}<div class="alert warn"><h3>Установка заблокирована</h3><p>Устраните причину предварительной проверки и подготовьте новый план.</p>{% if preflight.get('error_code') %}<p class="mono">{{ preflight.error_code }}</p>{% endif %}</div>{% endif %}
   {% if plan.get('verification') %}<h3>Проверки компонентов</h3><dl>{% for component, state in plan.verification.items() %}<dt>{{ component }}</dt><dd>Техническая проверка: {{ state.get('status') or state.get('installation_status') or 'Нет сведений' }} · Приёмка: {{ state.get('acceptance_status') or 'Нет сведений' }}{% if state.get('operator_action') %} · {{ state.operator_action }}{% endif %}</dd>{% endfor %}</dl>{% endif %}

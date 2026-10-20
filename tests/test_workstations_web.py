@@ -18,6 +18,18 @@ def test_navigation_and_six_stage_wizard_include_disabled_employee_creation(tmp_
     assert 'data-workstations' in page.text and '/static/workstations.js' in page.text
 
 
+def test_ordinary_wizard_fixes_full_preset_and_direct_vnc(tmp_path,monkeypatch):
+    client,_=_client(tmp_path,monkeypatch)
+    page=client.get('/workstations').text
+    assert re.search(r'<input[^>]*name="software_profile"[^>]*value="workstation-full-v1"',page)
+    assert re.search(r'<input[^>]*name="remote_access_profile"[^>]*value="krfb"',page)
+    assert '<select name="software_profile"' not in page
+    assert '<select name="remote_access_profile"' not in page
+    assert 'data-complete-preset' in page
+    assert '5900' in page
+    assert 'data-workflow-phases' in client.get('/workstations/jobs/job-20261015T000000Z-12345678').text
+
+
 def test_observer_sees_summary_without_employee_controls_or_private_payload(tmp_path, monkeypatch):
     client, _ = _client(tmp_path, monkeypatch)
     login_operator(client)

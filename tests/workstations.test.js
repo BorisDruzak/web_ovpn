@@ -3,6 +3,26 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {EventCursor, Poller, jobMessage, verificationLabel, canApply, findingDetails, readReadyMachines} = require('../app/static/workstations.js');
 
+test('ordinary setup selects only the complete preset and never downgrades',()=>{
+  const {completePreset,completeSetup}=require('../app/static/workstations.js');
+  const full={id:'workstation-full-v1',version:1,name:'Полный комплект',components:['remote.krfb']};
+  assert.deepEqual(completePreset({profiles:[{id:'office-standard-v1'},full]}),full);
+  assert.throws(()=>completePreset({profiles:[{id:'office-standard-v1'}]}),/полный|обнов/i);
+  assert.throws(()=>completePreset({profiles:[full,full]}),/полный|обнов/i);
+  assert.deepEqual(completeSetup(),{software_profile:'workstation-full-v1',remote_access_profile:'krfb'});
+});
+
+test('phase guidance distinguishes login, active viewer, certificate import and rollback',()=>{
+  const {workflowMessage,stageLabel}=require('../app/static/workstations.js');
+  for(const [code,word] of [['krfb_clients_connected',/VNC/],['certificates_importer_active',/сертификат/],
+    ['user_session_unavailable',/вход|сеанс/],['workflow_final_verification_unavailable',/провер/]]){
+    assert.match(workflowMessage({phase:'user',waiting_reason:code}),word);
+  }
+  assert.match(stageLabel('workflow.final_dns.apply'),/DNS/);
+  assert.match(stageLabel('workflow.user.queued'),/пользоват/i);
+  assert.match(workflowMessage({phase:'final_dns',phases:{final_dns:{state:'degraded',error_code:'final_dns_rollback_verified'}}}),/откат/i);
+});
+
 test('ready machine selection reads beyond unrelated device pages', async () => {
   const rows=Array.from({length:200},(_,i)=>({device_key:'network:'+i}));
   rows.push({machine_uuid:'ready-machine',registration_state:'ready',hostname:'Ready PC'},
