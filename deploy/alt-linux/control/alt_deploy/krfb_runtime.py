@@ -522,15 +522,24 @@ def _probe_rfb(address, password, *, connector=socket.create_connection, clock=t
             rectangles = struct.unpack('>H', receive(2))[0]
             if rectangles == 0:
                 continue
-            if rectangles != 1:
+            if rectangles > 16:
                 reject_framebuffer('rectangle_count',rectangles=rectangles)
             break
         else:
             reject_framebuffer('message_budget')
         rectangle = struct.unpack('>HHHHi', receive(12))
-        if rectangle != (0, 0, 1, 1, 0):
+        x, y, rectangle_width, rectangle_height, encoding = rectangle
+        # Servers can batch rectangles or send a larger damaged region. The
+        # first Raw pixel still proves the requested (0,0), without fetching
+        # the remaining pixels or any subsequent rectangle (RFC 6143 7.7.1).
+        if (x != 0 or y != 0 or not 1 <= rectangle_width <= width
+                or not 1 <= rectangle_height <= height or encoding != 0):
             reject_framebuffer('rectangle',**dict(zip(('x','y','width','height','encoding'),rectangle)))
         receive(4)  # discard exactly one pixel, never expose/store its bytes
+        if rectangles != 1 or rectangle_width != 1 or rectangle_height != 1:
+            print(json.dumps({'kind':'krfb_requested_pixel_verified','rectangles':rectangles,
+                              'width':rectangle_width,'height':rectangle_height}),
+                  file=sys.stderr,flush=True)
         result.update(status='ok', pixel_update_verified=True, width=width, height=height)
     except _ProbeError as exc:
         result['code'] = str(exc)

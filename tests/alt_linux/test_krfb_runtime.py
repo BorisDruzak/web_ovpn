@@ -306,6 +306,39 @@ def test_framebuffer_padding_is_ignored_as_required_by_rfb():
     assert result['status']=='ok' and result['pixel_update_verified'] is True
 
 
+@pytest.mark.parametrize('count,width,height', [(1,1600,900),(4,1600,900),(16,1,1)])
+def test_multiple_or_larger_raw_rectangles_read_only_the_requested_first_pixel(count,width,height,capsys):
+    # A server can batch damage rectangles or send a larger Raw rectangle.
+    # Do not fetch the rest of its pixels or any subsequent rectangle.
+    unread=b'PRIVATE-UNREAD-PIXELS-AND-RECTANGLES'
+    wire=server_wire()[:-20]+struct.pack('>BBH',0,255,count)
+    wire+=struct.pack('>HHHHi',0,0,width,height,0)+b'\x01\x02\x03\x04'+unread
+    result,connection=probe(wire)
+    assert result['status']=='ok' and result['pixel_update_verified'] is True
+    assert bytes(connection.wire)==unread
+    assert connection.sent[-1]==struct.pack('>BBHHHH',3,0,0,0,1,1)
+    assert len(connection.sent)==7
+    assert 'PRIVATE' not in capsys.readouterr().err+json.dumps(result)
+
+
+@pytest.mark.parametrize('rectangle', [
+    (1,0,1,1,0),(0,1,1,1,0),(0,0,0,1,0),(0,0,1,0,0),
+    (0,0,1601,900,0),(0,0,1600,901,0),(0,0,1600,900,5),
+])
+def test_first_rectangle_must_prove_the_requested_origin_within_server_frame(rectangle):
+    unread=b'PRIVATE-UNREAD-PIXELS'
+    wire=server_wire()[:-20]+struct.pack('>BBH',0,0,4)+struct.pack('>HHHHi',*rectangle)+unread
+    result,connection=probe(wire)
+    assert result['code']=='krfb_framebuffer_unverified'
+    assert result['pixel_update_verified'] is False and bytes(connection.wire)==unread
+
+
+def test_multiple_rectangles_without_a_complete_first_pixel_never_claim_ready():
+    wire=server_wire()[:-20]+struct.pack('>BBH',0,0,4)+struct.pack('>HHHHi',0,0,1600,900,0)+b'\x01\x02\x03'
+    result,_=probe(wire)
+    assert result['status']=='blocked' and result['pixel_update_verified'] is False
+
+
 @pytest.mark.parametrize('messages', [
     b'\x02'*17,
     b'\0\0\0\0'*17,
@@ -313,7 +346,7 @@ def test_framebuffer_padding_is_ignored_as_required_by_rfb():
     (b'\x03\0\0\0'+struct.pack('>I', 4096)+b'x'*4096)*2,
     b'\x01',  # A colour-map update was not negotiated in true-colour mode.
     b'\x06',
-    b'\0\0\0\x02',  # Exactly one requested rectangle is required.
+    b'\0\0\0\x11',  # Rectangle counts are bounded even though only one pixel is read.
 ])
 def test_unexpected_or_excessive_server_messages_never_reach_pixel(messages):
     result, connection=probe(_with_server_messages(messages))
