@@ -50,7 +50,7 @@ def test_user_import_preserves_unrelated_certificates_and_is_idempotent(tmp_path
     entries = bundle()
     source = ROOT / 'files/government_ca'
     assert module.import_certificates(source, entries, db, run)['changed'] is True
-    assert len(mutations) == 3
+    assert len(mutations) == 4
     assert state['Unrelated Vendor CA'] == {'pem': '', 'trust': 'C,C,C'}
     for entry in entries:
         if entry['gost']:
@@ -58,7 +58,7 @@ def test_user_import_preserves_unrelated_certificates_and_is_idempotent(tmp_path
             continue
         assert state['ALT Government CA '+entry['filename']]['trust'] == ('C,,' if entry['kind']=='root' else ',,')
     assert module.import_certificates(source, entries, db, run)['changed'] is False
-    assert len(mutations) == 3
+    assert len(mutations) == 4
 
 
 def test_nss_exact_record_identity_distinguishes_old_and_new_sub_ca(tmp_path):
@@ -97,8 +97,8 @@ def test_altered_bundle_is_rejected_before_store_operations(tmp_path):
 def test_government_bundle_contains_only_pinned_public_ca_certificates():
     settings = yaml.safe_load((ROOT / 'roles/government_ca/defaults/main.yml').read_text())
     entries = settings['government_ca_certificates']
-    assert len(entries) == 6
-    assert sum(e['kind'] == 'root' for e in entries) == 3
+    assert len(entries) == 7
+    assert sum(e['kind'] == 'root' for e in entries) == 4
     assert sum(e['kind'] == 'intermediate' for e in entries) == 3
     for entry in entries:
         payload = (ROOT / 'files/government_ca' / entry['filename']).read_bytes()
@@ -224,7 +224,7 @@ def test_all_user_roots_are_installed_before_intermediates_and_second_run_is_noo
         thumbprint=argv[argv.index('-thumbprint')+1]
         return SimpleNamespace(returncode=0 if (store,thumbprint) in state else 44,stdout=thumbprint)
     assert module.import_certificates(ROOT/'files/government_ca',entries,db,run,require_cryptopro=True)['changed'] is True
-    assert [kind for store,kind,name in imports]==['root']*3+['intermediate']*3
+    assert [kind for store,kind,name in imports]==['root']*4+['intermediate']*3
     assert all(store==('uRoot' if kind=='root' else 'uCA') for store,kind,name in imports)
     assert module.import_certificates(ROOT/'files/government_ca',entries,db,run,require_cryptopro=True)['changed'] is False
-    assert len(imports)==6 and state['vendor'] is True
+    assert len(imports)==7 and state['vendor'] is True

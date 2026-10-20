@@ -131,4 +131,4 @@ def test_real_ansible_machine_roots_precede_intermediates_and_import_is_idempote
         if iteration:assert 'changed=0' in result.stdout
     observed=json.loads(state.read_text())
     assert observed['vendor']=='preserve'
-    assert observed['imports']==[['mRoot','root']]*3+[['mCA','intermediate']]*3
+    assert observed['imports']==[['mRoot','root']]*4+[['mCA','intermediate']]*3

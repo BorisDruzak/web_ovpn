@@ -36,3 +36,9 @@ government_ca_certificates:
   fingerprint_sha256: 4bb37cc7c0ff4bf2aa893e95076ebb3565c69237ee1b61635beee4c1966495c7
   thumbprint_sha1: 2f0cb09be3550ef17ec4f29c90abd18bfcaad63a
   gost: true
+- filename: sosnadmin-local-ca.crt
+  kind: root
+  sha256: 8980cd7d21018f51d2af91c13189a960bada3296fa6cfafcc1ba7b978046d54a
+  fingerprint_sha256: 5525eccf01536b7f0436d96500c663f7a58edac463f00f0fb34a59dd8b3250be
+  thumbprint_sha1: efbed1f8572927112500d8a6e3437cebb63f9e64
+  gost: false

@@ -185,6 +185,15 @@ Run controller/native tests in a clean Linux environment as the non-root service
 - [x] Perform read-only current-PC system/NSS/machine-CSP/user-CSP verification. Do not reapply Setup or close applications.
 - [x] Update the guide and integration acceptance checks. Final focused Linux run: 153 passed, including real Ansible and immutable execution tests. Guarded publication remains part of Task 7; the post-login full-workflow proof is still required in Tasks 4–5.
 
+## Task 12: Include the verified organization root in automatic trust
+
+**Operator amendment on 2026-10-20; execute before resuming Task 2.** Extend the existing public trust bundle rather than adding another component. Preserve its six government identities and all legacy profile declarations. The approved organization root DER SHA-256 is `5525eccf01536b7f0436d96500c663f7a58edac463f00f0fb34a59dd8b3250be`; its source identity was independently checked against trusted infrastructure and the Windows root store during the pilot repair.
+
+- [x] Add failing tests that the pinned self-issued CA, rather than the cloud leaf, is included in the desired certificate query. Missing system trust, employee NSS identity or NSS root trust must make the fresh read-only probe fail. A conflicting managed nickname must remain unchanged.
+- [x] Add only the public CA payload and exact PEM/DER/SHA-1 catalog pins. Reuse existing system-root, roots-before-intermediates machine/user CSP, first-login NSS and exact post-import verification. Preserve true second-run no-op, foreign certificates and the previously pinned government entries.
+- [x] Run the new regressions and the existing certificate/order/component-probe/component-setup/clean-VM contract tests, including real Ansible. Update the guide and clean-clone acceptance to require the cloud login page in the employee browser without TLS bypass. Publish with the verified complete workflow in Task 7; do not replay the pilot Setup.
+- [x] Commit `fix(workstations): provision the verified organization root` and resume Task 2.
+
 ## Task 7: Clean ALT/browser acceptance and guarded release
 
 **Files:** Modify `deploy/alt-linux/install-control-plane.sh`, `install-control-plane-lib.sh` and associated installer/backup readiness tests only where needed to ship/validate new fixed assets. Add `docs/verification/ALT_COMPLETE_WORKFLOW_ACCEPTANCE_2026-10-20.md`; keep private manifests, identifiers, logs and artifact copies under the ignored operational evidence directory.
@@ -207,4 +216,4 @@ Run controller/native tests in a clean Linux environment as the non-root service
 - Canonical profile, policy binding and protected initial domain path: Task 4; real-login eligibility, claims, queue, expired receipt, restart and legacy compatibility: Task 5.
 - Web/MCP/skill, sanitized logs, permissions and read-only views: Task 6; isolated real acceptance, exact CI, backup/deployment and documentation: Task 7.
 - All five Review Focus cases have explicit tests in their owning tasks. Later tasks consume the names and JSON contracts defined above; no task authorizes an old job replay or source deployment before verification.
-- Implementation method remains native execution in this chat, approved on 2026-10-20 with direct VNC and Task 0 AD admission/diagnostics. Later explicit amendments add Tasks 8–9; execution order is 0, 9, 1, 10, 2, 8, 3, 4, 5, 6, 7. The already completed workstation application/DNS/VNC work is separate from the controller implementation.
+- Implementation method remains native execution in this chat, approved on 2026-10-20 with direct VNC and Task 0 AD admission/diagnostics. Later explicit amendments add Tasks 8–12; execution order is 0, 9, 1, 10, 11, 12, 2, 8, 3, 4, 5, 6, 7. The already completed workstation application/DNS/VNC work is separate from the controller implementation.

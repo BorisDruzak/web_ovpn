@@ -313,3 +313,26 @@ selection are required before success. Preserve distribution-owned trust files;
 package-provided intermediate anchors must not be mistaken for files this role
 created or removed. No personal signing certificate or private key is provisioned
 by this public CA bundle.
+
+## Organization CA amendment
+
+The operator explicitly requested the verified organization root in the complete
+automatic installation on 2026-10-20, after a pilot browser failure confirmed
+missing issuer trust. Extend the existing `certificates.government` trust bundle
+with exactly one public Sosnadmin Local CA root, DER SHA-256
+`5525eccf01536b7f0436d96500c663f7a58edac463f00f0fb34a59dd8b3250be`.
+Keep the six government certificate identities and legacy profile declarations.
+The existing component ID remains for compatibility; no new component or queue
+phase is required. Ship the pinned public CA with the normal source fingerprint
+and installer asset checks; never fetch trust from the contacted server at runtime.
+
+Install the organization root into system trust and selected employee NSS, and
+the normal machine/user CSP root stores when the provider is present. An absent
+home still waits for actual first login. Exact DER identity and NSS root trust
+must pass fresh post-login verification before the full workflow succeeds. A
+server leaf, an altered payload, missing store entry or conflicting managed
+nickname cannot satisfy this requirement. Preserve unrelated trust and user
+applications; do not disable TLS verification or force browser restart. Clean
+ALT acceptance must open the internal cloud login page in the selected employee's
+browser with strict TLS, recording network/application failures separately from
+certificate-store failures. DNS remains the last mutating stage.
