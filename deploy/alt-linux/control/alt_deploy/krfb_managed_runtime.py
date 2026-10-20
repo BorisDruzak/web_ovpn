@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass,field
+from contextlib import contextmanager
 import configparser
 import hashlib
 import json
@@ -17,7 +18,7 @@ import threading
 import time
 import uuid
 
-from .krfb_user_session import KRFBSessionError,_ini,_configuration_ready,_autostart_ready,_collect,_owned
+from .krfb_user_session import KRFBSessionError,_ini,_configuration_ready,_autostart_ready,_collect,_owned,stop_krfb,launch_krfb
 from .user_session import SessionContext,SessionError,_inside,_read,_trusted_program,_call
 
 
@@ -209,6 +210,166 @@ def create_runtime_backup(request,assessment,*,root=Path('/')):
     except KRFBSessionError:raise
     except Exception:
         raise KRFBSessionError('krfb_runtime_backup_unverified') from None
+
+
+@contextmanager
+def _runtime_lock(root):
+    # This target lock supplements, and never replaces, the controller's
+    # lifecycle lock and immutable native phase claim.
+    import fcntl
+    descriptor = None
+    try:
+        namespace = _private_directory(root,'/var/lib/alt-krfb-user-runtime',create=True)
+        descriptor = os.open(namespace/'runtime.lock',os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
+        info = os.fstat(descriptor);owner=0 if root==Path('/') else os.getuid()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid!=owner or stat.S_IMODE(info.st_mode)!=0o600
+                or info.st_nlink!=1 or info.st_size):raise ValueError
+        try:fcntl.flock(descriptor,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError:raise KRFBSessionError('krfb_runtime_busy') from None
+        yield namespace
+    except KRFBSessionError:raise
+    except (OSError,ValueError):
+        raise KRFBSessionError('krfb_runtime_lock_unverified') from None
+    finally:
+        if descriptor is not None:os.close(descriptor)
+
+
+def _readiness_request(request):
+    return {key:request[key] for key in ('schema_version','machine_uuid','hostname','login',
+        'source_sha256','policy_sha256','policy_helper_sha256','configuration','autostart')}
+
+
+def _stable_policy(policy):
+    # Listener presence is expected to change during this transaction. The
+    # marker, boot, source, owned legacy state and all foreign rules must not.
+    return {key:value for key,value in policy.items() if key not in ('snapshot_sha256','listener_present')}
+
+
+def _runtime_result(request,snapshot,status,code=None,*,changed=False,consumed=False):
+    return {'schema_version':1,'status':status,'code':code,'changed':changed,
+        'requires_direct_probe':status in ('configured','noop'),'target_claim_consumed':consumed,
+        'machine_uuid':request['machine_uuid'],'boot_id':snapshot['boot_id'],
+        'source_sha256':request['source_sha256'],'policy_sha256':request['policy_sha256'],
+        'snapshot_sha256':snapshot['snapshot_sha256']}
+
+
+def _private_record(directory,name,value):
+    data=json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
+    _write_private(directory/name,data)
+    if _read(directory/name)!=data:raise ValueError
+    _sync_directory(directory)
+
+
+def ensure_session(request,*,root=Path('/'),call=_call,limits_reader=resource.prlimit):
+    """Apply one native user-phase claim; full RFB acceptance stays controller-side.
+
+    This fixed internal function has no public command/action selector. A lost
+    reply consumes the existing backup/claim directory and cannot redispatch.
+    Existing user applications and new human-started KRFB processes are never
+    eligible for deadline cleanup or a second stop/launch.
+    """
+    validate_runtime_request(request)
+    root=Path(root)
+    with _runtime_lock(root) as namespace:
+        claim=namespace/request['context']['claim_sha256']
+        if claim.exists() or claim.is_symlink():raise KRFBSessionError('krfb_runtime_claim_consumed')
+        assessment=assess_runtime(_readiness_request(request),root=root,call=call,limits_reader=limits_reader)
+        snapshot=assessment.snapshot
+        if assessment.disposition=='waiting_vnc_clients':
+            return _runtime_result(request,snapshot,'waiting','krfb_clients_connected')
+        if (snapshot['snapshot_sha256']!=request['expected_snapshot_sha256']
+                or assessment.policy['snapshot_sha256']!=request['expected_policy_snapshot_sha256']):
+            raise KRFBSessionError('krfb_runtime_readiness_changed')
+        if assessment.disposition=='noop':return _runtime_result(request,snapshot,'noop')
+        directory=create_runtime_backup(request,assessment,root=root)
+        effects=False;stage=0
+
+        def record_stage(name):
+            nonlocal stage
+            _private_record(directory,'stage-'+str(stage).zfill(2)+'.json',
+                {'schema_version':1,'stage':name,'context':request['context']})
+            stage+=1
+
+        def current():
+            value,context,process=_collect({key:request[key] for key in ('machine_uuid','hostname','login')},
+                root=root,call=call,limits_reader=limits_reader)
+            if context!=assessment.context or any(value[key]!=assessment.snapshot[key] for key in
+                    ('machine_uuid','hostname','boot_id','login','uid','gid','session_sha256')):
+                raise KRFBSessionError('krfb_runtime_readiness_changed')
+            policy=read_direct_policy(request,root=root)
+            if _stable_policy(policy)!=_stable_policy(assessment.policy):
+                raise KRFBSessionError('krfb_vnc_policy_unverified')
+            return value,context,process
+
+        try:
+            # A final fresh client/session/policy check precedes the first
+            # effect. stop_krfb independently rechecks clients at the pidfd.
+            snapshot,context,process=current()
+            if snapshot['snapshot_sha256']!=assessment.snapshot['snapshot_sha256']:
+                if snapshot['connected_clients']:
+                    raise KRFBSessionError('krfb_clients_connected')
+                raise KRFBSessionError('krfb_runtime_readiness_changed')
+            if assessment.needs_reload:
+                record_stage('stop-requested');effects=True
+                try:stop_krfb(context,assessment.process,root=root)
+                except KRFBSessionError as error:
+                    if str(error)=='krfb_clients_connected':effects=False
+                    raise
+                record_stage('stop-confirmed')
+
+            # KRFB may save stale managed values on exit. Merge after its
+            # confirmed exit, retaining every unrelated newly saved setting.
+            snapshot,context,process=current()
+            if ((assessment.needs_reload and process is not None)
+                    or not assessment.needs_reload and process!=assessment.process):
+                raise KRFBSessionError('krfb_process_unverified')
+            if snapshot['connected_clients']:raise KRFBSessionError('krfb_clients_connected')
+            configuration=_owned(root,context.home+'/.config/krfbrc',context.uid,context.gid,0o600)
+            autostart=_owned(root,context.home+'/.config/autostart/org.sosn.krfb.desktop',context.uid,context.gid,0o644)
+            contents={'krfbrc':prepare_configuration(configuration,request['configuration'].encode(),context),
+                      'org.sosn.krfb.desktop':assessment.autostart}
+            expected={'krfbrc':hashlib.sha256(configuration).hexdigest() if configuration is not None else None,
+                      'org.sosn.krfb.desktop':hashlib.sha256(autostart).hexdigest() if autostart is not None else None}
+
+            def register_writer(identity):
+                _private_record(directory,'writer.json',{'schema_version':1,'stage':'configuration-writer',
+                    'context':request['context'],'child':identity})
+                return True
+
+            if configuration!=contents['krfbrc'] or autostart!=contents['org.sosn.krfb.desktop']:
+                record_stage('write-requested');effects=True
+                write_user_configuration(context,contents,expected,register_child=register_writer,root=root)
+                record_stage('write-confirmed')
+            snapshot,context,process=current()
+            if not snapshot['configuration_safe'] or not snapshot['autostart_safe']:
+                raise KRFBSessionError('krfb_configuration_unverified')
+            if process is None:
+                # Exactly one dispatch. A new human-started process discovered
+                # here or during startup is adopted only for fresh proof.
+                record_stage('launch-requested');effects=True
+                pid=launch_krfb(context)
+                _private_record(directory,'launch.json',{'schema_version':1,'context':request['context'],'pid':pid})
+            deadline=time.monotonic()+20
+            while True:
+                snapshot,context,process=current()
+                if process is not None and snapshot['listener_present']:break
+                if time.monotonic()>=deadline:raise KRFBSessionError('krfb_runtime_outcome_unverified')
+                time.sleep(0.2)
+            configuration=_owned(root,context.home+'/.config/krfbrc',context.uid,context.gid,0o600)
+            autostart=_owned(root,context.home+'/.config/autostart/org.sosn.krfb.desktop',context.uid,context.gid,0o644)
+            if (prepare_configuration(configuration,request['configuration'].encode(),context)!=configuration
+                    or autostart!=assessment.autostart):raise KRFBSessionError('krfb_configuration_unverified')
+            result=_runtime_result(request,snapshot,'configured',changed=effects,consumed=True)
+        except Exception as error:
+            code=str(error) if isinstance(error,KRFBSessionError) else ''
+            safe={'krfb_clients_connected','krfb_runtime_readiness_changed','krfb_process_unverified','krfb_vnc_policy_unverified'}
+            status='unknown' if effects else 'blocked'
+            result=_runtime_result(request,snapshot,status,
+                'krfb_runtime_outcome_unverified' if effects else code if code in safe else 'krfb_runtime_readiness_changed',
+                changed=effects,consumed=True)
+        try:_private_record(directory,'result.json',{'schema_version':1,'context':request['context'],'result':result})
+        except Exception:raise KRFBSessionError('krfb_runtime_outcome_unverified') from None
+        return result
 
 
 def _password_supported(value):
