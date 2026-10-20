@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass,field
+from contextlib import contextmanager
 import configparser
 import hashlib
 import json
@@ -148,7 +149,11 @@ def inspect_wallet(context,wallet_name='recovered-wallet',*,root=Path('/')):
         # Reject links even when they point to an otherwise owned wallet.
         candidates=[_inside(root,context.home+'/.local/share/kwalletd/'+name) for name in SOURCES]
         present=[p.exists() for p in candidates]
-        if not any(present):return _evidence(context,wallet_name,configuration,{},'noop')
+        if not any(present):
+            if _confirmed(parser) and any(_inside(root,context.home+'/.local/share/kwalletd/'+wallet_name+suffix).exists()
+                                          for suffix in ('.kwl','.salt','_attributes.json')):
+                raise WalletError('kwallet_partial_repair_unverified')
+            return _evidence(context,wallet_name,configuration,{},'noop')
         if not all(present) or not _confirmed(parser):raise WalletError('kwallet_empty_name_evidence_incomplete')
         _user_directory(directory,context,closed=True)
         for parent in (directory.parent,directory.parent.parent):_user_directory(parent,context)
@@ -220,6 +225,7 @@ def create_backup(evidence,operation_sha256,*,root=Path('/')):
         ticks=int(_read(process/'stat',4096).decode().rsplit(')',1)[1].split()[19])
         if ticks<=0:raise ValueError
         manifest={'schema_version':1,'kind':'confirmed_empty_wallet_backup','operation_sha256':operation_sha256,
+            'boot_id':_boot_id(),
             'snapshot_sha256':evidence.snapshot_sha256,'wallet_name':evidence.wallet_name,
             'uid':evidence.context.uid,'gid':evidence.context.gid,'home':evidence.context.home,
             'helper':{'pid':os.getpid(),'start_ticks':ticks,'uid':os.geteuid(),'gid':os.getegid(),
@@ -512,7 +518,7 @@ def run_writer(evidence,operation_sha256,directory,*,root=Path('/')):
         pidfd=os.pidfd_open(pid,0)
         if not select.select([ready_reader],[],[],10)[0] or os.read(ready_reader,1)!=b'R':raise ValueError
         identity=_writer_identity(pid,context,executable)
-        _record(directory,'writer.json',{'schema_version':1,'operation_sha256':operation_sha256,
+        _record(directory,'writer.json',{'schema_version':1,'operation_sha256':operation_sha256,'boot_id':_boot_id(),
             'snapshot_sha256':evidence.snapshot_sha256,'child':identity})
         if _writer_identity(pid,context,executable)!=identity:raise ValueError
         os.write(gate_writer,b'1');os.close(gate_writer);descriptors.remove(gate_writer)
@@ -564,3 +570,184 @@ def verify_wallet_bus(context):
         if result.returncode or result.stdout.strip()!='b true':raise ValueError
         return {'enabled':True,'latency_ms':max(0,round((time.monotonic()-started)*1000))}
     except Exception:raise WalletError('kwallet_dbus_unverified') from None
+
+
+@dataclass(frozen=True)
+class WalletReadiness:
+    disposition: str
+    snapshot_sha256: str
+    wallet: WalletEvidence = field(repr=False)
+    daemons: DaemonEvidence = field(repr=False)
+
+
+def observe_wallet(context,wallet_name='recovered-wallet',*,root=Path('/')):
+    evidence=inspect_wallet(context,wallet_name,root=root)
+    daemons=observe_daemons(context,root=root) if evidence.disposition=='repair' else DaemonEvidence(hashlib.sha256(b'[]').hexdigest(),())
+    digest=hashlib.sha256(json.dumps({'wallet':evidence.snapshot_sha256,'daemons':daemons.snapshot_sha256},
+        sort_keys=True,separators=(',',':')).encode()).hexdigest()
+    return WalletReadiness(evidence.disposition,digest,evidence,daemons)
+
+
+@contextmanager
+def _wallet_lock(root):
+    import fcntl
+    descriptor=None
+    try:
+        namespace=_private_directory(root,'/var/lib/alt-kwallet-empty-name-repair',create=True)
+        descriptor=os.open(namespace/'repair.lock',os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
+        info=os.fstat(descriptor);owner=0 if root==Path('/') else os.getuid()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid!=owner or stat.S_IMODE(info.st_mode)!=0o600
+                or info.st_nlink!=1 or info.st_size):raise ValueError
+        try:fcntl.flock(descriptor,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError:raise WalletError('kwallet_repair_busy') from None
+        yield namespace
+    except WalletError:raise
+    except (OSError,ValueError,SessionError):raise WalletError('kwallet_lock_unverified') from None
+    finally:
+        if descriptor is not None:os.close(descriptor)
+
+
+def _boot_id():
+    value=_read(Path('/proc/sys/kernel/random/boot_id'),128).decode().strip()
+    if not re.fullmatch('[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',value):raise ValueError
+    return value
+
+
+def _private_json(path,root):
+    info=path.stat();owner=0 if root==Path('/') else os.getuid()
+    if (path.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_uid!=owner
+            or stat.S_IMODE(info.st_mode)!=0o600 or info.st_nlink!=1):raise ValueError
+    def unique(pairs):
+        result={}
+        for key,value in pairs:
+            if key in result:raise ValueError
+            result[key]=value
+        return result
+    return json.loads(_read(path,2097152),object_pairs_hook=unique)
+
+
+def _recorded_process_alive(value):
+    if (not isinstance(value,dict) or any(type(value.get(key)) is not int or value[key]<=0
+                                          for key in ('pid','start_ticks'))
+            or value['pid']>2147483647):raise ValueError
+    try:
+        raw=_read(Path('/proc')/str(value['pid'])/'stat',4096).decode()
+    except FileNotFoundError:return False
+    ticks=int(raw.rsplit(')',1)[1].split()[19])
+    # A changed UID, executable or orphaned PPID cannot prove the recorded
+    # mutator stopped. Birth time plus this same boot identifies the process.
+    return ticks==value['start_ticks']
+
+
+def guard_previous_mutators(namespace,*,root=Path('/')):
+    """A lost parent releases flock, but an acknowledged writer may still live."""
+    try:
+        root=Path(root);namespace=Path(namespace)
+        if namespace!=_private_directory(root,'/var/lib/alt-kwallet-empty-name-repair'):raise ValueError
+        paths=list(namespace.iterdir())
+        if len(paths)>4096:raise ValueError
+        boot=_boot_id()
+        for directory in paths:
+            if directory.name=='repair.lock':continue
+            if not re.fullmatch('[0-9a-f]{64}',directory.name):raise ValueError
+            _private_directory(root,'/var/lib/alt-kwallet-empty-name-repair/'+directory.name)
+            manifest=_private_json(directory/'manifest.json',root)
+            if (type(manifest.get('schema_version')) is not int or manifest['schema_version']!=1
+                    or manifest['kind']!='confirmed_empty_wallet_backup'
+                    or manifest['operation_sha256']!=directory.name
+                    or not isinstance(manifest['boot_id'],str)
+                    or not re.fullmatch('[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',manifest['boot_id'])):raise ValueError
+            if manifest['boot_id']!=boot:continue
+            helper=manifest['helper']
+            if helper['pid']!=os.getpid() and _recorded_process_alive(helper):
+                raise WalletError('kwallet_previous_mutator_active')
+            path=directory/'writer.json'
+            if path.exists() or path.is_symlink():
+                writer=_private_json(path,root)
+                if (type(writer.get('schema_version')) is not int or writer['schema_version']!=1
+                        or writer['operation_sha256']!=directory.name or writer['boot_id']!=boot
+                        or writer['snapshot_sha256']!=manifest['snapshot_sha256']
+                        or writer['child']['uid']!=manifest['uid'] or writer['child']['gid']!=manifest['gid']):raise ValueError
+                if _recorded_process_alive(writer['child']):raise WalletError('kwallet_previous_mutator_active')
+    except WalletError:raise
+    except Exception:raise WalletError('kwallet_previous_state_unverified') from None
+
+
+def _verify_renamed(evidence,*,root,exact):
+    context=evidence.context
+    configuration=_file(_inside(root,context.home+'/.config/kwalletrc'),context,limit=131072)
+    if configuration is None or _configuration(configuration['data']).get('Wallet','Default Wallet',fallback=None)!=evidence.wallet_name:
+        raise WalletError('kwallet_postcondition_unverified')
+    if exact and configuration['sha256']!=hashlib.sha256(repair_configuration(evidence.configuration,evidence.wallet_name)).hexdigest():
+        raise WalletError('kwallet_postcondition_unverified')
+    pairs=zip(SOURCES,(evidence.wallet_name+'.kwl',evidence.wallet_name+'.salt',evidence.wallet_name+'_attributes.json'))
+    for old,new in pairs:
+        if _inside(root,context.home+'/.local/share/kwalletd/'+old).exists():raise WalletError('kwallet_postcondition_unverified')
+        value=_file(_inside(root,context.home+'/.local/share/kwalletd/'+new),context)
+        if value is None or exact and not _same_file(value,evidence.files[old]):raise WalletError('kwallet_postcondition_unverified')
+
+
+def repair_wallet(context,wallet_name,expected_snapshot_sha256,operation_sha256,*,root=Path('/')):
+    """One claim: backup -> proven stop -> acknowledged writer -> actual GUI bus.
+
+    The fixed CLI/native caller additionally binds machine, boot, helper source
+    and confirmed operation context before entering this private coordinator.
+    No automatic rollback is attempted after daemon activation is dispatched.
+    """
+    try:
+        root=Path(root)
+        if threading.active_count()!=1:raise ValueError
+        for value in (expected_snapshot_sha256,operation_sha256):
+            if not isinstance(value,str) or not re.fullmatch('[0-9a-f]{64}',value):raise ValueError
+        namespace=_inside(root,'/var/lib/alt-kwallet-empty-name-repair')
+        if (namespace/operation_sha256).exists():raise WalletError('kwallet_claim_consumed')
+        readiness=observe_wallet(context,wallet_name,root=root)
+        if readiness.snapshot_sha256!=expected_snapshot_sha256:raise WalletError('kwallet_readiness_changed')
+        if readiness.disposition=='noop' and not namespace.exists():return {'status':'noop','changed':False,'code':None}
+        with _wallet_lock(root):
+            guard_previous_mutators(namespace,root=root)
+            _revalidate(context)
+            fresh=observe_wallet(context,wallet_name,root=root)
+            if fresh.snapshot_sha256!=expected_snapshot_sha256:raise WalletError('kwallet_readiness_changed')
+            if fresh.disposition=='noop':return {'status':'noop','changed':False,'code':None}
+            directory=create_backup(fresh.wallet,operation_sha256,root=root)
+            _record(directory,'invocation.json',{'schema_version':1,'operation_sha256':operation_sha256,
+                'readiness_sha256':fresh.snapshot_sha256,'daemon_sha256':fresh.daemons.snapshot_sha256,
+                'uid':context.uid,'gid':context.gid,'snapshot_sha256':fresh.wallet.snapshot_sha256})
+            effects=False
+            try:
+                if observe_wallet(context,wallet_name,root=root).snapshot_sha256!=expected_snapshot_sha256:
+                    raise WalletError('kwallet_readiness_changed')
+                _record(directory,'stop.json',{'schema_version':1,'stage':'stop-requested','operation_sha256':operation_sha256})
+                effects=True
+                stop_daemons(context,fresh.daemons,root=root)
+                _record(directory,'stopped.json',{'schema_version':1,'stage':'stop-confirmed','operation_sha256':operation_sha256})
+                _revalidate(context)
+                file_result=run_writer(fresh.wallet,operation_sha256,directory,root=root)
+                if file_result['status']=='applied':
+                    _revalidate(context)
+                    _verify_renamed(fresh.wallet,root=root,exact=True)
+                    _record(directory,'activation.json',{'schema_version':1,'stage':'activation-requested',
+                        'operation_sha256':operation_sha256,'wallet_files_verified':3})
+                    bus=verify_wallet_bus(context)
+                    _revalidate(context)
+                    active=observe_daemons(context,root=root)
+                    if {p['executable'] for p in active.records}!=DAEMONS:raise WalletError('kwallet_dbus_unverified')
+                    # Exact bytes were sealed above before service activation.
+                    # Normal applications may now legitimately add secrets.
+                    _verify_renamed(fresh.wallet,root=root,exact=False)
+                    result={'status':'repaired','code':None,'changed':True,'wallet_files_verified':3,
+                            'dbus_enabled':True,'latency_ms':bus['latency_ms']}
+                else:
+                    result={'status':file_result['status'],'code':file_result['code'],'changed':True}
+            except Exception as error:
+                code=str(error) if isinstance(error,WalletError) else ''
+                safe={'kwallet_daemon_exit_unverified','kwallet_daemon_unverified','kwallet_writer_outcome_unverified',
+                      'kwallet_dbus_unverified','kwallet_postcondition_unverified','kwallet_readiness_changed'}
+                result={'status':'unknown' if effects else 'blocked','changed':effects,
+                        'code':code if code in safe else 'kwallet_repair_outcome_unverified'}
+            try:_record(directory,'result.json',{'schema_version':1,'operation_sha256':operation_sha256,'result':result})
+            except Exception:raise WalletError('kwallet_repair_outcome_unverified') from None
+            return result
+    except WalletError:raise
+    except Exception:raise WalletError('kwallet_repair_outcome_unverified') from None

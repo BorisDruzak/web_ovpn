@@ -318,3 +318,95 @@ def test_dbus_check_uses_actual_gui_environment_and_finite_deadline(wallet,monke
         with pytest.raises(m.WalletError,match='kwallet_dbus_unverified'):m.verify_wallet_bus(f['context'])
     assert calls==[(['/usr/bin/busctl','--user','--timeout=5','call','org.kde.kwalletd6',
                     '/modules/kwalletd6','org.kde.KWallet','isEnabled'],7)]
+
+
+@pytest.mark.parametrize('case',['success','healthy','stale','repeat','stop_failure','writer_unknown','bus_failure'])
+def test_root_coordinator_orders_backup_stop_writer_bus_and_never_repeats(wallet_daemons,monkeypatch,case):
+    m=helper();f=wallet_daemons;m._revalidate=lambda *_:None
+    (f['root']/'var/lib').mkdir(parents=True)
+    if case=='healthy':
+        for source in m.SOURCES:(f['directory']/source).unlink()
+    readiness=m.observe_wallet(f['context'],root=f['root'])
+    assert 'SENTINEL' not in repr(readiness)
+    expected=readiness.snapshot_sha256 if case!='stale' else 'f'*64
+    directory=f['root']/'var/lib/alt-kwallet-empty-name-repair'/('a'*64)
+    trace=[];original_writer=m.run_writer
+    def stop(context,proof,**kwargs):
+        assert (directory/'manifest.json').is_file() and (directory/'invocation.json').is_file()
+        trace.append('stop')
+        if case=='stop_failure':raise m.WalletError('kwallet_daemon_exit_unverified')
+        for p in f['daemons'].values():(p/'exe').unlink()
+    def write(*a,**kw):
+        assert trace==['stop'];trace.append('write')
+        if case=='writer_unknown':return {'status':'unknown','code':'kwallet_rollback_unverified'}
+        return original_writer(*a,**kw)
+    def bus(context):
+        assert trace==['stop','write'] and (directory/'activation.json').is_file()
+        assert m.inspect_wallet(context,root=f['root']).disposition=='noop'
+        trace.append('bus')
+        if case=='bus_failure':raise m.WalletError('kwallet_dbus_unverified')
+        for name,p in f['daemons'].items():(p/'exe').symlink_to('/usr/bin/'+name)
+        return {'enabled':True,'latency_ms':140}
+    monkeypatch.setattr(m,'stop_daemons',stop)
+    monkeypatch.setattr(m,'run_writer',write)
+    monkeypatch.setattr(m,'verify_wallet_bus',bus)
+    before=files(f['directory'])
+    if case=='stale':
+        with pytest.raises(m.WalletError,match='kwallet_readiness_changed'):
+            m.repair_wallet(f['context'],'recovered-wallet',expected,'a'*64,root=f['root'])
+        assert trace==[] and not directory.exists() and files(f['directory'])==before
+        return
+    result=m.repair_wallet(f['context'],'recovered-wallet',expected,'a'*64,root=f['root'])
+    assert 'SENTINEL' not in str(result)
+    if case=='healthy':
+        assert result['status']=='noop' and result['changed'] is False
+        assert trace==[] and not directory.parent.exists()
+    elif case in ('success','repeat'):
+        assert result['status']=='repaired' and result['dbus_enabled'] is True and trace==['stop','write','bus']
+        assert result['wallet_files_verified']==3 and result['latency_ms']==140
+        import json
+        assert json.loads((directory/'result.json').read_text())['result']==result
+        if case=='repeat':
+            fresh=m.observe_wallet(f['context'],root=f['root']);frozen=files(f['root']);events=list(trace)
+            second=m.repair_wallet(f['context'],'recovered-wallet',fresh.snapshot_sha256,'b'*64,root=f['root'])
+            assert second['status']=='noop' and trace==events and files(f['root'])==frozen
+    else:
+        assert result['status']=='unknown' and (directory/'result.json').is_file()
+        assert trace==(['stop'] if case=='stop_failure' else ['stop','write'] if case=='writer_unknown' else ['stop','write','bus'])
+        with pytest.raises(m.WalletError):
+            m.repair_wallet(f['context'],'recovered-wallet',expected,'a'*64,root=f['root'])
+
+
+def test_partial_rename_without_configuration_commit_never_looks_healthy(wallet):
+    m=helper();f=wallet
+    for old,new in [('.kwl','recovered-wallet.kwl'),('.salt','recovered-wallet.salt'),
+                    ('_attributes.json','recovered-wallet_attributes.json')]:
+        (f['directory']/old).rename(f['directory']/new)
+    before=files(f['root'])
+    with pytest.raises(m.WalletError,match='kwallet_partial_repair_unverified'):inspect(m,f)
+    assert files(f['root'])==before
+
+
+@pytest.mark.parametrize('case',['live','prior_boot','reused_pid'])
+def test_target_guard_detects_an_orphan_writer_even_after_its_parent_exits(wallet,case):
+    import json
+    m=helper();f=wallet;evidence=inspect(m,f)
+    (f['root']/'var/lib').mkdir(parents=True)
+    backup=m.create_backup(evidence,'a'*64,root=f['root'])
+    process=Path('/proc')/str(os.getpid())
+    ticks=int((process/'stat').read_text().rsplit(')',1)[1].split()[19])
+    boot=Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+    if case=='prior_boot':
+        manifest=json.loads((backup/'manifest.json').read_text());manifest['boot_id']='aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+        (backup/'manifest.json').write_text(json.dumps(manifest));(backup/'manifest.json').chmod(0o600)
+        boot='aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    m._record(backup,'writer.json',{'schema_version':1,'operation_sha256':'a'*64,
+        'snapshot_sha256':evidence.snapshot_sha256,'boot_id':boot,
+        'child':{'pid':os.getpid(),'start_ticks':ticks+(1 if case=='reused_pid' else 0),
+                 'parent_pid':2147483647,'uid':f['uid'],'gid':f['gid']}})
+    before=files(f['directory'])
+    if case=='live':
+        with pytest.raises(m.WalletError,match='kwallet_previous_mutator_active'):
+            m.guard_previous_mutators(backup.parent,root=f['root'])
+    else:m.guard_previous_mutators(backup.parent,root=f['root'])
+    assert files(f['directory'])==before
