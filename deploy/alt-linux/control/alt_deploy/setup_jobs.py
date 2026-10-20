@@ -6,6 +6,7 @@ it must never take the lifecycle lock while holding the queue lock.
 from __future__ import annotations
 
 import copy
+import ctypes
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
@@ -74,6 +75,17 @@ def fsync_directory(path: Path):
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def publish_job_directory(staging: Path,target: Path):
+    """Expose an intact job to readers atomically, without replacing a collision."""
+    if staging.parent!=target.parent or staging.name!='.'+target.name+'-admission':
+        raise fail('setup_job_admission_requires_review','Setup admission publication path differs')
+    fsync_directory(staging)
+    rename=getattr(ctypes.CDLL(None,use_errno=True),'renameat2',None)
+    if rename is None or rename(-100,os.fsencode(staging),-100,os.fsencode(target),1):
+        raise fail('setup_job_admission_requires_review','Setup admission could not be published exclusively')
+    fsync_directory(target.parent)
 
 
 @contextmanager
@@ -537,16 +549,18 @@ class SetupJobRepository:
             publish(path, claim, create=True)
             publish(self.reservations/(job_id+'.json'), claim, create=True)
             job_dir = self.jobs._job_dir(job_id)
-            job_dir.mkdir(mode=0o700)
+            staging=job_dir.with_name('.'+job_id+'-admission')
+            staging.mkdir(mode=0o700)
             fsync_directory(self.settings.jobs_dir)
-            publish(job_dir/'request.json', record, create=True)
+            publish(staging/'request.json', record, create=True)
             now = self.clock().isoformat()
             status = {'schema_version': 2, 'kind': 'setup', 'operation': operation, 'job_id': job_id,
                       'machine_uuid': identity['uuid'], 'plan_id': plan['plan_id'], 'plan_sha256': plan['sha256'],
                       'request_sha256': digest(record), 'admission_sequence': sequence,
                       'state': 'queued', 'stage': 'created', 'stage_history': [{'state': 'queued', 'stage': 'created', 'at': now}],
                       'created_at': now, 'updated_at': now, 'claimed': False, 'process_identity': None}
-            publish(job_dir/'status.json', status, create=True)
+            publish(staging/'status.json', status, create=True)
+            publish_job_directory(staging,job_dir)
             job = self.get(job_id)
             from .setup_retry import publish_review
             publish_review(self.settings, job)

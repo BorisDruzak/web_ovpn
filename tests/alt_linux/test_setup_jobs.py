@@ -41,11 +41,12 @@ def test_job_claim_consumes_plan_once_and_is_readable_by_shared_repository(compo
     assert jobs.get(job.job_id).request['plan'] == plan
 
 
-@pytest.mark.parametrize('boundary', ['claim', 'reservation', 'request', 'status'])
+@pytest.mark.parametrize('boundary', ['claim', 'reservation', 'request', 'status','directory'])
 def test_reservation_crash_boundaries_never_revive_consumed_plan(component_service, boundary, monkeypatch):
     from alt_deploy import setup_jobs
     jobs, plan, settings = jobs_fixture(component_service)
     original = setup_jobs.publish
+    original_directory=setup_jobs.publish_job_directory
     fired = []
     def crash(path, payload, *, create=False):
         original(path, payload, create=create)
@@ -56,10 +57,15 @@ def test_reservation_crash_boundaries_never_revive_consumed_plan(component_servi
             fired.append(True)
             raise KeyboardInterrupt('synthetic process termination')
     monkeypatch.setattr(setup_jobs, 'publish', crash)
+    def crash_directory(staging,target):
+        original_directory(staging,target)
+        if boundary=='directory':raise KeyboardInterrupt('synthetic process termination')
+    monkeypatch.setattr(setup_jobs,'publish_job_directory',crash_directory)
     with pytest.raises(KeyboardInterrupt): jobs.submit(plan, operation='component')
     monkeypatch.setattr(setup_jobs, 'publish', original)
+    monkeypatch.setattr(setup_jobs,'publish_job_directory',original_directory)
     restored = SetupJobRepository(settings, clock=jobs.clock)
-    if boundary == 'status':
+    if boundary == 'directory':
         result = restored.submit(plan, operation='component')
         assert result.state == 'queued' and result.status['claimed'] is False
     else:
@@ -175,4 +181,40 @@ def test_publication_syncs_parent_directories(component_service, monkeypatch):
     monkeypatch.setattr(setup_jobs, 'fsync_directory', sync)
     job = jobs.submit(plan, operation='component')
     assert jobs.claims in synced and jobs.reservations in synced
-    assert jobs.settings.jobs_dir in synced and synced.count(job.job_dir) == 2
+    staging=job.job_dir.with_name('.'+job.job_id+'-admission')
+    assert synced.count(staging)==3 and synced.count(jobs.settings.jobs_dir)==2
+    assert not staging.exists()
+
+@pytest.mark.parametrize('boundary',['request.json','status.json'])
+def test_admission_is_invisible_to_readers_until_complete_publication(component_service,monkeypatch,boundary):
+    from alt_deploy import setup_jobs
+    jobs,plan,settings=jobs_fixture(component_service);original=setup_jobs.publish;observations=[]
+    def interleaved_reader(path,payload,*,create=False):
+        original(path,payload,create=create)
+        if path.name==boundary:
+            # Deterministic interleaving: an ordinary read must not see the
+            # writer's incomplete transaction or make the persistent worker exit.
+            observations.append(JobRepository(settings).list())
+            assert observations[-1]==[]
+    monkeypatch.setattr(setup_jobs,'publish',interleaved_reader)
+    job=jobs.submit(plan,operation='component')
+    assert len(observations)==1 and jobs.list()[0].job_id==job.job_id
+    assert jobs.submit(plan,operation='component').job_id==job.job_id
+
+@pytest.mark.parametrize('collision',['directory','file','symlink','kernel_unavailable'])
+def test_atomic_job_publication_never_replaces_a_foreign_path(tmp_path,monkeypatch,collision):
+    from alt_deploy import setup_jobs
+    target=tmp_path/'job-20261020T010000Z-12345678'
+    staging=tmp_path/('.'+target.name+'-admission');staging.mkdir(mode=0o700)
+    (staging/'request.json').write_bytes(b'owned staged request')
+    foreign=tmp_path/'foreign';foreign.write_bytes(b'preserve foreign bytes')
+    if collision=='directory':target.mkdir();(target/'foreign').write_bytes(foreign.read_bytes())
+    elif collision=='file':target.write_bytes(foreign.read_bytes())
+    elif collision=='symlink':target.symlink_to(foreign)
+    else:monkeypatch.setattr(setup_jobs.ctypes,'CDLL',lambda *a,**k:object())
+    with pytest.raises(ControlError) as caught:setup_jobs.publish_job_directory(staging,target)
+    assert caught.value.code=='setup_job_admission_requires_review'
+    assert (staging/'request.json').read_bytes()==b'owned staged request'
+    if collision=='directory':assert (target/'foreign').read_bytes()==foreign.read_bytes()
+    elif collision in ('file','symlink'):assert target.read_bytes()==foreign.read_bytes()
+    else:assert not target.exists()
