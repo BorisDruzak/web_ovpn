@@ -52,6 +52,47 @@ def test_dns_reapply_waits_read_only_for_transient_dhcp_without_repeating_mutati
 
 
 @pytest.mark.parametrize('network',['nm_etcnet','nm_keyfile'],indirect=True)
+def test_dns_reapply_waits_for_partial_complete_ip_snapshot_without_repeating_mutation(network,monkeypatch):
+    m=helper();f=network;state={'applied':False,'polls':0,'mutations':0}
+    monkeypatch.setattr(m.time,'sleep',lambda duration:None)
+    def call(args,**kwargs):
+        if args[0]=='/usr/bin/busctl' and 'Reapply' in args:
+            state['applied']=True;state['mutations']+=1
+        if state['applied'] and args==['ip','-j','-4','address','show','dev','eth0']:
+            state['polls']+=1
+            if state['polls']==1:return 0,json.dumps([{'ifname':'eth0','addr_info':[]}])
+        return f['call'](args,**kwargs)
+    before=m.observe(f['request'],root=f['root'],call=call)
+    result=m.apply(f['request'],before.public['snapshot_sha256'],f['context'],root=f['root'],call=call,verify=lambda *a,**kw:None)
+    assert result=={'status':'applied_verified','changed':True,'code':'final_dns_applied'}
+    assert state['mutations']==1 and state['polls']>=3
+    directory=f['root']/'var/lib/alt-workstation-final-dns'/f['context']['claim_sha256']
+    original=json.loads((directory/'network.before.json').read_text())
+    assert m.digest(m.canonical(original))==before.public['network_sha256']
+    trace=json.loads((directory/'convergence-after.json').read_text())
+    assert trace['result']=='converged' and len(trace['samples'])==2
+    assert trace['samples'][0]['observation']['network_sha256']!=before.public['network_sha256']
+    assert trace['samples'][-1]['observation']['network_sha256']==before.public['network_sha256']
+    assert all((directory/name).stat().st_mode & 0o777==0o600 for name in ('network.before.json','convergence-after.json'))
+
+
+@pytest.mark.parametrize('fault',['network','connection','boot'])
+def test_settling_never_accepts_permanent_network_or_changed_identity(network,monkeypatch,fault):
+    m=helper();f=network;before=m.observe(f['request'],root=f['root'],call=f['call']);state={'reads':0}
+    from dataclasses import replace
+    actual=dict(before.public)
+    actual['network_sha256' if fault=='network' else 'connection_uuid' if fault=='connection' else 'boot_id']='f'*64
+    def observe(*args,**kwargs):
+        state['reads']+=1
+        return replace(before,public=actual)
+    ticks={'now':0}
+    def monotonic():ticks['now']+=1;return ticks['now']
+    monkeypatch.setattr(m,'observe',observe);monkeypatch.setattr(m.time,'monotonic',monotonic);monkeypatch.setattr(m.time,'sleep',lambda duration:None)
+    with pytest.raises(m.DnsError):m.observe_settled(before,f['request'],before.public['servers'],before.public['persistent_servers'],root=f['root'],call=f['call'])
+    assert state['reads']>1 if fault=='network' else state['reads']==1
+
+
+@pytest.mark.parametrize('network',['nm_etcnet','nm_keyfile'],indirect=True)
 @pytest.mark.parametrize('fault',['unsupported','foreign_uuid','zero_version','foreign_device_path','unknown_type'])
 def test_nm_preserve_capability_is_checked_before_any_write(network,fault):
     m=helper();f=network;before=files(f['root'])

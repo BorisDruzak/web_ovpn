@@ -129,7 +129,7 @@ def command(call,args):
     return text
 
 
-def network_identity(call,interface):
+def network_snapshot(call,interface):
     result={}
     for family in ('-4','-6'):
         routes=json.loads(command(call,['ip','-j',family,'route','show','dev',interface]))
@@ -142,7 +142,11 @@ def network_identity(call,interface):
                 {'addr_info':[{k:v for k,v in a.items() if k not in ('valid_life_time','preferred_life_time')}
                               for a in entry.get('addr_info',[])]})
         result[family]={'routes':routes,'addresses':normalized}
-    return digest(canonical(result))
+    if len(canonical(result))>65536:raise DnsError('final_dns_backend_unverified')
+    return result
+
+
+def network_identity(call,interface):return digest(canonical(network_snapshot(call,interface)))
 
 
 def nm_reapply_context(call,public):
@@ -280,6 +284,7 @@ class Snapshot:
     resolver_source:Path|None=field(default=None,repr=False)
     persistent_exists:bool=True
     nm_context:tuple|None=field(default=None,repr=False)
+    network:dict=field(default_factory=dict,repr=False)
 
 
 def _observe(request,*,root=Path('/'),call=run,_owned_rollback=None):
@@ -368,12 +373,13 @@ def _observe(request,*,root=Path('/'),call=run,_owned_rollback=None):
             'inode':i.st_ino,'device':i.st_dev,'mtime_ns':i.st_mtime_ns,'ctime_ns':i.st_ctime_ns,
             'attributes':{a:digest(b) for a,b in attributes(root/k).items()}})
             for k,(d,i) in records.items()}))
+        network=network_snapshot(call,interface)
         public={'schema_version':1,'machine_uuid':machine,'hostname':request['hostname'],'boot_id':boot,
             'backend':backend,'interface':interface,'connection_uuid':connection,'servers':dns,
             'persistent_servers':persistent,'configuration_sha256':config_hash,
-            'network_sha256':network_identity(call,interface)}
+            'network_sha256':digest(canonical(network))}
         public['snapshot_sha256']=digest(canonical(public))
-        return Snapshot(public,path,data,info,records,attributes(path) if persistent_exists else {},source,persistent_exists)
+        return Snapshot(public,path,data,info,records,attributes(path) if persistent_exists else {},source,persistent_exists,network=network)
     except DnsError:raise
     except Exception:raise DnsError('final_dns_backend_unverified') from None
 
@@ -533,27 +539,45 @@ def activate(snapshot,data,call,*,servers=None,rollback=False):
     if rc:raise DnsError('final_dns_apply_failed')
 
 
-def observe_settled(before,request,servers,persistent,*,root,call):
+def observe_settled(before,request,servers,persistent,*,root,call,journal=None,stage='after'):
     """Read-only convergence after one activation; retain exact network checks."""
-    deadline=time.monotonic()+30;stable=0
+    started=time.monotonic();deadline=started+30;stable=0;attempts=0;samples=[];seen=set();network_pending=False
+    outcome='final_dns_active_unverified'
     def bounded(args,**kwargs):
         remaining=deadline-time.monotonic()
         if remaining<=0:raise DnsError('final_dns_active_unverified')
         kwargs['timeout']=min(kwargs.get('timeout',15),remaining)
         return call(args,**kwargs)
-    while True:
-        try:
-            value=observe(request,root=root,call=bounded)
-        except DnsError as error:
-            if str(error)!='final_dns_backend_unverified':raise
-            stable=0
-        else:
-            # A complete but different network is never accepted as convergence.
-            same_connection(before,value)
-            stable=stable+1 if value.public['servers']==servers and value.public['persistent_servers']==persistent else 0
-            if stable==2:return value
-        if time.monotonic()>=deadline:raise DnsError('final_dns_active_unverified')
-        time.sleep(min(0.25,max(0,deadline-time.monotonic())))
+    try:
+        while True:
+            attempts+=1
+            try:
+                value=observe(request,root=root,call=bounded)
+            except DnsError as error:
+                if str(error)!='final_dns_backend_unverified':raise
+                stable=0
+            else:
+                key=digest(canonical(value.public))
+                if key not in seen and len(samples)<8:
+                    samples.append({'elapsed_ms':round((time.monotonic()-started)*1000),
+                        'observation':value.public,'network':value.network});seen.add(key)
+                # DHCP may briefly produce a partial multi-command snapshot.
+                # Identity/source checks remain immediate; only IP/route state
+                # may settle, and it must exactly equal the original twice.
+                same_connection(before,value,check_network=False)
+                network_pending=value.public['network_sha256']!=before.public['network_sha256']
+                matched=not network_pending and value.public['servers']==servers and value.public['persistent_servers']==persistent
+                stable=stable+1 if matched else 0
+                if stable==2:outcome='converged';return value
+            if time.monotonic()>=deadline:
+                raise DnsError('final_dns_network_changed' if network_pending else 'final_dns_active_unverified')
+            time.sleep(min(0.25,max(0,deadline-time.monotonic())))
+    except Exception as error:
+        outcome=str(error) if isinstance(error,DnsError) and str(error) in CODES else 'final_dns_outcome_unverified'
+        raise
+    finally:
+        if journal is not None:record(journal,'convergence-'+stage+'.json',
+            {'schema_version':1,'result':outcome,'attempts':attempts,'samples':samples})
 
 
 def native_context(context,request):
@@ -569,8 +593,9 @@ def native_context(context,request):
         raise DnsError('final_dns_context_unverified')
 
 
-def same_connection(before,after):
+def same_connection(before,after,*,check_network=True):
     for key in ('machine_uuid','hostname','boot_id','backend','interface','connection_uuid','network_sha256'):
+        if key=='network_sha256' and not check_network:continue
         if after.public[key]!=before.public[key]:raise DnsError('final_dns_network_changed')
     if after.path!=before.path or after.resolver_source!=before.resolver_source:
         raise DnsError('final_dns_configuration_changed')
@@ -617,6 +642,7 @@ def apply(request,expected,context,*,root=Path('/'),call=run,verify=None):
                 'mode':stat.S_IMODE(before.info.st_mode),'configuration_sha256':before.public['configuration_sha256'],
                 'persistent_exists':before.persistent_exists,
                 'attributes':{k:v.hex() for k,v in before.attributes.items()}})
+            record(directory,'network.before.json',before.network)
             check=verify or verify_dns
             check(before,phase='before',request=request,root=root,call=call)
             fresh=observe(request,root=root,call=call)
@@ -633,7 +659,7 @@ def apply(request,expected,context,*,root=Path('/'),call=run,verify=None):
                 stage='activate'
                 if changed:activate(before,new,call,servers=request['servers'])
                 stage='observe_after'
-                after=observe_settled(before,request,request['servers'],request['servers'],root=root,call=call)
+                after=observe_settled(before,request,request['servers'],request['servers'],root=root,call=call,journal=directory)
                 same_connection(before,after)
                 if (after.content!=new or after.attributes!=before.attributes
                         or (after.info.st_ino,after.info.st_dev)!=(new_info.st_ino,new_info.st_dev)):
@@ -657,7 +683,7 @@ def apply(request,expected,context,*,root=Path('/'),call=run,verify=None):
                             if before.persistent_exists:exchange(before.path,new,before.content,new_info,root,before.attributes,journal=directory,stage='rollback')
                             else:restore_absent(before.path,new,new_info,root,directory)
                         activate(before,before.content,call,servers=request['servers'],rollback=True)
-                    restored=observe_settled(before,request,before.public['servers'],before.public['persistent_servers'],root=root,call=call)
+                    restored=observe_settled(before,request,before.public['servers'],before.public['persistent_servers'],root=root,call=call,journal=directory,stage='rollback')
                     if (restored.persistent_exists!=before.persistent_exists
                             or restored.content!=before.content or restored.public['servers']!=before.public['servers']
                             or restored.public['network_sha256']!=before.public['network_sha256']):raise ValueError
