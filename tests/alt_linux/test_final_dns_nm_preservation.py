@@ -114,3 +114,25 @@ def test_nm_settings_encoding_is_accepted_by_real_private_dbus():
             '/org/freedesktop/DBus','org.freedesktop.DBus','NoSuchMethod','a{sa{sv}}tu']+encoded+['7','1'],capture_output=True,text=True,timeout=5)
         assert result.returncode!=0 and ('Unknown method' in result.stderr or 'does not understand message' in result.stderr),result.stderr
     finally:os.kill(int(pid),signal.SIGTERM)
+
+
+@pytest.mark.parametrize('network',['nm_etcnet','nm_keyfile'],indirect=True)
+def test_foreign_applied_dns_is_preserved_after_version_cas_rejection(network):
+    m=helper();f=network;state={'foreign':False,'mutations':0}
+    def call(args,**kwargs):
+        if args[0]=='/usr/bin/busctl' and 'GetAppliedConnection' in args:
+            rc,raw=f['call'](args,**kwargs);value=json.loads(raw)
+            if state['foreign']:
+                value['data'][1]=8
+                value['data'][0]['ipv4']['dns-data']={'type':'as','data':['192.0.2.99']}
+            return rc,json.dumps(value)
+        if args[0]=='/usr/bin/busctl' and 'Reapply' in args:
+            state['mutations']+=1
+            if state['mutations']==1:
+                state['foreign']=True
+                return 1,'version mismatch'
+        return f['call'](args,**kwargs)
+    before=m.observe(f['request'],root=f['root'],call=call)
+    result=m.apply(f['request'],before.public['snapshot_sha256'],f['context'],root=f['root'],call=call,verify=lambda *a,**kw:None)
+    assert result['status']=='outcome_unverified'
+    assert state=={'foreign':True,'mutations':1}

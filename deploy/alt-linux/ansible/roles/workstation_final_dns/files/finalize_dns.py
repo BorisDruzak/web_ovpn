@@ -235,6 +235,40 @@ def nm_without_dns(settings):
     return value
 
 
+def nm_dns_settings(applied,servers):
+    settings=json.loads(json.dumps(applied))
+    for family,number in (('ipv4',4),('ipv6',6)):
+        settings[family].pop('dns',None)
+        settings[family]['dns-data']={'type':'as','data':[ip for ip in servers if ipaddress.ip_address(ip).version==number]}
+        settings[family]['ignore-auto-dns']={'type':'b','data':True}
+    return settings
+
+
+def nm_dns_state(settings):
+    result=[]
+    for family in ('ipv4','ipv6'):
+        values=settings[family];dns=values.get('dns-data')
+        if dns is not None:
+            if dns.get('type')!='as' or not isinstance(dns.get('data'),list):raise DnsError('final_dns_backend_unverified')
+            addresses=[str(ipaddress.ip_address(ip)) for ip in dns['data']]
+        else:
+            legacy=values.get('dns',{'data':[]})['data']
+            addresses=[str(ipaddress.ip_address(struct.pack('=I',ip) if family=='ipv4' else bytes(ip))) for ip in legacy]
+        automatic=values.get('ignore-auto-dns',{'type':'b','data':False})
+        if automatic.get('type')!='b' or type(automatic.get('data')) is not bool:raise DnsError('final_dns_backend_unverified')
+        result.append((addresses,automatic['data']))
+    return result
+
+
+def nm_rollback_context(snapshot,servers,call):
+    device,_,applied=snapshot.nm_context
+    current_device,version,current=nm_reapply_context(call,snapshot.public)
+    if (current_device!=device or nm_without_dns(current)!=nm_without_dns(applied)
+            or nm_dns_state(current) not in (nm_dns_state(applied),nm_dns_state(nm_dns_settings(applied,servers)))):
+        raise DnsError('final_dns_configuration_changed')
+    return device,version,applied
+
+
 @dataclass(frozen=True)
 class Snapshot:
     public:dict
@@ -484,15 +518,9 @@ def activate(snapshot,data,call,*,servers=None,rollback=False):
     device,version,applied=snapshot.nm_context
     settings=json.loads(json.dumps(applied))
     if rollback:
-        current_device,version,current=nm_reapply_context(call,public)
-        if current_device!=device or nm_without_dns(current)!=nm_without_dns(applied):
-            raise DnsError('final_dns_configuration_changed')
+        device,version,_=nm_rollback_context(snapshot,servers,call)
     else:
-        for family,number in (('ipv4',4),('ipv6',6)):
-            if family not in settings:raise DnsError('final_dns_backend_unverified')
-            settings[family].pop('dns',None)
-            settings[family]['dns-data']={'type':'as','data':[ip for ip in servers if ipaddress.ip_address(ip).version==number]}
-            settings[family]['ignore-auto-dns']={'type':'b','data':True}
+        settings=nm_dns_settings(applied,servers)
     encoded=nm_settings_args(settings)
     rc,_=call(args)
     if rc:raise DnsError('final_dns_apply_failed')
@@ -620,6 +648,7 @@ def apply(request,expected,context,*,root=Path('/'),call=run,verify=None):
                 rollback_code=None
                 try:
                     if changed:
+                        if before.nm_context is not None:nm_rollback_context(before,request['servers'],call)
                         current=_observe(request,root=root,call=call,_owned_rollback=(before,new,new_info))
                         same_connection(before,current)
                         if current.content!=new or current.attributes!=before.attributes:raise ValueError
@@ -627,7 +656,7 @@ def apply(request,expected,context,*,root=Path('/'),call=run,verify=None):
                         if file_changed:
                             if before.persistent_exists:exchange(before.path,new,before.content,new_info,root,before.attributes,journal=directory,stage='rollback')
                             else:restore_absent(before.path,new,new_info,root,directory)
-                        activate(before,before.content,call,rollback=True)
+                        activate(before,before.content,call,servers=request['servers'],rollback=True)
                     restored=observe_settled(before,request,before.public['servers'],before.public['persistent_servers'],root=root,call=call)
                     if (restored.persistent_exists!=before.persistent_exists
                             or restored.content!=before.content or restored.public['servers']!=before.public['servers']
