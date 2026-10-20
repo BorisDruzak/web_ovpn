@@ -23,7 +23,12 @@ def test_catalog_inspection_is_versioned_and_never_constructs_setup(area, monkey
     payload = json.loads(output.getvalue())
     assert payload['schema_version'] == 2
     assert payload['operation'] == area+'_list'
-    assert len(payload[area]) == (13 if area == 'components' else 4)
+    assert len(payload[area]) == (17 if area == 'components' else 5)
+    identifiers={row['id'] for row in payload[area]}
+    if area=='components':
+        assert {'software.vkworkspace','remote.vnc_policy','desktop.kwallet_repair','network.final_dns'}<=identifiers
+    else:
+        assert identifiers=={'base','core-apps','office-standard-v1','office-signature-v1','workstation-full-v1'}
 
 
 def test_component_plan_verify_dispatch_and_no_arbitrary_override(monkeypatch):
