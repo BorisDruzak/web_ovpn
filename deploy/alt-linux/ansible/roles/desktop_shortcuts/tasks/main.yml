@@ -209,6 +209,7 @@
     dest: "{{ desktop_shortcuts_user_fields[5] }}/{{ desktop_shortcuts_user_desktop_name }}/{{ item.name }}"
     state: link
     force: true
+    follow: false
     owner: "{{ desktop_shortcuts_user_fields[2] | int }}"
     group: "{{ desktop_shortcuts_user_fields[3] | int }}"
   loop: "{{ desktop_shortcuts_relative_links }}"
