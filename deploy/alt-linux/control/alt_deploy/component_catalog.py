@@ -263,10 +263,13 @@ class ComponentCatalog:
         return result
 
     def _validate_profile(self, profile):
-        _keys(profile, {'id', 'version', 'name', 'components', 'optional_components', 'confirmation_policy'})
+        _keys(profile, {'id', 'version', 'name', 'components', 'optional_components', 'confirmation_policy'}, {'workflow'})
         _text(profile['id'], ID_RE)
         _text(profile['name'])
         _version(profile['version'])
+        if profile['id']=='workstation-full-v1' or 'workflow' in profile:
+            require(profile['id']=='workstation-full-v1' and profile.get('workflow')=='complete_workstation_v1'
+                    and profile['version']==1 and profile['optional_components']==[])
         _ids(profile['components'], allow_empty=False)
         _ids(profile['optional_components'])
         require(profile['confirmation_policy'] == 'sha256')

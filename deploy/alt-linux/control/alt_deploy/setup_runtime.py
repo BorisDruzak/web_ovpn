@@ -304,8 +304,15 @@ class SetupRuntime:
         from .ad_join_preflight import ADJoinPreflight
         return ADJoinPreflight(self.settings, runner=self.runner).observe(request)
 
-    def prerequisites(self, request):
+    def prerequisites(self, request, *, managed_workflow=None):
         settings = self.settings
+        workflow=None
+        if request.software_profile=='workstation-full-v1':
+            from .component_catalog import ComponentCatalog
+            from .full_workflow import validate_workflow_plan
+            workflow=validate_workflow_plan(managed_workflow,ComponentCatalog.load(settings.ansible_project_dir))
+        elif managed_workflow is not None:
+            raise fail('full_workflow_context_required','A legacy controller preflight cannot select managed workflow mode')
         fixed = settings.ansible_project_dir / 'playbooks/03-setup-controller-preflight.yml'
         required = [settings.ansible_playbook_path, settings.private_key_file, settings.known_hosts_file,
                     settings.ansible_project_dir / 'playbooks/03-configure-domain-workstation.yml', fixed,
@@ -314,9 +321,11 @@ class SetupRuntime:
             raise fail('configure_not_configured', 'Required fixed controller playbooks, SSH files or Ansible runtime are missing')
         checker = VaultHealthChecker(settings)
         checker.check_ad_join()
+        if workflow is not None and checker.full_workflow_policy()!=workflow['policy']['final_dns']:
+            raise fail('full_workflow_policy_changed','Protected resolver policy changed after planning')
         if request.remote_access_profile == 'krfb':
             checker.check_krfb()
-            if os.environ.get(KRFB_NETWORK_CONFIRMATION_VARIABLE) != 'true':
+            if workflow is None and os.environ.get(KRFB_NETWORK_CONFIRMATION_VARIABLE) != 'true':
                 raise fail('remote_access_network_restriction_unconfirmed', 'Restricted TCP 5900 access must be explicitly confirmed')
         environment = dict(os.environ)
         environment['ANSIBLE_CONFIG'] = str(settings.ansible_project_dir / 'ansible.cfg')
@@ -330,7 +339,9 @@ class SetupRuntime:
         # Bind all published Ansible content to the plan; encrypted Vault and
         # local secret paths are excluded from the public source fingerprint.
         from .ad_transport import DirectoryConfig
-        return {'ready': True, 'directory_uri': DirectoryConfig.load().uri,
+        result={'ready': True, 'directory_uri': DirectoryConfig.load().uri,
                 'source_sha256': source_fingerprint(settings.ansible_project_dir, Path(__file__).parent), 'ssh_files_present': True,
                 'vault_ad_join_ready': True, 'component_preflight': True,
-                'krfb_network_confirmed': request.remote_access_profile == 'krfb'}
+                'krfb_network_confirmed': request.remote_access_profile == 'krfb' and workflow is None}
+        if workflow is not None:result['workflow_policy_sha256']=workflow['policy_sha256']
+        return result

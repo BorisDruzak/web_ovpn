@@ -153,7 +153,9 @@ def desired_queries(project, catalog, components, *, profile_id='base'):
             query.update(helper_source=helper.read_text(encoding='utf-8'),
                          source_sha256=source_fingerprint(project,Path(__file__).parent))
         elif recipe == 'krfb':
-            template = (roles/'remote_access_krfb/templates/krfbrc.j2').read_text(encoding='utf-8')
+            from .full_workflow import is_full_profile
+            filename='krfbrc-managed.j2' if is_full_profile(catalog.profile(profile_id)) else 'krfbrc.j2'
+            template = (roles/'remote_access_krfb/templates'/filename).read_text(encoding='utf-8')
             template = template.replace("{{ 'xcb' if workstation_desktop_session | default('x11') == 'x11' else 'pw' }}",
                                         'xcb' if variables['workstation_desktop_session'] == 'x11' else 'pw')
             query['settings'] = [p for p in _ini(template) if p[1] not in ('desktopPassword', 'unattendedPassword')]

@@ -9,6 +9,7 @@ sys.path.insert(0, str(source_control if (source_control/'alt_deploy').is_dir() 
 
 from alt_deploy.component_catalog import ComponentCatalog
 from alt_deploy.setup_execution import catalog_selection
+from alt_deploy.full_workflow import validate_workflow_plan
 
 
 def selection(document, profile='base', component_id=''):
@@ -21,4 +22,9 @@ def selection(document, profile='base', component_id=''):
 
 class FilterModule:
     def filters(self):
-        return {'alt_setup_selection': selection}
+        return {'alt_setup_selection': selection,'alt_setup_workflow': workflow}
+
+
+def workflow(document,value):
+    try:return validate_workflow_plan(value,ComponentCatalog(Path(__file__).resolve().parents[1],document))
+    except Exception:raise AnsibleFilterError('The confirmed complete workstation workflow is invalid') from None

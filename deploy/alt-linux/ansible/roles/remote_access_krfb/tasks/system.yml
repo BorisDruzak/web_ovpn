@@ -1,0 +1,19 @@
+---
+- name: Require verified direct policy before installing the later user server
+  ansible.builtin.assert:
+    that:
+      - alt_setup_workflow_context is defined and alt_setup_workflow_context.kind == 'complete_workstation'
+      - alt_setup_workflow_context.phase == 'system'
+      - alt_setup_workflow_context.machine_uuid == machine_uuid
+      - alt_vnc_policy_apply is defined and alt_vnc_policy_apply.rc == 0
+      - (alt_vnc_policy_apply.stdout | from_json).status == 'ok'
+      - (alt_vnc_policy_apply.stdout | from_json).result.ready is sameas true
+      - (alt_vnc_policy_apply.stdout | from_json).result.policy_sha256 == alt_setup_workflow_context.policy_sha256
+    fail_msg: Verified direct policy must precede the KRFB system package
+  no_log: true
+
+- name: Install the fixed KRFB package without user autostart or launch
+  ansible.builtin.package:
+    name: krfb
+    state: present
+  tags: [alt_setup_transaction]

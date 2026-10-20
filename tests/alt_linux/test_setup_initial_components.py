@@ -23,6 +23,18 @@ def test_every_initial_component_detects_drift(identifier, state):
     if state == 'drift':
         if 'packages' in fact: fact['executable'] = False
         else: fact['checks']['ready'] = False
+        # Typed observations must describe an actual drift. A contradictory
+        # ready boolean with healthy signed metadata is unknown, not drifted.
+        if identifier=='desktop.kwallet_repair':
+            from alt_deploy.kwallet_runtime import canonical
+            import hashlib
+            value=fact['wallet_readiness'];value['disposition']='repair'
+            value['snapshot_sha256']=hashlib.sha256(canonical({k:v for k,v in value.items() if k!='snapshot_sha256'})).hexdigest()
+        elif identifier=='network.final_dns':
+            from alt_deploy.final_dns_runtime import canonical
+            import hashlib
+            value=fact['final_dns']['observation'];value['servers']=['192.0.2.11']
+            value['snapshot_sha256']=hashlib.sha256(canonical({k:v for k,v in value.items() if k!='snapshot_sha256'})).hexdigest()
     elif state == 'missing_fact': del facts['components'][identifier]
     elif state == 'malformed': fact['checks']['ready'] = 'true'
     result = VerificationEngine(CATALOG).evaluate(facts, [identifier])

@@ -27,12 +27,23 @@
 - name: Require protected policy helper parent directories
   ansible.builtin.assert:
     that:
-      - item.stat.exists and item.stat.isdir and not item.stat.islnk
-      - item.stat.uid == 0
-      - item.stat.mode[-2] in ['0', '1', '4', '5']
-      - item.stat.mode[-1] in ['0', '1', '4', '5']
+      - >-
+        (not item.stat.exists and item.item == '/usr/local/libexec') or
+        (item.stat.exists and item.stat.isdir and not item.stat.islnk and item.stat.uid == 0 and
+         item.stat.mode[-2] in ['0', '1', '4', '5'] and item.stat.mode[-1] in ['0', '1', '4', '5'])
     fail_msg: The direct VNC policy helper directory is unsafe
   loop: "{{ alt_vnc_policy_parents.results }}"
+  no_log: true
+
+- name: Create only the absent fixed policy helper directory
+  ansible.builtin.file:
+    path: /usr/local/libexec
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+    follow: false
+  when: not alt_vnc_policy_parents.results[2].stat.exists
   no_log: true
 
 - name: Inspect the fixed policy helper before installation

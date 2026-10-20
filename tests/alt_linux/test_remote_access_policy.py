@@ -353,6 +353,7 @@ def test_registry_policy_recipe_is_independent_and_preserves_legacy_profiles(tmp
     assert query['recipe']=='vnc_policy' and query['helper_source']==(SOURCE/'roles/remote_access_policy/templates/alt-vnc-access-policy.py.j2').read_text()
     assert len(query['source_sha256'])==64
     profiles=yaml.safe_load((project/'group_vars/software_catalog.yml').read_text())['setup_catalog']['profiles']
+    profiles=[p for p in profiles if p['id']!='workstation-full-v1']
     assert hashlib.sha256(json.dumps(profiles,sort_keys=True,separators=(',',':')).encode()).hexdigest()=='6dd71b909ed4b17939b488a4e63340118b822340592d1d7cfc82ae49d761044f'
 
 
@@ -370,7 +371,7 @@ def test_component_policy_observation_requires_preparation_not_application_readi
     assert 'authenticated' not in fact['checks']
 
 
-@pytest.mark.parametrize('case',['clean','missing_context','wrong_phase','helper_collision','parent_symlink'])
+@pytest.mark.parametrize('case',['clean','absent_parent','missing_context','wrong_phase','helper_collision','parent_symlink'])
 def test_real_ansible_policy_protocol_and_noop(tmp_path,case):
     import yaml
     executable=Path(sys.executable).with_name('ansible-playbook')
@@ -395,7 +396,7 @@ def test_real_ansible_policy_protocol_and_noop(tmp_path,case):
         'raise SystemExit(module.main(["--apply"]))\n')
     tasks=yaml.safe_load((SOURCE/'roles/remote_access_policy/tasks/main.yml').read_text())
     for task in tasks:
-        for key in ('ansible.builtin.stat','ansible.builtin.template'):
+        for key in ('ansible.builtin.stat','ansible.builtin.template','ansible.builtin.file'):
             if key in task:
                 for pathkey in ('path','dest'):
                     if pathkey in task[key] and task[key][pathkey].startswith('/usr/'):
@@ -403,8 +404,9 @@ def test_real_ansible_policy_protocol_and_noop(tmp_path,case):
         if task.get('name')=='Inspect fixed policy helper parent directories':
             task['loop']=[str(root)+p for p in task['loop']]
         if 'ansible.builtin.assert' in task:
-            task['ansible.builtin.assert']['that']=[s.replace('.uid == 0','.uid == '+str(os.getuid()))
+            task['ansible.builtin.assert']['that']=[s.replace('.uid == 0','.uid == '+str(os.getuid())).replace("item.item == '/usr/local/libexec'",'item.item == '+repr(str(destination.parent)))
                                                     for s in task['ansible.builtin.assert']['that']]
+        if 'ansible.builtin.file' in task:task['ansible.builtin.file'].update(owner=str(os.getuid()),group=str(os.getgid()))
         if 'ansible.builtin.template' in task:
             task['ansible.builtin.template'].update(src=str(fixed),owner=str(os.getuid()),group=str(os.getgid()))
         if 'ansible.builtin.command' in task:
@@ -414,6 +416,7 @@ def test_real_ansible_policy_protocol_and_noop(tmp_path,case):
     if case=='missing_context':variables.pop('alt_setup_workflow_context')
     if case=='wrong_phase':variables['alt_setup_workflow_context']['phase']='user'
     if case=='helper_collision':destination.write_bytes(b'UNOWNED-HELPER-SENTINEL');destination.chmod(0o700)
+    if case=='absent_parent':destination.parent.rmdir()
     if case=='parent_symlink':
         destination.parent.rmdir();elsewhere=tmp_path/'external';elsewhere.mkdir()
         destination.parent.symlink_to(elsewhere,target_is_directory=True)
@@ -421,12 +424,12 @@ def test_real_ansible_policy_protocol_and_noop(tmp_path,case):
         'vars':variables,'tasks':tasks}],sort_keys=False))
     cfg=tmp_path/'ansible.cfg';cfg.write_text('[defaults]\nretry_files_enabled=False\n')
     env=dict(os.environ,ANSIBLE_CONFIG=str(cfg),ALT_DEPLOY_KRFB_ALLOW_UNRESTRICTED='1')
-    for iteration in range(2 if case=='clean' else 1):
+    for iteration in range(2 if case in ('clean','absent_parent') else 1):
         result=subprocess.run([str(executable),'-i','localhost,',str(play)],env=env,cwd=tmp_path,
                                capture_output=True,text=True,timeout=40)
-        assert (result.returncode==0) is (case=='clean'),result.stdout+result.stderr
+        assert (result.returncode==0) is (case in ('clean','absent_parent')),result.stdout+result.stderr
         assert 'UNOWNED-HELPER-SENTINEL' not in result.stdout+result.stderr
-        if case=='clean':
+        if case in ('clean','absent_parent'):
             assert (root/'var/lib/alt-vnc-access-policy/prepared.json').is_file()
             if iteration:assert 'changed=0' in result.stdout
             else:

@@ -270,6 +270,8 @@ class ConfigureRequest:
                 or remote_access_profile not in REMOTE_ACCESS_PROFILES
             ):
                 raise _invalid_request("Configure profile is unsupported")
+            if software_profile=='workstation-full-v1' and remote_access_profile!='krfb':
+                raise _invalid_request('The complete workstation profile requires its managed KRFB stage')
             assigned_value = payload["assigned_domain_user"]
             if assigned_value is None:
                 assigned_domain_user = None
@@ -412,7 +414,16 @@ class ConfigurePlanner:
     def start(self, machine_uuid: str, request: ConfigureRequest, *,
               _lock_held: bool = False, setup_run_id: str | None = None,
               setup_directory_uri: str | None = None,
-              setup_fresh_install: bool = False, setup_ad_join_admission=None) -> dict[str, object]:
+              setup_fresh_install: bool = False, setup_ad_join_admission=None, setup_workflow=None) -> dict[str, object]:
+        if request.software_profile=='workstation-full-v1':
+            from .setup_jobs import current_setup_job
+            managed=current_setup_job(self.settings)
+            if (managed is None or managed.state!='running' or managed.status.get('claimed') is not True
+                    or managed.request['operation']!='full_setup' or setup_workflow is None
+                    or managed.request['plan']['payload'].get('workflow')!=setup_workflow):
+                raise ControlError('full_workflow_context_required','The complete workflow requires its original claimed native job',4)
+        elif setup_workflow is not None:
+            raise ControlError('full_workflow_context_required','A legacy configure request cannot select managed workflow mode',4)
         from contextlib import nullcontext
         from .locking import exclusive_lock
         from .setup_assignments import DomainAssignmentStore
@@ -436,6 +447,8 @@ class ConfigurePlanner:
                         or request.remote_access_profile != binding['remote_access_profile']):
                     raise ControlError('assignment_conflict', 'Configure request differs from reserved domain binding', 4)
             admission_options = {}
+            if setup_workflow is not None:
+                admission_options['setup_workflow']=setup_workflow
             if setup_ad_join_admission is not None:
                 from .ad_join_preflight import validate_evidence
                 if binding is None or not _lock_held or setup_run_id is None or not setup_fresh_install:
@@ -450,11 +463,17 @@ class ConfigurePlanner:
                 return self._start_unlocked(machine_uuid, request, setup_directory_uri=setup_directory_uri, **options, **admission_options)
             if setup_fresh_install:
                 return self._start_unlocked(machine_uuid, request, setup_fresh_install=True, **admission_options)
-            return self._start_unlocked(machine_uuid, request)
+            return self._start_unlocked(machine_uuid, request, **admission_options)
 
     def _start_unlocked(self, machine_uuid: str, request: ConfigureRequest, *,
                         setup_directory_uri: str | None = None,
-                        setup_fresh_install: bool = False, setup_ad_join_admission=None) -> dict[str, object]:
+                        setup_fresh_install: bool = False, setup_ad_join_admission=None, setup_workflow=None) -> dict[str, object]:
+        workflow_context=None
+        if request.software_profile=='workstation-full-v1':
+            from .full_workflow import native_system_context
+            workflow_context=native_system_context(self.settings,request,setup_workflow)
+        elif setup_workflow is not None:
+            raise ControlError('full_workflow_context_required','A legacy request cannot execute managed workflow roles',4)
         machine = self.machines.get(machine_uuid)
         if not machine.ip:
             raise ControlError(code="machine_missing_ip", message="Registered machine has no IP address", exit_code=5)
@@ -477,7 +496,7 @@ class ConfigurePlanner:
             krfb_network_restriction_confirmed = (
                 _krfb_network_restriction_confirmed()
             )
-            if not krfb_network_restriction_confirmed:
+            if workflow_context is None and not krfb_network_restriction_confirmed:
                 raise ControlError(
                     code="remote_access_network_restriction_unconfirmed",
                     message="Restricted TCP 5900 access is not confirmed",
@@ -509,6 +528,19 @@ class ConfigurePlanner:
                 "-e", f"@{request_path}",
                 "-e", f"configure_result_file={result_path}",
             ]
+            if workflow_context is not None:
+                from .krfb_runtime import observe_vnc_policy,DIRECT_POLICY
+                policy_evidence=observe_vnc_policy(self.settings,machine,DIRECT_POLICY)
+                from .setup_jobs import current_setup_job
+                original=current_setup_job(self.settings).request['plan']['payload']
+                if (policy_evidence['ssh_binding']!=original['ssh_binding']
+                        or policy_evidence['observation']['source_sha256']!=workflow_context['source_sha256']):
+                    raise ControlError('full_workflow_context_required','Fresh direct VNC identity differs from the original plan',4)
+                workflow_variables=run_dir/'workflow-vars.json'
+                atomic_write_json(workflow_variables,{'alt_setup_workflow_context':workflow_context,
+                    'alt_setup_workflow':setup_workflow,'alt_setup_vnc_policy_evidence':policy_evidence})
+                os.chmod(workflow_variables,0o600)
+                command.extend(['-e','@'+str(workflow_variables)])
             from .setup_plans import digest
             diagnostic_binding = {'schema_version': 1, 'configuration_run_id': run_id,
                 'invocation_id': uuid.uuid4().hex, 'identity_sha256': digest(request.to_dict())}
@@ -517,7 +549,7 @@ class ConfigurePlanner:
                 scope = {key: setup_ad_join_admission[key] for key in
                          ('join_principal_guid', 'join_principal_sid', 'ou_guid', 'dc')}
                 command.extend(['-e', json.dumps({'first_join_ad_scope': scope}, separators=(',', ':'))])
-            if krfb_network_restriction_confirmed:
+            if krfb_network_restriction_confirmed and workflow_context is None:
                 command.extend(
                     [
                         "-e",
@@ -550,7 +582,9 @@ class ConfigurePlanner:
             try:
                 with log_path.open("w", encoding="utf-8") as log_stream:
                     os.chmod(log_path, 0o600)
-                    completed = subprocess.run(command, shell=False, text=True, stdout=log_stream, stderr=subprocess.STDOUT, timeout=21600 if setup_fresh_install else 5400, check=False, cwd=self.settings.ansible_project_dir, env=environment)
+                    completed = subprocess.run(command, shell=False, text=True, stdout=log_stream, stderr=subprocess.STDOUT,
+                        timeout=setup_workflow['phases'][0]['budget_seconds'] if workflow_context is not None else 21600 if setup_fresh_install else 5400,
+                        check=False, cwd=self.settings.ansible_project_dir, env=environment)
             except subprocess.TimeoutExpired as exc:
                 if setup_fresh_install:
                     phase = 'configuration'
@@ -596,6 +630,9 @@ class ConfigurePlanner:
                 raise ControlError(code=error_code, message="Ansible domain configure failed", exit_code=7, details={"run_id": run_id})
             try:
                 result = _read_configure_result(read_json(result_path), request)
+                if workflow_context is not None:
+                    from .full_workflow import validate_system_result
+                    validate_system_result(result,setup_workflow)
             except (OSError, ValueError) as exc:
                 raise ControlError(code="domain_verification_failed", message="Domain configure did not produce a valid result", exit_code=7, details={"run_id": run_id}) from exc
             result["run_id"] = run_id

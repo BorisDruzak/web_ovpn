@@ -30,6 +30,7 @@ def test_wallet_component_and_queries_preserve_legacy_profile_definitions():
     assert len(query['wallet']['helper_sha256'])==64
     assert 'program' not in json.dumps(query)
     profiles=yaml.safe_load((SOURCE/'group_vars/software_catalog.yml').read_text())['setup_catalog']['profiles']
+    profiles=[p for p in profiles if p['id']!='workstation-full-v1']
     assert hashlib.sha256(json.dumps(profiles,sort_keys=True,separators=(',',':')).encode()).hexdigest()=='6dd71b909ed4b17939b488a4e63340118b822340592d1d7cfc82ae49d761044f'
 
 

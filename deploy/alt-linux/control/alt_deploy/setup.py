@@ -112,6 +112,11 @@ class SetupService:
             'domain_test_user': user['upn'], 'assigned_domain_user': user['upn'],
             'software_profile': software, 'remote_access_profile': remote,
         }, expected_uuid=machine.uuid, catalog=catalog)
+        workflow=None
+        if software=='workstation-full-v1':
+            from .full_workflow import build_workflow_plan
+            from .vault import VaultHealthChecker
+            workflow=build_workflow_plan(catalog,VaultHealthChecker(self.settings).full_workflow_policy())
         binding = self.assignments.identity_binding(machine.uuid, user, ou, software, remote)
         resolution = None
         partial_document = None
@@ -136,7 +141,8 @@ class SetupService:
             resolution = self.recovery_resolutions.validate(recovery_resolution, existing)
             if any(existing.get(key) != value for key, value in binding.items()):
                 raise fail("assignment_conflict", "Recovery continuation identity differs from original binding")
-        ready = self.prerequisites(request)
+        ready = (self.prerequisites(request,managed_workflow=workflow) if workflow is not None
+                 else self.prerequisites(request))
         if ready.get('ready') is not True:
             raise fail('setup_prerequisites_failed', 'Controller setup prerequisites are not ready')
         observed = self.probe(machine, user)
@@ -165,6 +171,8 @@ class SetupService:
             admission = validate_evidence(self.join_admission(request))
             if admission['ou_guid'] != ous[0]['object_guid']:
                 raise fail('ad_join_ou_changed', 'AD admission OU identity differs from the selected OU')
+        if workflow is not None and not observed['trust'] and admission is None:
+            raise fail('full_workflow_admission_unverified','The complete workflow requires fresh effective AD creation rights')
         if resolution is not None:
             from .setup_recovery_continuation import validate_continuity
             validate_continuity(resolution, user, ous[0], observed, computer, machine)
@@ -186,8 +194,10 @@ class SetupService:
             changes.append('ensure_core_apps_including_signature_suite')
         elif software != 'base':
             changes.append('ensure_published_software_profile')
-        if remote == 'krfb':
+        if remote == 'krfb' and workflow is None:
             changes.append('ensure_opt_in_krfb')
+        elif workflow is not None:
+            changes.extend(['prepare_direct_vnc_policy','configure_managed_krfb_after_login','finalize_client_dns'])
         payload = {'machine': {'uuid': machine.uuid, 'hostname': machine.hostname, 'ip': machine.ip,
                             'registration_sha256': digest(machine.raw)},
                 'user': user, 'computer_ou': ou, 'ou_identity': ous[0], 'computer': computer,
@@ -196,6 +206,9 @@ class SetupService:
                 'actions': preview['actions'], 'warnings': ['delegated_computer_creation_right_not_proven'] if not observed['trust'] else [],
                 'deferred_actions': ['user_home_operations_wait_for_first_domain_login'] if not observed['home_exists'] else []}
         payload['execution_budget_seconds'] = 5400 if computer['exists'] else 21600
+        if workflow is not None:
+            payload['workflow']=workflow
+            payload['execution_budget_seconds']=workflow['phases'][0]['budget_seconds']
         if admission is not None:
             payload['ad_join_admission'] = admission
             payload['warnings'] = []
@@ -211,7 +224,7 @@ class SetupService:
             from .component_probe import ComponentProbe, ssh_binding
             from .component_verification import VerificationEngine, valid_evidence, package_health_ready
             profile = catalog.profile(software)
-            selection = profile['components'] + (['remote.krfb'] if remote == 'krfb' else [])
+            selection = profile['components'] + (['remote.krfb'] if remote == 'krfb' and 'remote.krfb' not in profile['components'] else [])
             components = catalog.ordered(selection, os_id='alt-kworkstation-11')
             probe = self.component_probe or ComponentProbe(self.settings)
             facts = probe.observe(machine, user, components, allow_unresolved=not observed['trust'], profile_id=software)
@@ -222,6 +235,21 @@ class SetupService:
                     or (facts['user']['uid'] is not None and facts['user']['home_safe'] is not True)
                     or not package_health_ready(facts)):
                 raise fail('setup_probe_invalid', 'Full Setup component preflight cannot verify machine or package activity')
+            if workflow is not None:
+                try:
+                    import hashlib
+                    from .final_dns_runtime import validate_observation
+                    from .final_dns_program import target_program
+                    fact=facts['components']['network.final_dns'];receipt=fact['final_dns']
+                    policy=workflow['policy']['final_dns']
+                    if (fact['error_code'] is not None or fact['policy']!=policy or fact['policy_sha256']!=digest(policy)
+                            or set(receipt)!={'schema_version','status','helper_sha256','observation'}
+                            or type(receipt['schema_version']) is not int or receipt['schema_version']!=1
+                            or receipt['status']!='ok' or receipt['helper_sha256']!=hashlib.sha256(
+                                target_program(self.settings.ansible_project_dir).encode()).hexdigest()):raise ValueError
+                    validate_observation(receipt['observation'],machine,expected_boot_id=facts['machine']['boot_id'])
+                except Exception:
+                    raise fail('full_workflow_dns_backend_unverified','The complete workflow requires a supported owned DNS backend') from None
             from .setup_runtime import source_fingerprint
             from pathlib import Path
             from .component_storage import installation_budget, bind_budget_evidence
@@ -250,7 +278,7 @@ class SetupService:
                            component_verification=VerificationEngine(catalog).evaluate(facts, selection),
                            ssh_binding=ssh_binding(self.settings, machine),
                            source_sha256=source_fingerprint(self.settings.ansible_project_dir, Path(__file__).parent))
-            if remote == 'krfb':
+            if remote == 'krfb' and workflow is None:
                 from .configure import KRFB_NETWORK_CONFIRMATION_VARIABLE
                 import os
                 payload['network_restriction_confirmed'] = os.environ.get(KRFB_NETWORK_CONFIRMATION_VARIABLE) == 'true'
@@ -338,7 +366,8 @@ class SetupService:
                                  recovery_resolution=before.get('recovery_resolution'),
                                  partial_local_resolution=before.get('partial_local_resolution'),
                                  own_job_id=own_job_id, expected_plan=plan)
-        if current != before:
+        from .full_workflow import equivalent_payload
+        if not equivalent_payload(current,before):
             raise fail('setup_plan_drift', 'Full Setup identity, observed facts or published source changed')
         return current
 
@@ -381,7 +410,8 @@ class SetupService:
                                   partial_local_resolution=before.get('partial_local_resolution'),
                                   own_job_id=own_job_id, expected_plan=plan,
                                   legacy=before.get('engine_schema_version') != 2)
-        if current != before:
+        from .full_workflow import equivalent_payload
+        if not equivalent_payload(current,before):
             raise fail('setup_plan_drift', 'Setup identity or prerequisites changed; create a new plan')
         run_id = 'setup-run-' + uuid.uuid4().hex
         from .setup_jobs import legacy_setup_execution
@@ -417,6 +447,8 @@ class SetupService:
                     options['setup_fresh_install'] = True
                 if current.get('ad_join_admission') is not None:
                     options['setup_ad_join_admission'] = current['ad_join_admission']
+                if current.get('workflow') is not None:
+                    options['setup_workflow']=current['workflow']
                 result = self.planner.start(request.machine_uuid, request, _lock_held=True, setup_run_id=run_id, **options)
                 run.update(configuration_run_id=result['run_id'], result=result,
                            reboot_required=result.get('reboot_required', False))
@@ -502,7 +534,7 @@ class SetupService:
         from .component_verification import VerificationEngine, package_health_ready
         binding = self.assignments.get(result['machine_uuid'])
         selected = catalog.profile(binding['software_profile'])['components']
-        if binding['remote_access_profile'] == 'krfb':
+        if binding['remote_access_profile'] == 'krfb' and 'remote.krfb' not in selected:
             selected = selected+['remote.krfb']
         machine = self.machines.resolve(result['machine_uuid'])
         user = self.directory.user(binding['login'])
