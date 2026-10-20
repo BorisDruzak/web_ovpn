@@ -115,6 +115,7 @@ class WorkflowReadinessProbe:
 
     def prepare(self,job,phase):
         """The worker re-reads this after claiming; no saved SSH environment."""
+        stage='authority'
         try:
             from .krfb_runtime import observe_vnc_policy,DIRECT_POLICY
             from .krfb_program import target_program
@@ -130,20 +131,34 @@ class WorkflowReadinessProbe:
             if system is None or phase not in ('user','final_dns'):raise ValueError
             # This existing collector binds registration, exact AD employee,
             # machine trust, current source/catalog and pinned SSH identities.
+            stage='components'
             facts,verification=self.setup._observe_job_result(job.request['plan'],own_job_id=job.job_id)
+            stage='directory'
             machine=self.setup.machines.resolve(job.machine_uuid);user=self.setup.directory.user(payload['user']['login'])
+            if user!=payload['user']:raise fail('workflow_identity_changed','The selected employee identity differs')
             ous=[o for o in self.setup.directory.ous() if o['dn'].casefold()==payload['computer_ou'].casefold()]
             computer=self.setup.directory.computer(machine.hostname)
             if (len(ous)!=1 or ous[0]!=payload['ou_identity'] or payload['computer_ou'] not in self.setup.approved_ous
-                    or len(computer['objects'])!=1 or VaultHealthChecker(self.settings).full_workflow_policy()!=workflow['policy']['final_dns']):raise ValueError
+                    or len(computer['objects'])!=1):raise fail('workflow_identity_changed','The selected directory identities differ')
             obj=computer['objects'][0];current_computer={k:obj[k] for k in ('object_guid','object_sid','dn','dns_hostname')}
-            if current_computer!=system['result']['computer']:raise ValueError
+            if current_computer!=system['result']['computer']:raise fail('workflow_identity_changed','The selected computer identity differs')
+            stage='policy'
+            if VaultHealthChecker(self.settings).full_workflow_policy()!=workflow['policy']['final_dns']:
+                raise fail('workflow_source_changed','The protected resolver policy differs')
+            stage='wallet'
             wallet_fact=facts['components']['desktop.kwallet_repair']
             if wallet_fact.get('error_code') in WAIT_CODES:raise fail(wallet_fact['error_code'],'Selected-user wallet readiness is unavailable')
             wallet=wallet_fact['wallet_readiness']
-            dns=facts['components']['network.final_dns']['final_dns']
-            policy=observe_vnc_policy(self.settings,machine,DIRECT_POLICY,runner=self.runner)
+            stage='dns'
+            dns_fact=facts['components']['network.final_dns']
+            if dns_fact.get('error_code') in WAIT_CODES:raise fail(dns_fact['error_code'],'Resolver readiness is unavailable')
+            dns=dns_fact['final_dns']
+            stage='vnc_policy'
+            policy=observe_vnc_policy(self.settings,machine,DIRECT_POLICY,runner=self.runner,
+                expected_source=payload['source_sha256'],expected_ssh_binding=payload['ssh_binding'],
+                expected_boot_id=facts['machine']['boot_id'])
             if policy['observation']['ready'] is not True:raise ValueError
+            stage='templates'
             checker=VaultHealthChecker(self.settings)
             values=yaml.load(checker._decrypt(),Loader=_StrictLoader)
             private_values={name:values[name] for name in (KRFB_DESKTOP_PASSWORD_VARIABLE,KRFB_UNATTENDED_PASSWORD_VARIABLE)}
@@ -160,6 +175,7 @@ class WorkflowReadinessProbe:
                 'autostart':render('org.sosn.krfb.desktop.j2')}
             program=target_program(phase_observer=True)
             args=ssh_prefix(self.settings,machine)+['sudo -n /usr/bin/python3 -I -B -c '+shlex.quote(program)]
+            stage='graphical_session'
             rc,raw,_=self.runner(args,input_text=json.dumps(request),timeout=90,max_bytes=65536,
                 environment={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','LC_ALL':'C'})
             from .krfb_runtime import _unique_object
@@ -169,13 +185,15 @@ class WorkflowReadinessProbe:
                 raise fail(reply['code'],'Selected-user graphical readiness is unavailable')
             if rc or set(reply)!={'schema_version','status','observation'} or reply['status']!='ok':raise ValueError
             krfb=reply['observation']
+            stage='helper_binding'
             certificate_helper=self.settings.ansible_project_dir/'roles/government_ca/files/import_user_certificates.py'
             _regular(certificate_helper)
             helpers={'wallet':specification(self.settings.ansible_project_dir)['helper_sha256'],
                 'krfb':hashlib.sha256(target_program(apply=True).encode()).hexdigest(),
                 'dns':hashlib.sha256(dns_program(self.settings.ansible_project_dir).encode()).hexdigest(),
                 'vnc_policy':policy['helper_sha256'],'certificates':hashlib.sha256(certificate_helper.read_bytes()).hexdigest()}
-            if krfb['certificate_helper_sha256']!=helpers['certificates']:raise ValueError
+            if krfb['certificate_helper_sha256']!=helpers['certificates']:raise fail('workflow_source_changed','The installed certificate helper differs')
+            stage='binding'
             ready=bind_readiness(job,phase,system,facts=facts,user=user,computer=current_computer,
                 wallet=wallet,dns=dns['observation'],krfb=krfb,helpers=helpers)
             return ready,{'krfb_request':request,'krfb_observation':krfb,'wallet':wallet,'dns':dns,
@@ -183,5 +201,7 @@ class WorkflowReadinessProbe:
         except Exception as error:
             code=getattr(error,'code','')
             if code=='setup_post_verification_failed':code='workflow_identity_changed'
-            raise fail(code if code in WAIT_CODES else 'workflow_readiness_unverified',
-                       'Fresh phase identity, session or target readiness is unavailable') from None
+            from .errors import ControlError
+            raise ControlError(code if code in WAIT_CODES else 'workflow_readiness_unverified',
+                'Fresh phase identity, session or target readiness is unavailable',4,
+                {'readiness_stage':stage}) from None

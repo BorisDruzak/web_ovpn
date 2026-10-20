@@ -122,7 +122,8 @@ def _session_read(settings, machine, user, runner):
     return value
 
 
-def probe_krfb(settings, machine, user, policy, *, runner=None):
+def probe_krfb(settings, machine, user, policy, *, runner=None,expected_source=None,
+               expected_ssh_binding=None,expected_boot_id=None,expected_session_sha256=None):
     """Prove one selected user's live direct service without sending input."""
     from .ad_transport import bounded_run
     from .ad_directory import fail,normalize_login,DOMAIN
@@ -135,8 +136,12 @@ def probe_krfb(settings, machine, user, policy, *, runner=None):
         if (user['login']!=login or user['upn']!=login+'@'+DOMAIN
                 or str(uuid.UUID(user['object_guid']))!=user['object_guid'] or not uuid.UUID(user['object_guid']).int
                 or not re.fullmatch(r'S-1-[0-9]+(?:-[0-9]+){1,15}',user['object_sid'])):raise ValueError
-        evidence = observe_vnc_policy(settings,machine,policy,runner=runner)
+        evidence = observe_vnc_policy(settings,machine,policy,runner=runner,expected_source=expected_source,
+            expected_ssh_binding=expected_ssh_binding,expected_boot_id=expected_boot_id)
         before = _session_read(settings,machine,user,runner)
+        if (expected_boot_id is not None and before['boot_id']!=expected_boot_id
+                or expected_session_sha256 is not None and before['session_sha256']!=expected_session_sha256):
+            raise _ProbeError('vnc_policy_snapshot_changed')
         if before['boot_id']!=evidence['observation']['boot_id']:
             raise _ProbeError('vnc_policy_snapshot_changed')
         if not before['listener_present'] or before['krfb_pid'] is None:
@@ -213,7 +218,8 @@ def _policy_read(settings, machine, source, helper, runner):
     return value
 
 
-def observe_vnc_policy(settings, machine, policy, *, runner=None):
+def observe_vnc_policy(settings, machine, policy, *, runner=None,expected_source=None,
+                       expected_ssh_binding=None,expected_boot_id=None):
     """Read current policy and independently authenticate any existing listener."""
     from .ad_transport import bounded_run
     from .ad_directory import fail
@@ -230,7 +236,12 @@ def observe_vnc_policy(settings, machine, policy, *, runner=None):
         if not 0<len(helper.encode())<=65536:raise ValueError
         source = source_fingerprint(settings.ansible_project_dir,Path(__file__).parent)
         binding = ssh_binding(settings,machine,runner=runner)
+        if (expected_source is not None and source!=expected_source
+                or expected_ssh_binding is not None and binding!=expected_ssh_binding):
+            raise _ProbeError('vnc_policy_snapshot_changed')
         before = _policy_read(settings,machine,source,helper,runner)
+        if expected_boot_id is not None and before['boot_id']!=expected_boot_id:
+            raise _ProbeError('vnc_policy_snapshot_changed')
         if not before['legacy']['external_policy_clear']:
             raise _ProbeError('vnc_policy_external_blocker')
         authenticated = False
@@ -427,7 +438,8 @@ def _probe_rfb(address, password, *, connector=socket.create_connection, clock=t
             raise ValueError
     except (ValueError, TypeError):
         return dict(result, code='krfb_target_unverified')
-    deadline = clock() + 8
+    from .workflow_read_deadline import read_timeout
+    deadline = clock() + read_timeout(8)
 
     def remaining():
         value = deadline - clock()

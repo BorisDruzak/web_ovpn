@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import os
+import time
 from pathlib import Path
 
 from .ad_directory import fail
@@ -22,7 +23,6 @@ class WorkflowPhaseExecutor:
 
     def run(self,job,phase,claim):
         from .setup_worker import process_identity
-        from .krfb_runtime import DIRECT_POLICY,probe_krfb
         from .krfb_program import target_program
         from .kwallet_runtime import specification
         from .final_dns_policy import CODES
@@ -108,16 +108,7 @@ class WorkflowPhaseExecutor:
             raise fail('workflow_target_processes_unverified','The acknowledged phase child has not stopped')
         # Real independent read-only proof follows the mutator's exit. A lost
         # GUI/SSH reply here consumes the phase instead of rerunning any role.
-        after,proof=self.readiness.prepare(job,phase)
-        if after['scope']!=ready['scope']:
-            raise fail('workflow_identity_changed','The original phase identity changed')
-        expected={c['id'] for c in payload['components']} - {'network.final_dns'}
-        if any(proof['verification']['components'][i]['status']!='compliant' for i in expected):
-            raise fail('workflow_user_verification_failed','Fresh user and system component verification failed')
-        machine=self.readiness.setup.machines.resolve(job.machine_uuid)
-        direct=probe_krfb(self.settings,machine,payload['user'],DIRECT_POLICY)
-        if direct['ready'] is not True:
-            raise fail('workflow_user_verification_failed','Direct selected-user VNC authentication is unverified')
+        after,proof,direct=self._independent_proof(job,phase,claim,ready,payload)
         if outcome['status']=='applied_verified' and phase=='final_dns':
             if proof['verification']['components']['network.final_dns']['status']!='compliant':
                 raise fail('workflow_final_verification_failed','Final active and persistent resolver verification failed')
@@ -125,3 +116,54 @@ class WorkflowPhaseExecutor:
             'code':None if outcome['status']=='applied_verified' else outcome['code'],
             'verification_sha256':digest({'readiness':after,'components':proof['verification'],'direct':direct,'outcome':outcome}),
             'target_processes_absent':True}
+
+    def _independent_proof(self,job,phase,claim,ready,payload):
+        """Recollect only a classified RFB timeout, never the original effects."""
+        from .workflow_read_deadline import read_deadline,read_timeout
+        from .krfb_runtime import DIRECT_POLICY,probe_krfb,RFB_CODES
+        from .setup_waiting import WAIT_CODES
+        import json,sys
+        started=time.monotonic()
+        stages={'readiness','authority','components','directory','policy','wallet','dns','vnc_policy',
+                'templates','graphical_session','helper_binding','binding','deadline','identity','components_result','direct_vnc'}
+        def log(attempt,stage,code):
+            # Fixed enums and existing authority digests only. Never exception
+            # text, target output, private preparation or environment values.
+            safe=code if code is None or code in WAIT_CODES|RFB_CODES else 'workflow_readiness_unverified'
+            print(json.dumps({'kind':'workflow_independent_proof','job_id':job.job_id,'phase':phase,
+                'claim_sha256':digest(claim),'plan_sha256':job.status['plan_sha256'],
+                'source_sha256':payload['source_sha256'],'attempt':attempt,'stage':stage,
+                'code':safe,'elapsed_seconds':round(time.monotonic()-started,3)}),file=sys.stderr,flush=True)
+        with read_deadline(180):
+            for attempt in range(1,4):
+                stage='readiness';log(attempt,stage,None)
+                try:
+                    after,proof=self.readiness.prepare(job,phase)
+                    stage='identity'
+                    if (after['scope']!=ready['scope'] or any(after['observation'][k]!=ready['observation'][k]
+                            for k in ('boot_id','session_sha256'))):
+                        raise fail('workflow_identity_changed','The original phase identity or graphical session changed')
+                    stage='components_result'
+                    expected={c['id'] for c in payload['components']} - {'network.final_dns'}
+                    if any(proof['verification']['components'][i]['status']!='compliant' for i in expected):
+                        raise fail('workflow_user_verification_failed','Fresh user and system component verification failed')
+                    stage='direct_vnc'
+                    machine=self.readiness.setup.machines.resolve(job.machine_uuid)
+                    direct=probe_krfb(self.settings,machine,payload['user'],DIRECT_POLICY,
+                        expected_source=payload['source_sha256'],expected_ssh_binding=payload['ssh_binding'],
+                        expected_boot_id=ready['observation']['boot_id'],
+                        expected_session_sha256=ready['observation']['session_sha256'])
+                    if direct['ready'] is not True:
+                        raise fail('workflow_user_verification_failed','Direct selected-user VNC authentication is unverified')
+                    read_timeout(1)
+                    log(attempt,stage,None)
+                    return after,proof,direct
+                except Exception as error:
+                    details=getattr(error,'details',{})
+                    observed=details.get('readiness_stage') if isinstance(details,dict) else None
+                    if stage=='readiness' and observed in stages:stage=observed
+                    code=getattr(error,'code','workflow_readiness_unverified');log(attempt,stage,code)
+                    if code!='krfb_probe_timeout' or stage not in ('vnc_policy','direct_vnc') or attempt==3:raise
+                    # Discard the entire failed observation. No partial facts
+                    # are accepted or combined across independent attempts.
+                    time.sleep(read_timeout(1))

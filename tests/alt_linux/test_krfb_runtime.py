@@ -27,7 +27,8 @@ def policy_observation():
 
 @pytest.mark.parametrize('case',['clean','listener','identity','digest','bool','extra','duplicate',
                                  'helper','source_drift','ssh_drift','boot_drift','auth_failure',
-                                 'returned_auth_failure','missing_pixel','boolean_auth','unknown_failure'])
+                                 'returned_auth_failure','missing_pixel','boolean_auth','unknown_failure',
+                                 'pin_source','pin_ssh','pin_boot'])
 def test_published_policy_observer_binds_identity_source_and_password_proof(tmp_path,monkeypatch,case):
     from alt_deploy import krfb_runtime as module
     from alt_deploy import component_probe,setup_runtime
@@ -45,6 +46,7 @@ def test_published_policy_observer_binds_identity_source_and_password_proof(tmp_
     monkeypatch.setattr(module,'_protected_password',lambda settings:b'PRIVATE-SECRET-SENTINEL')
     def authenticate(*args,**kwargs):
         proofs.append(args)
+        assert not case.startswith('pin_'),'Original pins must be checked before RFB'
         if case=='auth_failure':raise module._ProbeError('krfb_authentication_failed')
         kwargs['connector']((machine.ip,5900),timeout=3)
         result={'status':'ok','code':None,'password_authenticated':True,'server_init_verified':True,
@@ -60,7 +62,7 @@ def test_published_policy_observer_binds_identity_source_and_password_proof(tmp_
         calls.append(argv);payload=json.loads(options['input_text'])
         value=policy_observation()
         value['listener_present']=case in ('listener','boot_drift','auth_failure','returned_auth_failure',
-                                           'missing_pixel','boolean_auth','unknown_failure')
+                                           'missing_pixel','boolean_auth','unknown_failure','pin_source','pin_ssh','pin_boot')
         value['snapshot_sha256']=hashlib.sha256(json.dumps({k:v for k,v in value.items() if k!='snapshot_sha256'},
                                     sort_keys=True,separators=(',',':')).encode()).hexdigest()
         if case=='identity':value['hostname']='another-host'
@@ -86,13 +88,18 @@ def test_published_policy_observer_binds_identity_source_and_password_proof(tmp_
         assert bool(proofs) is (case=='listener')
         assert 'SENTINEL' not in json.dumps(result)
     else:
-        with pytest.raises(ControlError) as caught:module.observe_vnc_policy(settings,machine,policy,runner=run)
+        pins={}
+        if case=='pin_source':pins['expected_source']='f'*64
+        if case=='pin_ssh':pins['expected_ssh_binding']={'host_public_sha256':'f'*64,'controller_public_sha256':'d'*64}
+        if case=='pin_boot':pins['expected_boot_id']='ffffffff-bbbb-cccc-dddd-eeeeeeeeeeee'
+        with pytest.raises(ControlError) as caught:module.observe_vnc_policy(settings,machine,policy,runner=run,**pins)
+        if case.startswith('pin_'):assert caught.value.code=='vnc_policy_snapshot_changed' and proofs==[]
         assert 'SENTINEL' not in str(caught.value)
     assert all('PRIVATE-SECRET-SENTINEL' not in str(argv) for argv in calls)
 
 
 @pytest.mark.parametrize('case',['ready','policy_unprepared','source_drift','ssh_drift','boot_drift',
-    'config_drift','pid_drift','no_graphical_session','auth_failure','invalid_user'])
+    'config_drift','pid_drift','no_graphical_session','auth_failure','invalid_user','pin_boot','pin_session'])
 def test_direct_public_probe_requires_selected_graphical_identity_and_fresh_rfb_evidence(tmp_path,monkeypatch,case):
     from alt_deploy import krfb_runtime as module
     from alt_deploy import component_probe,setup_runtime
@@ -146,7 +153,11 @@ def test_direct_public_probe_requires_selected_graphical_identity_and_fresh_rfb_
         assert len(probes)==1 and len(reads)==2
         assert 'SENTINEL' not in json.dumps(result)
     else:
-        with pytest.raises(ControlError) as caught:module.probe_krfb(settings,machine,user,module.DIRECT_POLICY)
+        pins={}
+        if case=='pin_boot':pins['expected_boot_id']='ffffffff-bbbb-cccc-dddd-eeeeeeeeeeee'
+        if case=='pin_session':pins['expected_session_sha256']='f'*64
+        with pytest.raises(ControlError) as caught:module.probe_krfb(settings,machine,user,module.DIRECT_POLICY,**pins)
+        if case.startswith('pin_'):assert caught.value.code=='vnc_policy_snapshot_changed' and probes==[]
         assert 'SENTINEL' not in str(caught.value)
         if case in ('no_graphical_session','invalid_user'):assert probes==[]
 

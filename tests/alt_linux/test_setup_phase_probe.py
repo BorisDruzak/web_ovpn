@@ -13,7 +13,8 @@ from test_full_workflow_binding import full_setup
 from test_component_catalog import project
 
 
-def test_production_probe_prepares_fixed_templates_but_publishes_only_safe_digests(phase_job,monkeypatch):
+@pytest.mark.parametrize('fault',['none','dns_blocked','rfb_timeout','computer_changed','helper_changed','employee_then_timeout'])
+def test_production_probe_prepares_fixed_templates_but_publishes_only_safe_digests(phase_job,monkeypatch,fault):
     from alt_deploy.setup_phase_probe import WorkflowReadinessProbe
     from alt_deploy.setup_plans import digest
     from alt_deploy.vault import VaultHealthChecker
@@ -24,9 +25,19 @@ def test_production_probe_prepares_fixed_templates_but_publishes_only_safe_diges
     setup._observe_job_result=lambda plan,**kwargs:(copy.deepcopy(facts),copy.deepcopy(verification))
     computer=store.records(job)['system']['result']['result']['computer']
     setup.directory.computer=lambda hostname:{'exists':True,'objects':[copy.deepcopy(computer)]}
+    if fault=='computer_changed':computer['object_guid']='0'*8+'-0000-0000-0000-000000000001'
+    if fault=='employee_then_timeout':
+        foreign=copy.deepcopy(payload['user']);foreign['object_guid']='0'*8+'-0000-0000-0000-000000000001'
+        setup.directory.user=lambda login:foreign
+    if fault=='dns_blocked':facts['components']['network.final_dns']={'error_code':'final_dns_backend_unverified'}
     monkeypatch.setattr(VaultHealthChecker,'_decrypt',lambda self:'vault_krfb_desktop_password_obscured: PRIVATE-DESKTOP-SENTINEL\nvault_krfb_unattended_password_obscured: PRIVATE-UNATTENDED-SENTINEL\n')
     monkeypatch.setattr('alt_deploy.krfb_runtime.observe_vnc_policy',lambda *a,**k:{'helper_sha256':'7'*64,
         'observation':{'ready':True,'snapshot_sha256':'8'*64}})
+    if fault in ('rfb_timeout','employee_then_timeout'):
+        def timeout(*a,**k):
+            assert fault!='employee_then_timeout','Observed employee drift must stop before RFB'
+            raise ControlError('krfb_probe_timeout','PRIVATE-TRANSPORT-SENTINEL',4)
+        monkeypatch.setattr('alt_deploy.krfb_runtime.observe_vnc_policy',timeout)
     def runner(args,**kwargs):
         request=json.loads(kwargs['input_text'])
         assert args[-1].startswith('sudo -n /usr/bin/python3 -I -B -c ')
@@ -40,8 +51,21 @@ def test_production_probe_prepares_fixed_templates_but_publishes_only_safe_diges
                         'session_sha256':'1'*64,'snapshot_sha256':'2'*64},
             'configuration_template_sha256':hashlib.sha256(request['configuration'].encode()).hexdigest(),
             'autostart_template_sha256':hashlib.sha256(request['autostart'].encode()).hexdigest()}
+        if fault=='helper_changed':value['certificate_helper_sha256']='0'*64
         return 0,json.dumps({'schema_version':1,'status':'ok','observation':value}),''
     probe=WorkflowReadinessProbe(setup.settings,setup=setup,runner=runner)
+    if fault!='none':
+        expected={'dns_blocked':('final_dns_backend_unverified','dns'),
+                  'rfb_timeout':('krfb_probe_timeout','vnc_policy'),
+                  'computer_changed':('workflow_identity_changed','directory'),
+                  'helper_changed':('workflow_source_changed','helper_binding'),
+                  'employee_then_timeout':('workflow_identity_changed','directory')}
+        with pytest.raises(ControlError) as caught:probe.prepare(job,'user')
+        code,stage=expected[fault]
+        assert caught.value.code==code
+        assert caught.value.details=={'readiness_stage':stage}
+        assert 'SENTINEL' not in str(caught.value.to_dict())
+        return
     value,private=probe.prepare(job,'user')
     assert value['status']=='ready' and value['scope']['computer_guid']==computer['object_guid']
     assert 'SENTINEL' not in json.dumps(value)

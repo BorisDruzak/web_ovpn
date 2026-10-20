@@ -105,14 +105,15 @@ def test_lost_or_failed_phase_reply_burns_claim_once_without_private_output(phas
     assert 'SENTINEL' not in str(result)
 
 
-@pytest.mark.parametrize('fault',['none','changed_after_claim','bad_result','missing_events','changed_after_apply'])
-def test_fixed_final_dns_executor_rechecks_readiness_and_requires_exact_completion(phase_job,monkeypatch,fault):
+@pytest.mark.parametrize('fault',['none','changed_after_claim','bad_result','missing_events','changed_after_apply',
+    'timeout_once','timeout_always','auth_failure','session_changed','boot_changed','generic_failure','late_proof'])
+def test_fixed_final_dns_executor_rechecks_readiness_and_requires_exact_completion(phase_job,monkeypatch,capsys,fault):
     from alt_deploy.setup_phase_execution import WorkflowPhaseExecutor
     from alt_deploy.setup_events import SetupEventStore
     from alt_deploy.setup_plans import private_create
     store,jobs,job,ready,identity,admissions,setup=phase_job
     setup.settings.ansible_playbook_path=Path('/usr/bin/ansible-playbook')
-    calls=[];observations=[]
+    calls=[];observations=[];now=[0.0]
     with exclusive_lock(setup.settings.lock_file):
         store.enqueue(job,'user',ready);store.claim(jobs.get(job.job_id),'user',identity)
         store.complete(jobs.get(job.job_id),'user',phase_result())
@@ -121,6 +122,14 @@ def test_fixed_final_dns_executor_rechecks_readiness_and_requires_exact_completi
         job=store.start(jobs.get(job.job_id),'final_dns',claim)
         def prepare(j,p):
             current=copy.deepcopy(ready);observations.append(p)
+            if len(observations)>1:
+                if fault=='timeout_always' or fault=='timeout_once' and len(observations)==2:
+                    raise ControlError('krfb_probe_timeout','PRIVATE-SENTINEL',4,{'readiness_stage':'vnc_policy'})
+                if fault=='auth_failure':raise ControlError('krfb_authentication_failed','PRIVATE-SENTINEL',4)
+                if fault=='generic_failure':raise ControlError('workflow_readiness_unverified','PRIVATE-SENTINEL',4)
+                if fault=='session_changed':current['observation']['session_sha256']='0'*64
+                if fault=='boot_changed':current['observation']['boot_id']='0'*8+'-0000-0000-0000-000000000001'
+                if fault=='late_proof':now[0]=200
             if fault=='changed_after_claim':current['observation']['dns_sha256']='0'*64
             if fault=='changed_after_apply' and len(observations)>1:current['scope']['computer_sid']+='-1'
             return current,{'dns':{'status':'ok','observation':{}},
@@ -138,12 +147,24 @@ def test_fixed_final_dns_executor_rechecks_readiness_and_requires_exact_completi
                 'type':'component_completed','code':'completed','changed':False})
             return 0
         probe=SimpleNamespace(prepare=prepare,setup=setup)
-        monkeypatch.setattr('alt_deploy.krfb_runtime.probe_krfb',lambda *a,**k:{'ready':True})
+        def direct(*args,**options):
+            payload=job.request['plan']['payload']
+            assert options=={'expected_source':payload['source_sha256'],'expected_ssh_binding':payload['ssh_binding'],
+                'expected_boot_id':ready['observation']['boot_id'],
+                'expected_session_sha256':ready['observation']['session_sha256']}
+            return {'ready':True}
+        monkeypatch.setattr('alt_deploy.krfb_runtime.probe_krfb',direct)
         executor=WorkflowPhaseExecutor(setup.settings,readiness=probe,runner=run)
-        if fault=='none':assert executor.run(job,'final_dns',claim)['status']=='applied_verified'
+        monkeypatch.setattr('alt_deploy.setup_phase_execution.time.sleep',lambda seconds:None)
+        if fault=='late_proof':monkeypatch.setattr('alt_deploy.workflow_read_deadline.time.monotonic',lambda:now[0])
+        if fault in ('none','timeout_once'):assert executor.run(job,'final_dns',claim)['status']=='applied_verified'
         else:
             with pytest.raises(ControlError):executor.run(job,'final_dns',claim)
         assert len(calls)==(0 if fault=='changed_after_claim' else 1)
+        if fault=='timeout_once':assert len(observations)==3
+        elif fault=='timeout_always':assert len(observations)==4
+        elif fault in ('auth_failure','generic_failure','session_changed','boot_changed'):assert len(observations)==2
+        assert 'SENTINEL' not in capsys.readouterr().err
 
 
 @pytest.mark.parametrize('outcome',['success','rollback','no_gui'])

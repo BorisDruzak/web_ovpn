@@ -5,11 +5,12 @@ import os
 from .wallet_codes import WALLET_CODES
 from .krfb_program import TARGET_CODES
 from .final_dns_policy import CODES as DNS_CODES
+from .krfb_runtime import RFB_CODES
 from .setup_plans import private_read
 from .ad_directory import fail
 
 
-WAIT_CODES=WALLET_CODES|TARGET_CODES|DNS_CODES|frozenset({
+WAIT_CODES=WALLET_CODES|TARGET_CODES|DNS_CODES|RFB_CODES|frozenset({
     'certificates_importer_active','workflow_package_manager_busy','workflow_target_processes_unverified',
     'workflow_readiness_unverified','workflow_identity_changed','workflow_source_changed',
     'vnc_policy_snapshot_changed','vnc_policy_external_blocker'})

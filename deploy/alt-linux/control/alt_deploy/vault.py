@@ -126,6 +126,7 @@ class VaultHealthChecker:
         return first_line.startswith("$ANSIBLE_VAULT;")
 
     def _decrypt(self) -> str | None:
+        from .workflow_read_deadline import read_timeout
         command = [
             str(self.ansible_vault_path),
             "view",
@@ -140,7 +141,7 @@ class VaultHealthChecker:
                 shell=False,
                 text=True,
                 capture_output=True,
-                timeout=30,
+                timeout=read_timeout(30),
                 check=False,
                 cwd=self.settings.ansible_project_dir,
             )

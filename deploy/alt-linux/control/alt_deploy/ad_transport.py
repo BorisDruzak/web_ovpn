@@ -11,6 +11,7 @@ import re
 import stat
 import subprocess
 import tempfile
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -84,7 +85,11 @@ class DirectoryConfig:
 
 def bounded_run(command, *, environment, input_text=None, timeout=20, max_bytes=None):
     """Read at most MAX_BYTES+1 from each pipe; kill excessive producers."""
+    from .workflow_read_deadline import read_timeout
+    timeout=read_timeout(timeout)
+    deadline=time.monotonic()+timeout
     try:
+        encoded=input_text.encode('utf-8') if input_text is not None else None
         process = subprocess.Popen(command, shell=False, env=environment,
                                    stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -101,16 +106,20 @@ def bounded_run(command, *, environment, input_text=None, timeout=20, max_bytes=
 
         readers = [Thread(target=read_pipe, args=(index, stream), daemon=True)
                    for index, stream in enumerate((process.stdout, process.stderr))]
+        if input_text is not None:
+            # A large fixed helper program can fill SSH's pipe before it is
+            # ready to read. Keep the main thread enforcing the wall deadline.
+            def write_input():
+                try:process.stdin.write(encoded)
+                except (BrokenPipeError,OSError):pass
+                finally:
+                    try:process.stdin.close()
+                    except (BrokenPipeError,OSError):pass
+            readers.append(Thread(target=write_input,daemon=True))
         for reader in readers:
             reader.start()
         try:
-            if input_text is not None:
-                try:
-                    process.stdin.write(input_text.encode('utf-8'))
-                    process.stdin.close()
-                except BrokenPipeError:
-                    pass
-            process.wait(timeout=timeout)
+            process.wait(timeout=read_timeout(max(0.001,deadline-time.monotonic())))
         except subprocess.TimeoutExpired as exc:
             process.kill()
             process.wait()
