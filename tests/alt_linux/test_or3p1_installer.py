@@ -60,6 +60,34 @@ def test_installer_prechecks_succeed_without_mutation(
     assert InstallerSandbox.mutation_commands(sandbox.commands()) == []
 
 
+def test_repository_verification_runs_as_service_user(tmp_path: Path) -> None:
+    sandbox = InstallerSandbox.create(tmp_path)
+    before = sandbox.protected_snapshot()
+
+    result = sandbox._run_function("run_repository_verification")
+
+    assert result.returncode == 0, result.stderr
+    calls = [command for command in sandbox.commands() if "pytest" in command]
+    assert len(calls) == 1
+    assert calls[0][:6] == ["sudo", "-n", "-H", "-u", "altserver", "--"]
+    assert calls[0][6] == str(sandbox.fake_bin / "python3")
+    assert calls[0][7:] == [
+        "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests/alt_linux"
+    ]
+    assert sandbox.protected_snapshot() == before
+    assert InstallerSandbox.mutation_commands(sandbox.commands()) == []
+
+
+def test_repository_test_failure_blocks_before_mutation(tmp_path: Path) -> None:
+    sandbox = InstallerSandbox.create(tmp_path)
+    before = sandbox.protected_snapshot()
+
+    result = sandbox.run_library(INSTALLER_TEST_RC="23")
+
+    assert result.returncode == 23
+    assert_pre_mutation_failure(sandbox, result, before)
+
+
 def test_active_jobs_block_before_mutation(tmp_path: Path) -> None:
     sandbox = InstallerSandbox.create(tmp_path)
     before = sandbox.protected_snapshot()

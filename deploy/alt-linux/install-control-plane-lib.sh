@@ -374,7 +374,10 @@ run_repository_verification() {
 
     (
         cd "${REPO_ROOT}"
-        "${python_bin}" -m pytest -q tests/alt_linux
+        # User-session fixtures must exercise a real non-root account. Keep
+        # the published source read-only and propagate every test failure.
+        sudo -n -H -u altserver -- "${python_bin}" \
+            -m pytest -q -p no:cacheprovider tests/alt_linux
     )
 }
 
