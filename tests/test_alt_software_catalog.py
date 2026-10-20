@@ -32,7 +32,7 @@ def test_core_apps_catalog_enables_only_controller_verified_artifacts() -> None:
 
 def test_catalog_components_are_disabled_or_complete() -> None:
     catalog = yaml.safe_load(CATALOG.read_text(encoding="utf-8"))["software_catalog"]
-    assert set(catalog) == {"browser", "onlyoffice", "nextcloud_desktop", "directum", "cryptopro", "cryptopro_cades", "gosuslugi_plugin"}
+    assert set(catalog) == {"browser", "onlyoffice", "nextcloud_desktop", "directum", "cryptopro", "cryptopro_cades", "gosuslugi_plugin", "vkworkspace"}
     for name, item in catalog.items():
         if item["enabled"]:
             assert item["source"] in {"rpm", "alt-repository", "archive", "zip"}, name

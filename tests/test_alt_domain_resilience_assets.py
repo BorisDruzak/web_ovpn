@@ -218,14 +218,18 @@ def test_login_baseline_owns_pam_write_and_precedes_software_remote_and_verifica
     verify = list(flatten(role("domain_verify")))
     assert not any("ansible.builtin.lineinfile" in task for task in verify)
     phase = load("playbooks/tasks/configure_critical_phase.yml")
-    names = [task["ansible.builtin.include_role"]["name"] for task in flatten(phase) if "ansible.builtin.include_role" in task]
+    roles=[task for task in flatten(phase) if 'ansible.builtin.include_role' in task]
+    managed=[task for task in roles if task['name'] in (
+        'Prepare direct authenticated VNC policy before upgrade or join',
+        'Install KRFB only for the later genuine user phase')]
+    assert len(managed)==2 and all(t['when']==["software_profile == 'workstation-full-v1'"] for t in managed)
+    names = [task["ansible.builtin.include_role"]["name"] for task in roles if task not in managed]
     assert names == ["manual_preflight", "workstation_identity", "prejoin_upgrade", "workstation_base",
                      "alt_group_policy_prerequisites", "workstation_network", "domain_join",
                      "alt_group_policy_client", "domain_login_baseline", "plasma_baseline", "standard_software", "government_ca",
                      "desktop_shortcuts", "remote_access_krfb", "domain_verify"]
-    krfb = next(task for task in flatten(phase)
-                if task.get("ansible.builtin.include_role", {}).get("name") == "remote_access_krfb")
-    assert krfb["when"] == ["remote_access_profile == 'krfb'"]
+    krfb = next(task for task in roles if task['name']=='Run requested KRFB profile')
+    assert krfb["when"] == ["remote_access_profile == 'krfb' and software_profile != 'workstation-full-v1'"]
     assert names.index("standard_software") < names.index("remote_access_krfb") < names.index("domain_verify")
 
 

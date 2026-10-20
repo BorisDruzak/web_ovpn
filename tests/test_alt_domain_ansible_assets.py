@@ -53,13 +53,13 @@ def test_critical_phase_runs_components_between_login_baseline_and_verification(
     phase_path = ANSIBLE_ROOT / "playbooks" / "tasks" / "configure_critical_phase.yml"
     rendered = phase_path.read_text(encoding="utf-8")
 
-    expected_includes = [
-        f"name: {role}" for role in CRITICAL_ROLES
-    ]
-    positions = [rendered.index(include) for include in expected_includes]
-
-    assert positions == sorted(positions)
-    assert rendered.count("ansible.builtin.include_role:") == len(CRITICAL_ROLES)
+    roles=[task for task in yaml.safe_load(rendered)[1]['block'] if 'ansible.builtin.include_role' in task]
+    managed=[task for task in roles if task['name'] in (
+        'Prepare direct authenticated VNC policy before upgrade or join',
+        'Install KRFB only for the later genuine user phase')]
+    assert len(managed)==2 and all(t['when']=="software_profile == 'workstation-full-v1'" for t in managed)
+    assert [t['ansible.builtin.include_role']['name'] for t in roles if t not in managed]==CRITICAL_ROLES
+    assert rendered.count("ansible.builtin.include_role:") == len(CRITICAL_ROLES)+2
     assert "loop:" not in rendered
 
 
@@ -328,7 +328,7 @@ def test_krfb_runs_after_selected_software_and_only_when_requested() -> None:
 
     assert software_index < krfb_index < verify_index
     assert block[krfb_index]["ansible.builtin.include_role"] == {"name": "remote_access_krfb"}
-    assert block[krfb_index]["when"] == "remote_access_profile == 'krfb'"
+    assert block[krfb_index]["when"] == "remote_access_profile == 'krfb' and software_profile != 'workstation-full-v1'"
 
 
 def test_selected_components_are_preflighted_before_component_roles() -> None:
