@@ -1,5 +1,6 @@
 """Current facts, rather than a previous run, control component compliance."""
 import copy
+import hashlib
 import sys
 from pathlib import Path
 
@@ -38,6 +39,15 @@ def evidence(catalog):
                 packages = [{'name': artifact['package_name'], 'evr': artifact['package_evr'],
                              'architecture': artifact['architecture'], 'epoch': artifact.get('package_epoch', 0)}]
             fact.update(packages=packages, executable=True)
+        if component['verification']['recipe']=='kwallet':
+            from alt_deploy.kwallet_runtime import specification,canonical
+            spec=specification(catalog._project)
+            value=dict(spec,schema_version=1,machine_uuid=UUID,hostname=result['machine']['hostname'],
+                boot_id=result['machine']['boot_id'],login=result['user']['login'],uid=result['user']['uid'],gid=result['user']['gid'],
+                installed_helper_sha256=spec['helper_sha256'],helper_installed=True,disposition='noop',readiness_sha256='a'*64)
+            value.pop('previous_helper_sha256')
+            value['snapshot_sha256']=hashlib.sha256(canonical(value)).hexdigest()
+            fact['wallet_readiness']=value
         result['components'][component['id']] = fact
     return result
 

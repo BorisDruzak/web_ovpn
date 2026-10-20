@@ -1,0 +1,4 @@
+---
+kwallet_repair_user: "{{ assigned_domain_user | default('') }}"
+kwallet_repair_new_name: recovered-wallet
+kwallet_repair_previous_helper_sha256: []

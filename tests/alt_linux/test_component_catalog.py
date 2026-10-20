@@ -40,7 +40,7 @@ def edit(project, change):
 
 def test_catalog_initial_profiles():
     catalog = ComponentCatalog.load(SOURCE)
-    assert len(catalog.components()) == 15
+    assert len(catalog.components()) == 16
     assert catalog.version == 1
     assert len(catalog.fingerprint) == 64
     core = catalog.profile('core-apps')

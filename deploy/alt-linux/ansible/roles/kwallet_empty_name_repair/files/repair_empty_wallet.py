@@ -1,4 +1,4 @@
-"""Inspect only the confirmed empty-name KDE wallet defect; private data stays local."""
+"""Repair only a confirmed empty-name KDE wallet through the fixed native helper."""
 from __future__ import annotations
 
 from dataclasses import dataclass,field
@@ -16,8 +16,10 @@ import stat
 import sys
 import threading
 import time
+import uuid
 
-from alt_deploy.user_session import SessionContext,SessionError,_inside,_process,_read,_revalidate,_trusted_program,run_session_command
+from alt_deploy.user_session import SessionContext,SessionError,_inside,_process,_read,_revalidate,_trusted_program,run_session_command,discover_session,_call
+from alt_deploy.wallet_codes import WALLET_CODES
 
 
 class WalletError(Exception):
@@ -687,7 +689,7 @@ def _verify_renamed(evidence,*,root,exact):
         if value is None or exact and not _same_file(value,evidence.files[old]):raise WalletError('kwallet_postcondition_unverified')
 
 
-def repair_wallet(context,wallet_name,expected_snapshot_sha256,operation_sha256,*,root=Path('/')):
+def repair_wallet(context,wallet_name,expected_snapshot_sha256,operation_sha256,*,root=Path('/'),native_context=None):
     """One claim: backup -> proven stop -> acknowledged writer -> actual GUI bus.
 
     The fixed CLI/native caller additionally binds machine, boot, helper source
@@ -699,6 +701,8 @@ def repair_wallet(context,wallet_name,expected_snapshot_sha256,operation_sha256,
         if threading.active_count()!=1:raise ValueError
         for value in (expected_snapshot_sha256,operation_sha256):
             if not isinstance(value,str) or not re.fullmatch('[0-9a-f]{64}',value):raise ValueError
+        if native_context is not None:
+            validate_invocation(native_context,{'machine_uuid':native_context.get('machine_uuid')},operation_sha256)
         namespace=_inside(root,'/var/lib/alt-kwallet-empty-name-repair')
         if (namespace/operation_sha256).exists():raise WalletError('kwallet_claim_consumed')
         readiness=observe_wallet(context,wallet_name,root=root)
@@ -713,7 +717,8 @@ def repair_wallet(context,wallet_name,expected_snapshot_sha256,operation_sha256,
             directory=create_backup(fresh.wallet,operation_sha256,root=root)
             _record(directory,'invocation.json',{'schema_version':1,'operation_sha256':operation_sha256,
                 'readiness_sha256':fresh.snapshot_sha256,'daemon_sha256':fresh.daemons.snapshot_sha256,
-                'uid':context.uid,'gid':context.gid,'snapshot_sha256':fresh.wallet.snapshot_sha256})
+                'uid':context.uid,'gid':context.gid,'snapshot_sha256':fresh.wallet.snapshot_sha256,
+                'native_context':native_context})
             effects=False
             try:
                 if observe_wallet(context,wallet_name,root=root).snapshot_sha256!=expected_snapshot_sha256:
@@ -751,3 +756,149 @@ def repair_wallet(context,wallet_name,expected_snapshot_sha256,operation_sha256,
             return result
     except WalletError:raise
     except Exception:raise WalletError('kwallet_repair_outcome_unverified') from None
+
+
+HELPER='/usr/local/libexec/alt-kwallet-empty-name-repair'
+
+
+def unique(pairs):
+    result={}
+    for key,value in pairs:
+        if key in result:raise ValueError
+        result[key]=value
+    return result
+
+
+def _helper_state(root,expected,previous):
+    try:
+        if (not isinstance(expected,str) or not re.fullmatch('[0-9a-f]{64}',expected)
+                or not isinstance(previous,list) or len(previous)>32 or len(set(previous))!=len(previous)
+                or any(not isinstance(v,str) or not re.fullmatch('[0-9a-f]{64}',v) for v in previous)):
+            raise ValueError
+        target=_inside(root,HELPER)
+        if not target.exists():return False,None
+        owner=0 if root==Path('/') else os.getuid()
+        current=target.parent
+        while current!=root:
+            info=current.stat()
+            if info.st_uid!=owner or info.st_mode & 0o022:raise ValueError
+            current=current.parent
+        info=target.stat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid!=owner or stat.S_IMODE(info.st_mode)!=0o700
+                or info.st_nlink!=1 or not 0<info.st_size<=1048576):raise ValueError
+        digest=hashlib.sha256(_read(target,1048576)).hexdigest()
+        if digest not in [expected,*previous]:raise ValueError
+        return True,digest
+    except Exception:raise WalletError('kwallet_helper_collision') from None
+
+
+def _collect_target(request,*,root=Path('/'),call=_call,limits_reader=resource.prlimit):
+    try:
+        if (not isinstance(request,dict) or set(request)!={'schema_version','machine_uuid','hostname','login',
+                'wallet_name','helper_sha256','previous_helper_sha256'}
+                or type(request['schema_version']) is not int or request['schema_version']!=1
+                or not isinstance(request['machine_uuid'],str) or str(uuid.UUID(request['machine_uuid']))!=request['machine_uuid']
+                or not uuid.UUID(request['machine_uuid']).int
+                or not isinstance(request['hostname'],str) or not re.fullmatch('[a-z][a-z0-9-]{0,62}',request['hostname'])
+                or not isinstance(request['login'],str) or not re.fullmatch('[a-z0-9][a-z0-9._-]{0,62}',request['login'])
+                or request['login'] in ('root','ansible','osn-admin')):raise ValueError
+        validate_wallet_name(request['wallet_name']);root=Path(root)
+        machine=_read(root/'sys/class/dmi/id/product_uuid',128).decode().strip().lower()
+        boot=_read(_inside(root,'/proc/sys/kernel/random/boot_id'),128).decode().strip()
+        rc,hostname=call(['hostname','-s'])
+        if (machine!=request['machine_uuid'] or rc or hostname.strip()!=request['hostname']
+                or not re.fullmatch('[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',boot)):
+            raise WalletError('kwallet_machine_unverified')
+        installed,digest=_helper_state(root,request['helper_sha256'],request['previous_helper_sha256'])
+        upn=request['login']+'@sosnadmin.local'
+        rc,passwd=call(['getent','-s','sss','passwd',upn]);fields=passwd.strip().split(':')
+        if (rc or len(passwd.splitlines())!=1 or len(fields)!=7 or fields[0].lower() not in (request['login'],upn)
+                or not fields[2].isdigit() or not fields[3].isdigit() or int(fields[2])<=0 or int(fields[3])<=0):
+            raise WalletError('kwallet_user_unverified')
+        if not _inside(root,fields[5]).exists():raise WalletError('graphical_session_unavailable')
+        context=discover_session(int(fields[2]),int(fields[3]),fields[5],root=root,call=call,limits_reader=limits_reader)
+        readiness=observe_wallet(context,request['wallet_name'],root=root)
+        namespace=_inside(root,'/var/lib/alt-kwallet-empty-name-repair')
+        if namespace.exists():guard_previous_mutators(namespace,root=root)
+        value={'schema_version':1,'machine_uuid':machine,'hostname':request['hostname'],'boot_id':boot,
+            'login':request['login'],'uid':context.uid,'gid':context.gid,
+            'wallet_name':request['wallet_name'],'helper_sha256':request['helper_sha256'],
+            'installed_helper_sha256':digest,'helper_installed':installed,'disposition':readiness.disposition,
+            'readiness_sha256':readiness.snapshot_sha256}
+        value['snapshot_sha256']=hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+        if (_read(root/'sys/class/dmi/id/product_uuid',128).decode().strip().lower()!=machine
+                or _read(_inside(root,'/proc/sys/kernel/random/boot_id'),128).decode().strip()!=boot):
+            raise WalletError('kwallet_machine_unverified')
+        return value,readiness
+    except WalletError:raise
+    except SessionError as error:
+        code=str(error) if str(error) in ('graphical_session_unavailable','graphical_session_ambiguous') else 'kwallet_target_unverified'
+        raise WalletError(code) from None
+    except Exception:raise WalletError('kwallet_target_unverified') from None
+
+
+def observe_candidate(request,**options):
+    return _collect_target(request,**options)[0]
+
+
+def validate_invocation(context,observation,operation_sha256):
+    try:
+        if not isinstance(context,dict) or type(context.get('schema_version')) is not int or context['schema_version']!=1:raise ValueError
+        kind=context.get('kind')
+        if kind=='complete_workstation':
+            keys={'schema_version','kind','phase','job_id','claim_sha256','plan_sha256','workflow_policy_sha256',
+                  'machine_uuid','source_sha256','policy_sha256'}
+            if set(context)!=keys or context['phase']!='user' or context['claim_sha256']!=operation_sha256:raise ValueError
+            digests=('claim_sha256','plan_sha256','workflow_policy_sha256','source_sha256','policy_sha256')
+        elif kind=='component_wallet_repair':
+            keys={'schema_version','kind','job_id','component_id','plan_sha256','machine_uuid','source_sha256','operation_sha256'}
+            if (set(context)!=keys or context['component_id']!='desktop.kwallet_repair'
+                    or context['operation_sha256']!=operation_sha256):raise ValueError
+            digests=('plan_sha256','source_sha256','operation_sha256')
+        else:raise ValueError
+        if (context['machine_uuid']!=observation['machine_uuid'] or not isinstance(context['machine_uuid'],str)
+                or str(uuid.UUID(context['machine_uuid']))!=context['machine_uuid'] or not uuid.UUID(context['machine_uuid']).int
+                or not isinstance(context['job_id'],str) or not re.fullmatch('job-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}',context['job_id'])
+                or any(not isinstance(context[key],str) or not re.fullmatch('[0-9a-f]{64}',context[key]) for key in digests)):
+            raise ValueError
+        return dict(context)
+    except Exception:raise WalletError('kwallet_native_context_unverified') from None
+
+
+def main():
+    try:
+        if os.geteuid()!=0:raise WalletError('kwallet_privilege_required')
+        import argparse
+        class Parser(argparse.ArgumentParser):
+            def error(self,message):raise WalletError('kwallet_request_unverified')
+        parser=Parser(add_help=False,allow_abbrev=False)
+        operation=parser.add_mutually_exclusive_group(required=True)
+        operation.add_argument('--observe',action='store_true');operation.add_argument('--apply',action='store_true')
+        for name in ('machine-uuid','hostname','user','wallet-name','helper-sha256'):parser.add_argument('--'+name,required=True)
+        parser.add_argument('--expected-readiness-sha256');parser.add_argument('--operation-sha256')
+        args=parser.parse_args()
+        if Path(sys.argv[0])!=Path(HELPER):raise WalletError('kwallet_helper_source_unverified')
+        request={'schema_version':1,'machine_uuid':args.machine_uuid,'hostname':args.hostname,'login':args.user,
+                 'wallet_name':args.wallet_name,'helper_sha256':args.helper_sha256,'previous_helper_sha256':[]}
+        observation,readiness=_collect_target(request)
+        if observation['installed_helper_sha256']!=args.helper_sha256:raise WalletError('kwallet_helper_source_unverified')
+        if args.observe:
+            if args.expected_readiness_sha256 is not None or args.operation_sha256 is not None:raise ValueError
+            print(json.dumps({'schema_version':1,'status':'ok','observation':observation}));return 0
+        raw=sys.stdin.read(8193)
+        if len(raw.encode())>8192:raise ValueError
+        context=validate_invocation(json.loads(raw,object_pairs_hook=unique),observation,args.operation_sha256)
+        if args.expected_readiness_sha256!=readiness.snapshot_sha256:raise WalletError('kwallet_readiness_changed')
+        result=repair_wallet(readiness.wallet.context,args.wallet_name,readiness.snapshot_sha256,args.operation_sha256,
+                             native_context=context)
+        after,_=_collect_target(request)
+        if any(after[key]!=observation[key] for key in ('machine_uuid','hostname','boot_id','helper_sha256','installed_helper_sha256')):
+            raise WalletError('kwallet_machine_unverified')
+        good=result['status'] in ('noop','repaired')
+        print(json.dumps({'schema_version':1,'status':'ok' if good else 'blocked','result':result,
+                          'helper_sha256':args.helper_sha256,'operation_sha256':args.operation_sha256}))
+        return 0 if good else 4
+    except Exception as error:
+        code=str(error) if isinstance(error,(WalletError,SessionError)) else ''
+        if code not in WALLET_CODES:code='kwallet_target_unverified'
+        print(json.dumps({'schema_version':1,'status':'blocked','code':code}));return 4

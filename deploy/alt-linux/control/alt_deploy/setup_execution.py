@@ -277,6 +277,26 @@ class ComponentExecutor:
                 raise fail('remote_access_network_restriction_unconfirmed', 'Restricted KRFB access is not confirmed')
             variables['remote_access_profile'] = 'krfb'
             variables[KRFB_ANSIBLE_CONFIRMATION_VARIABLE] = True
+        playbook='04-setup-component.yml'
+        if component['id']=='desktop.kwallet_repair':
+            if job.status.get('claimed') is not True or job.state not in ('preflight','running'):
+                raise fail('setup_job_not_claimed','Wallet repair requires its original worker claim')
+            from .kwallet_runtime import specification,validate_observation,canonical
+            import hashlib
+            wanted=specification(self.settings.ansible_project_dir)
+            request=dict(wanted,machine_uuid=job.machine_uuid,hostname=payload['machine']['hostname'],login=payload['user']['login'])
+            try:
+                readiness=validate_observation(payload['observed']['components'][component['id']]['wallet_readiness'],
+                                               request,payload['observed']['machine']['boot_id'])
+            except Exception:raise fail('kwallet_readiness_changed','Confirmed wallet readiness is unavailable') from None
+            operation=hashlib.sha256(canonical({'schema_version':1,'job_id':job.job_id,'plan_sha256':plan['sha256'],
+                'machine_uuid':job.machine_uuid,'component_id':component['id'],'source_sha256':payload['source_sha256']})).hexdigest()
+            variables.update(kwallet_repair_user=payload['user']['upn'],kwallet_repair_new_name=wanted['wallet_name'],
+                alt_setup_wallet_readiness=readiness,alt_setup_wallet_component_context={
+                    'schema_version':1,'kind':'component_wallet_repair','job_id':job.job_id,'component_id':component['id'],
+                    'plan_sha256':plan['sha256'],'machine_uuid':job.machine_uuid,'source_sha256':payload['source_sha256'],
+                    'operation_sha256':operation})
+            playbook='06-kwallet-empty-name-repair.yml'
         # The playbook independently derives selection from the same published registry.
         private_create(job.job_dir/'component-vars.json', variables)
         command = [str(self.settings.ansible_playbook_path), '-i', payload['machine']['ip']+',', '-u', 'ansible',
@@ -284,7 +304,7 @@ class ComponentExecutor:
                    '--ssh-common-args=-o UserKnownHostsFile='+str(self.settings.known_hosts_file)
                    +' -o StrictHostKeyChecking=yes -o ProxyCommand=none -o IdentitiesOnly=yes -o ConnectTimeout=10',
                    '-e', '@'+str(job.job_dir/'component-vars.json'),
-                   str(self.settings.ansible_project_dir/'playbooks/04-setup-component.yml')]
+                   str(self.settings.ansible_project_dir/'playbooks'/playbook)]
         env = os.environ.copy()
         env['ANSIBLE_CONFIG'] = str(self.settings.ansible_project_dir/'ansible.cfg')
         env['ANSIBLE_STDOUT_CALLBACK'] = 'alt_setup_events'

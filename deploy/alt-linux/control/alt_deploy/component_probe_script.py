@@ -424,7 +424,7 @@ def inspect_component(root, recipe, user, home, name, call):
             and backend_rc == 0 and backend == 'samba' and policy_rc == 0 and policy == 'workstation'
             and state_rc == 0 and properties.get('Result') == 'success' and properties.get('ExecMainStatus') == '0'
             and int(properties.get('ExecMainStartTimestampMonotonic', '0')) > 0)
-    elif kind in ('plasma', 'government_ca', 'shortcuts', 'krfb'):
+    elif kind in ('plasma', 'government_ca', 'shortcuts', 'krfb', 'kwallet'):
         if not user['home_safe']:
             return fact
         if not user['home_exists']:
@@ -435,6 +435,11 @@ def inspect_component(root, recipe, user, home, name, call):
             fact['checks']['ready'] = desktop_ready(root, recipe, home, uid)
         elif kind == 'government_ca':
             fact['checks']['ready'] = certificates_ready(root, recipe, home, name, uid, call)
+        elif kind == 'kwallet':
+            # The controller enriches this fixed placeholder through the
+            # separately published read-only GUI observer. Never execute a
+            # program or an operation selector supplied in this query.
+            fact['checks']['ready'] = False
         elif kind == 'shortcuts':
             defaults = recipe['defaults']
             entries = recipe['entries']

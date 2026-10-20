@@ -231,6 +231,15 @@ setup_catalog:
       execution: {role: government_ca, operation: configure, scope: system_and_user, requires_domain: true, requires_user_home: false, requires_reboot: false, retry_policy: idempotent}
       preflight: {recipe: government_ca}
       verification: {recipe: government_ca, functional_verification_required: false}
+    - id: desktop.kwallet_repair
+      version: 1
+      name: Confirmed empty-name KWallet repair
+      category: desktop
+      supported_os: [alt-kworkstation-11]
+      dependencies: [domain.ready, desktop.plasma, software.browser]
+      execution: {role: kwallet_empty_name_repair, operation: configure, scope: user, requires_domain: true, requires_user_home: true, requires_reboot: false, retry_policy: guarded}
+      preflight: {recipe: kwallet}
+      verification: {recipe: kwallet, functional_verification_required: false}
     - id: desktop.shortcuts
       version: 1
       name: Application shortcuts and Nextcloud autostart

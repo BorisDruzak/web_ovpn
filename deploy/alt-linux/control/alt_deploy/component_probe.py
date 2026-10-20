@@ -135,6 +135,9 @@ def desired_queries(project, catalog, components, *, profile_id='base'):
                     (roles/'government_ca/files/import_user_certificates.py').read_bytes()).hexdigest(), 'mode': 0o755},
                 '/etc/xdg/autostart/alt-government-ca.desktop': {'sha256': hashlib.sha256(
                     (roles/'government_ca/files/alt-government-ca.desktop').read_bytes()).hexdigest(), 'mode': 0o644}}
+        elif recipe == 'kwallet':
+            from .kwallet_runtime import specification
+            query['wallet'] = specification(project)
         elif recipe == 'shortcuts':
             query['defaults'] = _yaml(roles/'desktop_shortcuts/defaults/main.yml')
             selected_ids = set(catalog.profile(profile_id)['components']) | {c['id'] for c in components}
@@ -226,6 +229,28 @@ class ComponentProbe:
             if (rc or not valid_evidence(document, allow_unresolved=allow_unresolved) or document['machine']['uuid'] != machine.uuid
                     or document['machine']['hostname'] != machine.hostname or document['user']['login'] != login):
                 raise ValueError
+            for component in components:
+                if component['verification']['recipe']!='kwallet':continue
+                fact={'schema_version':1,'checks':{'ready':False},'error_code':None}
+                if allow_unresolved and (not document['user']['home_exists'] or document['user']['uid'] is None):
+                    fact['deferred']=True
+                else:
+                    from .kwallet_runtime import observe,validate_observation
+                    from .wallet_codes import WALLET_CODES
+                    result=observe(self.settings,machine,user,expected_boot_id=document['machine']['boot_id'],runner=self.runner)
+                    if isinstance(result,dict) and set(result)=={'status','code'} and result['status']=='blocked':
+                        if result['code'] not in WALLET_CODES:raise ValueError
+                        fact['error_code']=result['code']
+                    else:
+                        if not isinstance(result,dict) or set(result)!={'status','observation'} or result['status']!='ok':raise ValueError
+                        wanted=next(q['wallet'] for q in query['components'] if q['id']==component['id'])
+                        request=dict(wanted,machine_uuid=machine.uuid,hostname=machine.hostname,login=login)
+                        value=validate_observation(result['observation'],request,document['machine']['boot_id'])
+                        if value['uid']!=document['user']['uid'] or value['gid']!=document['user']['gid']:raise ValueError
+                        fact['wallet_readiness']=value
+                        fact['checks']['ready']=(value['disposition']=='noop' and value['helper_installed']
+                                                and value['installed_helper_sha256']==wanted['helper_sha256'])
+                document['components'][component['id']]=fact
             return document
         except Exception:
             raise fail('component_probe_unverified', 'Read-only component evidence cannot be verified') from None

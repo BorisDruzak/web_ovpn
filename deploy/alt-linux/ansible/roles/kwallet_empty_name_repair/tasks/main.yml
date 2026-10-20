@@ -1,0 +1,185 @@
+---
+- name: Require exactly one internally claimed wallet operation
+  ansible.builtin.assert:
+    that:
+      - (alt_setup_workflow_context is defined) != (alt_setup_wallet_component_context is defined)
+      - alt_setup_wallet_readiness is defined and alt_setup_wallet_readiness is mapping
+      - kwallet_repair_user is string
+      - kwallet_repair_user | lower is match('^[a-z0-9][a-z0-9._-]{0,62}(@sosnadmin[.]local)?$')
+      - kwallet_repair_new_name is string and kwallet_repair_new_name is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+    fail_msg: The wallet repair requires its original confirmed native job
+  no_log: true
+
+- name: Bind wallet parameters to the original claimed readiness
+  ansible.builtin.set_fact:
+    kwallet_native_context: "{{ alt_setup_workflow_context if alt_setup_workflow_context is defined else alt_setup_wallet_component_context }}"
+    kwallet_selected_login: "{{ (kwallet_repair_user | lower).split('@')[0] }}"
+  no_log: true
+
+- name: Require the selected user phase or original component job
+  ansible.builtin.assert:
+    that:
+      - kwallet_native_context is mapping
+      - kwallet_native_context.schema_version == 1
+      - >-
+        (kwallet_native_context.kind == 'complete_workstation' and kwallet_native_context.phase == 'user') or
+        (kwallet_native_context.kind == 'component_wallet_repair' and kwallet_native_context.component_id == 'desktop.kwallet_repair')
+      - kwallet_native_context.machine_uuid == machine_uuid
+      - alt_setup_wallet_readiness.machine_uuid == machine_uuid
+      - alt_setup_wallet_readiness.hostname == final_hostname
+      - alt_setup_wallet_readiness.login == kwallet_selected_login
+      - alt_setup_wallet_readiness.wallet_name == kwallet_repair_new_name
+      - alt_setup_wallet_readiness.readiness_sha256 is match('^[0-9a-f]{64}$')
+      - alt_setup_wallet_readiness.disposition in ['noop', 'repair']
+    fail_msg: The confirmed wallet identity or parameters changed
+  no_log: true
+
+- name: Build the fixed published wallet helper
+  ansible.builtin.set_fact:
+    kwallet_helper_program: "{{ role_path | alt_wallet_program }}"
+    kwallet_helper_sha256: "{{ (role_path | alt_wallet_program) | hash('sha256') }}"
+  no_log: true
+
+- name: Require the exact planned helper source before any target changes
+  ansible.builtin.assert:
+    that:
+      - kwallet_helper_sha256 == alt_setup_wallet_readiness.helper_sha256
+      - kwallet_helper_program | length < 120000
+    fail_msg: The published wallet helper changed after confirmation
+  no_log: true
+
+- name: Bind the one-shot target operation identifier
+  ansible.builtin.set_fact:
+    kwallet_operation_sha256: >-
+      {{ kwallet_native_context.claim_sha256 if kwallet_native_context.kind == 'complete_workstation'
+         else kwallet_native_context.operation_sha256 }}
+  no_log: true
+
+- name: Inspect fixed wallet helper parent directories
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop: [/usr, /usr/local, /usr/local/libexec]
+  register: kwallet_helper_parents
+  no_log: true
+
+- name: Require protected existing wallet helper directories
+  ansible.builtin.assert:
+    that:
+      - >-
+        (not item.stat.exists and item.item == '/usr/local/libexec') or
+        (item.stat.exists and item.stat.isdir and not item.stat.islnk and item.stat.uid == 0 and
+         item.stat.mode[-2] in ['0', '1', '4', '5'] and item.stat.mode[-1] in ['0', '1', '4', '5'])
+    fail_msg: The wallet helper parent ownership is unverified
+  loop: "{{ kwallet_helper_parents.results }}"
+  no_log: true
+
+- name: Inspect the fixed wallet helper before installation
+  ansible.builtin.stat:
+    path: /usr/local/libexec/alt-kwallet-empty-name-repair
+    checksum_algorithm: sha256
+    follow: false
+  register: kwallet_helper_before
+  no_log: true
+
+- name: Reject an unproven wallet helper name collision
+  ansible.builtin.assert:
+    that:
+      - >-
+        (not kwallet_helper_before.stat.exists and not alt_setup_wallet_readiness.helper_installed) or
+        (kwallet_helper_before.stat.exists and kwallet_helper_before.stat.isreg and
+         not kwallet_helper_before.stat.islnk and kwallet_helper_before.stat.uid == 0 and
+         kwallet_helper_before.stat.mode == '0700' and kwallet_helper_before.stat.nlink == 1 and
+         kwallet_helper_before.stat.checksum == alt_setup_wallet_readiness.installed_helper_sha256 and
+         kwallet_helper_before.stat.checksum in ([kwallet_helper_sha256] + kwallet_repair_previous_helper_sha256))
+    fail_msg: The existing wallet helper is not an approved owned asset
+  no_log: true
+
+- name: Create only the absent fixed helper directory
+  ansible.builtin.file:
+    path: /usr/local/libexec
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+    follow: false
+  when: not kwallet_helper_parents.results[2].stat.exists
+  no_log: true
+
+- name: Install the exact fixed wallet helper
+  ansible.builtin.copy:
+    content: "{{ kwallet_helper_program }}"
+    dest: /usr/local/libexec/alt-kwallet-empty-name-repair
+    owner: root
+    group: root
+    mode: '0700'
+    follow: false
+  no_log: true
+  diff: false
+
+- name: Recheck actual graphical wallet readiness without changing it
+  ansible.builtin.command:
+    argv: [/usr/bin/python3, -I, -B, /usr/local/libexec/alt-kwallet-empty-name-repair,
+      --observe, --machine-uuid, "{{ machine_uuid }}", --hostname, "{{ final_hostname }}",
+      --user, "{{ kwallet_selected_login }}", --wallet-name, "{{ kwallet_repair_new_name }}",
+      --helper-sha256, "{{ kwallet_helper_sha256 }}"]
+  register: kwallet_current
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Require unchanged confirmed wallet evidence before repair
+  ansible.builtin.assert:
+    that:
+      - kwallet_current.rc == 0
+      - (kwallet_current.stdout | from_json).schema_version == 1
+      - (kwallet_current.stdout | from_json).status == 'ok'
+      - (kwallet_current.stdout | from_json).observation.helper_installed is sameas true
+      - (kwallet_current.stdout | from_json).observation.installed_helper_sha256 == kwallet_helper_sha256
+      - (kwallet_current.stdout | from_json).observation.readiness_sha256 == alt_setup_wallet_readiness.readiness_sha256
+      - (kwallet_current.stdout | from_json).observation.disposition == alt_setup_wallet_readiness.disposition
+    fail_msg: The selected graphical wallet evidence changed before repair
+  no_log: true
+
+- name: Apply only the original one-shot confirmed wallet repair
+  ansible.builtin.command:
+    argv: [/usr/bin/python3, -I, -B, /usr/local/libexec/alt-kwallet-empty-name-repair,
+      --apply, --machine-uuid, "{{ machine_uuid }}", --hostname, "{{ final_hostname }}",
+      --user, "{{ kwallet_selected_login }}", --wallet-name, "{{ kwallet_repair_new_name }}",
+      --helper-sha256, "{{ kwallet_helper_sha256 }}", --expected-readiness-sha256,
+      "{{ alt_setup_wallet_readiness.readiness_sha256 }}", --operation-sha256, "{{ kwallet_operation_sha256 }}"]
+    stdin: "{{ kwallet_native_context | to_json }}"
+    stdin_add_newline: false
+  register: kwallet_apply
+  changed_when: >-
+    kwallet_apply.rc == 0 and (kwallet_apply.stdout | from_json).status == 'ok' and
+    (kwallet_apply.stdout | from_json).result.changed is sameas true
+  failed_when: false
+  when: alt_setup_wallet_readiness.disposition == 'repair'
+  no_log: true
+  diff: false
+
+- name: Retain only a fixed diagnostic from the original wallet invocation
+  ansible.builtin.set_fact:
+    kwallet_safe_failure: >-
+      {{ ((kwallet_apply.stdout | from_json).result.code | default((kwallet_apply.stdout | from_json).code | default('kwallet_repair_outcome_unverified'))) | alt_wallet_safe_code }}
+  when: not (kwallet_apply.skipped | default(false))
+  no_log: true
+
+- name: Report a safe wallet repair failure without private output
+  ansible.builtin.fail:
+    msg: "ALT_WALLET_FAILURE:{{ kwallet_safe_failure }}"
+  when:
+    - not (kwallet_apply.skipped | default(false))
+    - kwallet_apply.rc != 0 or (kwallet_apply.stdout | from_json).status != 'ok'
+  no_log: false
+
+- name: Require verified wallet outcome before component completion
+  ansible.builtin.assert:
+    that:
+      - (kwallet_apply.stdout | from_json).result.status in ['noop', 'repaired']
+      - (kwallet_apply.stdout | from_json).helper_sha256 == kwallet_helper_sha256
+      - (kwallet_apply.stdout | from_json).operation_sha256 == kwallet_operation_sha256
+    fail_msg: The original wallet repair outcome requires review
+  when: not (kwallet_apply.skipped | default(false))
+  no_log: true

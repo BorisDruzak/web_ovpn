@@ -125,6 +125,17 @@ class VerificationEngine:
             if any(components[d]['status'] != 'compliant' for d in component['dependencies']):
                 result.update(status='blocked', operator_action='verify_dependencies')
                 continue
+            if component['verification']['recipe'] == 'kwallet':
+                try:
+                    from .kwallet_runtime import specification,validate_observation
+                    request=dict(specification(self.catalog._project),machine_uuid=evidence['machine']['uuid'],
+                                 hostname=evidence['machine']['hostname'],login=evidence['user']['login'])
+                    value=validate_observation(fact['wallet_readiness'],request,evidence['machine']['boot_id'])
+                    expected=(value['disposition']=='noop' and value['helper_installed']
+                              and value['installed_helper_sha256']==request['helper_sha256'])
+                    if (value['uid']!=evidence['user']['uid'] or value['gid']!=evidence['user']['gid']
+                            or fact['checks']!={'ready':expected}):raise ValueError
+                except Exception:continue
             if component['verification']['recipe'] == 'package':
                 status = _package_status(self.catalog.artifact(identifier), fact)
             else:

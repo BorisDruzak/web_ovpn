@@ -1,0 +1,19 @@
+---
+- name: Repair one confirmed selected-user wallet component
+  hosts: all
+  serial: 1
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/software_catalog.yml
+  tasks:
+    - name: Require exactly the original confirmed wallet component
+      ansible.builtin.assert:
+        that:
+          - setup_component_id == 'desktop.kwallet_repair'
+          - ansible_play_hosts_all | length == 1
+        fail_msg: Wallet repair uses one confirmed native component job
+      tags: [alt_setup_preflight]
+    - name: Execute the approved component boundary
+      ansible.builtin.import_tasks: tasks/setup_component_execution.yml
