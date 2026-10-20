@@ -18,7 +18,7 @@ import threading
 import time
 import uuid
 
-from .krfb_user_session import KRFBSessionError,_ini,_configuration_ready,_autostart_ready,_collect,_owned,stop_krfb,launch_krfb
+from .krfb_user_session import KRFBSessionError,_ini,_configuration_ready,_autostart_ready,_collect,_owned,stop_krfb,launch_krfb,krfb_scope
 from .user_session import SessionContext,SessionError,_inside,_read,_trusted_program,_call
 
 
@@ -344,18 +344,31 @@ def ensure_session(request,*,root=Path('/'),call=_call,limits_reader=resource.pr
             snapshot,context,process=current()
             if not snapshot['configuration_safe'] or not snapshot['autostart_safe']:
                 raise KRFBSessionError('krfb_configuration_unverified')
+            launched=None
             if process is None:
                 # Exactly one dispatch. A new human-started process discovered
                 # here or during startup is adopted only for fresh proof.
                 record_stage('launch-requested');effects=True
-                pid=launch_krfb(context)
-                _private_record(directory,'launch.json',{'schema_version':1,'context':request['context'],'pid':pid})
+                def register_launch(identity):
+                    if identity['boot_id']!=assessment.snapshot['boot_id']:raise ValueError
+                    _private_record(directory,'launch.json',{'schema_version':1,'context':request['context'],
+                        'boot_id':identity['boot_id'],'unit':krfb_scope(context),'child':identity})
+                    return True
+                launched=launch_krfb(context,register_child=register_launch)
             deadline=time.monotonic()+20
             while True:
                 snapshot,context,process=current()
                 if process is not None and snapshot['listener_present']:break
                 if time.monotonic()>=deadline:raise KRFBSessionError('krfb_runtime_outcome_unverified')
                 time.sleep(0.2)
+            if launched is not None:
+                scope='/user.slice/user-'+str(context.uid)+'.slice/user@'+str(context.uid)+'.service/app.slice/'+krfb_scope(context)+'.scope'
+                if (process['pid']!=launched['pid'] or process['start_ticks']!=launched['start_ticks']
+                        or not any(line.split(':',2)[-1]==scope for line in process['cgroup'])):
+                    raise KRFBSessionError('krfb_runtime_outcome_unverified')
+                _private_record(directory,'launch-confirmed.json',{'schema_version':1,'context':request['context'],
+                    'boot_id':snapshot['boot_id'],'launch_sha256':hashlib.sha256(_read(directory/'launch.json')).hexdigest(),
+                    'pid':process['pid'],'start_ticks':process['start_ticks'],'unit':krfb_scope(context)})
             configuration=_owned(root,context.home+'/.config/krfbrc',context.uid,context.gid,0o600)
             autostart=_owned(root,context.home+'/.config/autostart/org.sosn.krfb.desktop',context.uid,context.gid,0o644)
             if (prepare_configuration(configuration,request['configuration'].encode(),context)!=configuration

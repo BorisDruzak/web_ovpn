@@ -1,5 +1,6 @@
 """A root receipt proves birth identity; a dead parent is insufficient."""
 import json
+import hashlib
 import os
 from pathlib import Path
 
@@ -9,6 +10,28 @@ from alt_deploy.setup_phase_target import mutators_quiet
 
 
 BOOT='11111111-2222-3333-4444-555555555555'
+
+
+@pytest.mark.parametrize('case',['pending','confirmed','reused','exited','foreign_confirmation','legacy'])
+def test_delayed_user_manager_dispatch_remains_a_mutator_after_helper_exit(tmp_path,case):
+    proc=tmp_path/'proc/sys/kernel/random';proc.mkdir(parents=True);(proc/'boot_id').write_text(BOOT)
+    namespace=tmp_path/'var/lib/alt-krfb-user-runtime';namespace.mkdir(parents=True,mode=0o700)
+    directory=namespace/('a'*64);directory.mkdir(mode=0o700)
+    context={'claim_sha256':'a'*64}
+    record(directory/'manifest.json',{'boot_id':BOOT,'context':context,'helper':{'pid':321,'start_ticks':123}})
+    launch={'schema_version':1,'context':context,'boot_id':BOOT,'unit':'app-alt-krfb-1000-40',
+            'child':{'pid':322,'start_ticks':456,'uid':1000,'gid':1000,'command_sha256':'b'*64}}
+    record(directory/'launch.json',launch if case!='legacy' else {'schema_version':1,'context':context,'pid':322})
+    if case!='exited':
+        target=tmp_path/'proc/322';target.mkdir()
+        (target/'stat').write_text('322 (systemd-run) '+' '.join(['S']+['1']*18+[str(457 if case=='reused' else 456)]))
+    if case in ('confirmed','foreign_confirmation'):
+        record(directory/'launch-confirmed.json',{'schema_version':1,'context':context,'boot_id':BOOT,
+            'launch_sha256':hashlib.sha256((directory/'launch.json').read_bytes()).hexdigest(),
+            'pid':322,'start_ticks':456 if case=='confirmed' else 789,'unit':launch['unit']})
+    if case in ('foreign_confirmation','legacy'):
+        with pytest.raises(ValueError):mutators_quiet(root=tmp_path)
+    else:assert mutators_quiet(root=tmp_path) is (case!='pending')
 
 
 def record(path,value):

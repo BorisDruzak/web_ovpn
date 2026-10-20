@@ -45,15 +45,18 @@ def transaction_fixture(f,monkeypatch,*,running=True,correct=False,clients=False
         for name,target in [('krfbrc',f['config']),('org.sosn.krfb.desktop',f['autostart'])]:
             assert hashlib.sha256(target.read_bytes()).hexdigest()==expected[name]
             target.write_bytes(contents[name])
-    def launch(context):
+    def launch(context,*,register_child):
         assert (directory/'manifest.json').is_file()
         assert b'fixture-desktop' not in f['config'].read_bytes()
         assert module.prepare_configuration(f['config'].read_bytes(),request['configuration'].encode(),context)==f['config'].read_bytes()
+        identity={'pid':104,'start_ticks':10400,'boot_id':assessment.snapshot['boot_id'],
+                  'uid':context.uid,'gid':context.gid,'command_sha256':'d'*64}
+        assert register_child(identity) is True
         trace.append('launch')
-        process=f['process'](104,'/usr/bin/krfb',f['env'],f'/user.slice/user-{f["uid"]}.slice/session-40.scope')
+        process=f['process'](104,'/usr/bin/krfb',f['env'],f'/user.slice/user-{f["uid"]}.slice/user@{f["uid"]}.service/app.slice/app-alt-krfb-{f["uid"]}-40.scope')
         (process/'fd').mkdir();(process/'fd/7').symlink_to('socket:[1999]')
         (f['root']/'proc/net/tcp').write_text('header\n'+f['row']())
-        return 104
+        return identity
     monkeypatch.setattr(module,'stop_krfb',stop,raising=False)
     monkeypatch.setattr(module,'write_user_configuration',write)
     monkeypatch.setattr(module,'launch_krfb',launch,raising=False)
@@ -172,7 +175,7 @@ def test_human_process_appearing_after_write_is_not_stopped_or_launched_again(de
     original=module.write_user_configuration;launch=module.launch_krfb
     def write(*a,**kw):
         original(*a,**kw)
-        launch(a[0]);trace.remove('launch')
+        launch(a[0],register_child=lambda _:True);trace.remove('launch')
     monkeypatch.setattr(module,'write_user_configuration',write)
     monkeypatch.setattr(module,'launch_krfb',lambda *_:pytest.fail('Do not launch over a human-started process'))
     result=apply(module,request,f)
@@ -182,14 +185,19 @@ def test_human_process_appearing_after_write_is_not_stopped_or_launched_again(de
 
 def test_listener_startup_timeout_never_relaunches_or_stops_the_new_child(desktop,monkeypatch):
     f=desktop;module,request,initial,directory,trace=transaction_fixture(f,monkeypatch,running=False)
-    def launch(*_):trace.append('launch');return 104
+    def launch(*_,register_child):
+        identity={'pid':104,'start_ticks':10400,'boot_id':initial.snapshot['boot_id'],
+                  'uid':f['uid'],'gid':f['gid'],'command_sha256':'d'*64}
+        assert register_child(identity) is True
+        trace.append('launch');return identity
     ticks=iter([0,0,21])
     monkeypatch.setattr(module,'launch_krfb',launch)
     monkeypatch.setattr(module.time,'monotonic',lambda:next(ticks))
     monkeypatch.setattr(module.time,'sleep',lambda *_:None)
     result=apply(module,request,f)
     assert result['status']=='unknown' and trace==['write','launch']
-    assert json.loads((directory/'launch.json').read_text())['pid']==104
+    assert json.loads((directory/'launch.json').read_text())['child']['pid']==104
+    assert not (directory/'launch-confirmed.json').exists()
 
 
 @pytest.mark.parametrize('case',['symlink','hardlink','mode'])

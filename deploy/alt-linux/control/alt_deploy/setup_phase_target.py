@@ -82,6 +82,23 @@ def mutators_quiet(*,root=Path('/')):
                 record=json.loads(_regular(writer,owner,private=True))
                 if record.get('boot_id')!=boot:raise ValueError
                 if _alive(record['child'],boot,root):return False
+            launch=path/'launch.json'
+            if name=='alt-krfb-user-runtime' and (launch.exists() or launch.is_symlink()):
+                raw=_regular(launch,owner,private=True);record=json.loads(raw)
+                if (record.get('schema_version')!=1 or record.get('boot_id')!=boot
+                        or record.get('context')!=value.get('context')
+                        or not re.fullmatch('app-alt-krfb-[0-9]+-[0-9A-Za-z_-]{1,64}',record.get('unit',''))):raise ValueError
+                child=record['child']
+                confirmation=path/'launch-confirmed.json'
+                if confirmation.exists() or confirmation.is_symlink():
+                    confirmed=json.loads(_regular(confirmation,owner,private=True))
+                    if (confirmed!={'schema_version':1,'context':record['context'],'boot_id':boot,
+                            'launch_sha256':hashlib.sha256(raw).hexdigest(),'pid':child['pid'],
+                            'start_ticks':child['start_ticks'],'unit':record['unit']}):raise ValueError
+                    # The immutable receipt was written only after the same
+                    # birth identity exec'd KRFB inside the exact user scope.
+                    # It can no longer be a delayed systemd dispatch wrapper.
+                elif _alive(child,boot,root):return False
     return True
 
 

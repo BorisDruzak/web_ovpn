@@ -12,6 +12,7 @@ import select
 import signal
 import stat
 import subprocess
+import sys
 import threading
 
 from .user_session import SessionError, _call, _inside, _process, _read, _revalidate, _trusted_program, discover_session
@@ -222,18 +223,52 @@ def stop_krfb(context, record, *, root=Path('/')):
         if descriptor is not None:os.close(descriptor)
 
 
-def launch_krfb(context):
+_DISPATCH_GATE = ('import os,sys\n'
+    'if sys.stdin.buffer.read(1)!=b"1": sys.exit(4)\n'
+    'os.close(0)\n'
+    'os.open("/dev/null",os.O_RDONLY)\n'
+    'os.execve(sys.argv[1],sys.argv[1:],os.environ)\n')
+
+
+def krfb_scope(context):
+    if not re.fullmatch('[0-9A-Za-z_-]{1,64}',context.session_id):raise ValueError
+    return 'app-alt-krfb-'+str(context.uid)+'-'+context.session_id
+
+
+def _launch_identity(pid,context,executable,command):
+    directory=Path('/proc')/str(pid)
+    status=dict(line.split(':',1) for line in _read(directory/'status',16384).decode().splitlines() if ':' in line)
+    raw=_read(directory/'cmdline',131072)
+    if (status.get('Uid','').split()!=[str(context.uid)]*4
+            or status.get('Gid','').split()!=[str(context.gid)]*4
+            or int(status.get('PPid','0'))!=os.getpid()
+            or os.readlink(directory/'exe')!=executable
+            or raw!=b'\0'.join(os.fsencode(part) for part in command)+b'\0'):raise ValueError
+    fields=_read(directory/'stat',4096).decode().rsplit(')',1)[1].split()
+    ticks=int(fields[19])
+    if ticks<=0 or fields[0] in ('Z','X'):raise ValueError
+    return {'pid':pid,'start_ticks':ticks,'parent_pid':os.getpid(),'uid':context.uid,'gid':context.gid,
+            'boot_id':_read(Path('/proc/sys/kernel/random/boot_id')).decode().strip(),
+            'command_sha256':hashlib.sha256(raw).hexdigest()}
+
+
+def launch_krfb(context,*,register_child):
     """Start only the fixed package program with the real user's GUI context.
 
     Called by a single-threaded one-shot target helper, after password/policy
-    preparation. It leaves its own long-lived child running. The caller proves
+    preparation. A user-manager scope outlives the administrative SSH session;
+    setsid alone does not escape logind's session cgroup. Scope execution keeps
+    the captured graphical environment and process limits. The caller proves
     its selected session/listener and direct RFB result separately; a lost
     launch result must never cause an automatic second launch.
     """
+    process=descriptor=None;released=False
     try:
-        if threading.active_count()!=1:raise ValueError
+        if threading.active_count()!=1 or not callable(register_child):raise ValueError
         _revalidate(context)
         program = _trusted_program(['/usr/bin/krfb'])
+        manager = _trusted_program(['/usr/bin/systemd-run'])
+        executable = _trusted_program([sys.executable])
         if os.geteuid()!=0 and (os.geteuid()!=context.uid or os.getegid()!=context.gid
                                or tuple(os.getgroups())!=context.groups):raise ValueError
 
@@ -245,13 +280,38 @@ def launch_krfb(context):
                 os.setgid(context.gid)
                 os.setuid(context.uid)
 
-        process = subprocess.Popen([program],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,
+        command = [executable,'-I','-c',_DISPATCH_GATE,manager,'--user','--scope','--collect','--quiet',
+                   '--unit='+krfb_scope(context),'--',program]
+        process = subprocess.Popen(command,stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,env=dict(context.environment),cwd=context.home,close_fds=True,
             start_new_session=True,preexec_fn=prepare_child)
-        if process.poll() is not None:
-            raise KRFBSessionError('krfb_runtime_outcome_unverified')
-        return process.pid
+        descriptor=os.pidfd_open(process.pid,0)
+        identity=_launch_identity(process.pid,context,executable,command)
+        # The child cannot contact systemd or launch KRFB before this private
+        # birth receipt is durable. Parent death closes stdin without dispatch.
+        if (register_child(identity) is not True
+                or _launch_identity(process.pid,context,executable,command)!=identity
+                or select.select([descriptor],[],[],0)[0]):raise ValueError
+        _revalidate(context)
+        released=True
+        process.stdin.write(b'1');process.stdin.flush();process.stdin.close()
+        return identity
     except KRFBSessionError:
         raise
     except (OSError,ValueError,TypeError,KeyError,AttributeError,SessionError,subprocess.SubprocessError):
         raise KRFBSessionError('krfb_runtime_launch_unverified') from None
+    finally:
+        if process is not None:
+            if process.stdin is not None and not process.stdin.closed:process.stdin.close()
+            if not released:
+                try:process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    # Only this unreleased, pidfd-bound gate is eligible. Once
+                    # released, uncertainty retains the receipt and never kills
+                    # a desktop application or permits a second dispatch.
+                    if descriptor is not None:
+                        try:signal.pidfd_send_signal(descriptor,signal.SIGKILL,None,0)
+                        except ProcessLookupError:pass
+                    try:process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:pass
+        if descriptor is not None:os.close(descriptor)

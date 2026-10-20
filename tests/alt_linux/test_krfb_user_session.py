@@ -162,17 +162,78 @@ def test_long_lived_launcher_preserves_gui_limits_and_drops_privilege_before_exe
         monkeypatch.setattr(os,name,lambda value,name=name:operations.append((name,value)))
     import resource,subprocess
     monkeypatch.setattr(resource,'setrlimit',lambda key,value:operations.append(('limit',(key,value))))
+    class Pipe:
+        closed=False
+        def write(self,value):operations.append(('dispatch',value))
+        def flush(self):pass
+        def close(self):self.closed=True
     class Process:
         pid=999
+        stdin=Pipe()
         def poll(self):return None
     def start(argv,**options):
         started.append((argv,options));options['preexec_fn']();return Process()
     monkeypatch.setattr(subprocess,'Popen',start)
-    assert module.launch_krfb(context)==999
+    identity={'pid':999,'start_ticks':123,'uid':context.uid,'gid':context.gid}
+    monkeypatch.setattr(module,'_launch_identity',lambda *a:identity)
+    monkeypatch.setattr(os,'pidfd_open',lambda *a:998)
+    monkeypatch.setattr(os,'close',lambda *a:None)
+    monkeypatch.setattr(module.select,'select',lambda *a:([],[],[]))
+    def register(value):operations.append(('register',value));return True
+    assert module.launch_krfb(context,register_child=register)==identity
     argv,options=started[0]
-    assert argv==['/usr/bin/krfb'] and options['env']==context.environment
-    assert options['stdin']==options['stdout']==options['stderr']==subprocess.DEVNULL
+    assert argv[1:4]==['-I','-c',module._DISPATCH_GATE]
+    assert argv[4:]==['/usr/bin/systemd-run','--user','--scope','--collect','--quiet',
+                  '--unit=app-alt-krfb-'+str(context.uid)+'-'+context.session_id,
+                  '--','/usr/bin/krfb']
+    assert options['env']==context.environment
+    assert options['stdin']==subprocess.PIPE and options['stdout']==options['stderr']==subprocess.DEVNULL
     assert options['start_new_session'] is True and options['close_fds'] is True
     assert options['cwd']==context.home
     assert [entry for entry in operations if entry[0]=='limit']==[('limit',item) for item in context.limits.items()]
-    assert operations[-3:]==[('setgroups',context.groups),('setgid',context.gid),('setuid',context.uid)]
+    assert operations[-5:]==[('setgroups',context.groups),('setgid',context.gid),('setuid',context.uid),
+                             ('register',identity),('dispatch',b'1')]
+
+
+def test_launcher_never_falls_back_to_the_ssh_session_when_user_manager_is_untrusted(desktop,monkeypatch):
+    from alt_deploy import krfb_user_session as module
+    from alt_deploy.user_session import SessionError
+    import subprocess
+    context=discover(desktop)
+    monkeypatch.setattr(module,'_revalidate',lambda value:None)
+    def trusted(argv):
+        if argv[0]=='/usr/bin/systemd-run':raise SessionError('graphical_command_unverified')
+        return argv[0]
+    monkeypatch.setattr(module,'_trusted_program',trusted)
+    monkeypatch.setattr(subprocess,'Popen',lambda *_a,**_k:pytest.fail('No launch from the SSH session'))
+    with pytest.raises(module.KRFBSessionError,match='krfb_runtime_launch_unverified'):
+        module.launch_krfb(context,register_child=lambda _:True)
+
+
+def test_dispatch_gate_eof_cannot_launch_after_parent_disappears(tmp_path):
+    import subprocess,sys
+    from alt_deploy.krfb_user_session import _DISPATCH_GATE
+    marker=tmp_path/'dispatched'
+    command=[sys.executable,'-I','-c',_DISPATCH_GATE,sys.executable,'-I','-c',
+             'from pathlib import Path;Path('+repr(str(marker))+').write_text("started")']
+    assert subprocess.run(command,input=b'',capture_output=True,timeout=5).returncode==4
+    assert not marker.exists()
+    assert subprocess.run(command,input=b'1',capture_output=True,timeout=5).returncode==0
+    assert marker.read_text()=='started'
+
+
+def test_failed_durable_launch_receipt_leaves_no_dispatchable_child(desktop,monkeypatch,tmp_path):
+    import dataclasses,sys
+    from alt_deploy import krfb_user_session as module
+    context=dataclasses.replace(discover(desktop),home=str(tmp_path))
+    monkeypatch.setattr(module,'_revalidate',lambda _:None)
+    monkeypatch.setattr(module,'_trusted_program',lambda argv:str(Path(sys.executable).resolve()) if argv[0]==sys.executable else argv[0])
+    observed=[]
+    def register(identity):
+        observed.append(identity)
+        assert Path('/proc',str(identity['pid'])).exists()
+        raise OSError('durability failure')
+    with pytest.raises(module.KRFBSessionError,match='krfb_runtime_launch_unverified'):
+        module.launch_krfb(context,register_child=register)
+    assert len(observed)==1
+    assert not Path('/proc',str(observed[0]['pid'])).exists()
