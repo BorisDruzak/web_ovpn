@@ -131,6 +131,8 @@ class ComponentSetupService:
         if len(ous) != 1:
             raise fail('setup_ou_not_found', 'Recorded computer OU is missing or ambiguous')
         profile = catalog.profile(binding['software_profile'])
+        if component_id=='remote.krfb' and profile['id']=='workstation-full-v1' and not read_only:
+            raise fail('full_workflow_required','Direct KRFB belongs to the original managed user phase; legacy restricted component apply is unavailable')
         user = self.setup.directory.user(binding['login'])
         if (user.get('state') != 'enabled' or user.get('object_guid') != binding['object_guid']
                 or user.get('object_sid') != binding['object_sid'] or not user.get('object_sid')):

@@ -8,9 +8,40 @@ import ssl
 import sqlite3
 import subprocess
 import sys
+import stat
+import fcntl
+from contextlib import contextmanager
 
 
 CRYPTOPRO_CERTMGR = Path('/opt/cprocsp/bin/amd64/certmgr')
+
+
+@contextmanager
+def user_import_lock(home):
+    """Share the actual import lock with first-login startup and native Setup."""
+    home=Path(home);uid=os.getuid();descriptor=None
+    try:
+        for parent in (home,*home.parents):
+            if not stat.S_ISDIR(parent.lstat().st_mode):raise ValueError('Unsafe import home')
+        if home.stat().st_uid!=uid:raise ValueError('Import home ownership differs')
+        directory=home
+        for name in ('.local','state','alt-government-ca'):
+            directory=directory/name
+            if not directory.exists() and not directory.is_symlink():directory.mkdir(mode=0o700)
+            info=directory.lstat()
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid!=uid or info.st_mode&0o022:
+                raise ValueError('Unsafe certificate import directory')
+        if stat.S_IMODE(directory.stat().st_mode)!=0o700:raise ValueError('Certificate import directory is not private')
+        path=directory/'import.lock'
+        descriptor=os.open(path,os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
+        info=os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid!=uid or stat.S_IMODE(info.st_mode)!=0o600
+                or info.st_nlink!=1 or info.st_size):raise ValueError('Unsafe certificate import lock')
+        try:fcntl.flock(descriptor,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError:raise ValueError('Selected-user certificate import is already active') from None
+        yield
+    finally:
+        if descriptor is not None:os.close(descriptor)
 
 
 def call(argv):
@@ -124,8 +155,9 @@ def main():
             raise ValueError('Browser certificate database ownership mismatch')
     directory = Path('/usr/local/share/alt-government-ca')
     entries = json.loads((directory / 'catalog.json').read_text())
-    print(json.dumps(import_certificates(directory, entries, db,
-                                       require_cryptopro=sys.argv[1:]==['--require-cryptopro'])))
+    with user_import_lock(home):
+        print(json.dumps(import_certificates(directory, entries, db,
+                                           require_cryptopro=sys.argv[1:]==['--require-cryptopro'])))
 
 
 if __name__ == '__main__':

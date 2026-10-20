@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 import stat
 
-from .setup_compat import control_module, history_fingerprint, MAINTENANCE_MODULES
+from .setup_compat import control_module, history_fingerprint, MAINTENANCE_MODULES,valid_validator_catalog
 from .setup_closed_failure import ClosedFailureEvidence
 from .setup_maintenance_review import MaintenanceReview, maintenance_lock, native_observe, denied
 from .setup_partial_observation import validate_evidence
@@ -18,8 +18,7 @@ def validate_payload(payload):
             or payload['job_ids'] != sorted(set(payload['job_ids']))
             or payload['lease_ids'] != sorted(set(payload['lease_ids']))
             or len(payload['covered']) != len(payload['job_ids']) or len(payload['lease_ids']) != 2*len(payload['job_ids'])
-            or set(payload['validators']) != set(MAINTENANCE_MODULES)
-            or any(not re.fullmatch('[0-9a-f]{64}', sha) for sha in payload['validators'].values())
+            or not valid_validator_catalog(payload['validators'])
             or not isinstance(payload['history'], dict)
             or any(not isinstance(name, str) or Path(name).is_absolute() or '..' in Path(name).parts
                    or not re.fullmatch('[0-9a-f]{64}', sha) for name, sha in payload['history'].items())): raise denied()
@@ -71,7 +70,8 @@ class MaintenanceCoverage(MaintenanceReview):
             info = path.lstat()
             # Source sandbox uses its service owner; production code is checked
             # root-owned by the bridge/native observer before import.
-            if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o022 or info.st_size > 1048576: raise denied()
+            if (not stat.S_ISREG(info.st_mode) or info.st_mode & 0o022 or info.st_size > 1048576
+                    or info.st_uid!=path.parent.stat().st_uid): raise denied()
             from .fs import read_regular_bytes
             hashes[name] = hashlib.sha256(read_regular_bytes(path, max_bytes=1048576)).hexdigest()
         return hashes
@@ -117,7 +117,7 @@ class MaintenanceCoverage(MaintenanceReview):
             with maintenance_lock(self.settings):
                 payload = self._snapshot_all()
                 now = self.clock().replace(microsecond=0)
-                body = {'schema_version': 2, 'operation': self.operation, 'created_at': now.isoformat(),
+                body = {'schema_version': self.schema_version, 'operation': self.operation, 'created_at': now.isoformat(),
                     'expires_at': (now+timedelta(minutes=30)).isoformat(), 'payload': payload,
                     'content_sha256': self.io.digest(payload)}
                 sha = self.io.digest(body)

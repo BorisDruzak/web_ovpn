@@ -305,6 +305,6 @@ setup_catalog:
       version: 1
       name: Complete workstation
       workflow: complete_workstation_v1
-      components: [remote.vnc_policy, system.base, domain.ready, desktop.plasma, software.browser, software.onlyoffice, software.nextcloud, software.directum, software.cryptopro, software.cades, software.gosplugin, software.vkworkspace, certificates.government, desktop.kwallet_repair, desktop.shortcuts, remote.krfb, network.final_dns]
+      components: [remote.vnc_policy, system.base, domain.ready, desktop.plasma, software.browser, software.onlyoffice, software.nextcloud, software.directum, software.cryptopro, software.cades, software.gosplugin, software.vkworkspace, certificates.government, remote.krfb, desktop.kwallet_repair, desktop.shortcuts, network.final_dns]
       optional_components: []
       confirmation_policy: sha256

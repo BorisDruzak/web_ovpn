@@ -159,6 +159,19 @@
   no_log: true
   diff: false
 
+- name: Read only the original root-owned wallet failure diagnostic
+  ansible.builtin.command:
+    argv: [/usr/bin/python3, -I, -B, -c,
+      "{{ alt_setup_helper_diagnostics['desktop.kwallet_repair'].program }}",
+      "{{ alt_setup_helper_diagnostics['desktop.kwallet_repair'].scope | to_json }}"]
+  when:
+    - alt_setup_helper_diagnostics is defined
+    - not (kwallet_apply.skipped | default(false))
+    - kwallet_apply.rc != 0 or (kwallet_apply.stdout | from_json).status != 'ok'
+  changed_when: false
+  failed_when: false
+  tags: [alt_setup_helper_diagnostic]
+
 - name: Retain only a fixed diagnostic from the original wallet invocation
   ansible.builtin.set_fact:
     kwallet_safe_failure: >-

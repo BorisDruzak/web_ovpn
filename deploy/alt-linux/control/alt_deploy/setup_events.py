@@ -35,6 +35,8 @@ def _diagnostic_code(result, component, expected):
     if (component['id'] != 'domain.ready' or 'alt_setup_first_join_diagnostic' not in getattr(task, 'tags', ())
             or getattr(task, 'no_log', False) or raw.get('_ansible_no_log') or not isinstance(expected, dict)):
         return None
+
+
     fields = {'schema_version', 'configuration_run_id', 'invocation_id', 'identity_sha256'}
     try:
         if (set(expected) != fields or type(expected['schema_version']) is not int or expected['schema_version'] != 1
@@ -68,7 +70,45 @@ def _diagnostic_code(result, component, expected):
         return None
 
 
-def safe_task_event(result, *, component, event_type, diagnostic_binding=None):
+def _helper_diagnostic(result,component,bindings):
+    try:
+        from .helper_diagnostics import CODES as HELPERS,UNAVAILABLE
+        from .helper_diagnostic_target import FIELDS,OUTCOMES,_unique
+        task=result._task;raw=result._result
+        if (not isinstance(bindings,dict) or component['id'] not in HELPERS
+                or 'alt_setup_helper_diagnostic' not in getattr(task,'tags',())
+                or getattr(task,'no_log',False) or raw.get('_ansible_no_log')):return None
+        expected=bindings[component['id']]
+        if not isinstance(expected,dict) or set(expected)!={'scope','reader_sha256'}:return None
+        scope=expected['scope'];command=raw.get('cmd');text=raw.get('stdout')
+        if (not isinstance(scope,dict) or set(scope)!=FIELDS or type(scope['schema_version']) is not int
+                or scope['schema_version']!=1 or scope['component_id']!=component['id']
+                or not isinstance(command,list) or len(command)!=6 or command[:4]!=['/usr/bin/python3','-I','-B','-c']
+                or not isinstance(command[4],str) or len(command[4].encode())>65536
+                or hashlib.sha256(command[4].encode()).hexdigest()!=expected['reader_sha256']
+                or not isinstance(command[5],str) or len(command[5].encode())>4096
+                or json.loads(command[5],object_pairs_hook=_unique)!=scope
+                or not isinstance(text,str) or len(text.encode())>4096):return None
+        value=json.loads(text,object_pairs_hook=_unique)
+        if (not isinstance(value,dict) or set(value)!=FIELDS|{'recorded','outcome','code'}
+                or any(type(value[k]) is not type(v) or value[k]!=v for k,v in scope.items())
+                or type(value['recorded']) is not bool or value['outcome'] not in OUTCOMES):return None
+        if not value['recorded']:
+            if value['outcome']!='outcome_unverified' or value['code']!=UNAVAILABLE:return None
+        elif value['code'] is not None and value['code'] not in HELPERS[component['id']]:return None
+        known=value['outcome'] in ('noop','repaired','configured','applied_verified','rolled_back_verified')
+        if not known and value['code'] is None:return None
+        return value['code'] or 'ok',not known
+    except Exception:return None
+
+
+def _allowed_codes(component,scope):
+    allowed=CODES
+    if 'desktop.kwallet_repair' in scope or 'network.final_dns' in scope:
+        from .helper_diagnostics import CODES as HELPERS,UNAVAILABLE
+        if component in HELPERS:allowed=allowed|HELPERS[component]|{UNAVAILABLE}
+    return allowed
+def safe_task_event(result, *, component, event_type, diagnostic_binding=None,helper_diagnostic_bindings=None):
     task = result._task
     path = task.get_path()
     task_id = 'task-'+hashlib.sha256(path.encode('utf-8')).hexdigest()[:16]
@@ -87,6 +127,10 @@ def safe_task_event(result, *, component, event_type, diagnostic_binding=None):
             code = diagnostic
             if diagnostic != 'first_join_ok':
                 event_type = 'task_failed'
+        helper=_helper_diagnostic(result,component,helper_diagnostic_bindings)
+        if helper is not None:
+            code,failed=helper
+            if failed:event_type='task_failed'
     return {'schema_version': 1, 'component_id': component['id'], 'component_version': component['version'],
             'stage': stage, 'task_id': task_id, 'type': event_type,
             'changed': result._result.get('changed') is True, 'code': code}
@@ -114,7 +158,7 @@ class SetupEventStore:
                     or event['component_version'] != scope[event['component_id']]
                     or event['stage'] not in STAGES or not isinstance(event['task_id'], str)
                     or not re.fullmatch(r'(task-[0-9a-f]{16}|component)', event['task_id'])
-                    or event['type'] not in TYPES or event['code'] not in CODES
+                    or event['type'] not in TYPES or event['code'] not in _allowed_codes(event['component_id'],scope)
                     or type(event['changed']) is not bool or len(canonical(event)) > 2048):
                 raise ValueError
             if persisted:

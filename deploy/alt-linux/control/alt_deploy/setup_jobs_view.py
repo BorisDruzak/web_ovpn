@@ -19,7 +19,7 @@ RECOMMENDATIONS = {'queued': 'watch_job', 'preflight': 'watch_job', 'running': '
 EXECUTION_FIELDS = {'schema_version', 'operation', 'job_id', 'machine_uuid', 'plan_id', 'plan_sha256',
     'components', 'original_boot_id', 'reboot_required', 'operator_action_required', 'error_code',
     'created_at', 'finished_at', 'state', 'stage'}
-OPTIONAL_EXECUTION_FIELDS = {'verification', 'legacy_run', 'legacy_error_run_id', 'post_error_package_manager', 'post_error_packages'}
+OPTIONAL_EXECUTION_FIELDS = {'verification', 'legacy_run', 'legacy_error_run_id', 'post_error_package_manager', 'post_error_packages','workflow'}
 CANCEL_STAGE = 'operator_cancelled_before_execution'
 CANCEL_FIELDS = {'schema_version', 'operation', 'job_id', 'machine_uuid', 'plan_id', 'plan_sha256',
     'state', 'stage', 'error_code', 'components', 'reboot_required', 'operator_action_required',
@@ -64,6 +64,49 @@ def _verification(value, version):
     return copy.deepcopy(value)
 
 
+def _workflow(settings,job,execution=None):
+    from .full_workflow import archived_workflow
+    from .setup_phases import WorkflowPhaseStore,validate_workflow_status
+    from .setup_plans import digest
+    declared=archived_workflow(job.request['plan']['payload'])
+    records=WorkflowPhaseStore(settings).records(job);current=job.status.get('workflow',{}).get('current_phase','system')
+    reason=None
+    if execution is not None and 'workflow' in execution:
+        value=execution['workflow']
+        if (not isinstance(value,dict) or set(value)!={'schema_version','kind','phase','waiting_reason','phases','system_result_sha256'}
+                or value['waiting_reason'] not in (None,'workflow_final_verification_unavailable')):raise _invalid()
+        retained={'schema_version':value['schema_version'],'kind':value['kind'],'current_phase':value['phase'],
+                  'phases':value['phases'],'system_result_sha256':value['system_result_sha256']}
+        proposed=copy.deepcopy(job.status);proposed['workflow']=retained
+        try:validate_workflow_status(job.request,proposed)
+        except Exception:raise _invalid() from None
+        if job.state!='unknown_requires_review' and retained!=job.status.get('workflow'):raise _invalid()
+        for phase,ref in value['phases'].items():
+            for kind in ('ticket','claim','result'):
+                raw=records[phase][kind];sha=ref[kind+'_sha256']
+                if sha is not None and (raw is None or sha!=digest(raw)):raise _invalid()
+        current=value['phase'];reason=value['waiting_reason']
+    elif 'workflow' in job.status:raise _invalid()
+    from .setup_waiting import read as read_waiting
+    waiting=read_waiting(settings,job)
+    if (reason is None and waiting is not None and waiting['phase']==current
+            and job.state in ('waiting_reboot','waiting_first_login','queued')):reason=waiting['code']
+    phases={}
+    for spec in declared['phases']:
+        phase=spec['id'];row=records[phase];state='pending';code=None
+        if row['result'] is not None:
+            outcome=row['result']['result'];code=outcome['code']
+            state={'applied_verified':'successful','rolled_back_verified':'degraded',
+                   'outcome_unverified':'unknown_requires_review'}[outcome['status']]
+        elif phase==current:
+            state=job.state
+        elif row['claim'] is not None:state='unknown_requires_review'
+        elif row['ticket'] is not None:state='queued'
+        phases[phase]={'state':state,'component_ids':spec['component_ids'],'budget_seconds':spec['budget_seconds'],
+                       'error_code':code,'admission_sequence':row['ticket']['admission_sequence'] if row['ticket'] else None}
+    return {'schema_version':1,'kind':'complete_workstation','phase':current,'waiting_reason':reason,'phases':phases}
+
+
 class SetupJobsService:
     def __init__(self, settings, *, jobs=None, engine=None):
         self.settings = settings
@@ -87,7 +130,7 @@ class SetupJobsService:
             raise _invalid()
         components = {c['id']: {'version': c['version'], 'changed': None, 'verification': None} for c in selected}
         code, reboot, action = None, False, job.state != 'successful'
-        if job.state == 'queued':
+        if job.state == 'queued' and not job.status['claimed']:
             check = queue_check(self.settings, job)
             if check is not None:
                 code = check['code']
@@ -103,6 +146,7 @@ class SetupJobsService:
                                 for c in selected})
             try:
                 if (not EXECUTION_FIELDS <= set(result) <= EXECUTION_FIELDS | OPTIONAL_EXECUTION_FIELDS
+                        or 'workflow' in result and 'workflow' not in payload
                         or result['schema_version'] != 2 or result['operation'] != 'setup_execution'
                         or any(result[k] != status[k] for k in ('job_id', 'machine_uuid', 'plan_id', 'plan_sha256'))
                         or set(result['components']) != set(components)
@@ -132,7 +176,7 @@ class SetupJobsService:
                     or type(profile.get('version')) is not int or profile['version'] < 1):
                 raise _invalid()
             profile = {'id': profile['id'], 'version': profile['version']}
-        return {'job_id': job.job_id, 'operation': job.request['operation'], 'machine_uuid': job.machine_uuid,
+        projection={'job_id': job.job_id, 'operation': job.request['operation'], 'machine_uuid': job.machine_uuid,
             'state': projected_state, 'recorded_state': job.state, 'stage': job.stage, 'plan_id': status['plan_id'], 'plan_sha256': status['plan_sha256'],
             'created_at': status['created_at'], 'updated_at': status['updated_at'], 'claimed': status['claimed'],
             'catalog_version': payload.get('catalog_version'), 'profile': profile,
@@ -140,6 +184,9 @@ class SetupJobsService:
             'components': components, 'error_code': code, 'reboot_required': reboot,
             'operator_action_required': action, 'recommended_action': RECOMMENDATIONS[projected_state],
             'history': copy.deepcopy(status['stage_history'][-100:]), 'history_total': len(status['stage_history'])}
+        if 'workflow' in payload:
+            projection['workflow']=_workflow(self.settings,job,result if path.exists() or path.is_symlink() else None)
+        return projection
 
     def list(self, machine_uuid=None, *, offset=0, limit=100):
         if (machine_uuid is not None and (not isinstance(machine_uuid, str) or not UUID.fullmatch(machine_uuid))

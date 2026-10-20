@@ -130,6 +130,20 @@
   no_log: true
   diff: false
 
+- name: Read only the original root-owned DNS failure or rollback diagnostic
+  ansible.builtin.command:
+    argv: [/usr/bin/python3, -I, -B, -c,
+      "{{ alt_setup_helper_diagnostics['network.final_dns'].program }}",
+      "{{ alt_setup_helper_diagnostics['network.final_dns'].scope | to_json }}"]
+  when:
+    - alt_setup_helper_diagnostics is defined
+    - >-
+      final_dns_apply.rc != 0 or (final_dns_apply.stdout | from_json).status != 'ok' or
+      (final_dns_apply.stdout | from_json).result.status != 'applied_verified'
+  changed_when: false
+  failed_when: false
+  tags: [alt_setup_helper_diagnostic]
+
 - name: Retain only a fixed diagnostic for the claimed DNS invocation
   ansible.builtin.set_fact:
     final_dns_safe_failure: "{{ ((final_dns_apply.stdout | from_json).result.code | default((final_dns_apply.stdout | from_json).code | default('final_dns_outcome_unverified'))) | alt_final_dns_safe_code }}"

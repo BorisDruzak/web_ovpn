@@ -1,5 +1,6 @@
 """Versioned, registry-derived complete workstation plan and fixed phase policy."""
 import copy
+import re
 
 from .ad_directory import fail
 from .final_dns_policy import validate
@@ -117,3 +118,41 @@ def validate_system_result(result,workflow):
     if (not isinstance(marker,dict) or type(marker.get('schema_version')) is not int
             or result.get('status')!='successful' or marker!=deferred_system_result(workflow)):
         raise ValueError('The complete system result must retain its original deferred phases')
+
+
+def archived_workflow(payload):
+    """Validate retained declarations without opening today's roles or Vault."""
+    try:
+        if payload.get('engine_schema_version')!=2 or not is_full_profile(payload.get('profile')):raise ValueError
+        components=payload['components'];profile=payload['profile']
+        if not isinstance(components,list) or not 1<=len(components)<=256:raise ValueError
+        if (type(payload.get('engine_schema_version')) is not int
+                or any(not isinstance(payload.get(k),str) or not re.fullmatch('[0-9a-f]{64}',payload[k])
+                       for k in ('source_sha256','catalog_sha256'))):raise ValueError
+        for component in components:
+            if (not isinstance(component,dict) or not isinstance(component.get('id'),str)
+                    or not re.fullmatch('[a-z][a-z0-9_.-]{0,127}',component['id'])
+                    or type(component.get('version')) is not int or component['version']<1
+                    or not isinstance(component.get('dependencies'),list)
+                    or not isinstance(component.get('execution'),dict)
+                    or not isinstance(component.get('verification'),dict)):
+                raise ValueError
+        mapping={c['id']:c for c in components}
+        if len(mapping)!=len(components) or list(mapping)!=profile['components']:raise ValueError
+        class ArchivedCatalog:
+            def profile(self,name):
+                if name!=PROFILE:raise ValueError
+                return copy.deepcopy(profile)
+            def components(self):return copy.deepcopy(components)
+            def component(self,name):return copy.deepcopy(mapping[name])
+            def ordered(self,names,*,os_id):
+                done=set();result=[]
+                for name in names:
+                    component=mapping[name]
+                    if (name in done or os_id not in component['supported_os']
+                            or any(v not in done for v in component['dependencies'])
+                            or type(component['execution']['requires_user_home']) is not bool):raise ValueError
+                    done.add(name);result.append(component)
+                return result
+        return validate_workflow_plan(payload['workflow'],ArchivedCatalog())
+    except Exception:raise fail('full_workflow_plan_invalid','The retained complete workflow is invalid') from None

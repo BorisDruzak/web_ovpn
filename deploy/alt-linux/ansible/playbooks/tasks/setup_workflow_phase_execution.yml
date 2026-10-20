@@ -1,0 +1,89 @@
+---
+- name: Require one original post-login native phase
+  ansible.builtin.assert:
+    that:
+      - ansible_play_hosts_all | length == 1
+      - software_profile == 'workstation-full-v1'
+      - remote_access_profile == 'krfb'
+      - alt_setup_workflow_context is mapping
+      - alt_setup_workflow_context.schema_version == 1
+      - alt_setup_workflow_context.kind == 'complete_workstation'
+      - alt_setup_workflow_context.phase in ['user', 'final_dns']
+      - alt_setup_workflow_context.job_id == setup_job_id
+      - alt_setup_workflow_context.machine_uuid == machine_uuid
+      - alt_setup_workflow_context.claim_sha256 is match('^[0-9a-f]{64}$')
+      - alt_setup_workflow_context.plan_sha256 is match('^[0-9a-f]{64}$')
+      - alt_setup_workflow_context.source_sha256 is match('^[0-9a-f]{64}$')
+    fail_msg: Only an original one-shot native post-login phase is supported
+  tags: [alt_setup_preflight]
+  no_log: true
+
+- name: Read only the published component registry
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/../group_vars/software_catalog.yml"
+    name: approved_software_catalog
+
+- name: Require the exact confirmed registry-derived partition
+  ansible.builtin.set_fact:
+    setup_validated_workflow: "{{ approved_software_catalog | alt_setup_workflow(setup_workflow) }}"
+    setup_selected_catalog: "{{ approved_software_catalog | alt_setup_selection(software_profile) }}"
+  no_log: true
+
+- name: Require the original complete policy
+  ansible.builtin.assert:
+    that:
+      - setup_validated_workflow == setup_workflow
+      - alt_setup_workflow_context.workflow_policy_sha256 == setup_validated_workflow.policy_sha256
+      - setup_phase_result_file is match('^/')
+    fail_msg: The original complete phase policy changed
+  no_log: true
+
+- name: Select only the declared user or final DNS components
+  ansible.builtin.set_fact:
+    setup_phase_ids: "{{ (setup_validated_workflow.phases | selectattr('id', 'equalto', alt_setup_workflow_context.phase) | first).component_ids }}"
+    selected_software_components: "{{ setup_selected_catalog.selected_software_components }}"
+    software_component_role_map: "{{ setup_selected_catalog.software_component_role_map }}"
+    profile_component_ids: "{{ setup_selected_catalog.profile_component_ids }}"
+    configure_result: {components: {}, verification: {}}
+
+- name: Require the direct-access guard before any other user-stage mutation
+  ansible.builtin.assert:
+    that:
+      - setup_phase_ids[0] == 'remote.krfb'
+    fail_msg: The confirmed user phase must guard existing VNC clients first
+  when: alt_setup_workflow_context.phase == 'user'
+
+- name: Configure declared direct KRFB before other user-stage effects
+  ansible.builtin.include_role:
+    name: remote_access_krfb
+  when: alt_setup_workflow_context.phase == 'user'
+
+- name: Finalize only selected-user certificate stores after genuine login
+  ansible.builtin.include_role:
+    name: government_ca
+    tasks_from: user_finalize
+  when: alt_setup_workflow_context.phase == 'user'
+
+- name: Execute only registry roles declared in this later phase
+  ansible.builtin.include_role:
+    name: "{{ setup_phase_component.execution.role }}"
+  loop: "{{ setup_selected_catalog.execution_components | selectattr('id', 'in', setup_phase_ids) | rejectattr('id', 'equalto', 'remote.krfb') | list }}"
+  loop_control:
+    loop_var: setup_phase_component
+    label: "{{ setup_phase_component.id }}"
+
+- name: Write only typed completion for the original claim
+  ansible.builtin.copy:
+    dest: "{{ setup_phase_result_file }}"
+    content: >-
+      {{ {'schema_version': 1, 'context': alt_setup_workflow_context,
+          'status': ('applied_verified' if alt_setup_workflow_context.phase == 'user' else alt_setup_final_dns_result.status),
+          'code': (none if alt_setup_workflow_context.phase == 'user' else alt_setup_final_dns_result.code)} | to_json }}
+    mode: '0600'
+    force: false
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  no_log: true
+  diff: false
+  tags: [alt_setup_verify]

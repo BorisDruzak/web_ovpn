@@ -32,12 +32,18 @@ class CallbackModule(CallbackBase):
         self.started = {}
         self.role_components = {}
         self.diagnostic_binding = None
+        self.helper_diagnostic_bindings=None
         try:
             raw = os.environ.get('ALT_SETUP_FIRST_JOIN_BINDING', '')
             if raw and len(raw) <= 4096:
                 self.diagnostic_binding = json.loads(raw)
         except (ValueError, TypeError):
             pass
+        try:
+            raw=os.environ.get('ALT_SETUP_HELPER_DIAGNOSTICS','')
+            if raw and len(raw.encode())<=16384:
+                self.helper_diagnostic_bindings=json.loads(raw)
+        except (ValueError,TypeError):pass
         if self.full:
             job = self.store.jobs.get(self.job_id)
             self.role_components = {c['execution']['role']: {'id': c['id'], 'version': c['version']}
@@ -64,7 +70,7 @@ class CallbackModule(CallbackBase):
                 component = self.role_components.get(role.get_name(), self.component)
         self._start(component)
         self.store.append(self.job_id, safe_task_event(result, component=component, event_type=event_type,
-            diagnostic_binding=self.diagnostic_binding))
+            diagnostic_binding=self.diagnostic_binding,helper_diagnostic_bindings=self.helper_diagnostic_bindings))
 
     def v2_playbook_on_task_start(self, task, is_conditional):
         self._event(SimpleNamespace(_task=task, _result={}), 'task_start')

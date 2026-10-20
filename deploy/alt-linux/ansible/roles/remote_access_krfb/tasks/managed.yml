@@ -62,10 +62,29 @@
     stdin: "{{ alt_setup_krfb_runtime_evidence.request | to_json }}"
     stdin_add_newline: false
   register: alt_setup_krfb_runtime_apply
-  changed_when: false
+  changed_when: >-
+    alt_setup_krfb_runtime_apply.rc == 0 and
+    (alt_setup_krfb_runtime_apply.stdout | from_json).status == 'ok' and
+    (alt_setup_krfb_runtime_apply.stdout | from_json).result.status in ['configured', 'noop'] and
+    (alt_setup_krfb_runtime_apply.stdout | from_json).result.changed is sameas true
   failed_when: false
   no_log: true
   diff: false
+
+- name: Read only the original root-owned KRFB failure diagnostic
+  ansible.builtin.command:
+    argv: [/usr/bin/python3, -I, -B, -c,
+      "{{ alt_setup_helper_diagnostics['remote.krfb'].program }}",
+      "{{ alt_setup_helper_diagnostics['remote.krfb'].scope | to_json }}"]
+  when:
+    - alt_setup_helper_diagnostics is defined
+    - >-
+      alt_setup_krfb_runtime_apply.rc != 0 or
+      (alt_setup_krfb_runtime_apply.stdout | from_json).status != 'ok' or
+      (alt_setup_krfb_runtime_apply.stdout | from_json).result.status not in ['configured', 'noop']
+  changed_when: false
+  failed_when: false
+  tags: [alt_setup_helper_diagnostic]
 
 - name: Require configured KRFB pending independent controller RFB proof
   ansible.builtin.assert:

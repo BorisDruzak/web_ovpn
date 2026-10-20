@@ -40,6 +40,10 @@ class QueueAdmissionReview(MaintenanceReview):
         queued = sorted((j for j in repository.list() if j.state == 'queued' and not j.status['claimed']),
                         key=lambda j: j.status['admission_sequence'])
         if not queued or queued[0].job_id != job_id: raise denied()
+        from_phase=control_module('setup_phases')
+        if any('workflow' in j.status and j.state=='queued' for j in repository.list()):
+            eligible=from_phase.eligible_candidates(self.settings)
+            if not eligible or eligible[0][1:]!=(job_id,None):raise denied()
         plan = job.request['plan']
         created, expires = (datetime.fromisoformat(plan[k]) for k in ('created_at', 'expires_at'))
         if not created <= self.clock() < expires: raise denied()
@@ -56,6 +60,12 @@ class QueueAdmissionReview(MaintenanceReview):
         snapshot = self._snapshot(old_id, candidate_job_id=candidate_id)
         old = self.jobs.SetupJobRepository(self.settings).get(old_id)
         self.distinct_candidate(candidate.request['identities'], old.request['identities'], snapshot['evidence']['computer'])
+        phases=control_module('setup_phases')
+        for idle in self.jobs.SetupJobRepository(self.settings).list():
+            if idle.job_id in (old_id,candidate_id) or not phases.idle_workflow(self.settings,idle):continue
+            identity=phases.effective_identity(self.settings,idle)
+            self.distinct_candidate(identity,old.request['identities'],snapshot['evidence']['computer'])
+            self.distinct_candidate(identity,candidate.request['identities'],candidate.request['plan']['payload']['computer'])
         if self._candidate(candidate_id)[1] != reference: raise denied()
         return dict(snapshot, candidate=reference,
             queue_validator_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())

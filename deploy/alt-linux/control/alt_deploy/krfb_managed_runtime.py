@@ -189,6 +189,7 @@ def create_runtime_backup(request,assessment,*,root=Path('/')):
         except FileExistsError:raise KRFBSessionError('krfb_runtime_claim_consumed') from None
         _private_directory(root,'/var/lib/alt-krfb-user-runtime/'+request['context']['claim_sha256'])
         manifest = {'schema_version':1,'kind':'complete_workstation_krfb_backup',
+            'boot_id':assessment.snapshot['boot_id'],
             'context':request['context'],'helper':_self_identity(),
             'snapshot_sha256':assessment.snapshot['snapshot_sha256'],
             'policy_snapshot_sha256':assessment.policy['snapshot_sha256'],
@@ -333,7 +334,7 @@ def ensure_session(request,*,root=Path('/'),call=_call,limits_reader=resource.pr
 
             def register_writer(identity):
                 _private_record(directory,'writer.json',{'schema_version':1,'stage':'configuration-writer',
-                    'context':request['context'],'child':identity})
+                    'context':request['context'],'boot_id':assessment.snapshot['boot_id'],'child':identity})
                 return True
 
             if configuration!=contents['krfbrc'] or autostart!=contents['org.sosn.krfb.desktop']:

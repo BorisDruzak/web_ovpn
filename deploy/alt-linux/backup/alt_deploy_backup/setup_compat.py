@@ -9,12 +9,22 @@ from types import SimpleNamespace
 from .errors import BackupError
 from .fs import read_regular_bytes
 
-MAINTENANCE_MODULES = ('__init__.py', 'setup_maintenance_review.py', 'setup_maintenance_coverage.py',
+MAINTENANCE_V2_MODULES = ('__init__.py', 'setup_maintenance_review.py', 'setup_maintenance_coverage.py',
     'setup_closed_failure.py', 'setup_partial_observation.py', 'partial_local_probe.py',
     'setup_queue_review.py', 'setup_compat.py', 'errors.py', 'fs.py', 'state_validation.py',
     'manifest.py', 'components.py', 'settings.py', 'systemd.py', 'secrets.py')
+MAINTENANCE_MODULES=(*MAINTENANCE_V2_MODULES,'setup_phase_admission.py','setup_workflow_closed.py','setup_workflow_maintenance.py')
 PARTIAL_DIRECTORIES = ('setup-partial-local-evidence', 'setup-partial-local-plans',
                        'setup-partial-local-claims', 'setup-partial-local-results')
+PHASE_DIRECTORIES=('setup-phase-tickets','setup-phase-claims','setup-phase-results','setup-phase-admissions')
+
+
+def valid_validator_catalog(values):
+    # Old SHA-protected reviews remain readable after additive code shipping.
+    # They cannot authorize new work: fresh snapshots bind every current hash.
+    import re
+    return (isinstance(values,dict) and set(MAINTENANCE_V2_MODULES)<=set(values)<=set(MAINTENANCE_MODULES)
+            and all(isinstance(v,str) and re.fullmatch('[0-9a-f]{64}',v) for v in values.values()))
 
 
 def partial_store(root):
@@ -46,6 +56,11 @@ def validate_job(request, status, job_dir):
     scope = store._scope(job)
     allowed = {'request.json', 'status.json', 'execution.json', 'component-vars.json',
                'component-result.json', 'ansible.log', 'events.lock', 'events', 'admission-check.json'}
+    if 'workflow' in request['plan']['payload']:
+        control_module('full_workflow').archived_workflow(request['plan']['payload'])
+        allowed.update('phase-'+phase+suffix for phase in ('user','final_dns')
+                       for suffix in ('-vars.json','-result.json','-process.json','.log'))
+        allowed.add('workflow-readiness.json')
     for path in job_dir.iterdir():
         if path.name not in allowed:
             raise ValueError('Unexpected Setup job object')
@@ -72,6 +87,8 @@ def validate_job(request, status, job_dir):
             raise ValueError('Unsafe Setup job file')
         elif path.name == 'admission-check.json':
             control_module('setup_jobs').queue_check(setup_settings(job_dir.parent.parent), job)
+        elif path.name=='workflow-readiness.json':
+            control_module('setup_waiting').read(setup_settings(job_dir.parent.parent),job)
 
 
 def setup_settings(root):
@@ -84,7 +101,7 @@ def ledger_present(root):
     return any((root/name).exists() or (root/name).is_symlink() for name in
                ('setup-job-plan-claims', 'setup-job-reservations', 'setup-job-reviews', 'legacy-setup-reservations', 'setup-functional-acceptance',
                 'setup-maintenance-plans', 'setup-maintenance-reviews',
-                'setup-queue-review-plans', 'setup-queue-reviews', 'setup-queue-admissions', *PARTIAL_DIRECTORIES))
+                'setup-queue-review-plans', 'setup-queue-reviews', 'setup-queue-admissions', *PARTIAL_DIRECTORIES,*PHASE_DIRECTORIES))
 
 
 def validate_ledger(root):
@@ -110,6 +127,8 @@ def validate_ledger(root):
     validate_artifacts(root)
     from .setup_queue_review import validate_artifacts as validate_queue_artifacts
     validate_queue_artifacts(root)
+    from .setup_phase_admission import validate_artifacts as validate_phase_admission
+    validate_phase_admission(root)
     acceptance = root/'setup-functional-acceptance'
     if acceptance.exists() or acceptance.is_symlink():
         import re
@@ -163,7 +182,7 @@ def history_fingerprint(root):
                                    'setup-job-reviews', 'legacy-setup-reservations', 'setup-functional-acceptance',
                                    'setup-maintenance-plans', 'setup-maintenance-reviews',
                                    'setup-queue-review-plans', 'setup-queue-reviews', 'setup-queue-admissions',
-                                   *PARTIAL_DIRECTORIES) if (root/name).exists()]
+                                   *PARTIAL_DIRECTORIES,*PHASE_DIRECTORIES) if (root/name).exists()]
     jobs_root = root/'jobs'
     if jobs_root.exists():
         from .state_validation import _read_object

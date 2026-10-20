@@ -15,19 +15,21 @@ TARGET_CODES = frozenset({
 })
 
 
-def target_program(*,apply=False):
+def target_program(*,apply=False,phase_observer=False):
     """Program bytes contain published source only; private values use stdin.
 
     Called by native phase preparation, never by a public command selector.
     Source/template hashes must be covered by the immutable phase claim before
     the resulting program is dispatched through the existing trusted transport.
     """
-    if type(apply) is not bool:raise ValueError('Unsupported KRFB program')
+    if type(apply) is not bool or type(phase_observer) is not bool or apply and phase_observer:raise ValueError('Unsupported KRFB program')
     program="import sys,types,json,os,hashlib\np=types.ModuleType('alt_deploy');p.__path__=[];sys.modules['alt_deploy']=p\n"
-    for name in ('user_session','krfb_user_session','krfb_managed_runtime'):
+    names=('user_session','krfb_user_session','krfb_managed_runtime')+ (('setup_phase_target',) if phase_observer else ())
+    for name in names:
         source=Path(__file__).with_name(name+'.py');_regular(source)
         program+=("m=types.ModuleType('alt_deploy."+name+"');sys.modules[m.__name__]=m;exec(compile("
                   +repr(source.read_text(encoding='utf-8'))+",'<published-"+name+">','exec'),m.__dict__)\n")
+    if phase_observer:program+="m=sys.modules['alt_deploy.krfb_managed_runtime']\n"
     program+='''
 def unique(pairs):
     result={}
@@ -50,8 +52,9 @@ try:
         'snapshot':value.snapshot,'policy':value.policy,
         'configuration_template_sha256':hashlib.sha256(request['configuration'].encode()).hexdigest(),
         'autostart_template_sha256':hashlib.sha256(request['autostart'].encode()).hexdigest()}
-    print(json.dumps({'schema_version':1,'status':'ok','observation':observation}))
 '''
+        if phase_observer:program+="    observation.update(sys.modules['alt_deploy.setup_phase_target'].user_state(value.context))\n"
+        program+="    print(json.dumps({'schema_version':1,'status':'ok','observation':observation}))\n"
     program+='''except Exception as error:
     code=str(error) if isinstance(error,m.KRFBSessionError) else ''
     if code not in '''+repr(tuple(sorted(TARGET_CODES)))+''':code='krfb_runtime_request_unverified'

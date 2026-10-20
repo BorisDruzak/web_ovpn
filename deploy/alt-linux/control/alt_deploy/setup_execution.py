@@ -13,7 +13,7 @@ from .setup_plans import private_create, private_read
 class SetupExecutionEngine:
     """Worker-owned dispatch. Waiting continuations only collect fresh evidence."""
     def __init__(self, settings, *, setup=None, components=None, jobs=None, events=None,
-                 component_executor=None):
+                 component_executor=None,phase_executor=None,workflow_probe=None):
         from .setup_jobs import SetupJobRepository
         self.settings = settings
         self.setup = setup
@@ -23,6 +23,8 @@ class SetupExecutionEngine:
         self.jobs = jobs or SetupJobRepository(settings)
         self.events = events or SetupEventStore(settings)
         self.component_executor = component_executor
+        self.phase_executor=phase_executor
+        self.workflow_probe=workflow_probe
 
     def _services(self, operation):
         if operation == 'component' and not self._components_injected:
@@ -138,6 +140,8 @@ class SetupExecutionEngine:
                 events = self.events._read(job)
                 for identifier, component in result['components'].items():
                     component['changed'] = any(e['component_id'] == identifier and e['changed'] for e in events)
+                if 'workflow' in payload:
+                    return self._complete_system(self.jobs.get(job_id),result,run)
                 self.jobs.transition(job_id, 'verifying', stage={'id': 'verify'})
             stage = 'verify'
             observed, verification = self._post(job)
@@ -208,6 +212,12 @@ class SetupExecutionEngine:
             if job.state not in ('waiting_reboot', 'waiting_first_login'):
                 raise fail('setup_continuation_not_waiting', 'Read-only continuation requires a waiting job')
             result = private_read(job.job_dir/'execution.json')
+            if 'workflow' in job.status:
+                # Poll/explicit verify cannot enqueue, claim, execute a role,
+                # or finish pending phases through the old verifier.
+                from .setup_phases import WorkflowPhaseStore
+                WorkflowPhaseStore(self.settings).records(job)
+                return result
             payload = job.request['plan']['payload']
             original = payload['observed'] if job.request['operation'] == 'component' else payload['component_observed']
             if (result.get('schema_version') != 2 or result.get('job_id') != job_id
@@ -225,6 +235,107 @@ class SetupExecutionEngine:
                 return result
             self.jobs.transition(job_id, 'verifying', stage={'id': 'verify'})
             return self._verified(job, result, observed, verification)
+
+    def _complete_system(self,job,result,run):
+        from .full_workflow import validate_system_result
+        from .component_verification import package_health_ready,_package_status
+        from .component_catalog import ComponentCatalog
+        from .setup_jobs import publish
+        from .setup_plans import digest
+        from .setup_phases import WorkflowPhaseStore
+        workflow=job.request['plan']['payload']['workflow']
+        validate_system_result(run['result'],workflow)
+        observed,verification=self._post(job)
+        identity=self.setup._verify_identity(job.machine_uuid)
+        if identity['status']!='successful' or not package_health_ready(observed):raise ValueError
+        catalog=ComponentCatalog.load(self.settings.ansible_project_dir)
+        for identifier in workflow['phases'][0]['component_ids']:
+            artifact=catalog.artifact(identifier)
+            if artifact and _package_status(artifact,observed['components'][identifier])!='compliant':raise ValueError
+            result['components'][identifier]['verification']=verification['components'][identifier]
+        result.update(state=job.state,stage=job.stage)
+        publish(job.job_dir/'execution.json',result)
+        computer=identity['computer']['objects'][0]
+        proof={'status':'applied_verified','changed':any(c['changed'] is True for c in result['components'].values()),
+            'code':None,'verification_sha256':digest({'run':run,'fresh':observed,'identity':identity}),
+            'target_processes_absent':True,'original_boot_id':result['original_boot_id'],
+            'reboot_required':result['reboot_required'],
+            'computer':{k:computer[k] for k in ('object_guid','object_sid','dn','dns_hostname')}}
+        WorkflowPhaseStore(self.settings).complete(job,'system',proof)
+        return private_read(job.job_dir/'execution.json')
+
+    def execute_phase(self,job_id,phase):
+        """Worker-only continuation; never call the protected Setup adapter."""
+        from .locks import assert_owned
+        from .setup_worker import process_identity
+        from .setup_phases import WorkflowPhaseStore,validate_result,PHASE_CODES
+        store=WorkflowPhaseStore(self.settings);assert_owned(self.settings.lock_file)
+        job=store._actor(self.jobs.get(job_id));row=store.records(job)[phase];claim=row['claim']
+        if (phase not in ('user','final_dns') or job.state!='preflight' or claim is None
+                or row['result'] is not None or claim['process_identity']!=process_identity(self.settings)):
+            raise fail('setup_phase_consumed','Only the current original phase worker may dispatch')
+        try:
+            job=store.start(job,phase,claim)
+            if self.phase_executor is None:
+                from .setup_phase_execution import WorkflowPhaseExecutor
+                self.phase_executor=WorkflowPhaseExecutor(self.settings)
+            result=self.phase_executor.run(job,phase,claim)
+            validate_result(job,phase,result)
+        except Exception as error:
+            code=getattr(error,'code','')
+            if code not in PHASE_CODES:code='workflow_phase_outcome_unverified'
+            result={'status':'outcome_unverified','changed':None,'code':code,'verification_sha256':None,
+                    'target_processes_absent':False}
+        store.complete(self.jobs.get(job_id),phase,result)
+        return private_read(job.job_dir/'execution.json')
+
+    def finalize_workflow(self,job_id):
+        """Only fresh read-only proof can publish the first full completion."""
+        from .setup_phases import WorkflowPhaseStore
+        from .setup_jobs import publish
+        from .krfb_runtime import probe_krfb,DIRECT_POLICY
+        store=WorkflowPhaseStore(self.settings);job=store._actor(self.jobs.get(job_id));records=store.records(job)
+        if job.state not in ('verifying','waiting_first_login'):raise fail('setup_phase_consumed','The workflow is not awaiting final proof')
+        if (any(records[p]['result'] is None for p in ('system','user','final_dns'))
+                or records['user']['result']['result']['status']!='applied_verified'
+                or records['final_dns']['result']['result']['status'] not in ('applied_verified','rolled_back_verified')):
+            raise fail('workflow_result_unverified','All original phase outcomes are required before completion')
+        outcome=records['final_dns']['result'];result=private_read(job.job_dir/'execution.json')
+        if set(result['components'])!={c['id'] for c in job.request['plan']['payload']['components']}:
+            raise fail('workflow_result_unverified','The original complete component result differs')
+        self._services('full_setup')
+        if self.workflow_probe is None:
+            from .setup_phase_probe import WorkflowReadinessProbe
+            self.workflow_probe=WorkflowReadinessProbe(self.settings,setup=self.setup)
+        state='waiting_first_login';reason='workflow_final_verification_unavailable'
+        try:
+            ready,prepared=self.workflow_probe.prepare(job,'final_dns')
+            if ready['scope']!=records['final_dns']['claim']['readiness']['scope']:raise ValueError
+            verification=prepared['verification'];expected=set(result['components'])
+            rollback=outcome['result']['status']=='rolled_back_verified'
+            if rollback:expected.remove('network.final_dns')
+            if any(verification['components'][i]['status']!='compliant' for i in expected):raise ValueError
+            machine=self.setup.machines.resolve(job.machine_uuid)
+            direct=probe_krfb(self.settings,machine,job.request['plan']['payload']['user'],DIRECT_POLICY)
+            if direct['ready'] is not True:raise ValueError
+            result['verification']=verification
+            for identifier,component in result['components'].items():component['verification']=verification['components'][identifier]
+            result['reboot_required']=False
+            result['operator_action_required']=rollback or verification['operator_action_required']
+            result['error_code']=outcome['result']['code'] if rollback else None
+            state='degraded' if rollback else 'successful';reason=None
+        except Exception:
+            # No mutation is retried when a GUI/transport disappears between
+            # the last known phase outcome and its fresh final observation.
+            result['operator_action_required']=True
+        if (reason is not None and job.state=='waiting_first_login' and job.stage=='workflow.final_dns.waiting'
+                and result.get('workflow',{}).get('waiting_reason')==reason):
+            return result
+        publish(job.job_dir/'execution.json',result)
+        with self.jobs.locked():
+            store._publish_status(job,state,'workflow.final_dns.'+('complete' if reason is None else 'waiting'),
+                                  job.status['workflow'],outcome,waiting_reason=reason)
+        return private_read(job.job_dir/'execution.json')
 
 
 def catalog_selection(catalog, *, profile='base', component_id=''):
@@ -263,6 +374,8 @@ class ComponentExecutor:
                     'reboot_required': False}
         if payload['action'] not in ('install', 'repair') or component['execution'].get('adapter'):
             raise fail('component_plan_blocked', 'Component plan is not executable')
+        if component['id']=='remote.krfb' and payload['profile']['id']=='workstation-full-v1':
+            raise fail('full_workflow_required','Direct KRFB can execute only in its original complete-workstation phase')
         catalog_selection(self.catalog, component_id=component['id'])
         result_path = job.job_dir/'component-result.json'
         variables = {'setup_component_id': component['id'], 'setup_component_version': component['version'],
@@ -278,6 +391,7 @@ class ComponentExecutor:
             variables['remote_access_profile'] = 'krfb'
             variables[KRFB_ANSIBLE_CONFIRMATION_VARIABLE] = True
         playbook='04-setup-component.yml'
+        diagnostics={}
         if component['id']=='desktop.kwallet_repair':
             if job.status.get('claimed') is not True or job.state not in ('preflight','running'):
                 raise fail('setup_job_not_claimed','Wallet repair requires its original worker claim')
@@ -297,6 +411,9 @@ class ComponentExecutor:
                     'plan_sha256':plan['sha256'],'machine_uuid':job.machine_uuid,'source_sha256':payload['source_sha256'],
                     'operation_sha256':operation})
             playbook='06-kwallet-empty-name-repair.yml'
+            from .helper_diagnostics import binding
+            diagnostics={component['id']:binding(job,component['id'],variables['alt_setup_wallet_component_context'],wanted['helper_sha256'])}
+            variables['alt_setup_helper_diagnostics']=diagnostics
         # The playbook independently derives selection from the same published registry.
         private_create(job.job_dir/'component-vars.json', variables)
         command = [str(self.settings.ansible_playbook_path), '-i', payload['machine']['ip']+',', '-u', 'ansible',
@@ -317,6 +434,11 @@ class ComponentExecutor:
         env['ALT_SETUP_COMPONENT_VERSION'] = str(component['version'])
         env['PYTHONPATH'] = str(Path(__file__).resolve().parent.parent)
         env.pop(KRFB_NETWORK_CONFIRMATION_VARIABLE, None)
+        env.pop('ALT_SETUP_HELPER_DIAGNOSTICS',None)
+        if diagnostics:
+            from .helper_diagnostics import callback_bindings
+            import json
+            env['ALT_SETUP_HELPER_DIAGNOSTICS']=json.dumps(callback_bindings(diagnostics),sort_keys=True)
         log = job.job_dir/'ansible.log'
         try:
             with log.open('x', encoding='utf-8') as output:

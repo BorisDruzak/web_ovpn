@@ -269,6 +269,17 @@ def timestamp(value):
     return parsed
 
 
+def next_admission_sequence(settings):
+    """Called under the native queue lock; original claim bytes never change."""
+    numbers=[]
+    for directory in ('setup-job-plan-claims','setup-phase-tickets'):
+        for path in (settings.state_root/directory).glob('*.json'):
+            value=private_read(path,owner_uid=service_uid(settings));sequence=value['admission_sequence']
+            if type(sequence) is not int or sequence<1:raise fail('setup_job_admission_requires_review','Admission sequence is invalid')
+            numbers.append(sequence)
+    return 1+max(numbers,default=0)
+
+
 def validate_plan(plan, operation):
     """Validate retained snapshots without treating expiration as corruption."""
     if operation not in ('component', 'full_setup') or not isinstance(plan, dict):
@@ -302,6 +313,9 @@ def validate_plan(plan, operation):
     assert_safe_payload(safe)
     if operation == 'full_setup':
         payload = plan['payload']
+        if 'workflow' in payload:
+            from .full_workflow import archived_workflow
+            archived_workflow(payload)
         proofs = [key for key in ('prejoin_retry', 'recovery_resolution', 'partial_local_resolution') if key in payload]
         if (len(proofs) > 1 or payload.get('predecessor_job') is not None and len(proofs) != 1
                 or 'partial_local_resolution' in payload and payload.get('predecessor_job') is None): raise ValueError
@@ -339,10 +353,13 @@ def validate_setup_record(request, status, *, job_id):
         if (not isinstance(request, dict) or not isinstance(status, dict)
                 or set(request) != {'schema_version', 'kind', 'operation', 'job_id', 'machine_uuid',
                                     'identities', 'plan', 'admission_sequence'}
-                or set(status) != {'schema_version', 'kind', 'operation', 'job_id', 'machine_uuid',
+                or set(status)-{'workflow'} != {'schema_version', 'kind', 'operation', 'job_id', 'machine_uuid',
                     'plan_id', 'plan_sha256', 'request_sha256', 'admission_sequence', 'state', 'stage',
                     'stage_history', 'created_at', 'updated_at', 'claimed', 'process_identity'}):
             raise ValueError
+        if 'workflow' in status:
+            from .setup_phases import validate_workflow_status
+            validate_workflow_status(request,status)
         if any(type(p['schema_version']) is not int or p['schema_version'] != 2
                or p['kind'] != 'setup' or p['job_id'] != job_id for p in (request, status)):
             raise ValueError
@@ -374,7 +391,9 @@ def validate_setup_record(request, status, *, job_id):
                 if entry['state'] != 'queued' or entry['at'] != status['created_at']:
                     raise ValueError
             elif entry['state'] not in TRANSITIONS[prior_state]:
-                raise ValueError
+                from .setup_phases import workflow_transition_allowed
+                if 'workflow' not in status or not workflow_transition_allowed(request,status,prior_state,entry['state'],entry['stage']):
+                    raise ValueError
             prior_state, prior_date = entry['state'], timestamp(entry['at'])
         if history[-1]['state'] != status['state'] or history[-1]['stage'] != status['stage']:
             raise ValueError
@@ -498,14 +517,15 @@ class SetupJobRepository:
                 reservation = self._read(reservation_path)
                 job = self.get(reservation['job_id'])
                 self._check_claim(job, reservation)
+                from .setup_phases import effective_identity
                 if (job.job_id not in reviewed | ({prior} if prior else set()) and job.state in ACTIVE_SETUP_STATES
-                        and any(identity.get(k) == v for k, v in reservation['identities'].items())):
+                        and any(identity.get(k) == v for k, v in effective_identity(self.settings,job).items())):
                     raise fail('setup_job_identity_reserved', 'UUID, hostname or AD computer identity is already reserved')
             if any((job.machine_uuid == identity['uuid'] or str(job.request.get('final_hostname', '')).casefold() == identity['hostname'])
                    and job.state in ('queued', 'running')
                    for job in self.jobs.list() if job.status.get('kind') != 'setup'):
                 raise fail('setup_active_job', 'Machine has an active legacy provision job')
-            sequence = 1 + max((self._read(p)['admission_sequence'] for p in self.claims.glob('*.json')), default=0)
+            sequence = next_admission_sequence(self.settings)
             job_id = self.jobs._generate_job_id()
             record = {'schema_version': 2, 'kind': 'setup', 'operation': operation,
                       'job_id': job_id, 'machine_uuid': identity['uuid'], 'identities': identity,
@@ -555,6 +575,10 @@ class SetupJobRepository:
                 if path.name != job.job_id+'.json' or self._read(self.claims/(job.status['plan_sha256']+'.json')) != reservation:
                     raise ValueError
                 self._check_claim(job, reservation)
+            from .setup_phases import validate_phase_artifacts
+            for sequence in validate_phase_artifacts(self.settings):
+                if sequence in sequences:raise ValueError
+                sequences.add(sequence)
             for job in self.list():
                 claim = self._read(self.claims/(job.status['plan_sha256']+'.json'))
                 self._check_claim(job, claim)
@@ -597,6 +621,8 @@ class SetupJobRepository:
             job = self.get(job_id)
             if not job.status['claimed']:
                 raise fail('setup_job_not_claimed', 'Setup transitions require the original worker claim')
+            if 'workflow' in job.status and state!='unknown_requires_review':
+                raise fail('setup_phase_authority_required', 'Workflow transitions require their original durable phase authority')
             if stage is not None and (not isinstance(stage, dict) or set(stage) != {'id'}):
                 raise fail('setup_job_stage_invalid', 'Setup job stage must contain only a safe identifier')
             self._transition(job, copy.deepcopy(job.status), state, stage['id'] if stage else None)

@@ -1,0 +1,13 @@
+---
+- name: Execute only the original claimed post-login workstation phase
+  hosts: all
+  serial: 1
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/vault.yml
+    - ../group_vars/software_catalog.yml
+  tasks:
+    - name: Execute the fixed post-login boundary
+      ansible.builtin.import_tasks: tasks/setup_workflow_phase_execution.yml

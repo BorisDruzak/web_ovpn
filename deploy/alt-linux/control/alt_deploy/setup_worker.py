@@ -47,16 +47,51 @@ def process_alive(settings, identity):
 
 
 class SetupWorker:
-    def __init__(self, settings, *, engine=None, process_probe=None, clock=None):
+    def __init__(self, settings, *, engine=None, process_probe=None, clock=None,phase_store=None,phase_probe=None):
         self.settings = settings
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.jobs = SetupJobRepository(settings, clock=self.clock)
         self.engine = engine
         self.process_probe = process_probe or (lambda identity: process_alive(settings, identity))
+        from .setup_phases import WorkflowPhaseStore
+        self.phases=phase_store or WorkflowPhaseStore(settings,clock=self.clock)
+        self.phase_probe=phase_probe;self._retry_at={}
+
+    def _observe_phase(self,job,phase):
+        if time.monotonic()<self._retry_at.get(job.job_id,0):
+            raise fail('setup_phase_waiting','The selected user phase is waiting for fresh readiness')
+        if self.phase_probe is None:
+            from .setup_phase_probe import WorkflowReadinessProbe
+            self.phase_probe=WorkflowReadinessProbe(self.settings)
+        from .setup_waiting import record,WAIT_CODES
+        try:
+            value=self.phase_probe.observe(job,phase)
+            record(self.settings,job,phase,None,clock=self.clock)
+            return value
+        except Exception as error:
+            self._retry_at[job.job_id]=time.monotonic()+30
+            code=getattr(error,'code','')
+            record(self.settings,job,phase,code if code in WAIT_CODES else 'workflow_readiness_unverified',clock=self.clock)
+            raise
+
+    def _engine(self):
+        if self.engine is None:
+            from .setup_execution import SetupExecutionEngine
+            self.engine=SetupExecutionEngine(self.settings,jobs=self.jobs)
+        return self.engine
 
     def _reconcile_unlocked(self):
         changed = []
         for job in self.jobs.list():
+            if 'workflow' in job.request['plan']['payload']:
+                before=job.state
+                self.phases.reconcile(job)
+                job=self.jobs.get(job.job_id)
+                if job.state!=before:
+                    changed.append({'job_id':job.job_id,'state':job.state,'code':'workflow_phase_outcome_unverified'})
+                # The initial worker identity stays historical. A consumed
+                # later claim is reconciled above using its own authority.
+                if 'workflow' in job.status:continue
             if job.status['claimed'] and job.state in EXECUTING:
                 try:
                     alive = self.process_probe(job.status['process_identity'])
@@ -72,6 +107,41 @@ class SetupWorker:
         with exclusive_lock(self.settings.lock_file):
             return self._reconcile_unlocked()
 
+    def _ready_phases(self):
+        for job in self.jobs.list():
+            if 'workflow' not in job.status:continue
+            if job.state not in ('waiting_reboot','waiting_first_login','verifying'):continue
+            rows=self.phases.records(job)
+            if rows['final_dns']['result'] is not None:
+                if time.monotonic()<self._retry_at.get(job.job_id,0):continue
+                result=self._engine().finalize_workflow(job.job_id)
+                if result['state']=='waiting_first_login':self._retry_at[job.job_id]=time.monotonic()+30
+                continue
+            phase=job.status['workflow']['current_phase']
+            if rows[phase]['ticket'] is not None:continue
+            try:ready=self._observe_phase(job,phase)
+            except Exception:continue
+            self.phases.enqueue(job,phase,ready)
+
+    def _execute_phase(self,job_id,phase):
+        job=self.jobs.get(job_id)
+        try:
+            self.phases.claim(job,phase,process_identity(self.settings))
+            self._engine().execute_phase(job_id,phase)
+            current=self.jobs.get(job_id)
+            if current.state=='verifying':
+                result=self._engine().finalize_workflow(job_id)
+                if result['state']=='waiting_first_login':self._retry_at[job_id]=time.monotonic()+30
+        except Exception:
+            current=self.jobs.get(job_id)
+            # Fresh pre-claim readiness/admission failures leave the same
+            # immutable ticket queued. Any consumed claim cannot be replayed.
+            row=self.phases.records(current)[phase]
+            if row['claim'] is not None and row['result'] is None and current.state!='unknown_requires_review':
+                self.jobs.transition(job_id,'unknown_requires_review',stage={'id':'workflow.phase_outcome_unverified'})
+        current=self.jobs.get(job_id)
+        return {'status':current.state,'job_id':job_id}
+
     def run_once(self):
         with exclusive_lock(self.settings.lock_file):
             self._reconcile_unlocked()
@@ -83,9 +153,13 @@ class SetupWorker:
                    if job.status.get('kind') != 'setup'):
                 return {'status': 'blocked', 'code': 'legacy_job_active'}
             from .setup_retry import reviewed_legacy_runs
+            self._ready_phases()
             jobs = self.jobs.list()
-            queued = sorted((job for job in jobs if job.state == 'queued' and not job.status['claimed']),
-                            key=lambda j: j.status['admission_sequence'])
+            from .setup_phases import eligible_candidates
+            candidates=eligible_candidates(self.settings,readiness=self._observe_phase)
+            if candidates and candidates[0][2] is not None:
+                return self._execute_phase(candidates[0][1],candidates[0][2])
+            queued=[self.jobs.get(candidates[0][1])] if candidates else []
             from .setup_retry import reviewed_jobs
             reviewed = reviewed_jobs(self.settings)
             leases = [r for r in unresolved_legacy_reservations(self.settings)
@@ -111,10 +185,7 @@ class SetupWorker:
                 return {'status': 'idle'}
             job = self.jobs.claim(queued[0].job_id, process_identity(self.settings))
             try:
-                if self.engine is None:
-                    from .setup_execution import SetupExecutionEngine
-                    self.engine = SetupExecutionEngine(self.settings, jobs=self.jobs)
-                self.engine.execute(job.job_id)
+                self._engine().execute(job.job_id)
             except Exception:
                 current = self.jobs.get(job.job_id)
                 if current.state in EXECUTING:

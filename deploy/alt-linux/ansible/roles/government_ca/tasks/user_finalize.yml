@@ -1,0 +1,36 @@
+---
+- name: Require the original complete user phase for late certificate finalization
+  ansible.builtin.assert:
+    that:
+      - alt_setup_workflow_context.kind == 'complete_workstation'
+      - alt_setup_workflow_context.phase == 'user'
+      - software_profile == 'workstation-full-v1'
+    fail_msg: Late certificate finalization requires the original user phase
+  no_log: true
+
+- name: Resolve the selected employee through SSSD
+  ansible.builtin.command:
+    argv: [getent, -s, sss, passwd, "{{ assigned_domain_user }}"]
+  register: government_ca_phase_account
+  changed_when: false
+  no_log: true
+
+- name: Require the same selected employee as the fresh native readiness
+  ansible.builtin.assert:
+    that:
+      - government_ca_phase_account.stdout_lines | length == 1
+      - government_ca_phase_account.stdout.split(':') | length == 7
+      - government_ca_phase_account.stdout.split(':')[2] | int == setup_phase_user_uid
+      - government_ca_phase_account.stdout.split(':')[3] | int == setup_phase_user_gid
+      - (government_ca_phase_account.stdout.split(':')[5] | hash('sha256')) == setup_phase_home_sha256
+    fail_msg: The selected domain profile changed after its phase claim
+  no_log: true
+
+- name: Finalize NSS and CryptoPro user roots before intermediates under the selected-user import lock
+  ansible.builtin.command:
+    argv: [runuser, -u, "{{ government_ca_phase_account.stdout.split(':')[0] }}", --,
+           /usr/bin/python3, -I, -B, /usr/local/libexec/alt-government-ca-user-import.py, --require-cryptopro]
+  register: government_ca_phase_import
+  changed_when: (government_ca_phase_import.stdout | from_json).changed is sameas true
+  no_log: true
+  diff: false

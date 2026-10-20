@@ -40,7 +40,7 @@ def validate_artifacts(root):
                         or value.get('plan_id') != path.stem
                         or set(value) != {'schema_version', 'operation', 'created_at', 'expires_at',
                                           'content_sha256', 'payload', 'plan_id', 'sha256'}
-                        or type(value['schema_version']) is not int or value['schema_version'] not in (1, 2)
+                        or type(value['schema_version']) is not int or value['schema_version'] not in (1, 2, 3)
                         or value['operation'] != 'setup_maintenance_plan'
                         or io.digest({k: v for k, v in value.items() if k not in ('plan_id', 'sha256')}) != sha
                         or io.digest(value['payload']) != value['content_sha256']): raise denied()
@@ -49,11 +49,14 @@ def validate_artifacts(root):
                 if value['schema_version'] == 2:
                     from .setup_maintenance_coverage import validate_payload
                     validate_payload(value['payload'])
+                elif value['schema_version']==3:
+                    from .setup_workflow_maintenance import validate_payload
+                    validate_payload(value['payload'])
             else:
                 sha = value.get('review_sha256')
                 if (not isinstance(sha, str) or not re.fullmatch('[0-9a-f]{64}', sha) or path.name != sha+'.json'
                         or set(value) != {'schema_version', 'purpose', 'review_sha256', 'confirmed_at', 'valid_until'}
-                        or type(value['schema_version']) is not int or value['schema_version'] not in (1, 2)
+                        or type(value['schema_version']) is not int or value['schema_version'] not in (1, 2, 3)
                         or value['purpose'] != 'controller_maintenance_only'): raise denied()
                 plan = io.private_read(root/'setup-maintenance-plans'/('setup-maintenance-'+sha+'.json'), owner_uid=uid)
                 if plan['schema_version'] != value['schema_version']: raise denied()
@@ -246,6 +249,11 @@ class MaintenanceReview:
             allowed.update(j.job_id for j in repository.list()
                            if j.state == 'queued' and not j.status['claimed']
                            and j.status['admission_sequence'] > candidate.status['admission_sequence'])
+            # Waiting for a genuine login is not an outstanding mutator. Old
+            # waiting jobs and every unconsumed/uncertain publication still
+            # retain the previous blocking behavior.
+            allowed.update(j.job_id for j in repository.list()
+                           if control_module('setup_phases').idle_workflow(self.settings,j))
         if any(j.job_id not in allowed and j.state in self.jobs.ACTIVE_SETUP_STATES for j in repository.jobs.list()):
             raise denied()
         history = history_fingerprint(root)
@@ -341,8 +349,7 @@ class MaintenanceReview:
 
     def confirm(self, plan_id, sha):
         if self.schema_version == 1 and self.purpose == 'controller_maintenance_only' and self._is_coverage(plan_id, sha):
-            from .setup_maintenance_coverage import MaintenanceCoverage
-            return MaintenanceCoverage(self.settings, clock=self.clock).confirm(plan_id, sha)
+            return self._coverage_service(plan_id,sha).confirm(plan_id,sha)
         try:
             with maintenance_lock(self.settings):
                 plan, created, expires = self._protected_plan(plan_id, sha)
@@ -371,8 +378,7 @@ class MaintenanceReview:
 
     def exclusions(self, sha):
         if self.schema_version == 1 and self.purpose == 'controller_maintenance_only' and self._is_coverage(self.prefix+str(sha), sha):
-            from .setup_maintenance_coverage import MaintenanceCoverage
-            return MaintenanceCoverage(self.settings, clock=self.clock).exclusions(sha)
+            return self._coverage_service(self.prefix+str(sha),sha).exclusions(sha)
         try:
             with maintenance_lock(self.settings):
                 self._receipt(sha)
@@ -384,10 +390,26 @@ class MaintenanceReview:
     def _is_coverage(self, plan_id, sha):
         try:
             if not isinstance(sha, str) or not re.fullmatch('[0-9a-f]{64}', sha) or plan_id != self.prefix+sha: raise denied()
-            return self._read(self.plans/(plan_id+'.json')).get('schema_version') == 2
+            return self._read(self.plans/(plan_id+'.json')).get('schema_version') in (2,3)
         except Exception: raise denied() from None
 
+    def _coverage_service(self,plan_id,sha):
+        if not self._is_coverage(plan_id,sha):raise denied()
+        schema=self._read(self.plans/(plan_id+'.json'))['schema_version']
+        if schema==3:
+            from .setup_workflow_maintenance import WorkflowMaintenanceCoverage
+            return WorkflowMaintenanceCoverage(self.settings,clock=self.clock)
+        from .setup_maintenance_coverage import MaintenanceCoverage
+        return MaintenanceCoverage(self.settings,clock=self.clock)
+
     def plan_all_closed(self):
+        repository=self.jobs.SetupJobRepository(self.settings)
+        reviewed=control_module('setup_retry').reviewed_jobs(self.settings)
+        for job in repository.list():
+            if job.job_id not in reviewed and job.state=='unknown_requires_review' and 'workflow' in job.request['plan']['payload']:
+                if control_module('setup_phases').WorkflowPhaseStore(self.settings).records(job)['system']['result'] is not None:
+                    from .setup_workflow_maintenance import WorkflowMaintenanceCoverage
+                    return WorkflowMaintenanceCoverage(self.settings,clock=self.clock).plan()
         from .setup_maintenance_coverage import MaintenanceCoverage
         return MaintenanceCoverage(self.settings, clock=self.clock).plan()
 

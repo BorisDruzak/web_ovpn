@@ -40,10 +40,10 @@ def test_managed_template_pins_password_authentication_and_fixed_port():
     assert '[TCP]' not in (ROLE/'templates/krfbrc.j2').read_text()
 
 
-@pytest.mark.parametrize('apply', [False,True])
-def test_fixed_program_is_bounded_and_rejects_malformed_private_input(apply):
+@pytest.mark.parametrize('apply,phase_observer', [(False,False),(True,False),(False,True)])
+def test_fixed_program_is_bounded_and_rejects_malformed_private_input(apply,phase_observer):
     from alt_deploy.krfb_program import target_program
-    program=target_program(apply=apply)
+    program=target_program(apply=apply,phase_observer=phase_observer)
     assert len(program.encode())<120000
     compile(program,'<fixed-managed-krfb>','exec')
     for private in ['{"schema_version":1,"command":"PRIVATE-SECRET-SENTINEL"}',
