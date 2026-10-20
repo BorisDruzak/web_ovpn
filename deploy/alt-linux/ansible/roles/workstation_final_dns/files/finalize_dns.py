@@ -156,7 +156,7 @@ class Snapshot:
     resolver_source:Path|None=field(default=None,repr=False)
 
 
-def observe(request,*,root=Path('/'),call=run):
+def _observe(request,*,root=Path('/'),call=run,_owned_rollback=None):
     try:
         root=Path(root)
         if (not isinstance(request,dict) or set(request)!={'schema_version','machine_uuid','hostname','servers'}
@@ -211,7 +211,19 @@ def observe(request,*,root=Path('/'),call=run):
                 # Adopt only the already registered exact interface source.
                 source=inside(root,'/run/resolvconf/interfaces/'+interface)
                 sdata,sinfo=read(source,root)
-                if sdata!=data:raise DnsError('final_dns_backend_unverified')
+                if sdata!=data:
+                    # A failed resolvconf activation can leave the original
+                    # registered source intact after our persistent exchange.
+                    # Only the exact retained replacement and original source
+                    # may be observed in this internal rollback transition.
+                    if _owned_rollback is None:raise DnsError('final_dns_backend_unverified')
+                    original,replacement,replacement_info=_owned_rollback
+                    prior=original.files.get(str(source.relative_to(root)))
+                    if (original.public['backend']!='etcnet' or original.path!=path or original.resolver_source!=source
+                            or data!=replacement or file_identity(info)!=file_identity(replacement_info)
+                            or attributes(path)!=original.attributes or prior is None or sdata!=prior[0]
+                            or file_identity(sinfo)!=file_identity(prior[1])):
+                        raise DnsError('final_dns_configuration_changed')
                 records[str(source.relative_to(root))]=(sdata,sinfo)
         records[str(path.relative_to(root))]=(data,info)
         # ALT resolvconf intentionally hardlinks its generated active file.
@@ -229,6 +241,11 @@ def observe(request,*,root=Path('/'),call=run):
         return Snapshot(public,path,data,info,records,attributes(path),source)
     except DnsError:raise
     except Exception:raise DnsError('final_dns_backend_unverified') from None
+
+
+def observe(request,*,root=Path('/'),call=run):
+    """Ordinary read-only observations always require source convergence."""
+    return _observe(request,root=root,call=call)
 
 
 def rewrite(snapshot,servers):
@@ -404,7 +421,7 @@ def apply(request,expected,context,*,root=Path('/'),call=run,verify=None):
                 code=str(error) if isinstance(error,DnsError) and str(error) in CODES else 'final_dns_outcome_unverified'
                 try:
                     if changed:
-                        current=observe(request,root=root,call=call)
+                        current=_observe(request,root=root,call=call,_owned_rollback=(before,new,new_info))
                         same_connection(before,current)
                         if current.content!=new or current.attributes!=before.attributes:raise ValueError
                         # Only our exact replacement inode may be rolled back.

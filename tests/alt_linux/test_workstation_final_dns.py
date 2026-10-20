@@ -159,6 +159,56 @@ def test_invalid_dns_or_machine_context_is_readonly(network):
     assert files(f['root'])==before
 
 
+def test_activation_failure_before_runtime_update_restores_owned_persistent_file(network):
+    m=helper();f=network;initial=m.observe(f['request'],root=f['root'],call=f['call'])
+    original={p:p.read_bytes() for p in (f['persistent'],f['source']) if p is not None}
+    activations=[];checks=[]
+    def call(args,**kwargs):
+        if args[:3]==['nmcli','device','reapply'] or args[:2]==['resolvconf','-a']:
+            activations.append(args)
+            if len(activations)==1:return 1,'PRIVATE-SECRET-SENTINEL'
+        return f['call'](args,**kwargs)
+    result=m.apply(f['request'],initial.public['snapshot_sha256'],f['context'],root=f['root'],call=call,
+        verify=lambda value,phase,**unused:checks.append(phase))
+    assert result=={'status':'rolled_back_verified','changed':False,'code':'final_dns_apply_failed'}
+    assert len(activations)==2 and checks==['before','rollback']
+    assert all(path.read_bytes()==content for path,content in original.items())
+    assert m.resolvers(f['active'].read_bytes())==initial.public['servers']
+    before=files(f['root'])
+    repeated=m.apply(f['request'],initial.public['snapshot_sha256'],f['context'],root=f['root'],call=call)
+    assert repeated['code']=='final_dns_claim_consumed' and files(f['root'])==before and len(activations)==2
+
+
+@pytest.mark.parametrize('network',['etcnet'],indirect=True)
+@pytest.mark.parametrize('foreign',['source','persistent_inode','network'])
+def test_failed_activation_never_restores_over_foreign_state(network,foreign):
+    m=helper();f=network;initial=m.observe(f['request'],root=f['root'],call=f['call']);failed=[]
+    def call(args,**kwargs):
+        if args[:2]==['resolvconf','-a']:
+            failed.append(args)
+            if foreign=='source':f['source'].write_text('nameserver 192.0.2.99\n')
+            if foreign=='persistent_inode':
+                replacement=f['persistent'].with_suffix('.foreign');replacement.write_bytes(f['persistent'].read_bytes())
+                replacement.chmod(f['persistent'].stat().st_mode&0o777);replacement.replace(f['persistent'])
+            return 1,''
+        if failed and foreign=='network' and args==['ip','-j','-4','route','show','dev','eth0']:
+            return 0,'[{"dst":"default","dev":"eth0","gateway":"192.0.2.99"}]'
+        return f['call'](args,**kwargs)
+    result=m.apply(f['request'],initial.public['snapshot_sha256'],f['context'],root=f['root'],call=call,verify=lambda *a,**kw:None)
+    assert result['status']=='outcome_unverified' and result['code']=='final_dns_rollback_unverified'
+    assert len(failed)==1 and b'192.0.2.53' in f['persistent'].read_bytes()
+    if foreign=='source':assert b'192.0.2.99' in f['source'].read_bytes()
+
+
+@pytest.mark.parametrize('network',['etcnet'],indirect=True)
+def test_readonly_observer_still_rejects_source_persistent_skew(network):
+    m=helper();f=network;initial=m.observe(f['request'],root=f['root'],call=f['call'])
+    f['persistent'].write_bytes(m.rewrite(initial,f['request']['servers']))
+    before=files(f['root'])
+    with pytest.raises(m.DnsError):m.observe(f['request'],root=f['root'],call=f['call'])
+    assert files(f['root'])==before
+
+
 @pytest.mark.parametrize('active_correct',[False,True])
 def test_already_persistent_policy_still_reapplies_stale_active_dns_and_then_is_noop(network,active_correct):
     m=helper();f=network
