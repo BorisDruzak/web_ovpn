@@ -73,5 +73,19 @@ def read_diagnostic(scope,codes,*,root=Path('/')):
         outcome=result['status'];code=result.get('code')
         if outcome not in OUTCOMES or code is not None and code not in codes[component]:raise ValueError
         if outcome not in ('noop','repaired','configured','applied_verified') and code is None:raise ValueError
+        if component=='network.final_dns':
+            try:raw_failure=_read(directory/'failure.json',root,mode=0o600)
+            except FileNotFoundError:
+                if (directory/'failure.json').is_symlink():raise ValueError
+                raw_failure=None
+            if raw_failure is not None:
+                failure=json.loads(raw_failure,object_pairs_hook=_unique)
+                if (not isinstance(failure,dict) or set(failure)!={'schema_version','stage','code','rollback_code'}
+                        or type(failure['schema_version']) is not int or failure['schema_version']!=1
+                        or failure['stage'] not in ('exchange','activate','observe_after','verify_after')
+                        or failure['code'] not in codes[component]
+                        or failure['rollback_code'] is not None and failure['rollback_code'] not in codes[component]
+                        or outcome not in ('rolled_back_verified','outcome_unverified')):raise ValueError
+                code=failure['code']
         return dict(scope,recorded=True,outcome=outcome,code=code)
     except Exception:return unavailable

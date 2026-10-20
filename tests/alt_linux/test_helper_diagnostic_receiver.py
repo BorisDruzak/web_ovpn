@@ -7,7 +7,8 @@ import pytest
 
 
 @pytest.mark.parametrize('component',['desktop.kwallet_repair','remote.krfb','network.final_dns'])
-@pytest.mark.parametrize('fault',['none','foreign_context','foreign_result','unsafe','missing','private_code'])
+@pytest.mark.parametrize('fault',['none','foreign_context','foreign_result','unsafe','missing','private_code',
+    'failure','failure_private','failure_stage','failure_extra','failure_mode','failure_symlink'])
 def test_fixed_reader_only_returns_allowlisted_original_claim_diagnostic(tmp_path,component,fault):
     from alt_deploy.helper_diagnostic_target import read_diagnostic
     from alt_deploy.setup_plans import digest
@@ -40,9 +41,21 @@ def test_fixed_reader_only_returns_allowlisted_original_claim_diagnostic(tmp_pat
         path=directory/name;path.write_text(json.dumps(value));path.chmod(0o600)
     if fault=='unsafe':(directory/invocation).chmod(0o666)
     if fault=='missing':(directory/invocation).unlink()
+    if fault.startswith('failure'):
+        failure={'schema_version':1,'stage':'verify_after','code':'final_dns_lookup_failed','rollback_code':'final_dns_apply_failed'}
+        if fault=='failure_private':failure['code']='PRIVATE-SENTINEL'
+        if fault=='failure_stage':failure['stage']='PRIVATE-SENTINEL'
+        if fault=='failure_extra':failure['output']='PRIVATE-SENTINEL'
+        path=directory/'failure.json';path.write_text(json.dumps(failure));path.chmod(0o600)
+        if fault=='failure_mode':path.chmod(0o644)
+        if fault=='failure_symlink':
+            path.rename(directory/'other.json');path.symlink_to('other.json')
     allowed={'desktop.kwallet_repair':WALLET_CODES,'remote.krfb':TARGET_CODES,'network.final_dns':CODES}
     value=read_diagnostic(scope,allowed,root=tmp_path)
     assert {k:value[k] for k in scope}==scope
     assert 'SENTINEL' not in json.dumps(value)
-    if fault=='none':assert value['recorded'] is True and value['code']==code
+    if fault=='failure' and component=='network.final_dns':
+        assert value['recorded'] is True and value['code']=='final_dns_lookup_failed' and value['outcome']=='outcome_unverified'
+    elif fault=='none' or fault.startswith('failure') and component!='network.final_dns':
+        assert value['recorded'] is True and value['code']==code
     else:assert value['recorded'] is False and value['code']=='workflow_helper_diagnostic_unavailable'

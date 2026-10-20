@@ -57,7 +57,13 @@ def network(tmp_path,request):
             if args[-1]=='--active':return 0,state['connection']+':eth0\n'
             return 0,state['connection']+':'+('/etc/NetworkManager/system-connections/test.nmconnection' if profile else '--')+'\n'
         if args[:3]==['nmcli','connection','reload'] or args[:3]==['nmcli','connection','load']:return 0,''
-        if args[:3]==['nmcli','device','reapply'] or args[:2]==['resolvconf','-a']:
+        if args[0]=='/usr/bin/busctl':
+            if 'get-property' in args:return 0,json.dumps({'type':'s','data':'1.54.4'})
+            if 'GetDeviceByIpIface' in args:return 0,json.dumps({'type':'o','data':['/org/freedesktop/NetworkManager/Devices/2']})
+            if 'GetAppliedConnection' in args:
+                return 0,json.dumps({'type':'a{sa{sv}}t','data':[{'connection':{'uuid':{'type':'s','data':state['connection']}},
+                    'ipv4':{'method':{'type':'s','data':'auto'}},'ipv6':{'method':{'type':'s','data':'ignore'}}},7]})
+        if args[:3]==['nmcli','device','reapply'] or args[:2]==['resolvconf','-a'] or args[0]=='/usr/bin/busctl' and 'Reapply' in args:
             if state['race']:
                 persistent.write_text(persistent.read_text()+'# concurrent employee edit\n')
             if profile:
@@ -81,6 +87,21 @@ def network(tmp_path,request):
 def files(root):
     return {str(p.relative_to(root)):(p.read_bytes(),p.stat().st_mode,p.stat().st_uid,p.stat().st_gid)
             for p in root.rglob('*') if p.is_file()}
+
+
+def test_original_failure_survives_failed_rollback_without_private_output(network):
+    m=helper();f=network;initial=m.observe(f['request'],root=f['root'],call=f['call'])
+    def verify(value,*,phase,**options):
+        if phase=='after':
+            f['state']['rollback_failure']=True
+            raise m.DnsError('final_dns_lookup_failed')
+    result=m.apply(f['request'],initial.public['snapshot_sha256'],f['context'],root=f['root'],call=f['call'],verify=verify)
+    assert result=={'status':'outcome_unverified','changed':None,'code':'final_dns_rollback_unverified'}
+    path=f['root']/'var/lib/alt-workstation-final-dns'/f['context']['claim_sha256']/'failure.json'
+    failure=json.loads(path.read_text())
+    assert failure=={'schema_version':1,'stage':'verify_after','code':'final_dns_lookup_failed','rollback_code':'final_dns_apply_failed'}
+    assert path.stat().st_mode & 0o777==0o600
+    assert 'SENTINEL' not in path.read_text()
 
 
 def test_supported_backend_observation_and_dns_edit_preserve_every_other_byte(network):
@@ -164,7 +185,7 @@ def test_activation_failure_before_runtime_update_restores_owned_persistent_file
     original={p:p.read_bytes() for p in (f['persistent'],f['source']) if p is not None}
     activations=[];checks=[]
     def call(args,**kwargs):
-        if args[:3]==['nmcli','device','reapply'] or args[:2]==['resolvconf','-a']:
+        if args[:3]==['nmcli','device','reapply'] or args[:2]==['resolvconf','-a'] or args[0]=='/usr/bin/busctl' and 'Reapply' in args:
             activations.append(args)
             if len(activations)==1:return 1,'PRIVATE-SECRET-SENTINEL'
         return f['call'](args,**kwargs)
@@ -270,7 +291,7 @@ def test_dhcp_etcnet_without_persistent_resolver_is_guarded(network,case):
     assert not f['persistent'].exists() and files(f['root'])==before
     activations=[]
     def call(args,**kwargs):
-        if args[:3]==['nmcli','device','reapply']:
+        if args[:3]==['nmcli','device','reapply'] or args[0]=='/usr/bin/busctl' and 'Reapply' in args:
             activations.append(args)
             if case=='activation_failure' and len(activations)==1:return 1,''
             if not f['persistent'].exists():

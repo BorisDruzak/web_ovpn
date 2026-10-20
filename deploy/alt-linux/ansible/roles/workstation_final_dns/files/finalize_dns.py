@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import configparser
 import ctypes
-from dataclasses import dataclass,field
+from dataclasses import dataclass,field,replace
 import fcntl
 import hashlib
 import ipaddress
@@ -145,6 +145,96 @@ def network_identity(call,interface):
     return digest(canonical(result))
 
 
+def nm_reapply_context(call,public):
+    """Resolve a version-bound device that supports preserving external IP."""
+    prefix=['/usr/bin/busctl','--system','--json=short','--timeout=8']
+    manager='org.freedesktop.NetworkManager'
+    def message(args,type_):
+        value=json.loads(command(call,prefix+args),object_pairs_hook=unique)
+        if not isinstance(value,dict) or set(value)!={'type','data'} or value['type']!=type_:
+            raise DnsError('final_dns_backend_unverified')
+        return value['data']
+    try:
+        version=message(['get-property',manager,'/org/freedesktop/NetworkManager',manager,'Version'],'s')
+        if not isinstance(version,str) or len(version)>64:raise ValueError
+        match=re.fullmatch(r'([0-9]+)[.]([0-9]+)(?:[.][0-9]+)?(?:[-+~][A-Za-z0-9._+~-]+)?',version)
+        if not match or tuple(map(int,match.groups()))<(1,42):raise ValueError
+        device=message(['call',manager,'/org/freedesktop/NetworkManager',manager,
+                        'GetDeviceByIpIface','s',public['interface']],'o')
+        if (not isinstance(device,list) or len(device)!=1 or not isinstance(device[0],str)
+                or not re.fullmatch('/org/freedesktop/NetworkManager/Devices/[1-9][0-9]*',device[0])):raise ValueError
+        applied=message(['call',manager,device[0],manager+'.Device','GetAppliedConnection','u','0'],'a{sa{sv}}t')
+        if (not isinstance(applied,list) or len(applied)!=2 or type(applied[1]) is not int
+                or not 0<applied[1]<2**64 or applied[0]['connection']['uuid']!={'type':'s','data':public['connection_uuid']}):
+            raise ValueError
+        if any(not isinstance(applied[0].get(family),dict) for family in ('ipv4','ipv6')):raise ValueError
+        nm_settings_args(applied[0])
+        return device[0],applied[1],applied[0]
+    except DnsError:raise
+    except Exception:raise DnsError('final_dns_backend_unverified') from None
+
+
+def nm_settings_args(settings):
+    """Encode only bounded NM property types; unknown shapes fail before writes."""
+    def string(value):
+        if not isinstance(value,str) or '\0' in value or len(value.encode())>4096:raise ValueError
+        return value
+    def sequence(value):
+        if not isinstance(value,list) or len(value)>256:raise ValueError
+        return value
+    def mapping(value):
+        if not isinstance(value,dict) or len(value)>256:raise ValueError
+        return value
+    def properties(value,depth):
+        if depth>4:raise ValueError
+        args=[str(len(mapping(value)))]
+        for key,item in value.items():
+            if not isinstance(item,dict) or set(item)!={'type','data'}:raise ValueError
+            signature=string(item['type'])
+            args.extend([string(key),signature]+encode(signature,item['data'],depth+1))
+        return args
+    def encode(signature,value,depth=0):
+        if signature=='s':return [string(value)]
+        if signature=='b':
+            if type(value) is not bool:raise ValueError
+            return ['true' if value else 'false']
+        bounds={'y':(0,2**8),'n':(-2**15,2**15),'q':(0,2**16),'i':(-2**31,2**31),
+                'u':(0,2**32),'x':(-2**63,2**63),'t':(0,2**64)}
+        if signature in bounds:
+            low,high=bounds[signature]
+            if type(value) is not int or not low<=value<high:raise ValueError
+            return [str(value)]
+        if signature in ('as','ay','au','at','ai'):
+            return [str(len(sequence(value)))]+[part for item in value for part in encode(signature[1:],item,depth+1)]
+        if signature=='a{ss}':
+            return [str(len(mapping(value)))]+[part for key,item in value.items() for part in (string(key),string(item))]
+        if signature=='aa{sv}':
+            return [str(len(sequence(value)))]+[part for item in value for part in properties(item,depth+1)]
+        if signature=='aau':
+            return [str(len(sequence(value)))]+[part for item in value for part in encode('au',item,depth+1)]
+        if signature in ('a(ayuay)','a(ayuayu)'):
+            types=('ay','u','ay') if signature=='a(ayuay)' else ('ay','u','ay','u')
+            args=[str(len(sequence(value)))]
+            for row in value:
+                if len(sequence(row))!=len(types):raise ValueError
+                for kind,item in zip(types,row):args.extend(encode(kind,item,depth+1))
+            return args
+        raise ValueError
+    try:
+        args=[str(len(mapping(settings)))]
+        for key,values in settings.items():args.extend([string(key)]+properties(values,0))
+        if sum(len(item.encode())+1 for item in args)>65536:raise ValueError
+        return args
+    except Exception:raise DnsError('final_dns_backend_unverified') from None
+
+
+def nm_without_dns(settings):
+    value=json.loads(json.dumps(settings))
+    for family in ('ipv4','ipv6'):
+        for key in ('dns','dns-data','ignore-auto-dns'):value.get(family,{}).pop(key,None)
+    return value
+
+
 @dataclass(frozen=True)
 class Snapshot:
     public:dict
@@ -155,6 +245,7 @@ class Snapshot:
     attributes:dict=field(repr=False)
     resolver_source:Path|None=field(default=None,repr=False)
     persistent_exists:bool=True
+    nm_context:tuple|None=field(default=None,repr=False)
 
 
 def _observe(request,*,root=Path('/'),call=run,_owned_rollback=None):
@@ -255,7 +346,9 @@ def _observe(request,*,root=Path('/'),call=run,_owned_rollback=None):
 
 def observe(request,*,root=Path('/'),call=run):
     """Ordinary read-only observations always require source convergence."""
-    return _observe(request,root=root,call=call)
+    value=_observe(request,root=root,call=call)
+    if value.public['backend'].startswith('nm_'):value=replace(value,nm_context=nm_reapply_context(call,value.public))
+    return value
 
 
 def rewrite(snapshot,servers):
@@ -380,7 +473,7 @@ def restore_absent(path,data,info,root,journal):
     finally:os.close(parentfd)
 
 
-def activate(snapshot,data,call):
+def activate(snapshot,data,call,*,servers=None,rollback=False):
     public=snapshot.public
     if public['backend']=='nm_etcnet':args=['nmcli','connection','reload']
     elif public['backend']=='nm_keyfile':args=['nmcli','connection','load','/etc/NetworkManager/system-connections/'+snapshot.path.name]
@@ -388,10 +481,51 @@ def activate(snapshot,data,call):
         rc,_=call(['resolvconf','-a',public['interface']],input_text=data.decode('utf-8'))
         if rc:raise DnsError('final_dns_apply_failed')
         return
+    device,version,applied=snapshot.nm_context
+    settings=json.loads(json.dumps(applied))
+    if rollback:
+        current_device,version,current=nm_reapply_context(call,public)
+        if current_device!=device or nm_without_dns(current)!=nm_without_dns(applied):
+            raise DnsError('final_dns_configuration_changed')
+    else:
+        for family,number in (('ipv4',4),('ipv6',6)):
+            if family not in settings:raise DnsError('final_dns_backend_unverified')
+            settings[family].pop('dns',None)
+            settings[family]['dns-data']={'type':'as','data':[ip for ip in servers if ipaddress.ip_address(ip).version==number]}
+            settings[family]['ignore-auto-dns']={'type':'b','data':True}
+    encoded=nm_settings_args(settings)
     rc,_=call(args)
     if rc:raise DnsError('final_dns_apply_failed')
-    rc,_=call(['nmcli','device','reapply',public['interface']])
+    # nmcli hardcodes flags=0 and flushes external IPv6 even for a DNS-only
+    # reload. Use the supported preserve-external-ip flag with the exact
+    # applied-connection version; never retry the mutation or fall back.
+    rc,_=call(['/usr/bin/busctl','--system','--json=short','--timeout=8','call',
+        'org.freedesktop.NetworkManager',device,'org.freedesktop.NetworkManager.Device',
+        'Reapply','a{sa{sv}}tu']+encoded+[str(version),'1'])
     if rc:raise DnsError('final_dns_apply_failed')
+
+
+def observe_settled(before,request,servers,persistent,*,root,call):
+    """Read-only convergence after one activation; retain exact network checks."""
+    deadline=time.monotonic()+30;stable=0
+    def bounded(args,**kwargs):
+        remaining=deadline-time.monotonic()
+        if remaining<=0:raise DnsError('final_dns_active_unverified')
+        kwargs['timeout']=min(kwargs.get('timeout',15),remaining)
+        return call(args,**kwargs)
+    while True:
+        try:
+            value=observe(request,root=root,call=bounded)
+        except DnsError as error:
+            if str(error)!='final_dns_backend_unverified':raise
+            stable=0
+        else:
+            # A complete but different network is never accepted as convergence.
+            same_connection(before,value)
+            stable=stable+1 if value.public['servers']==servers and value.public['persistent_servers']==persistent else 0
+            if stable==2:return value
+        if time.monotonic()>=deadline:raise DnsError('final_dns_active_unverified')
+        time.sleep(min(0.25,max(0,deadline-time.monotonic())))
 
 
 def native_context(context,request):
@@ -458,8 +592,9 @@ def apply(request,expected,context,*,root=Path('/'),call=run,verify=None):
             check=verify or verify_dns
             check(before,phase='before',request=request,root=root,call=call)
             fresh=observe(request,root=root,call=call)
-            if fresh.public!=before.public:raise DnsError('final_dns_configuration_changed')
+            if fresh.public!=before.public or fresh.nm_context!=before.nm_context:raise DnsError('final_dns_configuration_changed')
             new=rewrite(before,request['servers'])
+            stage='exchange'
             try:
                 file_changed=new!=before.content
                 changed=file_changed or before.public['servers']!=request['servers']
@@ -467,18 +602,22 @@ def apply(request,expected,context,*,root=Path('/'),call=run,verify=None):
                     new_info=(exchange(before.path,before.content,new,before.info,root,before.attributes,journal=directory)
                         if before.persistent_exists else publish_absent(before,new,root,directory))
                 else:new_info=before.info
-                if changed:activate(before,new,call)
-                after=observe(request,root=root,call=call)
+                stage='activate'
+                if changed:activate(before,new,call,servers=request['servers'])
+                stage='observe_after'
+                after=observe_settled(before,request,request['servers'],request['servers'],root=root,call=call)
                 same_connection(before,after)
                 if (after.content!=new or after.attributes!=before.attributes
                         or (after.info.st_ino,after.info.st_dev)!=(new_info.st_ino,new_info.st_dev)):
                     raise DnsError('final_dns_configuration_changed')
                 if after.public['servers']!=request['servers'] or after.public['persistent_servers']!=request['servers']:
                     raise DnsError('final_dns_active_unverified')
+                stage='verify_after'
                 check(after,phase='after',request=request,root=root,call=call)
                 result={'status':'applied_verified','changed':changed,'code':'final_dns_applied'}
             except Exception as error:
                 code=str(error) if isinstance(error,DnsError) and str(error) in CODES else 'final_dns_outcome_unverified'
+                rollback_code=None
                 try:
                     if changed:
                         current=_observe(request,root=root,call=call,_owned_rollback=(before,new,new_info))
@@ -488,14 +627,18 @@ def apply(request,expected,context,*,root=Path('/'),call=run,verify=None):
                         if file_changed:
                             if before.persistent_exists:exchange(before.path,new,before.content,new_info,root,before.attributes,journal=directory,stage='rollback')
                             else:restore_absent(before.path,new,new_info,root,directory)
-                        activate(before,before.content,call)
-                    restored=observe(request,root=root,call=call)
+                        activate(before,before.content,call,rollback=True)
+                    restored=observe_settled(before,request,before.public['servers'],before.public['persistent_servers'],root=root,call=call)
                     if (restored.persistent_exists!=before.persistent_exists
                             or restored.content!=before.content or restored.public['servers']!=before.public['servers']
                             or restored.public['network_sha256']!=before.public['network_sha256']):raise ValueError
                     check(restored,phase='rollback',request=request,root=root,call=call)
                     result={'status':'rolled_back_verified','changed':False,'code':code}
-                except Exception:result={'status':'outcome_unverified','changed':None,'code':'final_dns_rollback_unverified'}
+                except Exception as rollback_error:
+                    rollback_code=(str(rollback_error) if isinstance(rollback_error,DnsError) and str(rollback_error) in CODES
+                        else 'final_dns_outcome_unverified')
+                    result={'status':'outcome_unverified','changed':None,'code':'final_dns_rollback_unverified'}
+                record(directory,'failure.json',{'schema_version':1,'stage':stage,'code':code,'rollback_code':rollback_code})
             record(directory,'result.json',result)
             return result
         finally:os.close(lock)
