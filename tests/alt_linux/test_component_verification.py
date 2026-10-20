@@ -48,6 +48,18 @@ def evidence(catalog):
             value.pop('previous_helper_sha256')
             value['snapshot_sha256']=hashlib.sha256(canonical(value)).hexdigest()
             fact['wallet_readiness']=value
+        if component['verification']['recipe']=='final_dns':
+            from alt_deploy.final_dns_program import target_program
+            from alt_deploy.final_dns_runtime import canonical
+            policy={'servers':['192.0.2.53']}
+            value={'schema_version':1,'machine_uuid':UUID,'hostname':result['machine']['hostname'],
+                'boot_id':result['machine']['boot_id'],'backend':'nm_etcnet','interface':'eth0',
+                'connection_uuid':'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee','servers':policy['servers'],
+                'persistent_servers':policy['servers'],'configuration_sha256':'a'*64,'network_sha256':'b'*64}
+            value['snapshot_sha256']=hashlib.sha256(canonical(value)).hexdigest()
+            fact.update(policy=policy,policy_sha256=hashlib.sha256(canonical(policy)).hexdigest(),final_dns={
+                'schema_version':1,'status':'ok','helper_sha256':hashlib.sha256(target_program(catalog._project).encode()).hexdigest(),
+                'observation':value})
         result['components'][component['id']] = fact
     return result
 

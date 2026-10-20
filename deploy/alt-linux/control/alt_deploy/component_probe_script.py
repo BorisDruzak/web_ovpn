@@ -395,6 +395,10 @@ def inspect_component(root, recipe, user, home, name, call):
                 # Space evidence is relevant only before an installation, never
                 # turn an otherwise compliant installed package into drift.
                 fact['storage'] = None
+    elif kind == 'final_dns':
+        # Enriched by a separate fixed read-only receiver. A query cannot
+        # supply executable source or ask this collector to finalize DNS.
+        fact['checks']['ready'] = False
     elif kind == 'vnc_policy':
         namespace = {'__name__':'_published_vnc_policy_observer'}
         source = recipe['helper_source']

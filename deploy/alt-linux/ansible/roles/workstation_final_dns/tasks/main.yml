@@ -1,0 +1,156 @@
+---
+- name: Require the original final DNS phase claim and bound policy
+  ansible.builtin.assert:
+    that:
+      - alt_setup_workflow_context is defined and alt_setup_workflow_context is mapping
+      - alt_setup_workflow_context.schema_version == 1
+      - alt_setup_workflow_context.kind == 'complete_workstation'
+      - alt_setup_workflow_context.phase == 'final_dns'
+      - alt_setup_workflow_context.machine_uuid == machine_uuid
+      - alt_setup_final_dns_request is defined and alt_setup_final_dns_request is mapping
+      - alt_setup_final_dns_request.keys() | sort == ['hostname', 'machine_uuid', 'schema_version', 'servers']
+      - alt_setup_final_dns_request.machine_uuid == machine_uuid
+      - alt_setup_final_dns_request.hostname == final_hostname
+      - alt_setup_final_dns_readiness is defined and alt_setup_final_dns_readiness.status == 'ok'
+      - alt_setup_final_dns_readiness.observation.machine_uuid == machine_uuid
+      - alt_setup_final_dns_readiness.observation.hostname == final_hostname
+      - alt_setup_workflow_context.policy_sha256 == (alt_setup_final_dns_request.servers | alt_final_dns_policy_sha256)
+    fail_msg: The original confirmed final DNS phase is unavailable
+  no_log: true
+
+- name: Render the fixed published final DNS helper
+  ansible.builtin.set_fact:
+    final_dns_helper_program: "{{ lookup('ansible.builtin.template', 'alt-workstation-final-dns.py.j2') }}"
+  no_log: true
+
+- name: Require unchanged source before any target modification
+  ansible.builtin.assert:
+    that:
+      - final_dns_helper_program | length < 120000
+      - (final_dns_helper_program | hash('sha256')) == alt_setup_final_dns_readiness.helper_sha256
+      - alt_setup_final_dns_readiness.observation.snapshot_sha256 is match('^[0-9a-f]{64}$')
+    fail_msg: The planned final DNS helper source changed
+  no_log: true
+
+- name: Inspect protected final DNS helper directories
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop: [/usr, /usr/local, /usr/local/libexec]
+  register: final_dns_helper_parents
+  no_log: true
+
+- name: Require protected existing helper directories
+  ansible.builtin.assert:
+    that:
+      - >-
+        (not item.stat.exists and item.item == '/usr/local/libexec') or
+        (item.stat.exists and item.stat.isdir and not item.stat.islnk and item.stat.uid == 0 and
+         item.stat.mode[-2] in ['0', '1', '4', '5'] and item.stat.mode[-1] in ['0', '1', '4', '5'])
+    fail_msg: The final DNS helper directory is unverified
+  loop: "{{ final_dns_helper_parents.results }}"
+  no_log: true
+
+- name: Inspect the fixed helper before installation
+  ansible.builtin.stat:
+    path: /usr/local/libexec/alt-workstation-final-dns
+    follow: false
+    checksum_algorithm: sha256
+  register: final_dns_helper_before
+  no_log: true
+
+- name: Reject an unproven final DNS helper collision
+  ansible.builtin.assert:
+    that:
+      - >-
+        not final_dns_helper_before.stat.exists or
+        (final_dns_helper_before.stat.isreg and not final_dns_helper_before.stat.islnk and
+         final_dns_helper_before.stat.uid == 0 and final_dns_helper_before.stat.mode == '0700' and
+         final_dns_helper_before.stat.nlink == 1 and final_dns_helper_before.stat.checksum in
+         ([alt_setup_final_dns_readiness.helper_sha256] + final_dns_previous_helper_sha256))
+    fail_msg: The existing final DNS helper is not an approved owned asset
+  no_log: true
+
+- name: Create only the absent fixed helper directory
+  ansible.builtin.file:
+    path: /usr/local/libexec
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+    follow: false
+  when: not final_dns_helper_parents.results[2].stat.exists
+  no_log: true
+
+- name: Install the exact final DNS helper
+  ansible.builtin.copy:
+    content: "{{ final_dns_helper_program }}"
+    dest: /usr/local/libexec/alt-workstation-final-dns
+    owner: root
+    group: root
+    mode: '0700'
+    follow: false
+  no_log: true
+  diff: false
+
+- name: Observe the active and persistent DNS without changing either
+  ansible.builtin.command:
+    argv: [/usr/bin/python3, -I, -B, /usr/local/libexec/alt-workstation-final-dns, --observe]
+    stdin: "{{ {'request': alt_setup_final_dns_request, 'helper_sha256': alt_setup_final_dns_readiness.helper_sha256} | to_json }}"
+    stdin_add_newline: false
+  register: final_dns_current
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Require the confirmed network snapshot immediately before apply
+  ansible.builtin.assert:
+    that:
+      - final_dns_current.rc == 0
+      - (final_dns_current.stdout | from_json).status == 'ok'
+      - (final_dns_current.stdout | from_json).helper_sha256 == alt_setup_final_dns_readiness.helper_sha256
+      - (final_dns_current.stdout | from_json).observation == alt_setup_final_dns_readiness.observation
+    fail_msg: The confirmed DNS or connection state changed
+  no_log: true
+
+- name: Apply only the original one-shot final DNS phase
+  ansible.builtin.command:
+    argv: [/usr/bin/python3, -I, -B, /usr/local/libexec/alt-workstation-final-dns, --apply]
+    stdin: >-
+      {{ {'request': alt_setup_final_dns_request, 'helper_sha256': alt_setup_final_dns_readiness.helper_sha256,
+          'expected_snapshot_sha256': alt_setup_final_dns_readiness.observation.snapshot_sha256,
+          'context': alt_setup_workflow_context} | to_json }}
+    stdin_add_newline: false
+  register: final_dns_apply
+  changed_when: >-
+    final_dns_apply.rc == 0 and (final_dns_apply.stdout | from_json).status == 'ok' and
+    (final_dns_apply.stdout | from_json).result.status == 'applied_verified' and
+    (final_dns_apply.stdout | from_json).result.changed is sameas true
+  failed_when: false
+  no_log: true
+  diff: false
+
+- name: Retain only a fixed diagnostic for the claimed DNS invocation
+  ansible.builtin.set_fact:
+    final_dns_safe_failure: "{{ ((final_dns_apply.stdout | from_json).result.code | default((final_dns_apply.stdout | from_json).code | default('final_dns_outcome_unverified'))) | alt_final_dns_safe_code }}"
+  no_log: true
+
+- name: Report an uncertain DNS outcome without private output
+  ansible.builtin.fail:
+    msg: "ALT_FINAL_DNS_FAILURE:{{ final_dns_safe_failure }}"
+  when: final_dns_apply.rc != 0 or (final_dns_apply.stdout | from_json).status != 'ok'
+  no_log: false
+
+- name: Require a verified finalization or a verified rollback bound to this claim
+  ansible.builtin.assert:
+    that:
+      - (final_dns_apply.stdout | from_json).result.status in ['applied_verified', 'rolled_back_verified']
+      - (final_dns_apply.stdout | from_json).helper_sha256 == alt_setup_final_dns_readiness.helper_sha256
+      - (final_dns_apply.stdout | from_json).claim_sha256 == alt_setup_workflow_context.claim_sha256
+    fail_msg: The original final DNS phase requires review
+  no_log: true
+
+- name: Retain the DNS outcome for the original workflow result aggregator
+  ansible.builtin.set_fact:
+    alt_setup_final_dns_result: "{{ (final_dns_apply.stdout | from_json).result }}"
+  no_log: true

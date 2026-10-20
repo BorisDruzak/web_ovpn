@@ -2,6 +2,12 @@
 import ipaddress
 
 
+CODES=frozenset('final_dns_'+s for s in ('request_unverified','identity_unverified','backend_unverified',
+    'ownership_unverified','configuration_changed','lookup_failed','kerberos_failed','active_unverified',
+    'network_changed','backup_unverified','claim_consumed','busy','apply_failed','rollback_unverified',
+    'outcome_unverified','context_unverified','source_unverified','applied','rolled_back'))
+
+
 def validate(value):
     if not isinstance(value,list) or not 1<=len(value)<=4:raise ValueError('Invalid final DNS policy')
     result=[]

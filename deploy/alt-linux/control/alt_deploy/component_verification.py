@@ -125,6 +125,26 @@ class VerificationEngine:
             if any(components[d]['status'] != 'compliant' for d in component['dependencies']):
                 result.update(status='blocked', operator_action='verify_dependencies')
                 continue
+            if component['verification']['recipe'] == 'final_dns':
+                try:
+                    import hashlib
+                    from types import SimpleNamespace
+                    from .final_dns_policy import validate
+                    from .final_dns_program import target_program
+                    from .final_dns_runtime import validate_observation,canonical
+                    policy=fact['policy']
+                    if not isinstance(policy,dict) or set(policy)!={'servers'} or validate(policy['servers'])!=policy:raise ValueError
+                    reply=fact['final_dns']
+                    expected=hashlib.sha256(target_program(self.catalog._project).encode()).hexdigest()
+                    if (not isinstance(reply,dict) or set(reply)!={'schema_version','status','helper_sha256','observation'}
+                            or type(reply['schema_version']) is not int or reply['schema_version']!=1
+                            or reply['status']!='ok' or reply['helper_sha256']!=expected
+                            or fact['policy_sha256']!=hashlib.sha256(canonical(policy)).hexdigest()):raise ValueError
+                    machine=SimpleNamespace(uuid=evidence['machine']['uuid'],hostname=evidence['machine']['hostname'])
+                    value=validate_observation(reply['observation'],machine,expected_boot_id=evidence['machine']['boot_id'])
+                    ready=value['servers']==policy['servers'] and value['persistent_servers']==policy['servers']
+                    if fact['checks']!={'ready':ready}:raise ValueError
+                except Exception:continue
             if component['verification']['recipe'] == 'kwallet':
                 try:
                     from .kwallet_runtime import specification,validate_observation

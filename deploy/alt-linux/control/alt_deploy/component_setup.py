@@ -101,6 +101,8 @@ class ComponentSetupService:
     def _snapshot(self, identifier, component_id, *, own_job_id=None, expected_plan=None, after_job=None, read_only=False):
         catalog = self.catalog or ComponentCatalog.load(self.settings.ansible_project_dir)
         component = catalog.component(component_id)
+        if component['verification']['recipe']=='final_dns' and not read_only:
+            raise fail('full_workflow_required','Final DNS runs only as the last phase of the complete workstation workflow')
         machine = self.setup.machines.resolve(identifier)
         predecessor = None
         if after_job is not None:

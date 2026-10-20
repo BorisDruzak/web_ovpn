@@ -138,6 +138,9 @@ def desired_queries(project, catalog, components, *, profile_id='base'):
         elif recipe == 'kwallet':
             from .kwallet_runtime import specification
             query['wallet'] = specification(project)
+        elif recipe == 'final_dns':
+            from .final_dns_program import target_program
+            query['helper_sha256']=hashlib.sha256(target_program(project).encode()).hexdigest()
         elif recipe == 'shortcuts':
             query['defaults'] = _yaml(roles/'desktop_shortcuts/defaults/main.yml')
             selected_ids = set(catalog.profile(profile_id)['components']) | {c['id'] for c in components}
@@ -230,6 +233,26 @@ class ComponentProbe:
                     or document['machine']['hostname'] != machine.hostname or document['user']['login'] != login):
                 raise ValueError
             for component in components:
+                if component['verification']['recipe']=='final_dns':
+                    from .vault import VaultHealthChecker
+                    from .final_dns_runtime import observe,validate_observation,canonical
+                    from .final_dns_policy import CODES
+                    policy=VaultHealthChecker(self.settings).full_workflow_policy()
+                    reply=observe(self.settings,machine,policy,expected_boot_id=document['machine']['boot_id'],runner=self.runner)
+                    fact={'schema_version':1,'checks':{'ready':False},'error_code':None}
+                    if isinstance(reply,dict) and set(reply)=={'status','code'} and reply['status']=='blocked':
+                        if reply['code'] not in CODES:raise ValueError
+                        fact['error_code']=reply['code']
+                    else:
+                        expected=next(q['helper_sha256'] for q in query['components'] if q['id']==component['id'])
+                        if (not isinstance(reply,dict) or set(reply)!={'schema_version','status','helper_sha256','observation'}
+                                or type(reply['schema_version']) is not int or reply['schema_version']!=1
+                                or reply['status']!='ok' or reply['helper_sha256']!=expected):raise ValueError
+                        value=validate_observation(reply['observation'],machine,expected_boot_id=document['machine']['boot_id'])
+                        fact.update(final_dns=reply,policy=policy,policy_sha256=hashlib.sha256(canonical(policy)).hexdigest())
+                        fact['checks']['ready']=value['servers']==policy['servers'] and value['persistent_servers']==policy['servers']
+                    document['components'][component['id']]=fact
+                    continue
                 if component['verification']['recipe']!='kwallet':continue
                 fact={'schema_version':1,'checks':{'ready':False},'error_code':None}
                 if allow_unresolved and (not document['user']['home_exists'] or document['user']['uid'] is None):

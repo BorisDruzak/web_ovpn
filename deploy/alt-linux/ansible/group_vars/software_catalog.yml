@@ -267,6 +267,15 @@ setup_catalog:
       execution: {role: remote_access_policy, operation: configure, scope: system, requires_domain: false, requires_user_home: false, requires_reboot: false, retry_policy: guarded}
       preflight: {recipe: vnc_policy}
       verification: {recipe: vnc_policy, functional_verification_required: false}
+    - id: network.final_dns
+      version: 1
+      name: Final workstation DNS policy
+      category: system
+      supported_os: [alt-kworkstation-11]
+      dependencies: [domain.ready]
+      execution: {role: workstation_final_dns, operation: configure, scope: system, requires_domain: true, requires_user_home: false, requires_reboot: false, retry_policy: guarded}
+      preflight: {recipe: final_dns}
+      verification: {recipe: final_dns, functional_verification_required: false}
   profiles:
     - id: base
       version: 1
