@@ -164,6 +164,34 @@ validate_source_layout() {
         "${ALT_ROOT}/ansible/callback_plugins/alt_setup_events.py"
         "${ALT_ROOT}/ansible/filter_plugins/alt_setup_catalog.py"
         "${ALT_ROOT}/ansible/playbooks/04-setup-component.yml"
+        "${ALT_ROOT}/ansible/playbooks/05-setup-workflow-phase.yml"
+        "${ALT_ROOT}/ansible/playbooks/06-kwallet-empty-name-repair.yml"
+        "${ALT_ROOT}/ansible/playbooks/tasks/setup_workflow_phase_execution.yml"
+        "${ALT_ROOT}/control/alt_deploy/setup_phases.py"
+        "${ALT_ROOT}/control/alt_deploy/setup_phase_probe.py"
+        "${ALT_ROOT}/control/alt_deploy/setup_phase_execution.py"
+        "${ALT_ROOT}/control/alt_deploy/setup_phase_target.py"
+        "${ALT_ROOT}/control/alt_deploy/workflow_phase_process.py"
+        "${ALT_ROOT}/control/alt_deploy/setup_waiting.py"
+        "${ALT_ROOT}/control/alt_deploy/helper_diagnostics.py"
+        "${ALT_ROOT}/control/alt_deploy/helper_diagnostic_target.py"
+        "${ALT_ROOT}/backup/alt_deploy_backup/setup_phase_admission.py"
+        "${ALT_ROOT}/backup/alt_deploy_backup/setup_workflow_closed.py"
+        "${ALT_ROOT}/backup/alt_deploy_backup/setup_workflow_maintenance.py"
+        "${ALT_ROOT}/ansible/roles/remote_access_policy/tasks/main.yml"
+        "${ALT_ROOT}/ansible/roles/remote_access_policy/templates/alt-vnc-access-policy.py.j2"
+        "${ALT_ROOT}/ansible/roles/remote_access_krfb/tasks/managed.yml"
+        "${ALT_ROOT}/ansible/roles/remote_access_krfb/tasks/system.yml"
+        "${ALT_ROOT}/ansible/roles/remote_access_krfb/templates/krfbrc-managed.j2"
+        "${ALT_ROOT}/ansible/roles/remote_access_krfb/templates/org.sosn.krfb.desktop.j2"
+        "${ALT_ROOT}/ansible/roles/kwallet_empty_name_repair/files/repair_empty_wallet.py"
+        "${ALT_ROOT}/ansible/roles/kwallet_empty_name_repair/tasks/main.yml"
+        "${ALT_ROOT}/ansible/roles/workstation_final_dns/files/finalize_dns.py"
+        "${ALT_ROOT}/ansible/roles/workstation_final_dns/tasks/main.yml"
+        "${ALT_ROOT}/ansible/roles/workstation_final_dns/templates/alt-workstation-final-dns.py.j2"
+        "${ALT_ROOT}/ansible/roles/government_ca/files/import_user_certificates.py"
+        "${ALT_ROOT}/ansible/roles/government_ca/tasks/user_finalize.yml"
+        "${ALT_ROOT}/ansible/files/government_ca/sosnadmin-local-ca.crt"
         "${ALT_ROOT}/ansible/ansible.cfg"
         "${ALT_ROOT}/ansible/group_vars/all.yml"
         "${ALT_ROOT}/ansible/playbooks/01-preflight.yml"
@@ -484,6 +512,10 @@ ensure_private_state_directories() {
         "${state_root}" \
         "${state_root}/jobs" \
         "${state_root}/assignments" \
+        "${state_root}/setup-phase-tickets" \
+        "${state_root}/setup-phase-claims" \
+        "${state_root}/setup-phase-results" \
+        "${state_root}/setup-phase-admissions" \
         "${state_root}/machine-archives" \
         "${state_root}/machine-archives/.transactions" \
         "$(install_destination "${root_prefix}" /srv/alt-deploy/registration)" \

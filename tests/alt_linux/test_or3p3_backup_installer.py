@@ -59,7 +59,7 @@ def test_shared_maintenance_validator_is_readable_without_exposing_backup_data(t
                      'setup_closed_failure.py', 'setup_partial_observation.py', 'partial_local_probe.py',
                      'setup_queue_review.py', 'setup_compat.py', 'errors.py',
                      'fs.py', 'state_validation.py', 'manifest.py', 'components.py', 'settings.py',
-                     'systemd.py', 'secrets.py'}
+                     'systemd.py', 'secrets.py','setup_phase_admission.py','setup_workflow_closed.py','setup_workflow_maintenance.py'}
     assert all(stat.S_IMODE(p.stat().st_mode) == 0o644 for p in (shared/'alt_deploy_backup').glob('*.py'))
     for name in files:
         assert (shared/'alt_deploy_backup'/name).read_bytes() == sandbox.destination('/opt/alt-deploy-backup/alt_deploy_backup/'+name).read_bytes()
