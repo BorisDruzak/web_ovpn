@@ -279,6 +279,65 @@ def test_authenticated_probe_shares_desktop_and_discards_one_pixel():
     assert len(connection.sent) == 7  # no keyboard, mouse or clipboard message
 
 
+def _with_server_messages(messages):
+    wire = server_wire()
+    return wire[:-20] + messages + wire[-20:]
+
+
+@pytest.mark.parametrize('messages', [
+    b'\x02',  # Bell may precede the requested framebuffer update.
+    b'\x03\xff\x80\x01'+struct.pack('>I', 0),
+    b'\x03\xff\x80\x01'+struct.pack('>I', len(b'PRIVATE-CLIPBOARD-SENTINEL'))+b'PRIVATE-CLIPBOARD-SENTINEL',
+    b'\0\xff\0\0',  # An empty update proves no pixels, but is legal.
+    b'\x02\0\x80\0\0\x02',
+    b'\x02'*16,
+    b'\x03\0\0\0'+struct.pack('>I', 4096)+b'x'*4096,
+])
+def test_legal_server_messages_are_bounded_and_discarded_before_actual_pixel(messages):
+    result, connection = probe(_with_server_messages(messages))
+    assert result['status']=='ok' and result['pixel_update_verified'] is True
+    assert len(connection.sent)==7  # no clipboard/input response or new request
+    assert b'CLIPBOARD' not in json.dumps(result).encode()
+
+
+def test_framebuffer_padding_is_ignored_as_required_by_rfb():
+    wire=server_wire()
+    result,_=probe(wire[:-20]+b'\0\xff\0\x01'+wire[-16:])
+    assert result['status']=='ok' and result['pixel_update_verified'] is True
+
+
+@pytest.mark.parametrize('messages', [
+    b'\x02'*17,
+    b'\0\0\0\0'*17,
+    b'\x03\0\0\0'+struct.pack('>I', 4097),
+    (b'\x03\0\0\0'+struct.pack('>I', 4096)+b'x'*4096)*2,
+    b'\x01',  # A colour-map update was not negotiated in true-colour mode.
+    b'\x06',
+    b'\0\0\0\x02',  # Exactly one requested rectangle is required.
+])
+def test_unexpected_or_excessive_server_messages_never_reach_pixel(messages):
+    result, connection=probe(_with_server_messages(messages))
+    assert result['code']=='krfb_framebuffer_unverified'
+    assert result['pixel_update_verified'] is False
+    assert connection.wire  # reject before consuming an unbounded/unknown body
+
+
+@pytest.mark.parametrize('messages', [b'\x02', b'\0\xff\0\0',
+    b'\x03\0\0\0'+struct.pack('>I', len(b'PRIVATE-CLIPBOARD-SENTINEL'))+b'PRIVATE-CLIPBOARD-SENTINEL'])
+def test_legal_messages_without_actual_pixel_never_claim_ready(messages):
+    result,_=probe(server_wire()[:-20]+messages)
+    assert result['status']=='blocked' and result['pixel_update_verified'] is False
+    assert 'CLIPBOARD' not in json.dumps(result)
+
+
+def test_bad_framebuffer_retains_numeric_header_diagnostics_only(capsys):
+    result,_=probe(server_wire(encoding=5))
+    assert result['code']=='krfb_framebuffer_unverified'
+    assert json.loads(capsys.readouterr().err)=={
+        'kind':'krfb_framebuffer_rejected','stage':'rectangle',
+        'x':0,'y':0,'width':1,'height':1,'encoding':5}
+
+
 @pytest.mark.parametrize('security', [b'\x01', b'\x01\x02', b'\x02\x01', b'\x10', b'', bytes(range(32))])
 def test_no_authentication_or_unbounded_security_list_is_never_accepted(security):
     result, connection = probe(server_wire(security=security))

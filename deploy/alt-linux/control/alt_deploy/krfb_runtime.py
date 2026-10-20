@@ -16,6 +16,7 @@ import shlex
 import socket
 import struct
 import subprocess
+import sys
 import time
 import uuid
 
@@ -463,6 +464,13 @@ def _probe_rfb(address, password, *, connector=socket.create_connection, clock=t
         connection.settimeout(remaining())
         connection.sendall(data)
 
+    def reject_framebuffer(stage, **facts):
+        # Only fixed stages and numeric protocol headers; never a desktop name,
+        # pixel, clipboard body, password, or arbitrary exception message.
+        print(json.dumps({'kind':'krfb_framebuffer_rejected','stage':stage,**facts}),
+              file=sys.stderr,flush=True)
+        raise _ProbeError('krfb_framebuffer_unverified')
+
     try:
         connection = connector((str(destination), 5900), timeout=remaining())
         if receive(12) != b'RFB 003.008\n':
@@ -492,10 +500,36 @@ def _probe_rfb(address, password, *, connector=socket.create_connection, clock=t
         send(b'\0\0\0\0' + pixel_format)
         send(struct.pack('>BBHi', 2, 0, 1, 0))  # Raw only
         send(struct.pack('>BBHHHH', 3, 0, 0, 0, 1, 1))
-        if receive(4) != b'\0\0\0\x01':
-            raise _ProbeError('krfb_framebuffer_unverified')
-        if struct.unpack('>HHHHi', receive(12)) != (0, 0, 1, 1, 0):
-            raise _ProbeError('krfb_framebuffer_unverified')
+        # RFC 6143: padding has no meaning and asynchronous Bell/CutText
+        # messages can precede our update. Discard bounded private text without
+        # exposing it. Neither these messages nor an empty update prove pixels.
+        text_budget = 4096
+        for _ in range(17):  # at most 16 intervening messages, one connection
+            kind = receive(1)[0]
+            if kind == 2:  # Bell
+                continue
+            if kind == 3:  # ServerCutText: padding, byte length, private body
+                receive(3)
+                size = struct.unpack('>I', receive(4))[0]
+                if size > text_budget:
+                    reject_framebuffer('text_budget',length=size,remaining=text_budget)
+                text_budget -= size
+                receive(size)
+                continue
+            if kind != 0:
+                reject_framebuffer('message_type',message_type=kind)
+            receive(1)  # padding; never require a particular byte value
+            rectangles = struct.unpack('>H', receive(2))[0]
+            if rectangles == 0:
+                continue
+            if rectangles != 1:
+                reject_framebuffer('rectangle_count',rectangles=rectangles)
+            break
+        else:
+            reject_framebuffer('message_budget')
+        rectangle = struct.unpack('>HHHHi', receive(12))
+        if rectangle != (0, 0, 1, 1, 0):
+            reject_framebuffer('rectangle',**dict(zip(('x','y','width','height','encoding'),rectangle)))
         receive(4)  # discard exactly one pixel, never expose/store its bytes
         result.update(status='ok', pixel_update_verified=True, width=width, height=height)
     except _ProbeError as exc:
