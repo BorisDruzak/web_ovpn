@@ -93,7 +93,7 @@ class GatewayReceiptStore:
                 data = operation()
                 record.update(state='successful', data=data)
             except ControlError as exc:
-                code = exc.code if re.fullmatch(r'(?:ad|setup|component|workstations|directory)_[a-z0-9_]{1,90}', exc.code) else 'workstations_controller_error'
+                code = exc.code if re.fullmatch(r'(?:ad|setup|component|workstations|directory|full_workflow)_[a-z0-9_]{1,90}', exc.code) else 'workstations_controller_error'
                 record.update(state='unknown' if intent.get('operation') == 'plans.apply' else 'error', error_code=code)
                 private_replace(path, record)
                 fsync_directory(self.root)

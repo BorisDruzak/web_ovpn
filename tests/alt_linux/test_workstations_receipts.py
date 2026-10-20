@@ -89,15 +89,29 @@ def test_receipt_symlink_is_rejected(tmp_path):
         repository.status(request_id)
 
 
-def test_known_preflight_error_keeps_safe_code_and_is_not_retried(tmp_path):
+@pytest.mark.parametrize('code',['ad_user_disabled','full_workflow_dns_backend_unverified',
+                                'full_workflow_admission_unverified','full_workflow_policy_changed'])
+def test_known_preflight_error_keeps_safe_code_and_is_not_retried(tmp_path,code):
     request_id = str(uuid.uuid4())
     intent = {'operation': 'plans.create'}
     def rejected():
-        raise ControlError('ad_user_disabled', 'private directory identity')
+        raise ControlError(code, 'private directory identity')
     with pytest.raises(ControlError) as exc:
         store(tmp_path).execute(request_id, intent, rejected)
-    assert exc.value.code == 'ad_user_disabled'
+    assert exc.value.code == code
     result = store(tmp_path).execute(request_id, intent, lambda: pytest.fail('rejected request replayed'))
     assert result['state'] == 'error'
-    assert result['error_code'] == 'ad_user_disabled'
+    assert result['error_code'] == code
     assert 'private directory identity' not in str(result)
+
+
+@pytest.mark.parametrize('code',['private_unapproved','full_workflow_UPPERCASE','full_workflow_private/path',
+                                'full_workflow_'+'a'*100])
+def test_unapproved_preflight_error_remains_masked(tmp_path,code):
+    request_id=str(uuid.uuid4());intent={'operation':'plans.create'}
+    def rejected():raise ControlError(code,'PRIVATE-SECRET-SENTINEL')
+    with pytest.raises(ControlError) as caught:store(tmp_path).execute(request_id,intent,rejected)
+    assert caught.value.code=='workstations_controller_error'
+    result=store(tmp_path).status(request_id)
+    assert result['state']=='error' and result['error_code']=='workstations_controller_error'
+    assert 'SENTINEL' not in str(result)
