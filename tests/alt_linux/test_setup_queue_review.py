@@ -317,3 +317,15 @@ def test_queue_cli_routes_to_native_review_and_rejects_extra_execution_inputs(qu
     assert invoke('queue-review-confirm',plan['plan_id'],'--confirm-sha256',plan['sha256'])['purpose']=='queued_other_machine_only'
     for suffix in (['--role','domain_join'],['--command','arbitrary'],['--cand','job-x']):
         with pytest.raises(SystemExit):cli.build_parser().parse_args(['setup','jobs','queue-review-plan',old.job_id,'--candidate',candidate.job_id,*suffix])
+
+
+def test_large_candidate_history_keeps_queue_review_representation(queued, monkeypatch):
+    from alt_deploy.setup_plans import digest
+    import alt_deploy_backup.setup_maintenance_review as module
+    settings, old, candidate, _, _, _ = queued
+    history = {f'jobs/{old.job_id}/events/{index:08d}.json': digest({'index': index})
+               for index in range(5000)}
+    monkeypatch.setattr(module, 'history_fingerprint', lambda _: dict(history))
+    snapshot = review_for(queued)._snapshot(old.job_id, candidate_job_id=candidate.job_id)
+    assert history.items() <= snapshot['history'].items()
+    with pytest.raises(ControlError): review_for(queued).plan(old.job_id, candidate.job_id)

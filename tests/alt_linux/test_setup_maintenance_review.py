@@ -286,3 +286,17 @@ def test_native_observer_reuses_read_only_collectors(stopped, component_service,
     plan = review.plan(job.job_id)
     receipt = review.confirm(plan['plan_id'], plan['sha256'])
     assert review.exclusions(receipt['review_sha256'])['job_ids'] == {job.job_id}
+
+
+def test_single_job_maintenance_plan_accepts_large_retained_history(stopped, monkeypatch):
+    from alt_deploy.setup_plans import digest
+    import alt_deploy_backup.setup_maintenance_review as module
+    history = {f'jobs/retained-job/events/{index:08d}.json': digest({'index': index})
+               for index in range(5000)}
+    monkeypatch.setattr(module, 'history_fingerprint', lambda _: dict(history))
+    review = service(stopped)
+    plan = review.plan(stopped[1].job_id)
+    assert (review.plans/(plan['plan_id']+'.json')).stat().st_size <= review.io.MAX_STATE_BYTES
+    review.confirm(plan['plan_id'], plan['sha256'])
+    history['jobs/new-retained/events/00000000.json'] = 'e'*64
+    with pytest.raises(ControlError): review.exclusions(plan['sha256'])

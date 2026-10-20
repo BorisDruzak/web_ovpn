@@ -181,3 +181,26 @@ def test_all_closed_cli_is_mutually_exclusive_and_uses_native_service(component_
     assert calls == ['all']
     for args in ([], ['job-example', '--all-closed']):
         with pytest.raises(SystemExit): cli.build_parser().parse_args(['setup', 'jobs', 'maintenance-plan', *args])
+
+@pytest.mark.parametrize('drift', ['unchanged', 'modified', 'removed', 'renamed'])
+def test_large_ledger_review_fits_private_state_and_binds_every_entry(mixed, monkeypatch, drift):
+    settings, joined, partial, _, _ = mixed
+    review = coverage(mixed)
+    history = {f'jobs/retained-job/events/{index:08d}.json': digest({'index': index})
+               for index in range(5000)}
+    monkeypatch.setattr(backend('setup_maintenance_coverage'), 'history_fingerprint', lambda _: dict(history))
+    before = retained(settings.state_root)
+    plan = review.plan()
+    path = review.plans/(plan['plan_id']+'.json')
+    assert path.stat().st_size <= review.io.MAX_STATE_BYTES
+    if drift == 'modified': history[next(iter(history))] = 'f'*64
+    elif drift == 'removed': history.pop(next(iter(history)))
+    elif drift == 'renamed': history['jobs/renamed/events/00000000.json'] = history.pop(next(iter(history)))
+    if drift == 'unchanged':
+        # Dictionary enumeration order is not history drift.
+        history = dict(reversed(list(history.items())))
+        review.confirm(plan['plan_id'], plan['sha256'])
+        assert review.exclusions(plan['sha256'])['job_ids'] == {joined.job_id, partial.job_id}
+    else:
+        with pytest.raises(ControlError): review.confirm(plan['plan_id'], plan['sha256'])
+    assert retained(settings.state_root) == before

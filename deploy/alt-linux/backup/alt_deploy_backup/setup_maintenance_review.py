@@ -16,6 +16,19 @@ from .setup_compat import control_module, history_fingerprint, validate_job
 _LOCK_WAIT_SECONDS = 5.0
 
 
+def review_history(history):
+    """Bind every retained path/hash without overflowing private plan records.
+
+    Fresh observations still build and compare the complete map. Larger maps
+    use a domain-separated canonical commitment only in the published plan;
+    no history file is dropped, rewritten or exempted from fresh validation.
+    """
+    io = control_module('setup_plans')
+    if len(io.canonical(history)) <= io.MAX_STATE_BYTES // 2:
+        return history
+    return {'@complete-history-sha256-v1': io.digest({'schema_version': 1, 'files': history})}
+
+
 def denied():
     return control_module('ad_directory').fail('setup_maintenance_review_invalid',
         'Maintenance review is missing, busy, changed, unsafe or expired; target execution remains blocked')
@@ -307,7 +320,8 @@ class MaintenanceReview:
         fresh = self.observer(job)
         self._validate_joined(job.request['plan']['payload'], fresh)
         if self._history(job_id, candidate_job_id=candidate_job_id)[1:] != (history, leases): raise denied()
-        return {'job_id': job_id, 'history': history, 'lease_ids': sorted(leases), 'evidence': fresh,
+        bound_history = review_history(history) if self.purpose == 'controller_maintenance_only' else history
+        return {'job_id': job_id, 'history': bound_history, 'lease_ids': sorted(leases), 'evidence': fresh,
                 'validator_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                 'purpose': self.purpose, 'execution_window_seconds': 21600}
 

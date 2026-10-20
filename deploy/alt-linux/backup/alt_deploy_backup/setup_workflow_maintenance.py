@@ -6,7 +6,7 @@ from .setup_compat import control_module,valid_validator_catalog
 from .setup_closed_failure import ClosedFailureEvidence
 from .setup_workflow_closed import ClosedWorkflowEvidence
 from .setup_maintenance_coverage import MaintenanceCoverage
-from .setup_maintenance_review import denied
+from .setup_maintenance_review import denied,review_history
 
 
 def validate_payload(value):
@@ -96,7 +96,7 @@ class WorkflowMaintenanceCoverage(MaintenanceCoverage):
         _,after,after_leases=self._discover()
         if ([r['job_id'] for r in after]!=[r['job_id'] for r in closed] or after_leases!=leases
                 or self._history(after)!=history or self._validators()!=validators):raise denied()
-        value={'covered':covered,'job_ids':[r['job_id'] for r in closed],'lease_ids':leases,'history':history,
+        value={'covered':covered,'job_ids':[r['job_id'] for r in closed],'lease_ids':leases,'history':review_history(history),
                'validators':validators,'purpose':self.purpose,'execution_window_seconds':21600}
         validate_payload(value)
         return value

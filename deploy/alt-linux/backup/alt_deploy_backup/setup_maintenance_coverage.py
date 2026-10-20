@@ -7,7 +7,7 @@ import stat
 
 from .setup_compat import control_module, history_fingerprint, MAINTENANCE_MODULES,valid_validator_catalog
 from .setup_closed_failure import ClosedFailureEvidence
-from .setup_maintenance_review import MaintenanceReview, maintenance_lock, native_observe, denied
+from .setup_maintenance_review import MaintenanceReview, maintenance_lock, native_observe, denied, review_history
 from .setup_partial_observation import validate_evidence
 
 
@@ -104,7 +104,7 @@ class MaintenanceCoverage(MaintenanceReview):
         if ([v['job_id'] for v in after] != [v['job_id'] for v in closed] or after_leases != leases
                 or self._history(after) != history or self._validators() != validators): raise denied()
         payload = {'covered': covered, 'job_ids': [v['job_id'] for v in closed], 'lease_ids': leases,
-                   'history': history, 'validators': validators, 'purpose': self.purpose, 'execution_window_seconds': 21600}
+                   'history': review_history(history), 'validators': validators, 'purpose': self.purpose, 'execution_window_seconds': 21600}
         validate_payload(payload)
         return payload
 

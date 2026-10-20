@@ -83,3 +83,17 @@ def test_retained_v2_validator_names_survive_additive_native_code_shipping():
     assert not valid_validator_catalog(dict(old,untrusted_python_module='3'*64))
     old.pop(next(iter(old)))
     assert not valid_validator_catalog(old)
+
+
+def test_late_phase_maintenance_plan_accepts_large_retained_history(workflow_maintenance, monkeypatch):
+    from alt_deploy.setup_plans import digest
+    import alt_deploy_backup.setup_maintenance_coverage as module
+    history = {f'jobs/retained-job/events/{index:08d}.json': digest({'index': index})
+               for index in range(5000)}
+    monkeypatch.setattr(module, 'history_fingerprint', lambda _: dict(history))
+    review = workflow_maintenance[0]
+    plan = review.plan()
+    assert (review.plans/(plan['plan_id']+'.json')).stat().st_size <= review.io.MAX_STATE_BYTES
+    review.confirm(plan['plan_id'], plan['sha256'])
+    history[next(iter(history))] = 'e'*64
+    with pytest.raises(ControlError): review.exclusions(plan['sha256'])
