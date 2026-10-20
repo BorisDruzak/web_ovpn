@@ -147,7 +147,7 @@ def test_installer_verifies_before_maintenance_and_accepts_last(
     for marker in (
         "python3 -m py_compile",
         "bash -n",
-        "pytest -q tests/alt_linux",
+        "pytest -q -p no:cacheprovider tests/alt_linux",
     ):
         assert marker in installer_text
 
