@@ -1,0 +1,34 @@
+---
+- name: Initialize optional personal network-folder outcome
+  ansible.builtin.set_fact:
+    desktop_network_folders_result: "{{ {} | alt_network_folders_result }}"
+
+- name: Check AD identity and open candidate folders as the selected employee
+  ansible.builtin.command:
+    argv: [/usr/bin/timeout, --signal=TERM, --kill-after=2s, 55s,
+           /usr/bin/python3, -I, -B, -c, "{{ role_path | alt_network_folders_program }}"]
+    stdin: >-
+      {{ {'login': assigned_domain_user | default(domain_test_user, true),
+          'domain': ad_domain, 'ldap_uri': ad_ldap_uri,
+          'server': desktop_network_folders_server, 'share': desktop_network_folders_share,
+          'sid': setup_phase_user_sid | default(''),
+          'uid': desktop_shortcuts_user_fields[2] | int,
+          'desktop': desktop_shortcuts_user_desktop_name} | to_json }}
+  register: desktop_network_folders_probe
+  when: desktop_shortcuts_user_home.stat.exists | default(false)
+  # Optional failures must not generate task_failed in the native completion journal.
+  failed_when: false
+  changed_when: (desktop_network_folders_probe | alt_network_folders_result).changed
+  no_log: true
+  diff: false
+
+- name: Retain only the sanitized optional network-folder outcome
+  ansible.builtin.set_fact:
+    desktop_network_folders_result: "{{ desktop_network_folders_probe | default({}) | alt_network_folders_result }}"
+  no_log: true
+
+- name: Report optional network-folder verification independently of application shortcuts
+  ansible.builtin.debug:
+    msg:
+      network_folders: "{{ desktop_network_folders_result.status }}"
+  tags: [alt_setup_network_folders_result]

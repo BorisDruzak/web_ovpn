@@ -47,6 +47,7 @@ class WorkflowPhaseExecutor:
             'software_profile':'workstation-full-v1','remote_access_profile':'krfb','setup_workflow':workflow,
             'alt_setup_workflow_context':context,'setup_phase_result_file':str(result_path),
             'setup_phase_user_uid':ready['scope']['uid'],'setup_phase_user_gid':ready['scope']['gid'],
+            'setup_phase_user_sid':payload['user']['object_sid'],
             'setup_phase_home_sha256':ready['scope']['home_sha256']}
         if phase=='user':
             request=copy.deepcopy(prepared['krfb_request']);observed=prepared['krfb_observation']

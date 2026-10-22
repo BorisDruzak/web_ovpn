@@ -11,6 +11,19 @@ from test_component_setup import component_service
 from test_component_catalog import project
 
 
+@pytest.mark.parametrize('status', ['ok', 'partial', 'unknown'])
+def test_optional_network_status_is_visible_without_becoming_a_native_failure(status):
+    from alt_deploy.setup_events import _allowed_codes
+    task = SimpleNamespace(get_path=lambda: '/roles/desktop_shortcuts/tasks/network_folders.yml:30',
+                           tags=['alt_setup_network_folders_result'])
+    event = safe_task_event(SimpleNamespace(_task=task, _result={'msg': {'network_folders': status},
+        'stdout': 'PRIVATE-SENTINEL'}), component={'id': 'desktop.shortcuts', 'version': 1}, event_type='task_ok')
+    assert event['type'] == 'task_ok' and event['code'] == 'network_folders_' + status
+    assert event['code'] in _allowed_codes('desktop.shortcuts', {})
+    assert event['code'] not in _allowed_codes('domain.ready', {})
+    assert 'PRIVATE' not in json.dumps(event)
+
+
 def test_events_never_serialize_secret_results(component_service):
     jobs, plan, settings = jobs_fixture(component_service)
     job = jobs.submit(plan, operation='component')

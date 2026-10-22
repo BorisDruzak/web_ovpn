@@ -23,6 +23,7 @@ FIRST_JOIN_CODES = {'first_join_' + value for value in (
     'ad_quota_exhausted', 'ad_rights_unproven', 'ad_principal_unusable',
     'ad_identity_changed', 'ad_preflight_failed', 'native_quota_exhausted')}
 CODES |= FIRST_JOIN_CODES
+NETWORK_FOLDER_CODES = {'network_folders_ok', 'network_folders_partial', 'network_folders_unknown'}
 INPUT_FIELDS = {'schema_version', 'component_id', 'component_version', 'stage', 'task_id', 'type', 'changed', 'code'}
 STAGE_PRIORITY = ('transaction', 'download', 'verify', 'preflight', 'domain_join',
                   'domain_core_verify', 'upgrade', 'identity', 'network', 'configuration', 'apply', 'complete')
@@ -104,6 +105,8 @@ def _helper_diagnostic(result,component,bindings):
 
 def _allowed_codes(component,scope):
     allowed=CODES
+    if component == 'desktop.shortcuts':
+        allowed = allowed | NETWORK_FOLDER_CODES
     if 'desktop.kwallet_repair' in scope or 'network.final_dns' in scope:
         from .helper_diagnostics import CODES as HELPERS,UNAVAILABLE
         if component in HELPERS:allowed=allowed|HELPERS[component]|{UNAVAILABLE}
@@ -121,6 +124,13 @@ def safe_task_event(result, *, component, event_type, diagnostic_binding=None,he
             'task_skipped': 'skipped', 'task_start': 'started'}[event_type]
     if event_type == 'task_failed' and stage == 'preflight':
         code = 'component_preflight_failed'
+    if (event_type == 'task_ok' and component['id'] == 'desktop.shortcuts'
+            and 'alt_setup_network_folders_result' in getattr(task, 'tags', ())):
+        message = result._result.get('msg')
+        if (isinstance(message, dict) and set(message) == {'network_folders'}
+                and isinstance(message['network_folders'], str)
+                and message['network_folders'] in ('ok', 'partial', 'unknown')):
+            code = 'network_folders_' + message['network_folders']
     if event_type in ('task_ok', 'task_failed'):
         diagnostic = _diagnostic_code(result, component, diagnostic_binding)
         if diagnostic is not None:

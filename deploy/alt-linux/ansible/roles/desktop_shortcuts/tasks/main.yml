@@ -218,6 +218,9 @@
     - desktop_shortcuts_user_home.stat.exists
   no_log: true
 
+- name: Configure optional personal network folders after application shortcuts
+  ansible.builtin.include_tasks: network_folders.yml
+
 - name: Record verified shortcuts and home-dependent deferral
   ansible.builtin.set_fact:
     desktop_shortcuts_verified: true
@@ -226,7 +229,8 @@
       {{ configure_result | default({'components': {}, 'verification': {}}) | combine({
         'components': (configure_result | default({})).get('components', {}) | combine({
           'desktop_shortcuts': {'status': 'ok', 'verified': true,
-            'home_deferred': not (desktop_shortcuts_user_home.stat.exists | default(false))}
+            'home_deferred': not (desktop_shortcuts_user_home.stat.exists | default(false)),
+            'network_folders': desktop_network_folders_result}
         }),
         'verification': (configure_result | default({})).get('verification', {}) | combine({'desktop_shortcuts': true})
       }) }}

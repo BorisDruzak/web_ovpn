@@ -9,10 +9,12 @@ desktop_shortcuts_component_entries:
   software.vkworkspace: vkworkspace.desktop
 desktop_shortcuts_application_entries: "{{ desktop_shortcuts_component_entries.values() | list }}"
 desktop_shortcuts_relative_links:
-  - name: "Сетевая папка"
-    src: ../net.drives/Public
   - name: "Домашняя папка"
     src: ..
+
+# Personal access is evaluated by the server using the employee's own ticket.
+desktop_network_folders_server: "fileserver.{{ ad_domain }}"
+desktop_network_folders_share: Departments$
 desktop_shortcuts_user_desktop_name: "Рабочий стол"
 desktop_shortcuts_nextcloud_autostart_dir: /etc/skel/.config/autostart
 desktop_shortcuts_nextcloud_entry: nextcloud-client.desktop
