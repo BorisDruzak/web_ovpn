@@ -17,6 +17,21 @@ def denied():
         'Queue review is missing, changed, busy, unsafe or expired; execution remains blocked')
 
 
+def initial_candidate_status(job, settings):
+    """Rebuild admission bytes without later, independently validated phases."""
+    initial = copy.deepcopy(job.status)
+    if 'workflow' in initial:
+        phases = control_module('setup_phases')
+        phases.validate_workflow_status(job.request, initial)
+        phases.WorkflowPhaseStore(settings).records(job)
+        # submit() never writes this field. It is attached only after the
+        # immutable system result, and remains validated in current history.
+        initial.pop('workflow')
+    initial.update(state='queued', stage='created', claimed=False, process_identity=None,
+                   updated_at=initial['created_at'], stage_history=initial['stage_history'][:1])
+    return initial
+
+
 class QueueAdmissionReview(MaintenanceReview):
     prefix = 'setup-queue-review-'
     operation = 'queued_other_machine_review_plan'
@@ -234,9 +249,7 @@ def validate_artifacts(root):
                                                               'plan_sha256','identities','source_sha256'}): raise denied()
         candidate = repository.get(reference['job_id'])
         old = repository.get(payload['job_id'])
-        initial = copy.deepcopy(candidate.status)
-        initial.update(state='queued',stage='created',claimed=False,process_identity=None,
-                       updated_at=initial['created_at'],stage_history=initial['stage_history'][:1])
+        initial = initial_candidate_status(candidate, setup_settings(root))
         if reference != {'job_id':candidate.job_id,'request_sha256':io.digest(candidate.request),
             'status_sha256':io.digest(initial),'plan_sha256':candidate.status['plan_sha256'],
             'identities':candidate.request['identities'],
