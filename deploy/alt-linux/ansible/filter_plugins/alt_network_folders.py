@@ -34,7 +34,10 @@ def program(role_path):
     try:
         role = Path(role_path)
         network = (role / 'files/network_folders.py').read_text(encoding='utf-8')
-        session = (role / '../../../control/alt_deploy/user_session.py').read_text(encoding='utf-8')
+        session_path = role / '../../../control/alt_deploy/user_session.py'
+        if not session_path.is_file():
+            session_path = Path('/opt/alt-deploy-control/alt_deploy/user_session.py')
+        session = session_path.read_text(encoding='utf-8')
         value = 'import sys,types\n'
         for name, source in (('alt_network_user_session', session), ('alt_network_folders', network)):
             value += (f"m=types.ModuleType({name!r});sys.modules[m.__name__]=m;"

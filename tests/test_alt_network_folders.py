@@ -204,3 +204,19 @@ def test_ad_continuation_references_do_not_look_like_duplicate_users(helper):
             reply.stdout += '\nref: ldap://DomainDnsZones.example.test\nref: ldap://ForestDnsZones.example.test\n'
         return reply
     assert helper.probe(request(), runner=referral)['status'] == 'ok'
+
+
+def test_installed_role_uses_the_canonical_controller_session_module(filters, tmp_path, monkeypatch):
+    import shutil
+    role = tmp_path / 'installed-ansible/roles/desktop_shortcuts'
+    (role / 'files').mkdir(parents=True)
+    shutil.copyfile(HELPER, role / 'files/network_folders.py')
+    session = tmp_path / 'installed-control/user_session.py'
+    session.parent.mkdir()
+    session.write_text('"""canonical installed session module"""\n')
+    real_path = Path
+    monkeypatch.setattr(filters, 'Path', lambda value: session if str(value) ==
+        '/opt/alt-deploy-control/alt_deploy/user_session.py' else real_path(value))
+    source = filters.program(role)
+    assert 'canonical installed session module' in source and 'PERSONAL_PROGRAM' in source
+    compile(source, '<installed-probe>', 'exec')
