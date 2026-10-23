@@ -1,0 +1,7 @@
+---
+- name: Connect inventory-selected network Kyocera printers only
+  hosts: all
+  gather_facts: false
+  become: true
+  roles:
+    - inventory_printers

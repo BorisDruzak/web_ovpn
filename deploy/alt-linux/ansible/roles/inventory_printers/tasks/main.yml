@@ -1,0 +1,52 @@
+---
+- name: Load the approved printer request and exact local driver bytes
+  ansible.builtin.set_fact:
+    inventory_printer_payload: "{{ inventory_printer_request | inventory_printer_payload(inventory_printer_driver_dir, role_path) }}"
+  no_log: true
+
+- name: Validate complete printer input and target identity before changes
+  ansible.builtin.command:
+    argv: [/usr/bin/python3, -c, "{{ inventory_printer_payload.program }}", validate]
+    stdin: "{{ inventory_printer_payload.document | to_json }}"
+    stdin_add_newline: false
+  register: inventory_printer_validation
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require verified printer input and target identity
+  ansible.builtin.assert:
+    that: inventory_printer_validation.rc == 0
+    fail_msg: "Printer preflight blocked: {{ (inventory_printer_validation.stdout | from_json).code | default('printer_validation_unavailable') }}"
+
+- name: Ensure distribution CUPS packages are present
+  ansible.builtin.package:
+    name: [cups, cups-filters]
+    state: present
+
+- name: Ensure the local CUPS scheduler is running
+  ansible.builtin.service:
+    name: cups
+    state: started
+  when: not ansible_check_mode or (inventory_printer_validation.stdout | from_json).scheduler_available
+
+- name: Reconcile only the selected owned printer queues
+  ansible.builtin.command:
+    argv: [/usr/bin/python3, -c, "{{ inventory_printer_payload.program }}", "{{ 'check' if ansible_check_mode else 'apply' }}"]
+    stdin: "{{ inventory_printer_payload.document | to_json }}"
+    stdin_add_newline: false
+  register: inventory_printer_execution
+  changed_when: (inventory_printer_execution.stdout | from_json).changed | default(false)
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require a verified CUPS reconciliation result
+  ansible.builtin.assert:
+    that: inventory_printer_execution.rc == 0
+    fail_msg: "Printer reconciliation blocked: {{ (inventory_printer_execution.stdout | from_json).code | default('printer_outcome_unverified') }}"
+
+- name: Report the bounded printer reconciliation outcome
+  ansible.builtin.debug:
+    msg: "{{ inventory_printer_execution.stdout | from_json }}"

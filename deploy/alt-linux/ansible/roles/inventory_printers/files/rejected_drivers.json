@@ -1,0 +1,26 @@
+{
+  "M2040DN": {
+    "filename": "Kyocera ECOSYS M2040dn.PPD",
+    "sha256": "0970045d06db6c52cf1afbaed26f4459217fbf6826137f71d7475f16f5be5715",
+    "provenance": "Operator-supplied Kyocera EU English KPDL PPD",
+    "reason": "strict_cupstestppd_conformance_failed_on_CUPS_2.4.20"
+  },
+  "M2540DN": {
+    "filename": "Kyocera ECOSYS M2540dn.PPD",
+    "sha256": "7e452094f6d5ac0ca07ebdb690bed2d6bb7780eac09bff92015978aa0c456b76",
+    "provenance": "Operator-supplied Kyocera EU English KPDL PPD",
+    "reason": "strict_cupstestppd_conformance_failed_on_CUPS_2.4.20"
+  },
+  "M4125IDN": {
+    "filename": "Kyocera_ECOSYS M4125idn.ppd",
+    "sha256": "68d42859378db4f953aea6b217c11b2fc57ee3a4cbcc8b2bce60de15d5c7cdbd",
+    "provenance": "Operator-supplied Kyocera EU English KPDL PPD",
+    "reason": "strict_cupstestppd_conformance_failed_on_CUPS_2.4.20"
+  },
+  "M5526CDW": {
+    "filename": "Kyosera_552x.PPD",
+    "sha256": "ef5457b74b86fbb091b9d5060418e37d8036810271f7292ed6f841cccb9cad46",
+    "provenance": "Operator-supplied exact M5526cdw KPDL PPD; filename is not the model identity",
+    "reason": "strict_cupstestppd_conformance_failed_on_CUPS_2.4.20"
+  }
+}
