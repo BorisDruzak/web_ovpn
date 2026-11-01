@@ -26,9 +26,9 @@
 - [x] Capture and verify original/patched source identities and write failing patch/transaction/behavior tests.
 - [x] Implement the shared helper, backup/rollback and standalone role/playbook with red/green evidence.
 - [x] Integrate prerequisites and pre-application checks; verify the normal workflow contracts.
-- [ ] Run focused and broad tests, and review the complete change.
-- [ ] Test isolated original modules, check mode and repeated live playbook runs on the pilot; verify machine/user gpupdate and current GPO outputs.
-- [ ] Publish, deploy the exact verified controller revision with native rollback gates, and repeat acceptance from the deployed playbook.
+- [x] Run focused and broad tests, and review the complete change.
+- [x] Test isolated original modules, check mode and repeated live playbook runs on the pilot; verify machine/user gpupdate and current GPO outputs.
+- [x] Publish, deploy the exact verified controller revision with native rollback gates, and repeat acceptance from the deployed playbook.
 
 ## Execution ledger
 
@@ -38,3 +38,8 @@
 - Red/green: initial helper tests failed before implementation; unknown source, unsafe paths/versions, rollback metadata, post-rename write failure and real standalone variable loading regressions were reproduced and corrected. Focused integration suite: 161 passed; strengthened final helper/real-Ansible suite: 30 passed.
 - Review: no remaining Important/Critical findings after adding the standalone vars_files import and its real-Ansible boundary regression.
 - Pilot acceptance before publication: three original modules were repaired and rolled back in an isolated root using actual RPM-owner/version checks. Live --check and both standalone applications reported changed=0; working module hashes/timestamps were unchanged. Machine gpupdate and user service succeeded with application/Qt errors=0; desktop GPO verifier remained ready.
+
+- Final readability regression: a matching module with root-only read permissions is rejected before mutation. Red/green witnessed; final helper/real-Ansible suite 31 passed and follow-up review found no Important/Critical issues.
+- Final verification: 3099 panel tests passed (21 skipped); native installer ran 4367 ALT tests successfully (143 skipped) and installed 95b3421af35c85ab13447f653acce140b8661ab4 with exit 0 after fresh backup creation, verification and all 11 rehearsal checks.
+- Deployed acceptance: all six changed runtime/role/playbook files match published source. Installed standalone --check and both apply runs reported changed=0, failed=0 and all three fixes already_fixed. Original live module hashes/timestamps stayed unchanged. Fresh machine/user policy cycles succeeded without application/Qt errors; desktop GPO verification remained true.
+- Managed controller units are active and rollout guard is clear. Queue is empty and retained UNKNOWN/legacy history is unchanged. Only the selected pilot was executed; a fresh OS installation was not performed.
