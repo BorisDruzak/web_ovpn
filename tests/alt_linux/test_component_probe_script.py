@@ -182,7 +182,20 @@ def test_shortcuts_compare_autostart_and_launchers_for_selected_office_profile(
     assert not (desktop/'cptools.desktop').exists()
 
 
-@pytest.mark.parametrize('outcome', ['ok', 'failed', 'wrong_source', 'wrong_digest'])
+def test_preinstall_observation_of_older_role_has_no_gpo_execution_pin(tmp_path):
+    import shutil
+    for name in ('group_vars/all.yml', 'roles/desktop_shortcuts/defaults/main.yml'):
+        target = tmp_path/name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(CATALOG/name, target)
+    catalog = ComponentCatalog.load(CATALOG)
+    recipe = desired_queries(tmp_path, catalog, [catalog.component('desktop.shortcuts')],
+                             profile_id='workstation-full-v1')[0]
+    assert recipe['gpo_helper_sha256'] is None
+    assert recipe['entries']
+
+
+@pytest.mark.parametrize('outcome', ['ok', 'failed', 'wrong_source', 'wrong_digest', 'missing_pin'])
 def test_migrated_shortcuts_use_only_the_pinned_readonly_verifier(tmp_path, monkeypatch, outcome):
     import hashlib
     from alt_deploy import component_probe_script as target
@@ -201,6 +214,7 @@ def test_migrated_shortcuts_use_only_the_pinned_readonly_verifier(tmp_path, monk
     helper.chmod(0o755)
     recipe['gpo_helper_sha256'] = hashlib.sha256(helper.read_bytes()).hexdigest()
     if outcome == 'wrong_digest': recipe['gpo_helper_sha256'] = '0'*64
+    if outcome == 'missing_pin': recipe['gpo_helper_sha256'] = None
     # Production requires root ownership; allow only this temporary fixture's UID.
     protected = target.protected_gpo_helper
     monkeypatch.setattr(target, 'protected_gpo_helper',
@@ -219,4 +233,4 @@ def test_migrated_shortcuts_use_only_the_pinned_readonly_verifier(tmp_path, monk
         '/home/synthetic.user', 'synthetic.user', call)
     assert result['checks']['ready'] is (outcome == 'ok')
     assert tree(tmp_path) == before
-    assert len(calls) == (0 if outcome == 'wrong_digest' else 1)
+    assert len(calls) == (0 if outcome in ('wrong_digest', 'missing_pin') else 1)

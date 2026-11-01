@@ -144,8 +144,12 @@ def desired_queries(project, catalog, components, *, profile_id='base'):
         elif recipe == 'shortcuts':
             query['defaults'] = _yaml(roles/'desktop_shortcuts/defaults/main.yml')
             verifier = roles/'desktop_shortcuts/files/desktop_policy_source.py'
-            _regular(verifier)
-            query['gpo_helper_sha256'] = hashlib.sha256(verifier.read_bytes()).hexdigest()
+            # Pre-install maintenance observes the older deployed role. It has
+            # no verifier yet: retain legacy observation, but grant no GPO pin.
+            query['gpo_helper_sha256'] = None
+            if verifier.exists() or verifier.is_symlink():
+                _regular(verifier)
+                query['gpo_helper_sha256'] = hashlib.sha256(verifier.read_bytes()).hexdigest()
             selected_ids = set(catalog.profile(profile_id)['components']) | {c['id'] for c in components}
             query['entries'] = [entry for identifier, entry in query['defaults']['desktop_shortcuts_component_entries'].items()
                                 if identifier in selected_ids]
