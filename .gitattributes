@@ -13,3 +13,6 @@
 *.zip binary
 *.tgz binary
 *.tar.gz binary
+
+# RPM source fixtures must retain their exact hashed bytes, including EOF blanks.
+tests/alt_linux/fixtures/gpupdate-0.16.1/*.py.txt -text whitespace=-blank-at-eof
