@@ -82,7 +82,7 @@ def test_existing_pilot_fixes_are_readonly_noop(tmp_path):
     assert tree(tmp_path) == before and not (tmp_path/'var').exists()
 
 
-@pytest.mark.parametrize('fault', ['modified', 'symlink', 'writable', 'parent_symlink', 'new_package', 'missing'])
+@pytest.mark.parametrize('fault', ['modified', 'symlink', 'writable', 'unreadable', 'parent_symlink', 'new_package', 'missing'])
 def test_any_unverified_module_rejects_whole_plan_before_mutation(tmp_path, fault):
     m, packages = fixture(tmp_path)
     p = tmp_path/m.PATCHES[-1]['path'].lstrip('/')
@@ -90,6 +90,7 @@ def test_any_unverified_module_rejects_whole_plan_before_mutation(tmp_path, faul
     elif fault == 'symlink':
         p.rename(p.with_suffix('.saved'));p.symlink_to(p.with_suffix('.saved'))
     elif fault == 'writable': p.chmod(0o666)
+    elif fault == 'unreadable': p.chmod(0o600)
     elif fault == 'missing': p.unlink()
     elif fault == 'parent_symlink':
         parent = p.parent;parent.rename(parent.with_name(parent.name+'.saved'))

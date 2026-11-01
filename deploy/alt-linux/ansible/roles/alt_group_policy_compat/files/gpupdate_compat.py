@@ -195,6 +195,8 @@ def plan(root, owner, package_query):
         path = root/patch['path'].lstrip('/')
         try: info = safe(path,root,owner)
         except OSError: raise ValueError('module_unavailable') from None
+        if stat.S_IMODE(info.st_mode) & 0o444 != 0o444:
+            raise ValueError('module_permissions_unsafe')
         if package_query(path) != (patch['package'],patch['evr']): raise ValueError('package_version_unsupported')
         before = path.read_bytes();digest = sha(before)
         if digest not in (patch['before_sha256'],patch['after_sha256']): raise ValueError('source_unknown')
