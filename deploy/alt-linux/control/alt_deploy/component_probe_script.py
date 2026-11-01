@@ -82,6 +82,40 @@ def safe_user_copy(target, *, uid, mode):
     return actual & 0o700 == mode & 0o700 and actual & ~mode == 0
 
 
+def protected_gpo_helper(helper, root, *, owner=0):
+    """Only the fixed, root-protected verifier may be used by the collector."""
+    if not safe_file(helper, uid=owner, mode=0o755):
+        return False
+    for parent in helper.parents:
+        if parent == root:
+            break
+        info = parent.stat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != owner or stat.S_IMODE(info.st_mode) & 0o022:
+            return False
+    return True
+
+
+def desktop_gpo_ready(root, recipe, name, call):
+    marker = path(root, '/etc/gpupdate/desktop-shortcuts-gpo.json')
+    if not marker.exists() and not marker.is_symlink():
+        return None
+    helper = path(root, '/usr/local/libexec/alt-desktop-gpo-verify.py')
+    if (not protected_gpo_helper(helper, root)
+            or hashlib.sha256(helper.read_bytes()).hexdigest() != recipe['gpo_helper_sha256']):
+        return False
+    # No executable/operation selector is accepted from the query. The fixed
+    # read-only program must match the controller's published source bytes.
+    rc, output = call(['/usr/bin/python3', '-I', '-B', str(helper), '--user', name,
+                       '--entries-json', json.dumps(recipe['entries']), '--desktop-name',
+                       recipe['defaults']['desktop_shortcuts_user_desktop_name']])
+    if rc:
+        return False
+    result = json.loads(output)
+    return (isinstance(result, dict) and result.get('source') == 'gpo'
+            and result.get('verified') is True and result.get('home_deferred') is False
+            and result.get('legacy_home_links') == [])
+
+
 def text(target):
     if not safe_file(target):
         raise ValueError('probe file unavailable')
@@ -447,6 +481,10 @@ def inspect_component(root, recipe, user, home, name, call):
             # program or an operation selector supplied in this query.
             fact['checks']['ready'] = False
         elif kind == 'shortcuts':
+            gpo_ready = desktop_gpo_ready(root, recipe, name, call)
+            if gpo_ready is not None:
+                fact['checks']['ready'] = gpo_ready
+                return fact
             defaults = recipe['defaults']
             entries = recipe['entries']
             targets = [path(root, home+'/'+defaults['desktop_shortcuts_user_desktop_name']+'/'+e) for e in entries]

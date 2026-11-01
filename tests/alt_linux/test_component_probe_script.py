@@ -180,3 +180,43 @@ def test_shortcuts_compare_autostart_and_launchers_for_selected_office_profile(
     autostart.write_text('[Desktop Entry]\nExec=false\n')
     assert collect(query, root=tmp_path, call=call)['components']['desktop.shortcuts']['checks']['ready'] is False
     assert not (desktop/'cptools.desktop').exists()
+
+
+@pytest.mark.parametrize('outcome', ['ok', 'failed', 'wrong_source', 'wrong_digest'])
+def test_migrated_shortcuts_use_only_the_pinned_readonly_verifier(tmp_path, monkeypatch, outcome):
+    import hashlib
+    from alt_deploy import component_probe_script as target
+    catalog = ComponentCatalog.load(CATALOG)
+    recipe = desired_queries(CATALOG, catalog, [catalog.component('desktop.shortcuts')],
+                             profile_id='office-standard-v1')[0]
+    assert 'gpo_helper_sha256' in recipe
+    home = tmp_path/'home/synthetic.user'
+    home.mkdir(parents=True)
+    marker = tmp_path/'etc/gpupdate/desktop-shortcuts-gpo.json'
+    marker.parent.mkdir(parents=True)
+    marker.write_text('{}')
+    helper = tmp_path/'usr/local/libexec/alt-desktop-gpo-verify.py'
+    helper.parent.mkdir(parents=True)
+    helper.write_text('# synthetic immutable verifier\n')
+    helper.chmod(0o755)
+    recipe['gpo_helper_sha256'] = hashlib.sha256(helper.read_bytes()).hexdigest()
+    if outcome == 'wrong_digest': recipe['gpo_helper_sha256'] = '0'*64
+    # Production requires root ownership; allow only this temporary fixture's UID.
+    protected = target.protected_gpo_helper
+    monkeypatch.setattr(target, 'protected_gpo_helper',
+                        lambda value, root: protected(value, root, owner=os.getuid()))
+    calls = []
+    def call(argv):
+        calls.append(argv)
+        assert argv[:4] == ['/usr/bin/python3', '-I', '-B', str(helper)]
+        assert argv[4:6] == ['--user', 'synthetic.user']
+        return (2, '') if outcome == 'failed' else (0, json.dumps({
+            'source': 'ansible' if outcome == 'wrong_source' else 'gpo',
+            'verified': True, 'home_deferred': False, 'legacy_home_links': []}))
+    before = tree(tmp_path)
+    result = target.inspect_component(tmp_path, recipe,
+        {'home_safe':True,'home_exists':True,'uid':os.getuid(),'gid':os.getgid()},
+        '/home/synthetic.user', 'synthetic.user', call)
+    assert result['checks']['ready'] is (outcome == 'ok')
+    assert tree(tmp_path) == before
+    assert len(calls) == (0 if outcome == 'wrong_digest' else 1)

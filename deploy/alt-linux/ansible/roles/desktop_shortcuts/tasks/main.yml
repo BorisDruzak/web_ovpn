@@ -6,6 +6,59 @@
          selectattr('key', 'in', setup_selected_catalog.profile_component_ids) |
          map(attribute='value') | list }}
 
+- name: Verify desktop launcher policy ownership
+  ansible.builtin.script: >-
+    {{ role_path }}/files/desktop_policy_source.py
+    --user {{ assigned_domain_user | default(domain_test_user, true) | quote }}
+    --entries-json {{ desktop_shortcuts_selected_entries | to_json | quote }}
+    --desktop-name {{ desktop_shortcuts_user_desktop_name | quote }}
+  args:
+    executable: /usr/bin/python3
+  register: desktop_shortcuts_policy_check
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Record verified desktop launcher policy ownership
+  ansible.builtin.set_fact:
+    desktop_shortcuts_policy_source: "{{ desktop_shortcuts_policy_check.stdout | from_json }}"
+  no_log: true
+
+- name: Inspect the GPO verifier helper parent
+  ansible.builtin.stat:
+    path: /usr/local/libexec
+    follow: false
+  register: desktop_shortcuts_helper_parent
+  when: desktop_shortcuts_policy_source.source == 'gpo'
+
+- name: Require a protected existing helper parent
+  ansible.builtin.assert:
+    that:
+      - not desktop_shortcuts_helper_parent.stat.exists or desktop_shortcuts_helper_parent.stat.isdir
+      - not desktop_shortcuts_helper_parent.stat.exists or not desktop_shortcuts_helper_parent.stat.islnk
+      - not desktop_shortcuts_helper_parent.stat.exists or desktop_shortcuts_helper_parent.stat.uid == 0
+      - not desktop_shortcuts_helper_parent.stat.exists or desktop_shortcuts_helper_parent.stat.mode == '0755'
+    fail_msg: ALT_PREFLIGHT_FAILURE:desktop_gpo_helper_parent_unsafe
+  when: desktop_shortcuts_policy_source.source == 'gpo'
+
+- name: Create the GPO verifier helper directory
+  ansible.builtin.file:
+    path: /usr/local/libexec
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: desktop_shortcuts_policy_source.source == 'gpo'
+
+- name: Install the read-only desktop GPO verifier
+  ansible.builtin.copy:
+    src: "{{ role_path }}/files/desktop_policy_source.py"
+    dest: /usr/local/libexec/alt-desktop-gpo-verify.py
+    owner: root
+    group: root
+    mode: "0755"
+  when: desktop_shortcuts_policy_source.source == 'gpo'
+
 - name: Create desktop directory for future domain users
   ansible.builtin.file:
     path: "{{ desktop_shortcuts_skel_dir }}"
@@ -13,6 +66,7 @@
     owner: root
     group: root
     mode: "0755"
+  when: desktop_shortcuts_policy_source.source == 'ansible'
 
 - name: Inspect installed desktop application entries
   ansible.builtin.stat:
@@ -39,6 +93,7 @@
     group: root
     mode: "0755"
   loop: "{{ desktop_shortcuts_selected_entries }}"
+  when: desktop_shortcuts_policy_source.source == 'ansible'
 
 - name: Create folder links in future domain user desktops
   ansible.builtin.file:
@@ -47,6 +102,7 @@
     state: link
     force: true
   loop: "{{ desktop_shortcuts_relative_links }}"
+  when: desktop_shortcuts_policy_source.source == 'ansible'
 
 - name: Create Nextcloud autostart directory for future domain users
   ansible.builtin.file:
@@ -55,6 +111,7 @@
     owner: root
     group: root
     mode: "0755"
+  when: desktop_shortcuts_policy_source.source == 'ansible'
 
 - name: Add Nextcloud to future domain user autostart
   ansible.builtin.copy:
@@ -64,6 +121,7 @@
     owner: root
     group: root
     mode: "0644"
+  when: desktop_shortcuts_policy_source.source == 'ansible'
 
 - name: Resolve domain test user for existing desktop shortcuts
   ansible.builtin.command:
@@ -160,6 +218,7 @@
     group: "{{ desktop_shortcuts_user_fields[3] | int }}"
     mode: "0755"
   when:
+    - desktop_shortcuts_policy_source.source == 'ansible'
     - desktop_shortcuts_user_home is defined
     - desktop_shortcuts_user_home.stat.exists
   no_log: true
@@ -174,6 +233,7 @@
     mode: "0755"
   loop: "{{ desktop_shortcuts_selected_entries }}"
   when:
+    - desktop_shortcuts_policy_source.source == 'ansible'
     - desktop_shortcuts_user_home is defined
     - desktop_shortcuts_user_home.stat.exists
   no_log: true
@@ -186,6 +246,7 @@
     group: "{{ desktop_shortcuts_user_fields[3] | int }}"
     mode: "0700"
   when:
+    - desktop_shortcuts_policy_source.source == 'ansible'
     - desktop_shortcuts_user_home is defined
     - desktop_shortcuts_user_home.stat.exists
   no_log: true
@@ -199,6 +260,7 @@
     group: "{{ desktop_shortcuts_user_fields[3] | int }}"
     mode: "0644"
   when:
+    - desktop_shortcuts_policy_source.source == 'ansible'
     - desktop_shortcuts_user_home is defined
     - desktop_shortcuts_user_home.stat.exists
   no_log: true
@@ -214,12 +276,26 @@
     group: "{{ desktop_shortcuts_user_fields[3] | int }}"
   loop: "{{ desktop_shortcuts_relative_links }}"
   when:
+    - desktop_shortcuts_policy_source.source == 'ansible'
     - desktop_shortcuts_user_home is defined
     - desktop_shortcuts_user_home.stat.exists
   no_log: true
 
 - name: Configure optional personal network folders after application shortcuts
   ansible.builtin.include_tasks: network_folders.yml
+
+- name: Verify GPO-owned launchers after role execution
+  ansible.builtin.script: >-
+    {{ role_path }}/files/desktop_policy_source.py
+    --user {{ assigned_domain_user | default(domain_test_user, true) | quote }}
+    --entries-json {{ desktop_shortcuts_selected_entries | to_json | quote }}
+    --desktop-name {{ desktop_shortcuts_user_desktop_name | quote }}
+  args:
+    executable: /usr/bin/python3
+  changed_when: false
+  check_mode: false
+  when: desktop_shortcuts_policy_source.source == 'gpo'
+  no_log: true
 
 - name: Record verified shortcuts and home-dependent deferral
   ansible.builtin.set_fact:
@@ -229,6 +305,7 @@
       {{ configure_result | default({'components': {}, 'verification': {}}) | combine({
         'components': (configure_result | default({})).get('components', {}) | combine({
           'desktop_shortcuts': {'status': 'ok', 'verified': true,
+            'policy_source': desktop_shortcuts_policy_source.source,
             'home_deferred': not (desktop_shortcuts_user_home.stat.exists | default(false)),
             'network_folders': desktop_network_folders_result}
         }),
