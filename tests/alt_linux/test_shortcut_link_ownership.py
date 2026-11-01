@@ -24,6 +24,7 @@ def test_existing_desktop_links_belong_to_employee_without_chowning_targets(ansi
     play = project/'playbooks/synthetic-inherited-shortcut-links.yml'
     play.write_text(yaml.safe_dump([{'hosts':'localhost','gather_facts':False,
         'vars':{'desktop_shortcuts_user_fields':['employee','x','21000','21001','',''+str(home),'/bin/bash'],
+                'desktop_shortcuts_policy_source':{'source':'ansible'},
                 'desktop_shortcuts_user_desktop_name':'Desktop','desktop_shortcuts_relative_links':links,
                 'desktop_shortcuts_user_home':{'stat':{'exists':True}}}, 'tasks':[task]}]))
     code = r'''
