@@ -238,6 +238,18 @@
     - chrome.gosuslugi.plugin.json
     - ru.cryptopro.nmcades.json
 
+- name: Verify the selected signature browser policy source
+  ansible.builtin.script: "{{ role_path }}/files/browser_policy_source.py"
+  args:
+    executable: /usr/bin/python3
+  register: software_gosuslugi_plugin_browser_policy_source_check
+  changed_when: false
+  check_mode: false
+
+- name: Record the verified browser policy source
+  ansible.builtin.set_fact:
+    software_gosuslugi_plugin_browser_policy_source: "{{ software_gosuslugi_plugin_browser_policy_source_check.stdout | from_json }}"
+
 - name: Create managed extension policy directory for the approved browser
   ansible.builtin.file:
     path: /etc/opt/yandex/browser/policies/managed
@@ -258,16 +270,23 @@
     owner: root
     group: root
     mode: "0644"
+  when: software_gosuslugi_plugin_browser_policy_source.source == 'ansible'
+
+- name: Remove the legacy signature policy only after verified GPO handoff
+  ansible.builtin.file:
+    path: /etc/opt/yandex/browser/policies/managed/alt-signature-suite.json
+    state: absent
+  when: software_gosuslugi_plugin_browser_policy_source.source == 'gpo'
 
 - name: Read back the signature extension policy
   ansible.builtin.slurp:
-    src: /etc/opt/yandex/browser/policies/managed/alt-signature-suite.json
+    src: "{{ software_gosuslugi_plugin_browser_policy_source.policy_path }}"
   register: software_gosuslugi_plugin_browser_policy
 
 - name: Verify the fixed signature extension policy
   ansible.builtin.assert:
     that:
-      - (software_gosuslugi_plugin_browser_policy.content | b64decode | from_json).ExtensionInstallForcelist == ['jabjbhgjaidecageckilhonbggakppme;https://clients2.google.com/service/update2/crx']
+      - "'jabjbhgjaidecageckilhonbggakppme;https://clients2.google.com/service/update2/crx' in (software_gosuslugi_plugin_browser_policy.content | b64decode | from_json).ExtensionInstallForcelist"
     fail_msg: ALT_PREFLIGHT_FAILURE:gosuslugi_plugin_browser_policy_missing
 
 - name: Publish ГосПлагин verification facts
@@ -281,6 +300,7 @@
         'components': configure_result.components | combine({
           'gosuslugi_plugin': {'status': 'ok', 'verified': true,
             'native_host_verified': true, 'browser_policy_verified': true,
+            'browser_policy_source': software_gosuslugi_plugin_browser_policy_source.source,
             'browser_extension': 'pending_browser_start_and_download'}
         }),
         'verification': configure_result.verification | combine({'software_gosuslugi_plugin': true})
