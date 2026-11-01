@@ -37,8 +37,8 @@ autostart; deploy only after successful testing; restrict to the selected comput
 - [x] Update native component verification to accept verified GPO-owned launcher semantics.
 - [x] Exercise the real role on temporary paths and then on the pilot; demonstrate repeated Ansible runs do not rewrite GPO edits.
 - [x] Complete the scoped live GPO, verify machine/user cycles and launcher/autostart execution behavior.
-- [ ] Review, publish, create/verify/rehearse a fresh controller backup and deploy the exact tested revision.
-- [ ] Repeat live acceptance after deployment, retain rollback evidence and clean up only temporary probes.
+- [x] Review, publish, create/verify/rehearse a fresh controller backup and deploy the exact tested revision.
+- [x] Repeat live acceptance after deployment, retain rollback evidence and clean up only temporary probes.
 
 ## Execution ledger
 
@@ -52,3 +52,8 @@ autostart; deploy only after successful testing; restrict to the selected comput
 - Live acceptance: all seven missing user files were recreated by native refresh; a central GPO name edit was applied and preserved by a repeated Ansible run (changed=0). All 14 skel/profile file hashes and metadata stayed unchanged through the ownership test. The native component probe returned ready=true.
 - Nextcloud desktop entry validation and the isolated systemd XDG generator produced its autostart unit. The running session was preserved; a real logout/new login was not performed.
 - Verification before publication: focused Linux tests 76 passed; remaining panel tests 3099 passed, 21 skipped. Whole-branch review findings were corrected with regression tests; no Important/Critical findings remain. Native installer will execute the full ALT suite before mutation.
+
+- Final acceptance: native installer deployed 7019132b7151945e5da1de12d98804eb1458ca85 and returned exit 0 after 4336 ALT tests passed (143 skipped). The coordinated rollback generation was created, verified and rehearsed with all 11 rehearsal checks passing.
+- Compatibility rulings: pre-install observation of an older role grants no GPO helper execution pin; the isolated inherited-link fixture explicitly declares Ansible ownership. Reproduced failures were corrected and the complete native suite rerun successfully.
+- Post-install acceptance: deployed Ansible reported changed=0 and preserved all 14 managed files including contents, timestamps, permissions, owners and groups. The deployed native component probe returned ready=true. Fresh machine/user gpupdate completed without application or Qt errors; GPO application remained limited to the selected computer on both DCs.
+- The current user session was preserved. Fresh user-file creation and the actual XDG autostart generator were tested; a real logout/new login was not performed. The backed-up client shortcut-merge correction must be rechecked after gpupdate package upgrades.
