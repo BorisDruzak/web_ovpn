@@ -19,3 +19,7 @@
   retries: "{{ alt_package_lock_retry_attempts | int - 1 }}"
   delay: "{{ alt_package_lock_retry_delay }}"
   when: alt_group_policy_prerequisite_packages | length > 0
+
+- name: Repair the installed GPO client before domain join
+  ansible.builtin.include_role:
+    name: alt_group_policy_compat

@@ -1,0 +1,33 @@
+---
+- name: Check or repair the inspected gpupdate client baseline
+  ansible.builtin.script: >-
+    {{ role_path }}/files/gpupdate_compat.py
+    {{ '--check' if ansible_check_mode else '--apply' }}
+  args:
+    executable: /usr/bin/python3
+  register: alt_gpupdate_compat_execution
+  check_mode: false
+  changed_when: >-
+    alt_gpupdate_compat_execution.rc == 0 and
+    (alt_gpupdate_compat_execution.stdout | from_json).changed | bool
+  failed_when: false
+  until: >-
+    alt_gpupdate_compat_execution.rc == 0 or
+    (alt_gpupdate_compat_execution.stdout | from_json).code | default('') != 'client_busy'
+  retries: 5
+  delay: 5
+
+- name: Require verified gpupdate client compatibility
+  ansible.builtin.assert:
+    that: alt_gpupdate_compat_execution.rc == 0
+    fail_msg: >-
+      ALT_GPUPDATE_COMPAT_FAILURE:
+      {{ (alt_gpupdate_compat_execution.stdout | from_json).code | default('unverified') }}
+
+- name: Retain the verified gpupdate compatibility result
+  ansible.builtin.set_fact:
+    alt_gpupdate_compat_result: "{{ alt_gpupdate_compat_execution.stdout | from_json }}"
+
+- name: Report gpupdate client repair and rollback identity
+  ansible.builtin.debug:
+    var: alt_gpupdate_compat_result

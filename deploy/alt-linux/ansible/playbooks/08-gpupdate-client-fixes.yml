@@ -1,0 +1,15 @@
+---
+- name: Prepare a single ALT gpupdate client without applying domain policies
+  hosts: all
+  gather_facts: false
+  become: true
+  serial: 1
+  vars_files:
+    - ../group_vars/all.yml
+  pre_tasks:
+    - name: Require one explicitly selected inventory host
+      ansible.builtin.assert:
+        that: ansible_play_hosts_all | length == 1
+        fail_msg: Select exactly one ALT host using a dedicated inventory or --limit.
+  roles:
+    - alt_group_policy_prerequisites

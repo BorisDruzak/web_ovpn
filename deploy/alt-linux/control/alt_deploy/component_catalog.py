@@ -18,7 +18,7 @@ PROTECTED_ROLES = frozenset({
     'domain_join', 'domain_verify', 'alt_group_policy_client', 'alt_group_policy_prerequisites',
     'domain_login_baseline', 'prejoin_upgrade', 'workstation_identity', 'workstation_network',
     'local_employee', 'provision_verify', 'lightdm_accounts', 'standard_software',
-    'preflight', 'manual_preflight',
+    'preflight', 'manual_preflight', 'alt_group_policy_compat',
 })
 ID_RE = re.compile(r'^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$')
 ROLE_RE = re.compile(r'^[a-z][a-z0-9_]{0,95}$')

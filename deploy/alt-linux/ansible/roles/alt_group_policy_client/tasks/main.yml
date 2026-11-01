@@ -1,4 +1,8 @@
 ---
+- name: Verify GPO client compatibility before policy application
+  ansible.builtin.include_role:
+    name: alt_group_policy_compat
+
 - name: Verify the ALT Group Policy setup command is installed
   ansible.builtin.command:
     argv: [sh, -c, "command -v gpupdate-setup"]
