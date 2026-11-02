@@ -141,7 +141,9 @@ def probe(request, *, runner=_run):
 
         ticket = call(['/usr/bin/klist'])
         principal = re.search(r'^Default principal:\s*(\S+)\s*$', ticket.stdout, re.M)
-        if ticket.returncode or not principal or principal[1].casefold() != (login + '@' + domain).casefold():
+        cache = re.search(r'^Ticket cache:\s*(\S+)\s*$', ticket.stdout, re.M)
+        if (ticket.returncode or not principal or not cache
+                or principal[1].casefold() != (login + '@' + domain).casefold()):
             raise ValueError('selected_user_ticket_unavailable')
         who = call(['/usr/bin/ldapwhoami', '-Q', '-Y', 'GSSAPI', '-O', 'minssf=56', '-H', request['ldap_uri']])
         identity = who.stdout.strip()
@@ -167,7 +169,8 @@ def probe(request, *, runner=_run):
 
         def listing(path=''):
             argv = ['/usr/bin/smbclient', '//' + request['server'] + '/' + request['share'],
-                    '--use-kerberos=required', '--client-protection=sign', '-N', '-t', '3']
+                    '--use-kerberos=required', '--use-krb5-ccache=' + cache[1],
+                    '--client-protection=sign', '-t', '3']
             if path:
                 argv += ['-D', path]
             reply = call(argv + ['-c', 'ls'])

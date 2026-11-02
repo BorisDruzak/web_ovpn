@@ -31,9 +31,11 @@ def directory_listing(*names):
 
 
 class Server:
-    def __init__(self, *, who='u:EXAMPLE\\employee', ldap_error=False, timeout=False):
+    def __init__(self, *, who='u:EXAMPLE\\employee', ldap_error=False, timeout=False,
+                 ticket_cache='KEYRING:persistent:1000:krb_ccache_test'):
         self.calls = []
         self.who, self.ldap_error, self.timeout = who, ldap_error, timeout
+        self.ticket_cache = ticket_cache
 
     def __call__(self, argv, *, timeout):
         self.calls.append(argv)
@@ -41,7 +43,9 @@ class Server:
         if self.timeout:
             raise TimeoutError
         if name == 'klist':
-            return SimpleNamespace(returncode=0, stdout='Default principal: employee@EXAMPLE.TEST\n', stderr='')
+            cache_line = f'Ticket cache: {self.ticket_cache}\n' if self.ticket_cache else ''
+            return SimpleNamespace(returncode=0, stdout=cache_line +
+                                   'Default principal: employee@EXAMPLE.TEST\n', stderr='')
         if name == 'ldapwhoami':
             return SimpleNamespace(returncode=0, stdout=self.who + '\n', stderr='')
         if name == 'ldapsearch':
@@ -69,9 +73,37 @@ def test_only_folders_opened_by_the_selected_user_become_candidates(helper):
     assert {(i['department'], i['kind']) for i in result['folders']} == {
         ('Department A', 'Рабочая'), ('Department B', 'Сканы')}
     smb = [c for c in server.calls if Path(c[0]).name == 'smbclient']
-    assert all('--use-kerberos=required' in c and '-N' in c for c in smb)
+    assert all('--use-kerberos=required' in c and '-N' not in c for c in smb)
     assert all(c[c.index('-c') + 1] == 'ls' for c in smb)
     assert not any('password' in str(c).lower() for c in server.calls)
+
+
+@pytest.mark.parametrize('cache', ['KEYRING:persistent:1000:krb_ccache_test',
+                                  'FILE:/tmp/krb5cc_1000_test'])
+def test_samba_421_reuses_the_verified_ticket_cache_without_password_credentials(helper, cache):
+    server = Server(ticket_cache=cache)
+
+    def samba421(argv, *, timeout):
+        # Reproduce the observed Samba boundary: -N overrides cache credentials;
+        # a named user cache authenticates without asking for a password.
+        if Path(argv[0]).name == 'smbclient' and (
+                '-N' in argv or '--use-krb5-ccache=' + cache not in argv):
+            server.calls.append(argv)
+            return SimpleNamespace(returncode=1, stdout='NT_STATUS_INVALID_PARAMETER',
+                                   stderr='No password for user principal')
+        return server(argv, timeout=timeout)
+
+    result = helper.probe(request(), runner=samba421)
+    assert result['status'] == 'ok'
+    assert {(f['department'], f['kind']) for f in result['folders']} == {
+        ('Department A', 'Рабочая'), ('Department B', 'Сканы')}
+
+
+def test_missing_ticket_cache_never_attempts_smb_authentication(helper):
+    server = Server(ticket_cache='')
+    result = helper.probe(request(), runner=server)
+    assert result['status'] == 'unknown' and result['folders'] == []
+    assert not any(Path(c[0]).name == 'smbclient' for c in server.calls)
 
 
 @pytest.mark.parametrize('options', [{'who': 'u:EXAMPLE\\administrator'}, {'ldap_error': True}, {'timeout': True}])
