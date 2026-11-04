@@ -49,6 +49,26 @@ PATCHES = json.loads(r'''
 ''')
 BACKUPS = Path('var/backups/alt-gpupdate-compat')
 
+# 0.16.4 carries the KDE and shortcut fixes upstream. Their exact vendor bytes
+# are accepted without rewriting them; the unchanged service parser still needs
+# the inspected setter correction. Keep 0.16.1 recipes for legacy backups.
+PATCH_SETS = {
+    '0.16.1-alt1': PATCHES,
+    '0.16.4-alt1': [
+        dict(PATCHES[0], evr='0.16.4-alt1'),
+        dict(PATCHES[1], evr='0.16.4-alt1', patch='',
+             before_sha256='52838e1c47815d192c391f0be63157950c9e79a46cad997d3cb1ba8b4d9fa365',
+             after_sha256='52838e1c47815d192c391f0be63157950c9e79a46cad997d3cb1ba8b4d9fa365'),
+        dict(PATCHES[2], evr='0.16.4-alt1', patch='',
+             before_sha256='0498f7a2fa15aab0489f805a5fa785c9ded33d314e3ada3fb0f6141ff9f51eba',
+             after_sha256='0498f7a2fa15aab0489f805a5fa785c9ded33d314e3ada3fb0f6141ff9f51eba'),
+        {'id': 'shortcut_model', 'package': 'gpupdate', 'evr': '0.16.4-alt1',
+         'path': '/usr/lib/python3/site-packages/gpoa/gpt/shortcuts.py', 'patch': '',
+         'before_sha256': '718f3aefd17e5ccc2e9161153e84e8ec43291fdb12abc00f60b8436018d5deef',
+         'after_sha256': '718f3aefd17e5ccc2e9161153e84e8ec43291fdb12abc00f60b8436018d5deef'},
+    ],
+}
+
 
 def sha(data):
     return hashlib.sha256(data).hexdigest()
@@ -190,8 +210,14 @@ def save_manifest(path, value):
 
 
 def plan(root, owner, package_query):
+    first = root/PATCHES[0]['path'].lstrip('/')
+    try: safe(first,root,owner)
+    except OSError: raise ValueError('module_unavailable') from None
+    package, version = package_query(first)
+    recipes = PATCH_SETS.get(version)
+    if package != 'gpupdate' or recipes is None: raise ValueError('package_version_unsupported')
     rows = []
-    for patch in PATCHES:
+    for patch in recipes:
         path = root/patch['path'].lstrip('/')
         try: info = safe(path,root,owner)
         except OSError: raise ValueError('module_unavailable') from None
@@ -228,8 +254,9 @@ def repair(*, root=Path('/'), owner=0, package_query=package_info, busy=busy_cli
         parent = root/BACKUPS;ensure_directory(parent,root,owner)
         identifier = 'gpupdate-'+datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')+'-'+uuid.uuid4().hex[:12]
         backup = parent/identifier;backup.mkdir(mode=0o700);sync_directory(parent)
-        manifest = {'schema':1,'state':'prepared','backup_id':identifier,'modules':[
+        manifest = {'schema':2,'state':'prepared','backup_id':identifier,'modules':[
             {'id':r['patch']['id'],'path':r['patch']['path'],'metadata':r['info'],
+             'package':r['patch']['package'],'evr':r['patch']['evr'],
              'before_sha256':r['patch']['before_sha256'],'after_sha256':r['patch']['after_sha256']} for r in pending]}
         for row in pending: private_write(backup/(row['patch']['id']+'.original'),row['before'])
         private_write(backup/'rollback.py',Path(__file__).read_bytes())
@@ -263,13 +290,18 @@ def rollback(identifier, *, root=Path('/'), owner=0, package_query=package_info)
     with locked(root,owner):
         safe(backup/'manifest.json',root,owner)
         manifest = json.loads((backup/'manifest.json').read_bytes())
-        if (manifest.get('schema') != 1 or manifest.get('backup_id') != identifier
+        if (type(manifest.get('schema')) is not int or manifest['schema'] not in (1, 2) or manifest.get('backup_id') != identifier
                 or manifest.get('state') not in ('prepared','applied','rolled_back')
                 or not isinstance(manifest.get('modules'),list) or not 0<len(manifest['modules'])<=len(PATCHES)):
             raise ValueError('backup_manifest_invalid')
         rows = [];seen = set()
         for row in manifest['modules']:
-            patch = next((p for p in PATCHES if p['id']==row['id']),None)
+            # Schema-1 receipts predate version selection and remain pinned to
+            # 0.16.1. Never reinterpret their identical service bytes as 0.16.4.
+            recipes = PATCHES if manifest['schema'] == 1 else (
+                PATCH_SETS.get(row.get('evr'), []) if isinstance(row.get('evr'),str) else [])
+            patch = next((p for p in recipes if p['id']==row['id'] and
+                          (manifest['schema']==1 or p['package']==row.get('package'))),None)
             if (not patch or row['id'] in seen or any(row.get(k)!=patch[k] for k in ('path','before_sha256','after_sha256'))):
                 raise ValueError('backup_manifest_invalid')
             seen.add(row['id']);path=root/patch['path'].lstrip('/');current=safe(path,root,owner)

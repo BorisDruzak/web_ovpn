@@ -12,13 +12,15 @@ import yaml
 from test_component_ansible_runtime import ansible_runtime
 from test_component_catalog import project
 from test_gpupdate_compat import helper, fixture, tree, ROLE
+from test_gpupdate_compat_0164 import vendor_fixture
 
 
 @pytest.mark.parametrize('invalid',[False,True])
-def test_standalone_check_apply_repeat_and_failure_are_real_ansible(ansible_runtime,tmp_path,invalid):
+@pytest.mark.parametrize('version',['0.16.1-alt1','0.16.4-alt1'])
+def test_standalone_check_apply_repeat_and_failure_are_real_ansible(ansible_runtime,tmp_path,invalid,version):
     executable,project,env=ansible_runtime
     root=tmp_path/'client';root.mkdir()
-    m,packages=fixture(root)
+    m,packages=fixture(root) if version=='0.16.1-alt1' else vendor_fixture(root)
     if invalid:
         p=root/m.PATCHES[-1]['path'].lstrip('/');p.write_bytes(p.read_bytes()+b'\n# unreviewed\n')
     # Avoid package management on the test runner, retain the real nested role.
@@ -31,14 +33,14 @@ def test_standalone_check_apply_repeat_and_failure_are_real_ansible(ansible_runt
     # Relocate the helper's filesystem/RPM boundary, without replacing its repair logic.
     code='''import importlib.util,json,os,sys
 s=importlib.util.spec_from_file_location('compat',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
-root=m.Path(sys.argv[2]);packages=lambda path:next((p['package'],p['evr']) for p in m.PATCHES if str(path).endswith(p['path']))
+root=m.Path(sys.argv[2]);packages=lambda path:('gpoa-lib' if path.name=='kde_applier.py' else 'gpupdate',sys.argv[3])
 try:print(json.dumps(m.repair(root=root,owner=os.getuid(),package_query=packages,busy=lambda:False,apply='--apply' in sys.argv)))
 except ValueError as e:print(json.dumps({'status':'error','code':str(e)}));sys.exit(2)
 '''
     wrapper=tmp_path/'run-helper.py';wrapper.write_text(code)
     tasks=yaml.safe_load((project/'roles/alt_group_policy_compat/tasks/main.yml').read_text())
     tasks[0].pop('ansible.builtin.script');tasks[0].pop('args')
-    tasks[0]['ansible.builtin.command']={'argv':[sys.executable,str(wrapper),str(ROLE/'files/gpupdate_compat.py'),str(root),
+    tasks[0]['ansible.builtin.command']={'argv':[sys.executable,str(wrapper),str(ROLE/'files/gpupdate_compat.py'),str(root),version,
         "{{ '--check' if ansible_check_mode else '--apply' }}"]}
     (project/'roles/alt_group_policy_compat/tasks/main.yml').write_text(yaml.safe_dump(tasks))
     argv=[str(executable),'-i','localhost,','-c','local','-e',json.dumps({'ansible_become':False,'ansible_python_interpreter':sys.executable}),
