@@ -155,7 +155,9 @@ def coverage_observe(settings, job):
     if fresh['observed'].get('trust') is True: return fresh
     from .setup_closed_failure import ClosedFailureEvidence
     from .setup_partial_observation import PartialLocalObserver
-    return PartialLocalObserver(settings).observe(ClosedFailureEvidence(settings).load(job.job_id), mode='partial_ad')
+    closed=ClosedFailureEvidence(settings).load(job.job_id)
+    mode='prejoin_local' if closed['result']['phase']=='network' else 'partial_ad'
+    return PartialLocalObserver(settings).observe(closed,mode=mode)
 
 
 def native_observe(settings, job, *, coverage=False):

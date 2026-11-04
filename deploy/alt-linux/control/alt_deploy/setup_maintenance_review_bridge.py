@@ -41,5 +41,9 @@ def partial_observer_service(settings):
     return _service(settings, 'setup_partial_observation', 'PartialLocalObserver')
 
 
+def prejoin_compatibility_service(settings):
+    return _service(settings, 'setup_partial_observation', 'PrejoinCompatibilityHistory')
+
+
 def phase_admission_service(settings):
     return _service(settings,'setup_phase_admission','PhaseAdmissionReview')

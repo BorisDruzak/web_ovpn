@@ -115,6 +115,22 @@ KRFB and unresolved protected Setup cannot use ordinary component retry. Full
 prejoin/recovery successors require original reviewed gates. The old UNKNOWN
 remains immutable and the new job records its review relationship.
 
+A structured compatibility-assertion failure before the first join has a narrow
+`prejoin_retry` continuation. It requires the initial V2 plan, the complete exact
+compatibility-failure/rescue event sequence, an unsuccessful `network` result and
+no join event. The proof seals the result, log and every safe event. Fresh native
+local PAM/service state, strict SSH identity, AD collision/absence, clock,
+administrator, credential/process absence and package health are checked at
+planning, submission and worker preflight. A changed result, another failed task,
+any join event or unsafe current state denies continuation. The old UNKNOWN,
+claims and reservations remain retained; only a fresh one-use successor executes.
+
+Controller source repair for this closed prejoin failure uses complete-set
+`maintenance-plan --all-closed` with schema-2 `prejoin_local` coverage after the
+matching backup validators are installed. That receipt permits controller
+backup/deployment only. It does not authorize a target retry. Mixed coverage with
+post-login workflow UNKNOWNs is not supported by this prejoin scope.
+
 `setup_controller_maintenance` means backup/restore blocks admission; retry after
 maintenance. Invalid/partial admission evidence requires review, not claim
 deletion. Restore rejects older archives with differing retained execution

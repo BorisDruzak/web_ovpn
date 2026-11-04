@@ -10,15 +10,21 @@ import re
 from datetime import datetime
 
 from .ad_directory import fail
-from .configure import historical_setup_request
+from .configure import historical_setup_request, _read_configure_result
 from .setup_plans import SetupPlanStore, digest, private_read, private_read_bytes
 
 
 def prejoin_retry_evidence(settings, binding, machine, user, ou_identity, observed, computer):
     snapshot = {'uuid': machine.uuid, 'hostname': machine.hostname, 'ip': machine.ip,
                 'registration_sha256': digest(machine.raw)}
-    return historical_prejoin_retry_evidence(settings.state_root, binding, snapshot, user,
-                                            ou_identity, observed, computer)
+    proof=historical_prejoin_retry_evidence(settings.state_root, binding, snapshot, user,
+                                           ou_identity, observed, computer)
+    if 'result' in proof['evidence_sha256']:
+        from .setup_maintenance_review_bridge import prejoin_compatibility_service
+        # This runs on every fresh plan/apply/worker preflight. Archival readers
+        # below never perform live observations or rely on the advanced binding.
+        prejoin_compatibility_service(settings).live(proof['failed_run_id'])
+    return proof
 
 
 def historical_prejoin_retry_evidence(root, binding, machine, user, ou_identity, observed, computer):
@@ -34,10 +40,13 @@ def historical_prejoin_retry_evidence(root, binding, machine, user, ou_identity,
         paths = {'run': root/'setup-runs'/(run_id+'.json')}
         raw_run = private_read_bytes(paths['run'])
         run = private_read(paths['run'])
+        structured=('configuration_result_unavailable' not in run and run.get('error',{}).get('code')=='domain_join_failed'
+                    and isinstance(run.get('result'),dict) and run['result'].get('phase')=='network')
+        timeout=(run.get('configuration_result_unavailable') is True and
+                 run.get('error',{}).get('code') in ('domain_join_timeout','setup_upgrade_timeout'))
         if (type(run.get('schema_version')) is not int or run.get('schema_version') != 1 or run.get('run_id') != run_id or
                 run.get('machine_uuid') != machine['uuid'] or run.get('status') != 'failed' or
-                run.get('partial_failure') is not True or run.get('configuration_result_unavailable') is not True or
-                run.get('error', {}).get('code') not in ('domain_join_timeout', 'setup_upgrade_timeout')):
+                run.get('partial_failure') is not True or not (structured or timeout)):
             raise ValueError
         config_id = run['configuration_run_id']
         if not re.fullmatch(r'[0-9a-f]{32}', config_id):
@@ -49,6 +58,7 @@ def historical_prejoin_retry_evidence(root, binding, machine, user, ou_identity,
         # Validate the original plan at the original apply instant, never replay it.
         plan = SetupPlanStore(root, clock=lambda: created).load(run['plan_id'], run['plan_sha256'])
         old = plan['payload']
+        if structured and old.get('engine_schema_version')!=2:raise ValueError
         request = historical_setup_request(old, expected_uuid=machine['uuid'])
         if (any(binding.get(k) != v for k, v in old['binding'].items()) or
                 old['machine'] != machine or
@@ -61,12 +71,16 @@ def historical_prejoin_retry_evidence(root, binding, machine, user, ou_identity,
             raise ValueError
         config = root/'configure-runs'/config_id
         result_path = config/'result.json'
-        if result_path.exists() or result_path.is_symlink():
+        if not structured and (result_path.exists() or result_path.is_symlink()):
             raise ValueError
         paths.update(plan=root/'setup-plans'/(run['plan_id']+'.json'), request=config/'request.json', log=config/'ansible.log')
         raw = {k: private_read_bytes(p) for k, p in paths.items()}
         if raw['run'] != raw_run or private_read(paths['request']) != request.to_dict():
             raise ValueError
+        if structured:
+            result=_read_configure_result(private_read(result_path),request)
+            if result!=run['result']:raise ValueError
+            raw['result']=private_read_bytes(result_path)
         if old.get('engine_schema_version') == 2:
             from types import SimpleNamespace
             from .setup_events import SetupEventStore
@@ -82,8 +96,11 @@ def historical_prejoin_retry_evidence(root, binding, machine, user, ou_identity,
             outcome = private_read(job.job_dir/'execution.json')
             events = SetupEventStore(settings)._read(job)
             tasks = [e for e in events if e['type'].startswith('task_')]
-            if (outcome.get('legacy_error_run_id') != run_id or not tasks
-                    or tasks[-1]['component_id'] != 'domain.ready'
+            if outcome.get('legacy_error_run_id') != run_id or not tasks:raise ValueError
+            if structured:
+                from .setup_maintenance_review_bridge import prejoin_compatibility_service
+                prejoin_compatibility_service(settings).validate(old,result,events)
+            elif (tasks[-1]['component_id'] != 'domain.ready'
                     or tasks[-1]['stage'] not in ('upgrade', 'download', 'transaction')
                     or any(e['stage'] == 'domain_join' or e['component_id'] not in ('domain.ready', 'system.base') for e in tasks)):
                 raise ValueError

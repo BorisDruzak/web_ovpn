@@ -29,7 +29,7 @@ def validate_payload(payload):
                 or not re.fullmatch('setup-run-[0-9a-f]{32}', record['failed_run_id'])
                 or not re.fullmatch('[0-9a-f]{32}', record['configuration_run_id'])
                 or not re.fullmatch('[0-9a-f]{64}', record['history_sha256'])
-                or record['mode'] not in ('joined', 'partial_ad') or len(record['lease_ids']) != 2
+                or record['mode'] not in ('joined', 'partial_ad', 'prejoin_local') or len(record['lease_ids']) != 2
                 or any(not re.fullmatch('[0-9a-f]{32}', identifier) for identifier in record['lease_ids'])
                 or record['lease_ids'] != sorted(set(record['lease_ids'])) or not isinstance(record['evidence'], dict)): raise denied()
         leases += record['lease_ids']
@@ -93,7 +93,8 @@ class MaintenanceCoverage(MaintenanceReview):
         for value in closed:
             fresh = self.observer(repository.get(value['job_id']))
             if 'partial_local' in fresh:
-                mode = 'partial_ad'
+                mode = fresh['partial_local']['mode']
+                if mode not in ('partial_ad','prejoin_local'): raise denied()
                 validate_evidence(value, fresh, mode=mode)
             else:
                 mode = 'joined'

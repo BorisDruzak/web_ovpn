@@ -323,9 +323,15 @@ class SetupService:
                 return self._execute_locked(plan_id, confirmed_sha)
         from .setup_jobs import SetupJobRepository
         jobs = SetupJobRepository(self.settings, clock=self.clock)
-        if plan['payload'].get('partial_local_resolution'):
+        compatibility_retry='result' in plan['payload'].get('prejoin_retry',{}).get('evidence_sha256',{})
+        if plan['payload'].get('partial_local_resolution') or compatibility_retry:
             with exclusive_lock(self.settings.lock_file):
-                self._validate_job_plan(plan, own_job_id=None)
+                claim=jobs.claims/(plan['sha256']+'.json')
+                # An existing claim is observation-only: submit validates its
+                # exact original job/reservation, including interrupted claims.
+                # Only a genuinely new compatibility successor needs admission.
+                if not compatibility_retry or not (claim.exists() or claim.is_symlink()):
+                    self._validate_job_plan(plan, own_job_id=None)
                 job = jobs.submit(plan, operation='full_setup')
         else:
             job = jobs.submit(plan, operation='full_setup')

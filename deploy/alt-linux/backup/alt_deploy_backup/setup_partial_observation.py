@@ -26,6 +26,65 @@ def denied():
         'Partial local state, original identity or complete directory absence cannot be verified')
 
 
+def validate_prejoin_compatibility(original, result, events):
+    """Recognize only the complete failed compatibility gate before first join.
+
+    Task IDs bind the inspected deployed role/assert and its result-only rescue
+    suffix. An unexpected task path, failure, missing event or join denies this
+    narrow continuation; this classifier never probes or mutates a target.
+    """
+    assertion = 'task-5735ab09588eb5b5'
+    finalizers = ('task-3bff097f8cfb64be', 'task-55f514a300181b34',
+                  'task-0df1c31dec416be0', 'task-aa008671aca81205')
+    if (original.get('engine_schema_version') != 2 or original.get('existing_assignment') is not None
+            or any(original.get(k) for k in ('prejoin_retry','recovery_resolution','partial_local_resolution'))
+            or original['computer'].get('exists') is not False or original['computer'].get('objects') != []
+            or original['observed'].get('domain') != '' or original['observed'].get('trust') is not False
+            or original['observed'].get('sssd') is not False or original['observed'].get('computer_identity') is not None
+            or result.get('status') != 'failed' or result.get('phase') != 'network'
+            or result.get('recovered') is not False or result.get('retryable') is not False
+            or result.get('components') != {} or result.get('verification',{}).get('group_policy') is not False
+            or result.get('error',{}).get('code') != 'configure_critical_phase_failed'
+            or not events or [e.get('sequence') for e in events] != list(range(1,len(events)+1))): raise denied()
+    tasks = [e for e in events if e['type'].startswith('task_')]
+    if (any(e['stage']=='domain_join' or e['component_id'] not in
+            ('domain.ready','system.base','remote.vnc_policy','remote.krfb') for e in events)
+            or any(e['type']=='task_unreachable' for e in tasks)
+            or not any(e['type']=='task_ok' and e['stage']=='transaction' for e in tasks)): raise denied()
+    failures = [e for e in tasks if e['type']=='task_failed']
+    if (len(failures)!=2 or failures[0]['task_id']!=assertion or failures[0]['stage']!='network'
+            or failures[0]['component_id']!='domain.ready' or failures[0]['changed'] is not False): raise denied()
+    suffix = [(assertion,'task_start','network',False), (assertion,'task_failed','network',False)]
+    for task in finalizers:
+        suffix += [(task,'task_start','apply',False),
+                   (task,'task_failed' if task==finalizers[-1] else 'task_ok','apply',task==finalizers[-2])]
+    tail = events[failures[0]['sequence']-2:]
+    if ([(e['task_id'],e['type'],e['stage'],e['changed']) for e in tail] != suffix
+            or any(e['component_id']!='domain.ready' for e in tail)): raise denied()
+
+
+class PrejoinCompatibilityHistory:
+    """Trusted bridge for archival classification and separate fresh admission."""
+    def __init__(self,settings,*,observer=None):
+        self.settings=settings;self.observer=observer
+
+    def validate(self,original,result,events):
+        validate_prejoin_compatibility(original,result,events)
+
+    def live(self,failed_run_id):
+        if not isinstance(failed_run_id,str) or not re.fullmatch('setup-run-[0-9a-f]{32}',failed_run_id): raise denied()
+        io=control_module('setup_plans');jobs=control_module('setup_jobs')
+        run=io.private_read(self.settings.state_root/'setup-runs'/(failed_run_id+'.json'),owner_uid=jobs.service_uid(self.settings))
+        candidates=[job for job in jobs.SetupJobRepository(self.settings).list()
+                    if job.request['operation']=='full_setup' and job.status['plan_id']==run['plan_id']]
+        if len(candidates)!=1: raise denied()
+        from .setup_closed_failure import ClosedFailureEvidence
+        closed=ClosedFailureEvidence(self.settings).load(candidates[0].job_id)
+        if closed['failed_run_id']!=failed_run_id: raise denied()
+        observer=self.observer or PartialLocalObserver(self.settings)
+        return observer.observe(closed,mode='prejoin_local')
+
+
 def directory_collisions(directory, hostname):
     ad = control_module('ad_directory')
     if not ad.HOST_RE.fullmatch(hostname): raise denied()
@@ -102,11 +161,15 @@ def validate_native(native, original, boot_id, mode):
 
 def validate_evidence(closed, fresh, *, mode):
     original = closed['original']
+    if mode=='prejoin_local':
+        validate_prejoin_compatibility(original,closed['result'],[
+            json.loads(raw) for path,raw in sorted(closed['files'].items()) if '/events/' in path])
+    elif closed['result']['phase']!='domain_join': raise denied()
     if (fresh['machine'] != original['machine'] or fresh['ssh_binding'] != original['ssh_binding']
             or fresh['ou_identity'] != original['ou_identity'] or fresh['user'].get('state') != 'enabled'
             or any(fresh['user'].get(k) != original['user'].get(k) for k in ('object_guid', 'object_sid', 'upn', 'login'))
             or original['observed']['domain'] != '' or original['observed']['trust'] is not False
-            or original['computer']['objects'] != [] or closed['result']['phase'] != 'domain_join'
+            or original['computer']['objects'] != []
             or fresh['computer'].get('exists') is not False or fresh['computer'].get('objects') != []
             or not control_module('component_verification').package_health_ready(fresh)
             or not control_module('setup_jobs').UUID.fullmatch(fresh['boot_id'])): raise denied()
@@ -150,17 +213,17 @@ class PartialLocalObserver:
             raise denied() from None
 
     def _observe(self, closed, mode):
-        if mode not in ('partial_ad', 'local'): raise denied()
+        if mode not in ('partial_ad', 'local', 'prejoin_local'): raise denied()
         original = closed['original']
         if (original['observed']['domain'] != '' or original['observed']['trust'] is not False
                 or original['computer']['exists'] is not False or original['computer']['objects'] != []
-                or closed['result']['phase'] != 'domain_join'
                 or self.directory_uri != original['prerequisites']['directory_uri']): raise denied()
         # Complete event validation occurred in ClosedFailureEvidence; require
         # that the recorded failure really reached the protected join stage.
-        events = [json.loads(raw) for path, raw in closed['files'].items() if '/events/' in path]
-        if not any(event.get('component_id') == 'domain.ready' and event.get('stage') == 'domain_join'
-                   for event in events): raise denied()
+        events = [json.loads(raw) for path, raw in sorted(closed['files'].items()) if '/events/' in path]
+        if mode=='prejoin_local': validate_prejoin_compatibility(original,closed['result'],events)
+        elif (closed['result']['phase']!='domain_join' or not any(event.get('component_id') == 'domain.ready'
+                and event.get('stage') == 'domain_join' for event in events)): raise denied()
         machine = self.setup.machines.resolve(original['machine']['uuid'])
         identity = {'uuid': machine.uuid, 'hostname': machine.hostname, 'ip': machine.ip,
                     'registration_sha256': control_module('setup_plans').digest(machine.raw)}
