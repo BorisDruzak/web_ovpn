@@ -66,10 +66,12 @@ def _review_plan(root, path):
             or _date(value['expires_at'])-_date(value['created_at']) != timedelta(minutes=30)):
         raise denied()
     p=value['payload']
-    if set(p) != {'request_id','original_plan_id','original_plan_sha256','receipt_sha256','prejoin_retry','assignment_sha256','live'}:
+    if set(p) != {'request_id','original_plan_id','original_plan_sha256','receipt_sha256','prejoin_retry','assignment_sha256','closed_history_sha256','live'}:
         raise denied()
     if (not isinstance(p['original_plan_sha256'],str) or not re.fullmatch('[0-9a-f]{64}',p['original_plan_sha256'])
-            or p['original_plan_id']!='setup-'+p['original_plan_sha256']): raise denied()
+            or p['original_plan_id']!='setup-'+p['original_plan_sha256']
+            or not isinstance(p['closed_history_sha256'],str)
+            or not re.fullmatch('[0-9a-f]{64}',p['closed_history_sha256'])): raise denied()
     receipt = _receipt(root,p['request_id'])
     original = _read(root,root/'setup-plans'/(p['original_plan_id']+'.json'))
     control_module('setup_jobs').validate_plan(original,'full_setup')
@@ -156,11 +158,15 @@ class NoAdmissionReview:
         historical=control_module('setup_prejoin_retry').historical_prejoin_retry_evidence(
             root,assignment,p['machine'],p['user'],p['ou_identity'],p['observed'],p['computer'])
         if historical!=proof: raise denied()
+        predecessor_id=control_module('setup_retry').validate_predecessor(self.settings,plan)
+        from .setup_closed_failure import ClosedFailureEvidence
+        closed=ClosedFailureEvidence(self.settings,clock=self.clock).load(predecessor_id)
+        if closed['predecessor_job']!=p['predecessor_job'] or closed['failed_run_id']!=proof['failed_run_id']: raise denied()
         from .setup_partial_observation import PrejoinCompatibilityHistory
         live=PrejoinCompatibilityHistory(self.settings,observer=self.observer).live(proof['failed_run_id'])
         return dict(request_id=request_id,original_plan_id=plan['plan_id'],original_plan_sha256=plan['sha256'],
             receipt_sha256=_hash(root,root/DIRECTORIES[0]/(request_id+'.json')),prejoin_retry=proof,
-            assignment_sha256=self.io.digest(assignment),live=live)
+            assignment_sha256=self.io.digest(assignment),closed_history_sha256=closed['history_sha256'],live=live)
 
     def _locks(self,request_id):
         # Same receipt -> lifecycle -> queue order as native apply. A terminal

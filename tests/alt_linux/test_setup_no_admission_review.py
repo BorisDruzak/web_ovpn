@@ -156,3 +156,21 @@ def test_cli_no_admission_review_has_no_execution_switch(monkeypatch):
     assert calls==[('plan','request'),('confirm','plan','a'*64)]
     with pytest.raises(SystemExit):
         cli.build_parser().parse_args(['setup','requests','no-admission-plan','request','--apply'])
+
+
+@pytest.mark.parametrize('fault', ['status_before_plan','status_before_confirm','execution_before_confirm'])
+def test_review_binds_sealed_predecessor_and_complete_closed_history(unadmitted, fault):
+    p, _, request_id, _ = unadmitted
+    review=review_for(unadmitted)
+    plan=None if fault=='status_before_plan' else review.plan(request_id)
+    if fault.startswith('status'):
+        path=p[2].job_dir/'status.json'; value=private_read(path)
+        value['stage_history'][0]['stage']='different.valid_stage'
+        private_replace(path,value)
+    else:
+        path=p[2].job_dir/'execution.json'; path.write_bytes(path.read_bytes()+b' ')
+    # These are valid retained records; structural rejection is not the proof.
+    p[1]._check_admissions()
+    with pytest.raises(ControlError):
+        if plan is None: review.plan(request_id)
+        else: review.confirm(plan['plan_id'],plan['sha256'])
