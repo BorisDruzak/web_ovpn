@@ -133,7 +133,7 @@ exit 2
         self._fake_script(
             "sudo",
             "case \" $* \" in\n"
-            "  *\" -m pytest \"*)\n"
+            "  *\" -m pytest \"*|*\"verify_repository.py\"*)\n"
             "    if [[ ${INSTALLER_REAL_PYTEST:-0} == 1 ]]; then\n"
             "      while [[ ${1:-} != -- ]]; do (( $# )) || exit 2; shift; done\n"
             "      shift\n"

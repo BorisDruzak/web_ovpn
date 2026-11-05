@@ -354,36 +354,7 @@ run_repository_verification() {
     local python_bin
     python_bin=$(installer_python)
 
-    python3 -m py_compile \
-        "${ALT_ROOT}/control/alt_deploy"/*.py \
-        "${ALT_ROOT}/api/static_server.py" \
-        "${ALT_ROOT}/api/register_api.py" \
-        "${ALT_ROOT}/api/process_pending.py" \
-        "${ALT_ROOT}/control/alt-job-stage" \
-        "${ALT_ROOT}/control/alt-setup-worker" \
-        "${ALT_ROOT}/control/alt-workstations-gateway" \
-        "${ALT_ROOT}/ansible/callback_plugins"/*.py \
-        "${ALT_ROOT}/ansible/filter_plugins"/*.py
-
-    bash -n "${ALT_ROOT}/install-control-plane.sh"
-    bash -n "${ALT_ROOT}/install-control-plane-args.sh"
-    bash -n "${ALT_ROOT}/install-control-plane-lib.sh"
-    sh -n "${ALT_ROOT}/install-workstations-gateway.sh"
-    bash -n "${ALT_ROOT}/bootstrap/bootstrap.sh"
-    bash -n "${ALT_ROOT}/bootstrap/alt-bootstrap-register"
-
-    (
-        cd "${REPO_ROOT}"
-        # Keep imports and nested py_compile writes outside the published tree.
-        # The private cache belongs only to this unprivileged test subprocess.
-        sudo -n -H -u altserver -- "${python_bin}" -c '
-import os, subprocess, sys, tempfile
-with tempfile.TemporaryDirectory(prefix="alt-deploy-test-python-") as cache:
-    environment = dict(os.environ, PYTHONPYCACHEPREFIX=cache)
-    result = subprocess.run([sys.executable, *sys.argv[1:]], env=environment)
-raise SystemExit(result.returncode)
-' -m pytest -q -p no:cacheprovider tests/alt_linux
-    )
+    sudo -n -H -u altserver -- "${python_bin}" "${ALT_ROOT}/verify_repository.py"
 }
 
 install_control_plane_prechecks() {

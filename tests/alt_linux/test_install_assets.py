@@ -80,10 +80,9 @@ def test_installer_installs_and_compiles_stage_helper(
     assert '"${ALT_ROOT}/control/alt-job-stage"' in installer_text
     assert "/usr/local/libexec/alt-job-stage" in installer_text
 
-    compile_start = installer_text.index("python3 -m py_compile")
-    compile_end = installer_text.index("bash -n", compile_start)
-    compile_block = installer_text[compile_start:compile_end]
-    assert '"${ALT_ROOT}/control/alt-job-stage"' in compile_block
+    runner = (ALT_ROOT / 'verify_repository.py').read_text()
+    assert 'control/alt-job-stage' in runner
+    assert "'-m', 'py_compile'" in runner
 
 
 def test_installer_creates_private_state_directories(
@@ -144,12 +143,11 @@ def test_installer_updates_complete_registration_runtime(
 def test_installer_verifies_before_maintenance_and_accepts_last(
     installer_text: str,
 ) -> None:
-    for marker in (
-        "python3 -m py_compile",
-        "bash -n",
-        "pytest -q -p no:cacheprovider tests/alt_linux",
-    ):
-        assert marker in installer_text
+    assert 'verify_repository.py' in installer_text
+    runner = (ALT_ROOT / 'verify_repository.py').read_text()
+    assert "'-m', 'py_compile'" in runner
+    assert "'/bin/bash', '-n'" in runner
+    assert "'-m', 'pytest', '-q', '-p', 'no:cacheprovider'" in runner
 
     main_start = installer_text.index("install_control_plane_main()")
     main_block = installer_text[main_start:]
