@@ -47,3 +47,7 @@ def prejoin_compatibility_service(settings):
 
 def phase_admission_service(settings):
     return _service(settings,'setup_phase_admission','PhaseAdmissionReview')
+
+
+def no_admission_service(settings):
+    return _service(settings,'setup_no_admission','NoAdmissionReview')

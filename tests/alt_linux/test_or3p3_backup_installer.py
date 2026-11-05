@@ -59,7 +59,8 @@ def test_shared_maintenance_validator_is_readable_without_exposing_backup_data(t
                      'setup_closed_failure.py', 'setup_partial_observation.py', 'partial_local_probe.py',
                      'setup_queue_review.py', 'setup_compat.py', 'errors.py',
                      'fs.py', 'state_validation.py', 'manifest.py', 'components.py', 'settings.py',
-                     'systemd.py', 'secrets.py','setup_phase_admission.py','setup_workflow_closed.py','setup_workflow_maintenance.py'}
+                     'systemd.py', 'secrets.py','setup_phase_admission.py','setup_workflow_closed.py','setup_workflow_maintenance.py',
+                     'setup_no_admission.py'}
     assert all(stat.S_IMODE(p.stat().st_mode) == 0o644 for p in (shared/'alt_deploy_backup').glob('*.py'))
     for name in files:
         assert (shared/'alt_deploy_backup'/name).read_bytes() == sandbox.destination('/opt/alt-deploy-backup/alt_deploy_backup/'+name).read_bytes()
@@ -74,7 +75,7 @@ def test_shared_maintenance_validator_is_readable_without_exposing_backup_data(t
         secret.mkdir(mode=0o700)
         (secret/'sentinel').write_text('synthetic-private-data')
         (secret/'sentinel').chmod(0o600)
-        script = "import alt_deploy_backup.setup_maintenance_review, alt_deploy_backup.setup_queue_review; from pathlib import Path; p=Path(__import__('sys').argv[1]);\ntry: p.read_bytes()\nexcept PermissionError: pass\nelse: raise SystemExit(2)"
+        script = "import alt_deploy_backup.setup_maintenance_review, alt_deploy_backup.setup_queue_review, alt_deploy_backup.setup_no_admission; from pathlib import Path; p=Path(__import__('sys').argv[1]);\ntry: p.read_bytes()\nexcept PermissionError: pass\nelse: raise SystemExit(2)"
         proof = subprocess.run(['/usr/bin/python3', '-B', '-c', script, str(secret/'sentinel')],
             env={'PYTHONPATH': str(root/'code'), 'PATH': '/usr/bin:/bin'},
             user=65534, group=65534, extra_groups=[], capture_output=True, text=True)

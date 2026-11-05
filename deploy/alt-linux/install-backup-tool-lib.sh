@@ -233,7 +233,7 @@ backup_install_package() {
     for source_file in __init__.py setup_maintenance_review.py setup_maintenance_coverage.py \
         setup_closed_failure.py setup_partial_observation.py partial_local_probe.py setup_queue_review.py setup_compat.py errors.py fs.py \
         state_validation.py manifest.py components.py settings.py systemd.py secrets.py \
-        setup_phase_admission.py setup_workflow_closed.py setup_workflow_maintenance.py; do
+        setup_phase_admission.py setup_workflow_closed.py setup_workflow_maintenance.py setup_no_admission.py; do
         backup_require_regular_nonempty "${ALT_ROOT}/backup/alt_deploy_backup/${source_file}"
         backup_validate_existing_regular "${root_prefix}" "/opt/alt-deploy-maintenance/alt_deploy_backup/${source_file}"
         install -o root -g root -m 0644 "${ALT_ROOT}/backup/alt_deploy_backup/${source_file}" \

@@ -13,7 +13,8 @@ MAINTENANCE_V2_MODULES = ('__init__.py', 'setup_maintenance_review.py', 'setup_m
     'setup_closed_failure.py', 'setup_partial_observation.py', 'partial_local_probe.py',
     'setup_queue_review.py', 'setup_compat.py', 'errors.py', 'fs.py', 'state_validation.py',
     'manifest.py', 'components.py', 'settings.py', 'systemd.py', 'secrets.py')
-MAINTENANCE_MODULES=(*MAINTENANCE_V2_MODULES,'setup_phase_admission.py','setup_workflow_closed.py','setup_workflow_maintenance.py')
+MAINTENANCE_MODULES=(*MAINTENANCE_V2_MODULES,'setup_phase_admission.py','setup_workflow_closed.py','setup_workflow_maintenance.py','setup_no_admission.py')
+REQUEST_DIRECTORIES=('workstations-gateway-receipts','setup-no-admission-plans','setup-no-admission-facts')
 PARTIAL_DIRECTORIES = ('setup-partial-local-evidence', 'setup-partial-local-plans',
                        'setup-partial-local-claims', 'setup-partial-local-results')
 PHASE_DIRECTORIES=('setup-phase-tickets','setup-phase-claims','setup-phase-results','setup-phase-admissions')
@@ -101,7 +102,7 @@ def ledger_present(root):
     return any((root/name).exists() or (root/name).is_symlink() for name in
                ('setup-job-plan-claims', 'setup-job-reservations', 'setup-job-reviews', 'legacy-setup-reservations', 'setup-functional-acceptance',
                 'setup-maintenance-plans', 'setup-maintenance-reviews',
-                'setup-queue-review-plans', 'setup-queue-reviews', 'setup-queue-admissions', *PARTIAL_DIRECTORIES,*PHASE_DIRECTORIES))
+                'setup-queue-review-plans', 'setup-queue-reviews', 'setup-queue-admissions', *PARTIAL_DIRECTORIES,*PHASE_DIRECTORIES,*REQUEST_DIRECTORIES))
 
 
 def validate_ledger(root):
@@ -112,6 +113,8 @@ def validate_ledger(root):
         return
     module = control_module('setup_jobs')
     settings = setup_settings(root)
+    from .setup_no_admission import validate_artifacts as validate_request_artifacts
+    validate_request_artifacts(root)
     partial = partial_store(root)
     if partial is not None: partial.validate_artifacts()
     module.SetupJobRepository(settings)._check_admissions()
@@ -182,7 +185,7 @@ def history_fingerprint(root):
                                    'setup-job-reviews', 'legacy-setup-reservations', 'setup-functional-acceptance',
                                    'setup-maintenance-plans', 'setup-maintenance-reviews',
                                    'setup-queue-review-plans', 'setup-queue-reviews', 'setup-queue-admissions',
-                                   *PARTIAL_DIRECTORIES,*PHASE_DIRECTORIES) if (root/name).exists()]
+                                   *PARTIAL_DIRECTORIES,*PHASE_DIRECTORIES,*REQUEST_DIRECTORIES) if (root/name).exists()]
     jobs_root = root/'jobs'
     if jobs_root.exists():
         from .state_validation import _read_object

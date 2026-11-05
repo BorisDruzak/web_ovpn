@@ -31,6 +31,13 @@ def add_parsers(commands):
 
     setup = commands.add_parser('setup', allow_abbrev=False, help='Plan, confirm and verify existing-employee workstation setup')
     actions = setup.add_subparsers(dest='setup_action', required=True)
+    requests = actions.add_parser('requests', allow_abbrev=False, help='Archival review only; no execution or replay')
+    request_actions = requests.add_subparsers(dest='request_action', required=True)
+    request_plan = request_actions.add_parser('no-admission-plan', allow_abbrev=False)
+    request_plan.add_argument('request_id')
+    request_confirm = request_actions.add_parser('no-admission-confirm', allow_abbrev=False)
+    request_confirm.add_argument('plan_id')
+    request_confirm.add_argument('--confirm-sha256', required=True)
     for area, identifier in (('components', 'component_id'), ('profiles', 'profile_id')):
         parser = actions.add_parser(area, allow_abbrev=False, help='Inspect the published catalog without contacting AD')
         sub = parser.add_subparsers(dest='catalog_action', required=True)
@@ -143,6 +150,11 @@ def directory_for_settings(settings):
 
 
 def handle(parsed, settings):
+    if parsed.command == 'setup' and parsed.setup_action == 'requests':
+        from .setup_maintenance_review_bridge import no_admission_service
+        review = no_admission_service(settings)
+        return (review.plan(parsed.request_id) if parsed.request_action == 'no-admission-plan'
+                else review.confirm(parsed.plan_id, parsed.confirm_sha256))
     if parsed.command == 'setup' and parsed.setup_action == 'recovery' and parsed.recovery_action == 'partial-local':
         if parsed.partial_local_action == 'continue-plan':
             from .setup_partial_local_continuation import PartialLocalContinuation
@@ -276,6 +288,11 @@ def write_text(stream, payload):
         return
     if 'plan_id' in payload and 'payload' in payload:
         content = payload['payload']
+        if payload.get('operation') == 'setup_no_admission_plan':
+            stream.write(f"No-admission review: {payload['plan_id']}\nSHA-256: {payload['sha256']}\nExpires: {payload['expires_at']}\n")
+            stream.write(f"Request: {content['request_id']}\nOriginal plan: {content['original_plan_id']}\n")
+            stream.write('Execution available: false\nOriginal UNKNOWN remains unchanged. Confirm only this archival fact.\n')
+            return
         if payload['plan_id'].startswith('recovery-operator-'):
             stream.write(f"Recovery operator plan: {payload['plan_id']}\nSHA-256: {payload['sha256']}\nExpires: {payload['expires_at']}\n")
             stream.write(f"Machine: {content['machine']['uuid']} / {content['machine']['hostname']}\nOriginal failed run: {content['failed_run_id']}\n")
