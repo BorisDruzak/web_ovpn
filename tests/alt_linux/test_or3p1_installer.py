@@ -69,11 +69,10 @@ def test_repository_verification_runs_as_service_user(tmp_path: Path) -> None:
     result = sandbox._run_function("run_repository_verification")
 
     assert result.returncode == 0, result.stderr
-    calls = [command for command in sandbox.commands() if any("verify_repository.py" in arg for arg in command)]
+    calls = [command for command in sandbox.commands() if any("verification_checkpoint.py" in arg for arg in command)]
     assert len(calls) == 1
-    assert calls[0][:6] == ["sudo", "-n", "-H", "-u", "altserver", "--"]
-    assert calls[0][6] == str(sandbox.fake_bin / "python3")
-    assert calls[0][7:] == [str(ALT_ROOT / "verify_repository.py")]
+    assert calls[0][:3] == ['python3', '-I', str(ALT_ROOT / 'verification_checkpoint.py')]
+    assert calls[0][calls[0].index('--python')+1] == str(sandbox.fake_bin / 'python3')
     assert sandbox.protected_snapshot() == before
     assert InstallerSandbox.mutation_commands(sandbox.commands()) == []
 

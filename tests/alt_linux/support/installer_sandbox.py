@@ -178,6 +178,7 @@ exit 2
         )
         self._fake_script(
             "python3",
+            "if [[ \" $* \" == *verification_checkpoint.py* ]]; then exit \"${INSTALLER_TEST_RC:-0}\"; fi\n"
             "if [[ ${1:-} == -c ]]; then exec "
             + shlex.quote(sys.executable)
             + " \"$@\"; fi\nexit \"${INSTALLER_PYTHON_RC:-0}\"\n",

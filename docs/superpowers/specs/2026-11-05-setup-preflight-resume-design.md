@@ -25,7 +25,9 @@ that verification; all backup, active-job, vault, permission, registration and
 rollout guards run freshly. Refuse stale/tampered evidence. Do not resume a
 partially mutated rollout, replay workstation jobs, clear UNKNOWN, or grant
 permission through a receipt. Known workstation prejoin successors already exist
-and remain unchanged. A quick live precheck runs before tests, with a second
+and retain their fresh live gates. Extend their exact sealed classifier to the
+new upgrade-check refusal only when the journal proves no transaction or join
+was dispatched and the deferred reboot flag is false. A quick live precheck runs before tests, with a second
 fresh check after them.
 
 Alternatives: repeating all tests retains the observed delay; automatically

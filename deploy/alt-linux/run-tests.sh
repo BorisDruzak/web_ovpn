@@ -7,6 +7,6 @@ if [[ -x "${REPO_ROOT}/.venv/bin/python" ]]; then
 fi
 umask 022
 if (( EUID == 0 )); then
-    exec sudo -n -H -u altserver -- "${python_bin}" "${REPO_ROOT}/deploy/alt-linux/verify_repository.py" "$@"
+    exec sudo -n -H -u altserver -- "${python_bin}" -E "${REPO_ROOT}/deploy/alt-linux/verify_repository.py" "$@"
 fi
-exec "${python_bin}" "${REPO_ROOT}/deploy/alt-linux/verify_repository.py" "$@"
+exec "${python_bin}" -E "${REPO_ROOT}/deploy/alt-linux/verify_repository.py" "$@"

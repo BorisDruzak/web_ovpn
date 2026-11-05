@@ -41,7 +41,7 @@ def historical_prejoin_retry_evidence(root, binding, machine, user, ou_identity,
         raw_run = private_read_bytes(paths['run'])
         run = private_read(paths['run'])
         structured=('configuration_result_unavailable' not in run and run.get('error',{}).get('code')=='domain_join_failed'
-                    and isinstance(run.get('result'),dict) and run['result'].get('phase')=='network')
+                    and isinstance(run.get('result'),dict) and run['result'].get('phase') in ('network','upgrade'))
         timeout=(run.get('configuration_result_unavailable') is True and
                  run.get('error',{}).get('code') in ('domain_join_timeout','setup_upgrade_timeout'))
         if (type(run.get('schema_version')) is not int or run.get('schema_version') != 1 or run.get('run_id') != run_id or

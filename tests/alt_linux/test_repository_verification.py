@@ -75,7 +75,7 @@ def test_syntax_failure_prevents_full_test_run(monkeypatch):
 def test_installer_and_developer_use_the_same_runner():
     library = (ROOT/'deploy/alt-linux/install-control-plane-lib.sh').read_text()
     wrapper = (ROOT/'deploy/alt-linux/run-tests.sh').read_text()
-    assert 'verify_repository.py' in library and 'verify_repository.py' in wrapper
+    assert 'verification_checkpoint.py' in library and 'verify_repository.py' in wrapper
     assert 'TemporaryDirectory' not in library
 
 
@@ -108,3 +108,37 @@ def test_nested_compiler_preserves_readonly_source_and_cleans_cache(monkeypatch,
         assert module.read_text() == 'VALUE = 42\n'
     finally:
         source.chmod(0o700)
+
+
+def test_runtime_fingerprint_detects_unrecorded_startup_code_and_preserved_metadata(tmp_path):
+    m = runner()
+    site = tmp_path/'site-packages'
+    site.mkdir()
+    before = m.runtime_digest([site])
+    custom = site/'sitecustomize.py'
+    custom.write_text('value=1\n')
+    added = m.runtime_digest([site])
+    assert added != before
+    info = custom.stat()
+    custom.write_text('value=2\n')
+    os.utime(custom, ns=(info.st_atime_ns, info.st_mtime_ns))
+    assert m.runtime_digest([site]) != added
+    pth = site/'custom.pth'; pth.write_text('import custom\n')
+    assert m.runtime_digest([site]) != added
+
+
+def test_runtime_fingerprint_ignores_only_generated_cache(tmp_path):
+    m = runner()
+    before = m.runtime_digest([tmp_path])
+    cache = tmp_path/'__pycache__'; cache.mkdir(); (cache/'generated.pyc').write_bytes(b'cache')
+    assert m.runtime_digest([tmp_path]) == before
+
+
+def test_venv_import_tree_is_bound_even_though_source_receipt_excludes_it(monkeypatch, tmp_path):
+    m = runner()
+    monkeypatch.setattr(m, 'ROOT', tmp_path)
+    site = tmp_path/'.venv/lib/python3.12/site-packages'
+    site.mkdir(parents=True)
+    before = m.runtime_digest([site])
+    (site/'startup.pth').write_text('import startup\n')
+    assert m.runtime_digest([site]) != before

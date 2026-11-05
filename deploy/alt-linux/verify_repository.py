@@ -17,6 +17,47 @@ DEFAULT_TARGET = 'tests/alt_linux'
 POLICY = 1
 
 
+def runtime_digest(paths):
+    """Hash executable import inputs, including unrecorded startup hooks.
+
+    Distribution versions alone miss .pth/sitecustomize and same-version file
+    edits. Follow directory links with inode cycle detection; ignore pyc caches.
+    """
+    rows = []
+    def unreadable(error):
+        raise error
+    for root in sorted({Path(p).absolute() for p in paths}, key=str):
+        if root == ROOT or (root.is_relative_to(ROOT) and not root.is_relative_to(ROOT/'.venv')):
+            continue  # Already bound by the source receipt.
+        if root == Path('/') or root == Path.home():
+            raise ValueError('unbounded Python import root')
+        if not root.exists():
+            rows.append((str(root), None))
+            continue
+        if root.is_file():
+            rows.append((str(root), hashlib.sha256(root.read_bytes()).hexdigest()))
+            continue
+        visited = set()
+        for directory, names, files in os.walk(root, followlinks=True, onerror=unreadable):
+            info = Path(directory).stat()
+            identity = (info.st_dev, info.st_ino)
+            if identity in visited:
+                names[:] = []
+                continue
+            visited.add(identity)
+            names[:] = sorted(n for n in names if n != '__pycache__')
+            for name in sorted(files):
+                path = Path(directory)/name
+                if path.suffix not in ('.py', '.so', '.pth', '.zip', '.egg') and name not in ('METADATA', 'entry_points.txt', 'top_level.txt'):
+                    continue
+                with path.open('rb') as stream:
+                    content = hashlib.file_digest(stream, 'sha256').hexdigest()
+                rows.append((str(path), content))
+                if len(rows) > 150000:
+                    raise ValueError('Python import tree too large to verify')
+    return hashlib.sha256(json.dumps(sorted(rows), separators=(',', ':')).encode()).hexdigest()
+
+
 def test_environment(workspace, home):
     workspace = Path(workspace)
     for name in ('cache', 'tmp'):
@@ -46,11 +87,21 @@ def describe():
     smoke_check()
     rpm = subprocess.run(['/usr/bin/rpm', '-qa', '--qf', '%{NAME}|%{VERSION}-%{RELEASE}|%{INSTALLTIME}\n'],
                          text=True, capture_output=True, timeout=30, check=True)
-    packages = sorted((d.metadata['Name'], d.version, str(d.locate_file('')))
-                      for d in importlib.metadata.distributions())
+    packages = []
+    for distribution in importlib.metadata.distributions():
+        files = []
+        for entry in distribution.files or ():
+            path = distribution.locate_file(entry)
+            if (path.suffix in ('.py', '.so', '.pth') or path.name in ('METADATA', 'entry_points.txt')) and path.is_file():
+                info = path.stat()
+                files.append((str(entry), info.st_size, info.st_mtime_ns, info.st_ino, info.st_mode))
+        packages.append((distribution.metadata['Name'], distribution.version, str(distribution.locate_file('')),
+                         hashlib.sha256(json.dumps(sorted(files)).encode()).hexdigest()))
+    packages.sort()
     return {'policy': POLICY, 'python': sys.version, 'executable': str(Path(sys.executable).resolve()),
             'executable_sha256': hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest(),
             'uid': os.geteuid(), 'gid': os.getegid(), 'packages': packages,
+            'runtime_sha256': runtime_digest(sys.path),
             'rpm_sha256': hashlib.sha256('\n'.join(sorted(rpm.stdout.splitlines())).encode()).hexdigest(),
             'os_sha256': hashlib.sha256(Path('/etc/os-release').read_bytes()).hexdigest()}
 
@@ -68,7 +119,7 @@ def syntax_commands(root):
     for script in ('install-control-plane.sh', 'install-control-plane-args.sh', 'install-control-plane-lib.sh',
                    'install-workstations-gateway.sh', 'bootstrap/bootstrap.sh',
                    'bootstrap/alt-bootstrap-register', 'run-tests.sh'):
-        yield ['/bin/bash', '-n', str(alt/script)]
+        yield ['/bin/sh' if script == 'install-workstations-gateway.sh' else '/bin/bash', '-n', str(alt/script)]
 
 
 def verify(root, targets, *, run=subprocess.run):

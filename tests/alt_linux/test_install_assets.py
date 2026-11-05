@@ -143,10 +143,10 @@ def test_installer_updates_complete_registration_runtime(
 def test_installer_verifies_before_maintenance_and_accepts_last(
     installer_text: str,
 ) -> None:
-    assert 'verify_repository.py' in installer_text
+    assert 'verification_checkpoint.py' in installer_text
     runner = (ALT_ROOT / 'verify_repository.py').read_text()
     assert "'-m', 'py_compile'" in runner
-    assert "'/bin/bash', '-n'" in runner
+    assert "'/bin/sh' if script == 'install-workstations-gateway.sh' else '/bin/bash'" in runner
     assert "'-m', 'pytest', '-q', '-p', 'no:cacheprovider'" in runner
 
     main_start = installer_text.index("install_control_plane_main()")

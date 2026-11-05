@@ -33,7 +33,9 @@ def validate_prejoin_compatibility(original, result, events):
     suffix. An unexpected task path, failure, missing event or join denies this
     narrow continuation; this classifier never probes or mutates a target.
     """
-    assertion = 'task-5735ab09588eb5b5'
+    early = result.get('phase') == 'upgrade'
+    assertion = 'task-3be8f8abf2e42bb2' if early else 'task-5735ab09588eb5b5'
+    phase = 'upgrade' if early else 'network'
     finalizers = ('task-3bff097f8cfb64be', 'task-55f514a300181b34',
                   'task-0df1c31dec416be0', 'task-aa008671aca81205')
     if (original.get('engine_schema_version') != 2 or original.get('existing_assignment') is not None
@@ -41,7 +43,8 @@ def validate_prejoin_compatibility(original, result, events):
             or original['computer'].get('exists') is not False or original['computer'].get('objects') != []
             or original['observed'].get('domain') != '' or original['observed'].get('trust') is not False
             or original['observed'].get('sssd') is not False or original['observed'].get('computer_identity') is not None
-            or result.get('status') != 'failed' or result.get('phase') != 'network'
+            or result.get('status') != 'failed' or result.get('phase') != phase
+            or (early and result.get('reboot_required') is not False)
             or result.get('recovered') is not False or result.get('retryable') is not False
             or result.get('components') != {} or result.get('verification',{}).get('group_policy') is not False
             or result.get('error',{}).get('code') != 'configure_critical_phase_failed'
@@ -50,11 +53,13 @@ def validate_prejoin_compatibility(original, result, events):
     if (any(e['stage']=='domain_join' or e['component_id'] not in
             ('domain.ready','system.base','remote.vnc_policy','remote.krfb') for e in events)
             or any(e['type']=='task_unreachable' for e in tasks)
-            or not any(e['type']=='task_ok' and e['stage']=='transaction' for e in tasks)): raise denied()
+            or (early and any(e['stage']=='transaction' for e in tasks))
+            or not any(e['type']=='task_ok' and e['stage']==('download' if early else 'transaction')
+                       for e in tasks)): raise denied()
     failures = [e for e in tasks if e['type']=='task_failed']
-    if (len(failures)!=2 or failures[0]['task_id']!=assertion or failures[0]['stage']!='network'
+    if (len(failures)!=2 or failures[0]['task_id']!=assertion or failures[0]['stage']!=phase
             or failures[0]['component_id']!='domain.ready' or failures[0]['changed'] is not False): raise denied()
-    suffix = [(assertion,'task_start','network',False), (assertion,'task_failed','network',False)]
+    suffix = [(assertion,'task_start',phase,False), (assertion,'task_failed',phase,False)]
     for task in finalizers:
         suffix += [(task,'task_start','apply',False),
                    (task,'task_failed' if task==finalizers[-1] else 'task_ok','apply',task==finalizers[-2])]

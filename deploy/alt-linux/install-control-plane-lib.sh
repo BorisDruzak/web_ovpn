@@ -201,6 +201,9 @@ validate_source_layout() {
         "${ALT_ROOT}/install-control-plane.sh"
         "${ALT_ROOT}/install-control-plane-args.sh"
         "${ALT_ROOT}/install-control-plane-lib.sh"
+        "${ALT_ROOT}/verify_repository.py"
+        "${ALT_ROOT}/verification_checkpoint.py"
+        "${ALT_ROOT}/run-tests.sh"
         "${ALT_ROOT}/install-workstations-gateway.sh"
         "${ALT_ROOT}/provision-directory-observer.ps1"
         "${ALT_ROOT}/directory-observer.json.sample"
@@ -351,10 +354,18 @@ require_pending_empty() {
 }
 
 run_repository_verification() {
+    local root_prefix=${1:-}
     local python_bin
     python_bin=$(installer_python)
 
-    sudo -n -H -u altserver -- "${python_bin}" "${ALT_ROOT}/verify_repository.py"
+    local resume_args=()
+    if [[ ${RESUME_VERIFICATION:-0} == 1 ]]; then resume_args=(--resume); fi
+    # The checkpoint process is isolated from the caller's Python search path.
+    # Its child runs the same verify_repository.py as the developer wrapper.
+    python3 -I "${ALT_ROOT}/verification_checkpoint.py" \
+        --source "${REPO_ROOT}" --python "${python_bin}" \
+        --cache "$(install_destination "${root_prefix}" /var/cache/alt-deploy-install-verification)" \
+        "${resume_args[@]}"
 }
 
 install_control_plane_prechecks() {
@@ -389,7 +400,15 @@ install_control_plane_prechecks() {
 
     validate_rollback_backup "${root_prefix}" "${rollback_backup_id}"
     validate_source_layout
-    run_repository_verification
+    # Refuse obvious live blockers before the expensive suite, then recheck
+    # everything after it. Reusing test evidence never reuses target admission.
+    validate_live_prechecks "${root_prefix}"
+    run_repository_verification "${root_prefix}"
+    validate_live_prechecks "${root_prefix}"
+}
+
+validate_live_prechecks() {
+    local root_prefix=$1
     validate_active_jobs "${root_prefix}"
     validate_vault_and_permissions "${root_prefix}"
     validate_external_prerequisites "${root_prefix}"

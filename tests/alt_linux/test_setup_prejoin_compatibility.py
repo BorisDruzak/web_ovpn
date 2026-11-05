@@ -22,7 +22,10 @@ FINALIZERS = ('task-3bff097f8cfb64be', 'task-55f514a300181b34',
 
 
 @pytest.fixture
-def prejoin(component_service, monkeypatch):
+def prejoin(component_service, monkeypatch, request):
+    early = getattr(request, 'param', None) == 'early_upgrade'
+    phase = 'upgrade' if early else 'network'
+    assertion = 'task-3be8f8abf2e42bb2' if early else COMPAT
     _, setup, machine, user, facts, date, calls = component_service
     (setup.assignments.root/(UUID+'.json')).unlink()
     current = dict(uuid=UUID, hostname=machine.hostname, domain='', trust=False,
@@ -43,15 +46,15 @@ def prejoin(component_service, monkeypatch):
             root = setup.settings.state_root/'configure-runs'/config_id
             private_create(root/'request.json', request.to_dict())
             private_create(root/'result.json', dict(schema_version=1, machine_uuid=UUID,
-                hostname=machine.hostname, profile=request.profile, status='failed', phase='network',
-                retryable=False, recovered=False, reboot_required=True, components={},
+                hostname=machine.hostname, profile=request.profile, status='failed', phase=phase,
+                retryable=False, recovered=False, reboot_required=not early, components={},
                 verification={'group_policy': False}, error={'code':'configure_critical_phase_failed',
                 'class':'fatal-invariant', 'safe_message':'Synthetic prejoin compatibility failure'}))
             (root/'ansible.log').write_text('Protected callback only\n'); (root/'ansible.log').chmod(0o600)
             job = next(j for j in jobs.list() if j.machine_uuid == UUID)
             events = SetupEventStore(setup.settings, clock=setup.clock)
-            rows = [('task-upgrade', 'transaction', 'task_ok', True),
-                    (COMPAT, 'network', 'task_start', False), (COMPAT, 'network', 'task_failed', False)]
+            rows = [('task-upgrade', 'download' if early else 'transaction', 'task_ok', not early),
+                    (assertion, phase, 'task_start', False), (assertion, phase, 'task_failed', False)]
             for task in FINALIZERS:
                 rows.extend([(task, 'apply', 'task_start', False),
                              (task, 'apply', 'task_failed' if task==FINALIZERS[-1] else 'task_ok',
@@ -60,7 +63,7 @@ def prejoin(component_service, monkeypatch):
                 events.append(job.job_id, dict(schema_version=1, component_id='domain.ready',
                     component_version=1, stage=stage, task_id='task-'+'1'*16 if task=='task-upgrade' else task,
                     type=kind, changed=changed, code={'task_ok':'ok','task_start':'started','task_failed':'task_failed'}[kind]))
-            raise ControlError('domain_join_failed', 'Synthetic failure', 7, {'run_id':config_id,'phase':'network'})
+            raise ControlError('domain_join_failed', 'Synthetic failure', 7, {'run_id':config_id,'phase':phase})
     setup.planner.start = fail_before_join
     plan = setup.plan(UUID, user['login'], OU, 'office-standard-v1')
     submitted = setup.apply(plan['plan_id'], plan['sha256'], detach=True)
@@ -204,3 +207,42 @@ def test_duplicate_successor_submission_does_not_create_another_job(prejoin,monk
     second=setup.apply(plan['plan_id'],plan['sha256'],detach=True)
     assert first['job_id']==second['job_id'] and len(jobs.list())==2
     assert jobs.get(job.job_id).state=='unknown_requires_review'
+
+
+@pytest.mark.parametrize('prejoin', ['early_upgrade'], indirect=True)
+def test_early_refusal_has_one_fresh_successor_without_replaying_old_job(prejoin, monkeypatch):
+    inject_bridge(monkeypatch, prejoin)
+    setup, jobs, old, machine, user, *_ = prejoin
+    before = {p:p.read_bytes() for p in old.job_dir.rglob('*') if p.is_file()}
+    plan = setup.plan(UUID, user['login'], OU, 'office-standard-v1')
+    submitted = setup.apply(plan['plan_id'], plan['sha256'], detach=True)
+    assert submitted['job_id'] != old.job_id and jobs.get(submitted['job_id']).state == 'queued'
+    assert jobs.get(old.job_id).state == 'unknown_requires_review'
+    assert {p:p.read_bytes() for p in old.job_dir.rglob('*') if p.is_file()} == before
+
+
+@pytest.mark.parametrize('prejoin', ['early_upgrade'], indirect=True)
+@pytest.mark.parametrize('fault', ['transaction', 'other_failure', 'credentials', 'collision'])
+def test_early_refusal_cannot_authorize_unproven_history_or_unsafe_live_state(prejoin, monkeypatch, fault):
+    inject_bridge(monkeypatch, prejoin)
+    setup, jobs, old, machine, user, *_ = prejoin
+    if fault in ('transaction', 'other_failure'):
+        path = sorted((old.job_dir/'events').glob('*.json'))[0 if fault == 'transaction' else 2]
+        value = private_read(path)
+        if fault == 'transaction': value['stage'] = 'transaction'
+        else: value['task_id'] = 'task-'+'f'*16
+        private_replace(path, value)
+    elif fault == 'credentials': prejoin[8]['credentials_absent'] = False
+    else: prejoin[9]['matches'] = 1
+    with pytest.raises(ControlError): setup.plan(UUID, user['login'], OU, 'office-standard-v1')
+    assert len(jobs.list()) == 1
+
+
+@pytest.mark.parametrize('prejoin', ['early_upgrade'], indirect=True)
+def test_early_refusal_maintenance_uses_same_prejoin_observer(prejoin, monkeypatch):
+    setup, jobs, old, *_ = prejoin
+    review = backend('setup_maintenance_review')
+    monkeypatch.setattr(review, 'observe', lambda *a: {'observed': {'trust': False}})
+    monkeypatch.setattr(backend('setup_partial_observation'), 'PartialLocalObserver', lambda *a: prejoin[10])
+    fresh = review.coverage_observe(setup.settings, old)
+    assert fresh['partial_local']['mode'] == 'prejoin_local'

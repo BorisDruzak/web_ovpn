@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import stat
+import importlib.util
 from pathlib import Path
 
 from support.installer_sandbox import (
@@ -76,7 +77,13 @@ def test_installer_source_validates_and_publishes_helper() -> None:
     ).read_text(encoding="utf-8")
 
     assert '"${ALT_ROOT}/bootstrap/alt-bootstrap-register"' in source
-    assert 'bash -n "${ALT_ROOT}/bootstrap/alt-bootstrap-register"' in source
+    # Syntax verification is shared with the developer runner; publication
+    # remains an installer responsibility.
+    spec = importlib.util.spec_from_file_location('verify_repository', ALT_ROOT/'verify_repository.py')
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    assert ['/bin/bash', '-n', str(ALT_ROOT/'bootstrap/alt-bootstrap-register')] in list(
+        runner.syntax_commands(ALT_ROOT.parents[1]))
     assert '"${bootstrap_root}/alt-bootstrap-register"' in source
     assert '"${state_root}/machine-archives/.transactions"' in source
     assert 'lock_file="${state_root}/workstationctl.lock"' in source

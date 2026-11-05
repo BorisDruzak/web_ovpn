@@ -156,7 +156,7 @@ def coverage_observe(settings, job):
     from .setup_closed_failure import ClosedFailureEvidence
     from .setup_partial_observation import PartialLocalObserver
     closed=ClosedFailureEvidence(settings).load(job.job_id)
-    mode='prejoin_local' if closed['result']['phase']=='network' else 'partial_ad'
+    mode='prejoin_local' if closed['result']['phase'] in ('network','upgrade') else 'partial_ad'
     return PartialLocalObserver(settings).observe(closed,mode=mode)
 
 
