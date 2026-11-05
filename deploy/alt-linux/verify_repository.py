@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import importlib
 import importlib.metadata
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -111,10 +112,14 @@ def syntax_commands(root):
     files = sorted((alt/'control/alt_deploy').glob('*.py'))
     for directory in ('ansible/callback_plugins', 'ansible/filter_plugins'):
         files.extend(sorted((alt/directory).glob('*.py')))
+    files.extend(sorted((alt/'ansible/roles').rglob('*.py')))
+    files.extend(sorted((alt/'backup/alt_deploy_backup').glob('*.py')))
     files.extend(alt/p for p in ('api/static_server.py', 'api/register_api.py', 'api/process_pending.py',
         'control/alt-job-stage', 'control/alt-setup-worker', 'control/alt-workstations-gateway', 'verify_repository.py'))
     if (alt/'verification_checkpoint.py').exists():
         files.append(alt/'verification_checkpoint.py')
+    for name in ('verification_policy.py', 'release_verification.py'):
+        if (alt/name).exists(): files.append(alt/name)
     yield [sys.executable, '-m', 'py_compile', *map(str, files)]
     for script in ('install-control-plane.sh', 'install-control-plane-args.sh', 'install-control-plane-lib.sh',
                    'install-workstations-gateway.sh', 'bootstrap/bootstrap.sh',
@@ -132,7 +137,13 @@ def verify(root, targets, *, run=subprocess.run):
                 result = run(command, cwd=root, env=environment, check=False)
                 if result.returncode:
                     return result.returncode
+            if not targets and (root/'deploy/alt-linux/verification_policy.py').exists():
+                spec = importlib.util.spec_from_file_location('developer_verification_policy', root/'deploy/alt-linux/verification_policy.py')
+                policy = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(policy)
+                targets = policy.full_targets()
             command = [sys.executable, '-m', 'pytest', '-q', '-p', 'no:cacheprovider',
+                       '--durations=10',
                        '--basetemp', str(Path(temporary)/'pt'), *(targets or [DEFAULT_TARGET])]
             return run(command, cwd=root, env=environment, check=False).returncode
         finally:

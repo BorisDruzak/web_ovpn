@@ -203,6 +203,8 @@ validate_source_layout() {
         "${ALT_ROOT}/install-control-plane-lib.sh"
         "${ALT_ROOT}/verify_repository.py"
         "${ALT_ROOT}/verification_checkpoint.py"
+        "${ALT_ROOT}/verification_policy.py"
+        "${ALT_ROOT}/release_verification.py"
         "${ALT_ROOT}/run-tests.sh"
         "${ALT_ROOT}/install-workstations-gateway.sh"
         "${ALT_ROOT}/provision-directory-observer.ps1"
@@ -360,6 +362,7 @@ run_repository_verification() {
 
     local resume_args=()
     if [[ ${RESUME_VERIFICATION:-0} == 1 ]]; then resume_args=(--resume); fi
+    if [[ ${FULL_VERIFICATION:-0} == 1 ]]; then resume_args+=(--full); fi
     # The checkpoint process is isolated from the caller's Python search path.
     # Its child runs the same verify_repository.py as the developer wrapper.
     python3 -I "${ALT_ROOT}/verification_checkpoint.py" \

@@ -2,7 +2,7 @@
 
 parse_control_plane_args() {
     if (( $# < 2 )) || [[ ${1:-} != "--rollback-backup-id" ]]; then
-        echo "Usage: install-control-plane.sh --rollback-backup-id <backup-id> [--maintenance-review SHA256] [--resume-verification]" >&2
+        echo "Usage: install-control-plane.sh --rollback-backup-id <backup-id> [--maintenance-review SHA256] [--resume-verification] [--full-verification]" >&2
         return 2
     fi
     local backup_id=$2
@@ -13,6 +13,7 @@ parse_control_plane_args() {
     CONTROL_PLANE_BACKUP_ID=${backup_id}
     CONTROL_PLANE_MAINTENANCE_REVIEW=
     CONTROL_PLANE_RESUME_VERIFICATION=0
+    CONTROL_PLANE_FULL_VERIFICATION=0
     shift 2
     while (( $# )); do
         case "$1" in
@@ -26,6 +27,10 @@ parse_control_plane_args() {
             --resume-verification)
                 if (( CONTROL_PLANE_RESUME_VERIFICATION )); then return 2; fi
                 CONTROL_PLANE_RESUME_VERIFICATION=1
+                shift ;;
+            --full-verification)
+                if (( CONTROL_PLANE_FULL_VERIFICATION )); then return 2; fi
+                CONTROL_PLANE_FULL_VERIFICATION=1
                 shift ;;
             *) echo "Invalid installer option" >&2; return 2 ;;
         esac

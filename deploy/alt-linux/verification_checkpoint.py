@@ -1,13 +1,15 @@
 #!/usr/bin/python3
-"""Root-private evidence of full ALT tests, never rollout authorization."""
+"""Root-private automatic ALT release verification, never rollout authorization."""
 import argparse
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -29,15 +31,17 @@ def checked(path, owner, *, directory=False, mode=None):
     return info
 
 
-def source_digest(root, owner):
+def source_snapshot(root, owner):
     checked(root, owner, directory=True)
     rows = []
+    directories = []
     def unreadable(error):
         raise error
     for directory, names, files in os.walk(root, followlinks=False, onerror=unreadable):
         names[:] = sorted(n for n in names if n not in IGNORED)
         parent = Path(directory)
-        checked(parent, owner, directory=True)
+        directory_info = checked(parent, owner, directory=True)
+        directories.append((str(parent.relative_to(root)), stat.S_IMODE(directory_info.st_mode)))
         for name in names:
             checked(parent/name, owner, directory=True)
         for name in sorted(files):
@@ -50,7 +54,15 @@ def source_digest(root, owner):
             rows.append((str(path.relative_to(root)), stat.S_IMODE(info.st_mode), content))
     if not rows:
         raise ValueError('verification_source_empty')
-    return digest(rows)
+    return {'files': sorted(rows), 'directories': sorted(directories)}
+
+
+def source_manifest(root, owner):
+    return source_snapshot(root, owner)['files']
+
+
+def source_digest(root, owner):
+    return digest(source_manifest(root, owner))
 
 
 def verify(source, cache, environment, execute, *, resume=False, owner=0, now=None):
@@ -127,25 +139,40 @@ def main():
     parser.add_argument('--cache', type=Path, required=True)
     parser.add_argument('--python', required=True)
     parser.add_argument('--resume', action='store_true')
+    parser.add_argument('--full', action='store_true', help='Force full verification of the installer')
+    parser.add_argument('--plan', action='store_true', help='Read-only preliminary test selection')
     args = parser.parse_args()
     if os.geteuid() != 0:
         raise ValueError('root_required')
+    sys.dont_write_bytecode = True
     # The public CLI accepts only protected, canonical source/cache ancestry.
     for path in (args.source, args.cache.parent):
         if not path.is_absolute():
             raise ValueError('verification_path_unsafe')
         for parent in (path, *path.parents):
             checked(parent, 0, directory=True)
+    if Path(__file__).resolve() != (args.source/'deploy/alt-linux/verification_checkpoint.py').resolve():
+        raise ValueError('verification_source_entrypoint_mismatch')
+    # -I intentionally excludes the script directory. Import only explicitly
+    # protected source files, never the caller's module search path.
+    source_manifest(args.source, 0)
+    module_path = args.source/'deploy/alt-linux/release_verification.py'
+    checked(module_path, 0)
+    checked(module_path.with_name('verification_policy.py'), 0)
+    spec = importlib.util.spec_from_file_location('alt_release_gate', module_path)
+    release = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(release)
     command = worker_command(args.source, args.python)
     clean = {'PATH': '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin', 'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8'}
     def environment():
         result = subprocess.run([*command, '--describe'], cwd=args.source, env=clean,
                                 capture_output=True, text=True, timeout=120, check=True)
         return json.loads(result.stdout)
-    def execute():
-        return subprocess.run(command, cwd=args.source, env=clean, check=False).returncode
-    outcome = verify(args.source, args.cache, environment, execute, resume=args.resume)
-    print(json.dumps({'status': 'ok', 'verification': outcome, 'rollout_authorized': False}))
+    def execute(targets):
+        return subprocess.run([*command, *targets], cwd=args.source, env=clean, check=False).returncode
+    outcome = release.verify_release(args.source, args.cache, environment, execute,
+        resume=args.resume, full=args.full, plan_only=args.plan)
+    print(json.dumps(dict(outcome, status='ok')))
 
 
 if __name__ == '__main__':

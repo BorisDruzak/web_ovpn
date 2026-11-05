@@ -72,6 +72,25 @@ def test_syntax_failure_prevents_full_test_run(monkeypatch):
     assert not any('pytest' in c for c in calls)
 
 
+def test_new_component_helper_syntax_is_checked_before_pytest(monkeypatch, tmp_path):
+    m = runner()
+    monkeypatch.setattr(m, 'smoke_check', lambda: None)
+    commands = list(m.syntax_commands(tmp_path))
+    for command in commands:
+        paths = command[3:] if 'py_compile' in command else [command[-1]]
+        for name in paths:
+            path = Path(name);path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('pass\n' if 'py_compile' in command else '#!/bin/sh\nexit 0\n')
+    helper = tmp_path/'deploy/alt-linux/ansible/roles/software_directum/files/new_helper.py'
+    helper.parent.mkdir(parents=True)
+    helper.write_text('this is broken Python (\n')
+    def run(command, **kwargs):
+        if 'pytest' in command:
+            pytest.fail('component helper syntax must fail before pytest')
+        return subprocess.run(command, **kwargs, capture_output=True)
+    assert m.verify(tmp_path, [], run=run) != 0
+
+
 def test_installer_and_developer_use_the_same_runner():
     library = (ROOT/'deploy/alt-linux/install-control-plane-lib.sh').read_text()
     wrapper = (ROOT/'deploy/alt-linux/run-tests.sh').read_text()
