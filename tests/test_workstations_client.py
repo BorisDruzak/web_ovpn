@@ -70,6 +70,19 @@ def test_execute_credential_is_never_used_by_default(tmp_path):
     assert 'IdentityFile=' + str(settings.workstations_read_key) not in calls[0]
 
 
+@pytest.mark.parametrize('operation,expected', [('plans.apply', 310), ('plans.create', 310), ('jobs.cancel', 30)])
+def test_guarded_apply_has_time_for_fresh_admission_without_changing_cancel(tmp_path, operation, expected):
+    from app.workstations.client import WorkstationsClient
+    calls = []
+    def run(command, **options):
+        calls.append(options['timeout'])
+        request = json.loads(options['input_data'])
+        return 0, json.dumps(dict(schema_version=1, request_id=request['request_id'], status='ok',
+                                 data={}, error_code=None)).encode(), b''
+    WorkstationsClient(configured(tmp_path), runner=run).call(operation, {}, request_id=str(uuid.uuid4()), scope='execute')
+    assert calls == [expected]
+
+
 @pytest.mark.parametrize('host', ['-oProxyCommand=private', 'host;private', 'host\nprivate', '', 'a b'])
 def test_invalid_config_cannot_become_shell_or_ssh_options(tmp_path, host):
     from app.workstations.client import WorkstationsClient, WorkstationsTransportError

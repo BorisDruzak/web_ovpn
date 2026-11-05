@@ -119,8 +119,8 @@ class WorkstationsClient:
                    '-o', 'ServerAliveInterval=5', '-o', 'ServerAliveCountMax=2', '-o', 'PasswordAuthentication=no',
                    '-o', 'KbdInteractiveAuthentication=no', '-o', 'ClearAllForwardings=yes', '-o', 'ForwardAgent=no',
                    '-o', 'PermitLocalCommand=no', '-o', 'ProxyCommand=none', '-l', user, '--', host, 'gateway']
-        timeout = (310 if operation in ('plans.create', 'component_plans.create', 'jobs.verify') else
-                   130 if operation == 'directory.snapshot' else 30 if operation in ('directory.search', 'directory.identity', 'plans.apply', 'jobs.cancel') else 15)
+        timeout = (310 if operation in ('plans.create', 'component_plans.create', 'plans.apply', 'jobs.verify') else
+                   130 if operation == 'directory.snapshot' else 30 if operation in ('directory.search', 'directory.identity', 'jobs.cancel') else 15)
         if self.deadline is not None:
             timeout = min(timeout, self.deadline - time.monotonic())
             if timeout <= 0:
