@@ -77,6 +77,18 @@
     - prejoin_upgrade_enabled | bool
     - not prejoin_upgrade_already_joined
 
+- name: Check future Group Policy client compatibility before changing packages
+  ansible.builtin.script: >-
+    {{ role_path }}/../alt_group_policy_compat/files/gpupdate_compat.py --upgrade-check
+  args:
+    executable: /usr/bin/python3
+  register: prejoin_upgrade_compatibility
+  changed_when: false
+  check_mode: false
+  when:
+    - prejoin_upgrade_enabled | bool
+    - not prejoin_upgrade_already_joined
+
 - name: Perform the full ALT upgrade before first domain join
   ansible.builtin.command:
     argv: [apt-get, -y, dist-upgrade]

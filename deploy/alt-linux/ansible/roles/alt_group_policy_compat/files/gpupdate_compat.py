@@ -134,6 +134,76 @@ def package_info(path):
     return tuple(parts)
 
 
+def check_upgrade(*, run=subprocess.run):
+    """Predict the policy-client pair without downloading or changing packages.
+
+    APT-RPM appends its repository build identity after VERSION-RELEASE. Keep
+    epochs fail-closed; the inspected recipes do not authorize another epoch.
+    """
+    names = ('gpupdate', 'gpoa-lib')
+    versions = {}
+
+    def call(argv):
+        try:
+            result = run(argv, capture_output=True, text=True, timeout=120,
+                         env=dict(os.environ, LC_ALL='C'))
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ValueError('upgrade_resolution_unavailable') from exc
+        return result
+
+    for name in names:
+        result = call(['/usr/bin/rpm', '-q', '--qf', '%{NAME}|%{VERSION}-%{RELEASE}\n', name])
+        if result.returncode == 1 and result.stdout.strip() == f'package {name} is not installed':
+            continue
+        match = re.fullmatch(re.escape(name) + r'\|([^\s|]+)\n?', result.stdout)
+        if result.returncode or not match:
+            raise ValueError('upgrade_resolution_unavailable')
+        versions[name] = match[1]
+
+    def simulate(arguments):
+        result = call(['/usr/bin/apt-get', '--simulate', '-o', 'Debug::NoLocking=true', *arguments])
+        if result.returncode:
+            raise ValueError('upgrade_resolution_unavailable')
+        seen = set()
+        configured = {}
+        for line in result.stdout.splitlines():
+            tokens = line.split()
+            if len(tokens) < 2 or tokens[0] not in ('Inst', 'Remv', 'Conf'):
+                continue
+            name = tokens[1]
+            if name.split(':')[0] not in names:
+                continue
+            if name not in names or tokens[0] == 'Remv':
+                raise ValueError('upgrade_package_removed_or_ambiguous')
+            match = re.fullmatch(r'(?:Inst|Conf) ' + re.escape(name) +
+                                 r'(?: \[[^\]\r\n]+\])? \(([^\s()]+)(?: [^\r\n]*)?\)(?: \[[^\r\n]*\])?', line)
+            if not match:
+                raise ValueError('upgrade_resolution_ambiguous')
+            version = re.fullmatch(r'(?:0:)?([^:\s]+)(?::[a-zA-Z][A-Za-z0-9+._@-]*)?', match[1])
+            if not version:
+                raise ValueError('upgrade_version_unsupported')
+            if tokens[0] == 'Conf':
+                if name in configured:
+                    raise ValueError('upgrade_resolution_ambiguous')
+                configured[name] = version[1]
+            else:
+                if name in seen:
+                    raise ValueError('upgrade_resolution_ambiguous')
+                seen.add(name)
+                versions[name] = version[1]
+        if any(versions.get(name) != value for name, value in configured.items()):
+            raise ValueError('upgrade_resolution_ambiguous')
+
+    simulate(['dist-upgrade'])
+    missing = [name for name in names if name not in versions]
+    if missing:
+        simulate(['install', *missing])
+    if (set(versions) != set(names) or len(set(versions.values())) != 1
+            or next(iter(versions.values())) not in PATCH_SETS):
+        raise ValueError('upgrade_version_unsupported')
+    return {'schema': 1, 'changed': False, 'status': 'compatible', 'packages': versions}
+
+
 def busy_client():
     names = {'gpupdate','gpoa','gpupdate-user','gpupdate-setup','apt-get','apt','rpm','epm'}
     for p in Path('/proc').iterdir():
@@ -331,8 +401,13 @@ def main():
     group=parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--check',action='store_true');group.add_argument('--apply',action='store_true')
     group.add_argument('--rollback',metavar='BACKUP_ID')
+    group.add_argument('--upgrade-check',action='store_true')
     args=parser.parse_args()
     if os.geteuid()!=0: raise ValueError('root_required')
+    if args.upgrade_check:
+        if busy_client(): raise ValueError('client_busy')
+        print(json.dumps(check_upgrade()))
+        return
     result=rollback(args.rollback) if args.rollback else repair(apply=args.apply)
     print(json.dumps(result))
 
