@@ -10,6 +10,32 @@
         'verification': (configure_result | default({})).get('verification', {}) | combine({'software_gosuslugi_plugin': false})
       }) }}
 
+- name: Verify CryptoPro browser policy ownership
+  ansible.builtin.script: "{{ role_path }}/files/cryptopro_browser_policy.py"
+  args:
+    executable: /usr/bin/python3
+  register: software_cryptopro_browser_policy_check
+  changed_when: false
+  check_mode: false
+
+- name: Record CryptoPro browser policy candidate
+  ansible.builtin.set_fact:
+    software_cryptopro_browser_policy_candidate: "{{ software_cryptopro_browser_policy_check.stdout | from_json }}"
+
+- name: Read approved CryptoPro browser native manifest
+  ansible.builtin.slurp:
+    src: /etc/opt/chrome/native-messaging-hosts/ru.cryptopro.nmcades.json
+  register: software_cryptopro_browser_native_manifest
+
+- name: Require approved CryptoPro browser extension origin
+  ansible.builtin.assert:
+    that:
+      - (software_cryptopro_browser_native_manifest.content | b64decode | from_json) is mapping
+      - (software_cryptopro_browser_native_manifest.content | b64decode | from_json).allowed_origins | type_debug == 'list'
+      - (software_cryptopro_browser_native_manifest.content | b64decode | from_json).allowed_origins | select('string') | list | length == (software_cryptopro_browser_native_manifest.content | b64decode | from_json).allowed_origins | length
+      - "'chrome-extension://epebfcehmdedogndhlcacafjaacknbcm/' in (software_cryptopro_browser_native_manifest.content | b64decode | from_json).allowed_origins"
+    fail_msg: ALT_PREFLIGHT_FAILURE:cryptopro_browser_native_origin_missing
+
 - name: Inspect approved ГосПлагин ZIP archive on controller
   ansible.builtin.stat:
     path: "{{ software_gosuslugi_plugin_catalog.artifact_path }}"
@@ -288,6 +314,28 @@
     that:
       - "'jabjbhgjaidecageckilhonbggakppme;https://clients2.google.com/service/update2/crx' in (software_gosuslugi_plugin_browser_policy.content | b64decode | from_json).ExtensionInstallForcelist"
     fail_msg: ALT_PREFLIGHT_FAILURE:gosuslugi_plugin_browser_policy_missing
+
+- name: Install CryptoPro browser extension automatically
+  ansible.builtin.copy:
+    dest: "{{ software_cryptopro_browser_policy_candidate.policy_path }}"
+    content: "{{ software_cryptopro_browser_policy_candidate.policy | to_nice_json }}\n"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Read back CryptoPro browser extension policy
+  ansible.builtin.slurp:
+    src: "{{ software_cryptopro_browser_policy_candidate.policy_path }}"
+  register: software_cryptopro_browser_policy
+
+- name: Verify CryptoPro automatic extension policy
+  ansible.builtin.assert:
+    that:
+      - (software_cryptopro_browser_policy.content | b64decode | from_json).keys() | list == ['ExtensionSettings']
+      - (software_cryptopro_browser_policy.content | b64decode | from_json).ExtensionSettings.keys() | list == ['epebfcehmdedogndhlcacafjaacknbcm']
+      - (software_cryptopro_browser_policy.content | b64decode | from_json).ExtensionSettings.epebfcehmdedogndhlcacafjaacknbcm.installation_mode == 'force_installed'
+      - (software_cryptopro_browser_policy.content | b64decode | from_json).ExtensionSettings.epebfcehmdedogndhlcacafjaacknbcm.update_url == 'https://extension-updates.opera.com/api/omaha/update/'
+    fail_msg: ALT_PREFLIGHT_FAILURE:cryptopro_browser_policy_missing
 
 - name: Publish ГосПлагин verification facts
   ansible.builtin.set_fact:
