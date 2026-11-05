@@ -1,5 +1,6 @@
 """Resolve future APT policy-client versions before the first real upgrade."""
 import subprocess
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -8,7 +9,7 @@ import yaml
 from test_gpupdate_compat import helper
 
 
-def resolver(installed=None, upgrade='', install='', *, fail=None):
+def resolver(installed=None, upgrade='', install='', *, fail=None, epoch='0'):
     installed = installed if installed is not None else {'gpupdate': '0.16.1-alt1', 'gpoa-lib': '0.16.1-alt1'}
     calls = []
 
@@ -18,7 +19,7 @@ def resolver(installed=None, upgrade='', install='', *, fail=None):
             name = argv[-1]
             value = installed.get(name)
             return subprocess.CompletedProcess(argv, 0 if value else 1,
-                f'{name}|{value}\n' if value else f'package {name} is not installed\n', '')
+                f'{name}|{epoch}|{value}\n' if value else f'package {name} is not installed\n', '')
         assert '--simulate' in argv and 'Debug::NoLocking=true' in argv
         assert kwargs['timeout'] <= 120 and kwargs['env']['LC_ALL'] == 'C'
         if fail == 'timeout':
@@ -48,7 +49,7 @@ def test_missing_dependency_is_resolved_before_accepting_upgrade():
     run, calls = resolver(installed={'gpupdate': '0.16.4-alt1'},
                          install='Inst gpoa-lib (0.16.4-alt1:p11+123@456 ALT)\n')
     assert helper().check_upgrade(run=run)['packages']['gpoa-lib'] == '0.16.4-alt1'
-    assert any(c[-2:] == ['install', 'gpoa-lib'] for c in calls)
+    assert any('install' in c and 'gpupdate' in c and 'alterator-gpupdate' in c for c in calls)
 
 
 @pytest.mark.parametrize('output', [
@@ -89,3 +90,44 @@ def test_prejoin_checks_after_metadata_before_upgrade_without_retrying_transacti
     assert gate['changed_when'] is False and gate['check_mode'] is False
     assert gate['when'] == upgrade['when']
     assert not {'until', 'retries', 'delay'} & set(upgrade)
+    line = next(i for i, text in enumerate(path.read_text().splitlines(), 1)
+                if text.startswith('- name: Check future Group Policy client compatibility'))
+    canonical = '/home/altserver/ansible/roles/prejoin_upgrade/tasks/main.yml:'+str(line)
+    assert 'task-'+hashlib.sha256(canonical.encode()).hexdigest()[:16] == 'task-3be8f8abf2e42bb2'
+
+
+def test_complete_prerequisite_request_is_resolved_even_when_pair_is_present():
+    run, calls = resolver()
+    helper().check_upgrade(run=run)
+    assert any(c[-3:] == ['install', 'gpupdate', 'alterator-gpupdate'] for c in calls)
+
+
+def test_later_forecast_cannot_hide_unsupported_first_transaction():
+    run, _ = resolver(installed={'gpupdate': '0.16.1-alt1'},
+        upgrade='Inst gpupdate (0.17.0-alt1 ALT)\n',
+        install='Inst gpupdate (0.16.4-alt1 ALT)\nInst gpoa-lib (0.16.4-alt1 ALT)\n')
+    with pytest.raises(ValueError, match='upgrade_version_unsupported'):
+        helper().check_upgrade(run=run)
+
+
+def test_contradictory_supported_forecasts_are_not_composed_as_one_transaction():
+    run, _ = resolver(upgrade='Inst gpupdate (0.16.4-alt1 ALT)\nInst gpoa-lib (0.16.4-alt1 ALT)\n',
+        install='Inst gpupdate (0.16.1-alt1 ALT)\nInst gpoa-lib (0.16.1-alt1 ALT)\n')
+    with pytest.raises(ValueError, match='upgrade_resolution_contradictory'):
+        helper().check_upgrade(run=run)
+
+
+def test_nonzero_installed_epoch_is_not_equivalent_to_inspected_evr():
+    run, _ = resolver(epoch='1')
+    with pytest.raises(ValueError, match='upgrade_version_unsupported'):
+        helper().check_upgrade(run=run)
+
+
+def test_unresolvable_actual_prerequisites_are_denied_before_real_upgrade():
+    run, _ = resolver()
+    def missing_prerequisite(argv, **kwargs):
+        if 'install' in argv:
+            return subprocess.CompletedProcess(argv, 100, '', 'unmet alterator dependency')
+        return run(argv, **kwargs)
+    with pytest.raises(ValueError, match='upgrade_resolution_unavailable'):
+        helper().check_upgrade(run=missing_prerequisite)

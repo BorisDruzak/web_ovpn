@@ -134,7 +134,7 @@ def package_info(path):
     return tuple(parts)
 
 
-def check_upgrade(*, run=subprocess.run):
+def check_upgrade(*, run=subprocess.run, prerequisites=('gpupdate', 'alterator-gpupdate')):
     """Predict the policy-client pair without downloading or changing packages.
 
     APT-RPM appends its repository build identity after VERSION-RELEASE. Keep
@@ -142,6 +142,10 @@ def check_upgrade(*, run=subprocess.run):
     """
     names = ('gpupdate', 'gpoa-lib')
     versions = {}
+    if (not isinstance(prerequisites, (list, tuple)) or len(prerequisites) > 32
+            or any(not isinstance(name, str) or not re.fullmatch(r'[a-z0-9][a-z0-9+_.-]{0,127}', name)
+                   for name in prerequisites) or len(set(prerequisites)) != len(prerequisites)):
+        raise ValueError('upgrade_prerequisites_invalid')
 
     def call(argv):
         try:
@@ -152,19 +156,21 @@ def check_upgrade(*, run=subprocess.run):
         return result
 
     for name in names:
-        result = call(['/usr/bin/rpm', '-q', '--qf', '%{NAME}|%{VERSION}-%{RELEASE}\n', name])
+        result = call(['/usr/bin/rpm', '-q', '--qf', '%{NAME}|%{EPOCH}|%{VERSION}-%{RELEASE}\n', name])
         if result.returncode == 1 and result.stdout.strip() == f'package {name} is not installed':
             continue
-        match = re.fullmatch(re.escape(name) + r'\|([^\s|]+)\n?', result.stdout)
+        match = re.fullmatch(re.escape(name) + r'\|([^|\r\n]+)\|([^\s|]+)\n?', result.stdout)
         if result.returncode or not match:
             raise ValueError('upgrade_resolution_unavailable')
-        versions[name] = match[1]
+        if match[1] not in ('0', '(none)'):
+            raise ValueError('upgrade_version_unsupported')
+        versions[name] = match[2]
 
     def simulate(arguments):
         result = call(['/usr/bin/apt-get', '--simulate', '-o', 'Debug::NoLocking=true', *arguments])
         if result.returncode:
             raise ValueError('upgrade_resolution_unavailable')
-        seen = set()
+        proposed = {}
         configured = {}
         for line in result.stdout.splitlines():
             tokens = line.split()
@@ -187,17 +193,25 @@ def check_upgrade(*, run=subprocess.run):
                     raise ValueError('upgrade_resolution_ambiguous')
                 configured[name] = version[1]
             else:
-                if name in seen:
+                if name in proposed:
                     raise ValueError('upgrade_resolution_ambiguous')
-                seen.add(name)
-                versions[name] = version[1]
-        if any(versions.get(name) != value for name, value in configured.items()):
+                proposed[name] = version[1]
+        resolved = dict(versions, **proposed)
+        if any(resolved.get(name) != value for name, value in configured.items()):
             raise ValueError('upgrade_resolution_ambiguous')
+        return proposed
 
-    simulate(['dist-upgrade'])
-    missing = [name for name in names if name not in versions]
-    if missing:
-        simulate(['install', *missing])
+    first = simulate(['dist-upgrade'])
+    versions.update(first)
+    # Validate the first transition independently. A later forecast must never
+    # erase evidence that dist-upgrade itself selected an unsupported pair.
+    if any(v not in PATCH_SETS for v in versions.values()) or len(set(versions.values())) > 1:
+        raise ValueError('upgrade_version_unsupported')
+    if prerequisites:
+        following = simulate(['install', *prerequisites])
+        if any(name in first and first[name] != value for name, value in following.items()):
+            raise ValueError('upgrade_resolution_contradictory')
+        versions.update(following)
     if (set(versions) != set(names) or len(set(versions.values())) != 1
             or next(iter(versions.values())) not in PATCH_SETS):
         raise ValueError('upgrade_version_unsupported')
@@ -402,11 +416,12 @@ def main():
     group.add_argument('--check',action='store_true');group.add_argument('--apply',action='store_true')
     group.add_argument('--rollback',metavar='BACKUP_ID')
     group.add_argument('--upgrade-check',action='store_true')
+    parser.add_argument('--prerequisites-json', default='["gpupdate", "alterator-gpupdate"]')
     args=parser.parse_args()
     if os.geteuid()!=0: raise ValueError('root_required')
     if args.upgrade_check:
         if busy_client(): raise ValueError('client_busy')
-        print(json.dumps(check_upgrade()))
+        print(json.dumps(check_upgrade(prerequisites=json.loads(args.prerequisites_json))))
         return
     result=rollback(args.rollback) if args.rollback else repair(apply=args.apply)
     print(json.dumps(result))
