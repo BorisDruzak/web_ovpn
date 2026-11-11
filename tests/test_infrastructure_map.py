@@ -1475,7 +1475,9 @@ def test_observed_fdb_resolves_ifindex_only_with_matching_live_port_collection()
         conn.execute("UPDATE switch_ports SET collector_run_id=6")
         assert query_observed_mac_ports(conn, macs) == []
         conn.execute("UPDATE switch_ports SET collector_run_id=5")
-        conn.execute("INSERT INTO switch_ports VALUES (1, 'physical:23', 5, 'down')")
+        conn.execute("INSERT INTO switch_ports VALUES (1, 'physical:23', 4, 'up')")
+        assert query_observed_mac_ports(conn, macs) == [report]
+        conn.execute("UPDATE switch_ports SET collector_run_id=5, oper_status='down' WHERE port_key='physical:23'")
         assert query_observed_mac_ports(conn, macs) == []
 
 
