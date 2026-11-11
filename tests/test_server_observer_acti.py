@@ -202,6 +202,11 @@ def test_acti_https_uses_only_fixed_paths_ca_and_deadline(monkeypatch):
         )
         assert 0 < options["timeout"] <= 3 and options["shell"] is False
 
+    calls.clear()
+    checks = observer._acti_https_checks(host, address="192.0.2.45")
+    assert all(x["status"] == "ok" for x in checks)
+    assert all(command[-5] == host and command[-1] == "192.0.2.45" for command, _ in calls)
+
 
 @pytest.mark.parametrize(
     "failure",
@@ -626,6 +631,19 @@ def test_real_tls_probe_requires_chain_hostname_json_and_never_redirects(
         "Cookie" not in headers and "Authorization" not in headers
         for _, headers in requests
     )
+
+
+def test_real_tls_probe_uses_verified_hostname_over_fixed_address(tls_fixture):
+    port, ca, _, requests = tls_fixture
+    before = len(requests)
+    for host, code in (("localhost", 0), ("unmatched.example.invalid", 4)):
+        result = subprocess.run(
+            [sys.executable, "-I", "-c", observer._ACTI_HTTPS_PROBE,
+             host, str(port), "/ok", str(ca), "127.0.0.1"],
+            capture_output=True, timeout=3,
+        )
+        assert result.returncode == code
+    assert [headers["Host"] for _, headers in requests[before:]] == [f"localhost:{port}"]
 
 
 def test_real_tls_probe_is_killed_at_wall_deadline_during_slow_response(tls_fixture):

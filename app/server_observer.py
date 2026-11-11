@@ -89,11 +89,14 @@ ACTI_HTTPS_CHECKS = (
 )
 # A child process enforces a wall-clock deadline even during DNS/header reads.
 # http.client never follows redirects or ambient proxy/cookie configuration.
-_ACTI_HTTPS_PROBE = r'''import http.client,ssl,sys
+_ACTI_HTTPS_PROBE = r'''import http.client,socket,ssl,sys
 connection=None
 try:
  context=ssl.create_default_context(cafile=sys.argv[4])
  connection=http.client.HTTPSConnection(sys.argv[1],int(sys.argv[2]),timeout=2.5,context=context)
+ if len(sys.argv)>5:
+  with socket.create_connection((sys.argv[5],int(sys.argv[2])),timeout=2.5) as transport:
+   connection.sock=context.wrap_socket(transport,server_hostname=sys.argv[1])
  connection.request('GET',sys.argv[3],headers={'Accept':'application/json'})
  response=connection.getresponse()
  if response.status!=200 or response.getheader('Content-Type','').split(';')[0].strip().lower()!='application/json':sys.exit(3)
@@ -293,8 +296,8 @@ def _validate_runtime_config(config: dict[str, Any]) -> None:
 
 def _validate_runtime_target(value: Any) -> None:
     target = _require_mapping(value, "target")
-    if set(target) - {"listener_ports"} != {"role", "host", "user", "checks"}:
-        raise ValueError("target fields must be role, host, user, checks, and optional listener_ports")
+    if set(target) - {"listener_ports", "https_host"} != {"role", "host", "user", "checks"}:
+        raise ValueError("target fields must be role, host, user, checks, and supported optional fields")
     if target["role"] not in ALLOWED_ROLES:
         raise ValueError("target role is not allowed")
     if "listener_ports" in target:
@@ -302,6 +305,10 @@ def _validate_runtime_target(value: Any) -> None:
         if (target["role"] != "directum" or not ports.keys() <= _DIRECTUM_LISTENER_PROCESSES.keys()
                 or any(type(port) is not int or not 1 <= port <= 65535 for port in ports.values())):
             raise ValueError("listener_ports must specify supported Directum components and valid TCP ports")
+    if "https_host" in target:
+        name = target["https_host"]
+        if target["role"] != "acti" or not isinstance(name, str) or not _SAFE_SSH_HOST.fullmatch(name):
+            raise ValueError("https_host must be a valid ACTI host name")
     if not isinstance(target["user"], str) or not _SAFE_SSH_USER.fullmatch(target["user"]):
         raise ValueError("target user must be a safe SSH destination component")
     if not isinstance(target["host"], str) or not _SAFE_SSH_HOST.fullmatch(target["host"]):
@@ -398,7 +405,9 @@ def collect(
         except Exception:
             checks = _failure_checks(role, source, "transport")
         if role == "acti":
-            checks.extend(_acti_https_checks(configured_target["host"]))
+            address = configured_target["host"]
+            https_host = configured_target.get("https_host")
+            checks.extend(_acti_https_checks(https_host, address=address) if https_host else _acti_https_checks(address))
         collected_targets.append({"role": role, "checks": checks})
 
     timestamp = now.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -478,7 +487,7 @@ def _strict_json(stdout: Any) -> dict[str, Any]:
     return value
 
 
-def _acti_https_checks(host: str) -> list[dict[str, Any]]:
+def _acti_https_checks(host: str, *, address: str | None = None) -> list[dict[str, Any]]:
     checks = []
     deadline = perf_counter() + 10
     for name, path in ACTI_HTTPS_CHECKS:
@@ -497,6 +506,8 @@ def _acti_https_checks(host: str) -> list[dict[str, Any]]:
                 path,
                 ACTI_CA_PATH,
             ]
+            if address is not None:
+                command.append(address)
             completed = subprocess.run(
                 command,
                 shell=False,

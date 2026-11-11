@@ -1069,6 +1069,11 @@ the observer validates the CA before stopping its timer when `acti` is configure
 the optional read-only systemd bind leaves other roles usable without that CA.
 The installer does not install trust or create credentials.
 
+Set `https_host` on the `acti` target when the public HTTPS name differs from
+the SSH target. The observer uses `https_host` for the TLS hostname, HTTP Host,
+and OIDC issuer. It connects to the configured `host` address for both SSH and
+HTTPS.
+
 For `acti_backup`, identify the actual host containing the ACTI backup repository
 and verify its machine identity and `ACTIBackup` provider before configuring a
 target. An existing `file_server` role can point to a different machine; never
