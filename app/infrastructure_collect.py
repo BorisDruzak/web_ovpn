@@ -558,6 +558,54 @@ def _corroborate_fdb_ports(links, nodes: dict, now: datetime) -> None:
                             "at": min(stamps).isoformat(), "confirmed": True})
 
 
+def _add_guest_switch_uplinks(links, nodes: dict, pve: dict, now: datetime) -> None:
+    owners = {}
+    candidates = {}
+    for link in links:
+        if not link["confirmed"] or link["kind"] != "Сетевое соединение":
+            continue
+        for local, remote in (("a", "b"), ("b", "a")):
+            switch, peer = link[local], link[remote]
+            if nodes[switch]["kind"] != NETWORK_KINDS[0]:
+                continue
+            for report in link.get("portEvidence", []):
+                source = report["source"]
+                if (not report["confirmed"] or not report[local] or not observation_is_fresh(report["at"], now)
+                        or source not in {"netctl FDB + Proxmox", "LLDP UI_VPN", "LLDP · двустороннее"}):
+                    continue
+                switch_port = (switch, report[local].casefold())
+                endpoint = (peer, report[remote].casefold())
+                owners.setdefault(switch_port, set()).add(endpoint)
+                if source == "netctl FDB + Proxmox" and endpoint[1] and nodes[peer]["kind"] == "Гипервизор":
+                    candidates.setdefault(endpoint, {})[switch_port] = {
+                        "id": switch, "port": report[local], "at": report["at"],
+                    }
+
+    running = {(row["node"], row["vmid"]) for row in pve.get("guests", [])
+               if row.get("status") == "running" and not row.get("template")}
+    for link in links:
+        host, guest = link["a"], link["b"]
+        if (not link["confirmed"] or link["kind"] != "Размещение ВМ"
+                or (host, nodes[guest].get("vmid")) not in running):
+            continue
+        for report in link.get("portEvidence", []):
+            virtual = report.get("virtual")
+            if (not virtual or not report["confirmed"] or not observation_is_fresh(report["at"], now)
+                    or virtual["linkDisabled"] or not virtual["bridgeActive"] or virtual["switchPorts"]):
+                continue
+            bridge = pve.get("bridges", {}).get(host, {}).get(report["a"], {})
+            uplink = bridge.get("bridge_ports")
+            if not isinstance(uplink, str) or virtual["uplinks"] != [uplink] or uplink not in pve.get("activePorts", {}).get(host, []):
+                continue
+            endpoint = (host, uplink.casefold())
+            paths = candidates.get(endpoint, {})
+            if len(paths) == 1:
+                (switch_port, evidence), = paths.items()
+                if owners[switch_port] == {endpoint}:
+                    checked_at = min(datetime.fromisoformat(stamp) for stamp in (evidence["at"], report["at"]))
+                    virtual["switchUplink"] = {**evidence, "at": checked_at.isoformat()}
+
+
 def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings: dict, now: datetime) -> dict:
     nodes = {}
     edges = {}
@@ -1144,6 +1192,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             nodes[key].setdefault("serviceChecks", []).append(observation)
     _reconcile_fdb_ports(edges.values())
     _corroborate_fdb_ports(edges.values(), nodes, now)
+    _add_guest_switch_uplinks(edges.values(), nodes, pve, now)
     return {"schema": 1, "snapshotAt": now.isoformat(), "nodes": list(nodes.values()),
             "links": list(edges.values()), "clusterId": cluster_id, "nodeOrder": hypervisors,
             "overviewGuests": overview_guests}

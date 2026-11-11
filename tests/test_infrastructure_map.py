@@ -949,13 +949,35 @@ def test_vm_switch_observation_requires_current_mac_and_declared_host_port(tmp_p
         link = next(e for e in graph["links"] if {e["a"], e["b"]} == {"sw", "pve1"})
         return [(p["a"], p["b"]) for p in link["portEvidence"] if p["source"] == "netctl FDB + Proxmox"]
 
+    def guest_uplink(vmid, rendered_at=now):
+        graph = build_graph(context, network, {}, pve, {}, now)
+        path.write_text(json.dumps(graph), encoding="utf-8")
+        link = next(edge for edge in load_infrastructure_map(path, rendered_at)["links"]
+                    if edge["b"] == f"pve-guest:{vmid}")
+        return link["portEvidence"][0]["virtual"].get("switchUplink")
+
     assert switch_ports(now) == [{"id": "sw", "port": "xe3", "vlan": 1, "at": at}]
     assert physical_ports() == [("xe3", "ens7f1np1")]
+    pve["guests"].append({**pve["guests"][0], "vmid": 104})
+    pve["configs"]["104"] = {"net0": "virtio=02:00:00:00:00:04,bridge=vmbr1"}
+    assert guest_uplink(103) is None
+    assert guest_uplink(104) == {"id": "sw", "port": "xe3", "at": at}
+    assert guest_uplink(104, now + timedelta(hours=1)) is None
+    context["devices"].append({"id": "other", "name": "Other", "kind": "router"})
+    network["lldp"] = [{"source": "switch-source", "local_port_key": "index:3",
+                        "system_name": "Other", "observed_at": at}]
+    assert guest_uplink(104) is None
+    del network["lldp"]
+    pve["configs"]["104"]["net0"] += ",link_down=1"
+    assert guest_uplink(104) is None
+    pve["configs"]["104"]["net0"] = pve["configs"]["104"]["net0"].removesuffix(",link_down=1")
     pve["activePorts"]["pve1"] = []
     assert physical_ports() == []
+    assert guest_uplink(104) is None
     pve["activePorts"]["pve1"] = ["ens7f1np1"]
     pve["bridges"]["pve1"]["vmbr1"]["bridge_ports"] += " ens7f0np0"
     assert physical_ports() == []
+    assert guest_uplink(104) is None
     pve["bridges"]["pve1"]["vmbr1"]["bridge_ports"] = "ens7f1np1"
     assert switch_ports(now + timedelta(hours=1)) == []
     pve["configs"]["103"]["net0"] += ",link_down=1"

@@ -236,6 +236,14 @@ def load_infrastructure_map(path: Path, now: datetime | None = None) -> dict:
                             and observation_is_fresh(match.get("at"), now)
                         ],
                     }
+                    switch_uplink = virtual.get("switchUplink")
+                    if isinstance(switch_uplink, dict) and evidence[-1]["confirmed"]:
+                        switch_id, port = _text(switch_uplink.get("id")), _text(switch_uplink.get("port"), 64)
+                        if (port and switch_id in nodes and nodes[switch_id]["kind"] == NETWORK_KINDS[0]
+                                and observation_is_fresh(switch_uplink.get("at"), now)):
+                            evidence[-1]["virtual"]["switchUplink"] = {
+                                "id": switch_id, "port": port, "at": _time(switch_uplink["at"]).isoformat(),
+                            }
             confirmed = row.get("confirmed") is True
             if edge["source"] in {"netctl", "LLDP UI_VPN", "LLDP · двустороннее", "netctl FDB",
                                   "netctl FDB + Proxmox", "Proxmox", "SNMP LACP + ARP", "MikroTik · ARP",
