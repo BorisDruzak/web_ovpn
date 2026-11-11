@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime, timedelta, timezone
 
 from test_context_api import make_client
@@ -455,6 +456,26 @@ def test_missing_infrastructure_snapshot_has_explicit_empty_state(tmp_path, monk
     response = client.get("/api/v1/network/infrastructure", headers=headers)
     assert response.status_code == 200
     assert response.json()["infrastructure"]["availability"] == "missing"
+
+
+def test_browser_can_refresh_snapshot_only_with_a_web_session(tmp_path, monkeypatch):
+    path = tmp_path / "map.json"
+    monkeypatch.setenv("INFRASTRUCTURE_MAP_SNAPSHOT_PATH", str(path))
+    client, _, _ = make_client(tmp_path, monkeypatch)
+    endpoint = "/network/infrastructure/snapshot"
+    assert client.get(endpoint, follow_redirects=False).status_code == 303
+    login = client.get("/login")
+    csrf = re.search(r'name="csrf_token" value="([^"]+)"', login.text).group(1)
+    response = client.post("/login", data={"csrf_token": csrf, "username": "admin", "password": "admin-pass"},
+                           follow_redirects=False)
+    assert response.headers["location"] == "/"
+    assert client.get(endpoint).json()["infrastructure"]["availability"] == "missing"
+    stamp = datetime.now(timezone.utc).isoformat()
+    path.write_text(json.dumps({"schema": 1, "snapshotAt": stamp, "nodes": [], "links": []}), encoding="utf-8")
+    updated = client.get(endpoint)
+    assert updated.headers["cache-control"] == "no-store"
+    assert updated.json()["infrastructure"]["snapshotAt"] == stamp
+    assert 'data-snapshot-url="/network/infrastructure/snapshot"' in client.get("/network/infrastructure").text
 
 
 def test_inventory_binding_needs_matching_guest_mac():

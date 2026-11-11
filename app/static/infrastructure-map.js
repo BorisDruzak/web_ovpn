@@ -1,7 +1,7 @@
 import { setupInfrastructureVr } from './infrastructure-xr.js';
 
 (() => {
-  const data = JSON.parse(document.getElementById("infrastructure-data").textContent);
+  let data = JSON.parse(document.getElementById("infrastructure-data").textContent);
   const root = document.getElementById('infra-map-review');
   const groups = root.querySelector('#map-groups');
   const details = root.querySelector('#map-details');
@@ -19,22 +19,11 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const label = node.reachability?.state === 'stopped' ? 'Выключен' : availabilityStates[color];
     return {label, color};
   };
-  const byId = new Map(data.nodes.map(node => [node.id, node]));
-  const incident = new Map(data.nodes.map(node => [node.id, []]));
-  const connected = new Map(data.nodes.map(node => [node.id, []]));
-  for (const edge of data.links) {
-    incident.get(edge.a).push(edge);
-    incident.get(edge.b).push(edge);
-    if (edge.confirmed) {
-      connected.get(edge.a).push(edge.b);
-      connected.get(edge.b).push(edge.a);
-    }
-  }
+  let byId, incident, connected, networkKinds, primary, anchors, networkDistance;
   const buttons = new Map();
   const graphs = [];
   const resize = new ResizeObserver(draw);
   const viewButtons = Array.from(root.querySelectorAll('[data-view]'));
-  const networkKinds = new Set(data.switchKinds);
   let view = 'overview';
   let selected = null;
   let focusedRanks = null;
@@ -46,27 +35,30 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   };
   const formatTime = value => new Intl.DateTimeFormat('ru-RU', { timeZone:'Asia/Yekaterinburg', dateStyle:'short', timeStyle:'short' }).format(new Date(value));
   const source = root.querySelector('#map-sources');
-  const canonical = make('a','GitHub ' + data.git.slice(0,7));
-  canonical.href = 'https://github.com/BorisDruzak/network_configuration/blob/' + data.git + '/config/network-context.yaml';
-  canonical.target = '_blank';
-  canonical.rel = 'noopener noreferrer';
-  if (data.snapshotAt) source.append('Снимок · ' + formatTime(data.snapshotAt) + ' (ЕКБ)');
-  if (data.git) source.append(' · ', canonical);
   const availability = root.querySelector('#map-availability');
   const availabilityLabels = {
     missing: 'Снимок инфраструктуры ещё не опубликован.',
     invalid: 'Снимок инфраструктуры недоступен.',
     stale: 'Снимок устарел. Связи показаны по последним доступным данным.',
   };
-  if (availabilityLabels[data.availability]) {
-    availability.textContent = availabilityLabels[data.availability];
-    availability.hidden = false;
+  function showAvailability(message = availabilityLabels[data.availability] ?? '') {
+    availability.textContent = message;
+    availability.hidden = !message;
   }
-  if (!data.nodes.length) {
-    root.querySelector('.map-views').hidden = true;
-    root.querySelector('.map-legend').hidden = true;
-    root.querySelector('#map-search').hidden = true;
-    return;
+  function renderSnapshotHeader() {
+    source.replaceChildren();
+    if (data.snapshotAt) source.append('Снимок · ' + formatTime(data.snapshotAt) + ' (ЕКБ)');
+    if (data.git) {
+      const canonical = make('a', 'GitHub ' + data.git.slice(0, 7));
+      canonical.href = 'https://github.com/BorisDruzak/network_configuration/blob/' + data.git + '/config/network-context.yaml';
+      canonical.target = '_blank';
+      canonical.rel = 'noopener noreferrer';
+      source.append(' · ', canonical);
+    }
+    showAvailability();
+    for (const section of ['.map-views', '.map-legend', '#map-search']) {
+      root.querySelector(section).hidden = !data.nodes.length;
+    }
   }
   function group(title) {
     const section = make('section', null, 'map-group');
@@ -103,12 +95,26 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     return distance;
   }
   const nameOrder = (a, b) => byId.get(a).name.localeCompare(byId.get(b).name, 'ru');
-  const networkRoots = data.nodes.filter(node => networkKinds.has(node.kind)).map(node => node.id);
-  const primary = networkRoots.sort((a, b) => connected.get(b).length - connected.get(a).length || nameOrder(a, b))[0];
-  const anchors = [primary, ...data.overviewGuests].filter(Boolean);
   const onBackbone = node => node.id !== data.clusterId && (!node.guest || data.overviewGuests.includes(node.id));
-  const backboneIds = new Set(data.nodes.filter(onBackbone).map(node => node.id));
-  const networkDistance = primary ? traversal(primary, new Set(), backboneIds) : new Map();
+  function indexSnapshot() {
+    byId = new Map(data.nodes.map(node => [node.id, node]));
+    incident = new Map(data.nodes.map(node => [node.id, []]));
+    connected = new Map(data.nodes.map(node => [node.id, []]));
+    for (const edge of data.links) {
+      incident.get(edge.a).push(edge);
+      incident.get(edge.b).push(edge);
+      if (edge.confirmed) {
+        connected.get(edge.a).push(edge.b);
+        connected.get(edge.b).push(edge.a);
+      }
+    }
+    networkKinds = new Set(data.switchKinds);
+    const roots = data.nodes.filter(node => networkKinds.has(node.kind)).map(node => node.id);
+    primary = roots.sort((a, b) => connected.get(b).length - connected.get(a).length || nameOrder(a, b))[0];
+    anchors = [primary, ...data.overviewGuests].filter(Boolean);
+    const backboneIds = new Set(data.nodes.filter(onBackbone).map(node => node.id));
+    networkDistance = primary ? traversal(primary, new Set(), backboneIds) : new Map();
+  }
 
   function focusedTopology(id) {
     const path = [id];
@@ -191,6 +197,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     view = mode;
     focusedRanks = focus ? focusedTopology(focus) : null;
     viewButtons.forEach(button => button.setAttribute('aria-pressed', String(button.dataset.view === mode)));
+    if (!data.nodes.length) return;
     if (focusedRanks) {
       addGraph('Схема связей', [focusedRanks]);
       const graph = graphs.at(-1).graph;
@@ -360,6 +367,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       renderView(clusterItem ? 'cluster' : 'overview', clusterItem ? null : id);
     }
     if (!buttons.has(id)) return;
+    renderSelection(id, reveal);
+  }
+
+  function renderSelection(id, reveal) {
     buttons.get(selected)?.setAttribute('aria-pressed','false');
     selected = id;
     updateNodeUrl(id);
@@ -403,6 +414,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     }
     if (node.ports?.length) {
       const panel = make('details', null, 'map-port-panel');
+      panel.dataset.section = 'ports';
       const list = make('ul', null, 'map-detail-list');
       const states = {up: 'Линк поднят', down: 'Линк опущен', disabled: 'Отключён', unknown: 'Нет подтверждения'};
       const sorted = [...node.ports].sort((a,b) => a.name.localeCompare(b.name, 'ru', {numeric: true}));
@@ -436,6 +448,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     }
     if (node.checks?.length) {
       const panel = make('details', null, 'map-port-panel');
+      panel.dataset.section = 'checks';
       const list = make('ul', null, 'map-detail-list');
       const states = {ok: 'В норме', warn: 'Отклонение', critical: 'Ошибка', unknown: 'Нет подтверждения'};
       for (const check of node.checks) {
@@ -531,9 +544,59 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   viewButtons.forEach(button => button.addEventListener('click', () => {
     if (button.dataset.view !== view || focusedRanks) renderView(button.dataset.view);
   }));
-  renderView('overview');
-  const linkedNode = new URLSearchParams(window.location.search).get('node');
-  if (byId.has(linkedNode)) select(linkedNode, false);
+  function displaySnapshot(graph) {
+    const wanted = selected ?? new URLSearchParams(window.location.search).get('node');
+    const opened = new Set(Array.from(details.querySelectorAll('details[open]'), panel => panel.dataset.section));
+    const active = document.activeElement;
+    const activeNode = [...buttons].find(([, button]) => button === active)?.[0];
+    const activePanel = active?.closest('summary')?.parentElement.dataset.section;
+    const inCard = details.contains(active) || related.contains(active);
+    data = graph;
+    indexSnapshot();
+    renderSnapshotHeader();
+    const focus = view === 'overview' && byId.has(wanted) ? wanted : null;
+    renderView(view, focus);
+    if (buttons.has(wanted)) {
+      renderSelection(wanted, false);
+      for (const panel of details.querySelectorAll('details')) {
+        panel.open = opened.has(panel.dataset.section);
+      }
+    }
+    const summary = activePanel && details.querySelector(`[data-section="${activePanel}"] summary`);
+    const replacement = summary || buttons.get(activeNode ?? (inCard ? wanted : null));
+    replacement?.focus({preventScroll: true});
+  }
+
+  displaySnapshot(data);
+  let lastSnapshot = JSON.stringify(data);
+  let refreshing = false;
+  async function refreshSnapshot() {
+    if (document.hidden || refreshing) return;
+    refreshing = true;
+    try {
+      const response = await fetch(root.dataset.snapshotUrl, {
+        cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(10_000),
+      });
+      if (!response.ok) throw new Error('Snapshot request failed');
+      const {infrastructure: graph} = await response.json();
+      if (!Array.isArray(graph?.nodes) || !Array.isArray(graph.links)) throw new Error('Invalid snapshot');
+      const serialized = JSON.stringify(graph);
+      if (serialized !== lastSnapshot) {
+        displaySnapshot(graph);
+        lastSnapshot = serialized;
+      } else {
+        showAvailability();
+      }
+    } catch {
+      showAvailability(data.snapshotAt ? 'Обновление карты недоступно. Показан последний полученный снимок.' : 'Не удалось загрузить снимок карты.');
+    } finally {
+      refreshing = false;
+    }
+  }
+  if (root.dataset.snapshotUrl) {
+    window.setInterval(refreshSnapshot, 30_000);
+    document.addEventListener('visibilitychange', refreshSnapshot);
+  }
 
   setupInfrastructureVr(root.querySelector('#map-vr'), root.querySelector('#map-vr-status'), () => {
     draw();

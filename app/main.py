@@ -1699,6 +1699,13 @@ def network_infrastructure(request: Request, db: Session = Depends(get_db)):
     return response
 
 
+@app.get("/network/infrastructure/snapshot")
+def network_infrastructure_snapshot(request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    graph = load_infrastructure_map(get_settings().infrastructure_map_snapshot_path)
+    return JSONResponse({"infrastructure": graph}, headers={"Cache-Control": "no-store"})
+
+
 @app.get("/network/dashboard", response_class=HTMLResponse)
 def network_dashboard(request: Request, db: Session = Depends(get_db)):
     require_user(request, db)
