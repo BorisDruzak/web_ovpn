@@ -222,3 +222,57 @@ def test_operator_page_assigns_inventory_pc_and_requires_csrf(staging):
     assert ended.status_code == 200
     assert "Fixture reassignment" in ended.text
     assert client.get(f"{INTERNAL}/{person}", headers=service).json()["assignments"] == []
+
+
+
+def test_operator_directory_filters_presence_before_pagination(staging):
+    from app.db import session_scope
+    from app.inventory.models import InventoryEndpointState, InventoryExternalBinding, InventoryExternalBindingStatus
+    from app.models import utcnow
+
+    client, csrf, _ = staging
+    labels = {
+        "online": "Fixture connected", "offline": "Fixture disconnected", "unknown": "Fixture unavailable",
+        "not_detected": "Fixture without agent", "review": "Fixture proposed binding", "no_pcs": "Fixture without PC",
+    }
+    assets = {}
+    for status, label in labels.items():
+        response = client.post(OPERATOR, headers=csrf, json={"full_name": label, "department": "Fixtures"})
+        person = response.json()["inventory_person_id"]
+        if status != "no_pcs":
+            assets[status] = _create_asset(custom_name=f"Test asset {status}")
+            assert _assign(client, csrf, person, assets[status], "primary").status_code == 200
+
+    with session_scope() as db:
+        for status in ("online", "offline", "unknown", "review"):
+            row = InventoryExternalBinding(asset_id=assets[status], external_id=str(uuid4()),
+                status=(InventoryExternalBindingStatus.CANDIDATE if status == "review"
+                        else InventoryExternalBindingStatus.CONFIRMED),
+                binding_method="manual", confidence=100, created_by="test")
+            db.add(row)
+            db.flush()
+            if status != "review":
+                observed_at = utcnow() - timedelta(hours=1) if status == "unknown" else utcnow()
+                db.add(InventoryEndpointState(binding_id=row.id, asset_id=row.asset_id, endpoint_device_id=row.external_id,
+                    online=status == "online", last_seen_at=observed_at,
+                    safe_context_json={"identity_status": "available", "identity_checked_at": observed_at.isoformat()}))
+
+    for status, label in labels.items():
+        response = client.get("/inventory/people", params={"q": "fixtures", "state": status})
+        assert response.status_code == 200
+        assert label in response.text
+        assert all(other not in response.text for other in labels.values() if other != label)
+    assert client.get("/inventory/people", params={"state": "invalid"}).status_code == 422
+
+    # The connected employee must remain on the first filtered page even if
+    # earlier names fill the first unfiltered page.
+    from app.inventory.models import InventoryPerson
+    with session_scope() as db:
+        for number in range(50):
+            name = f"A fixture {number:02d}"
+            db.add(InventoryPerson(full_name=name, department="Fixtures", search_key=f"{name.lower()} fixtures"))
+    unfiltered = client.get("/inventory/people", params={"q": "fixtures"})
+    assert labels["online"] not in unfiltered.text
+    filtered = client.get("/inventory/people", params={"q": "fixtures", "state": "online"})
+    assert labels["online"] in filtered.text
+    assert "A fixture 00" not in filtered.text

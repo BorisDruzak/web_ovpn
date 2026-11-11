@@ -10,6 +10,10 @@ An operator can find employees by name or department, add or edit a profile,
 search for a PC, and assign it as primary or shared. The same flow opens from
 an existing PC card with that PC selected. The employee card displays the
 current Endpoint presence and the reason recorded for completed assignments.
+The directory counts employees in each filter across the search results before
+pagination. Use the filters to find employees without assigned PCs, missing agents,
+offline agents, unavailable presence data, or bindings that require review.
+The connected filter requires every assigned PC to have a confirmed online agent.
 Page access uses `workstations:link`, and writes require the session CSRF token.
 
 Operator endpoints under `/api/v1/inventory/people` require an authenticated web
@@ -54,6 +58,6 @@ Next integration steps:
 2. Project assignments and freshness into the requester profile. Retain the
    last confirmed display data during provider outages and check conflicts
    before creating any effective device permissions.
-3. Add directory-level device status filters and expose existing Endpoint
+3. Show Helpdesk account linkage in the directory and expose existing Endpoint
    assignment and installation workflows from the employee card. Verify a genuine Endpoint
    registration and heartbeat before reporting an installation complete.

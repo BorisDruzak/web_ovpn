@@ -5,12 +5,15 @@ from __future__ import annotations
 import hashlib
 import hmac
 import unicodedata
-from typing import Annotated, Literal
+from collections import Counter, defaultdict
+from datetime import datetime
+from typing import Annotated, Iterator, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, StringConstraints
 from sqlalchemy import and_, select, update
+from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, aliased
 
@@ -119,6 +122,13 @@ def _search_key(value: str) -> str:
     return " ".join(unicodedata.normalize("NFC", value).casefold().split())
 
 
+def _people_query(q: str):
+    query = select(InventoryPerson)
+    if term := _search_key(q):
+        query = query.where(InventoryPerson.search_key.contains(term, autoescape=True))
+    return query
+
+
 @operator_router.get("", dependencies=[Depends(_operator_read)])
 def list_people(
     response: Response,
@@ -127,10 +137,7 @@ def list_people(
     page: Annotated[int, Query(ge=1, le=10000)] = 1,
 ) -> dict:
     size = 50
-    query = select(InventoryPerson)
-    if term := _search_key(q):
-        query = query.where(InventoryPerson.search_key.contains(term, autoescape=True))
-    rows = list(db.scalars(query.order_by(InventoryPerson.search_key, InventoryPerson.id)
+    rows = list(db.scalars(_people_query(q).order_by(InventoryPerson.search_key, InventoryPerson.id)
                            .offset((page - 1) * size).limit(size + 1)))
     response.headers["Cache-Control"] = "no-store"
     return {"people": [_person_view(row) for row in rows[:size]], "page": page, "has_more": len(rows) > size}
@@ -214,11 +221,7 @@ def _endpoint_status(state: InventoryEndpointState | None, now) -> str:
     return "online" if state.online else "offline"
 
 
-@operator_router.get("/{person_id}", dependencies=[Depends(_operator_read)])
-@helpdesk_router.get("/{person_id}", dependencies=[Depends(_helpdesk)])
-def read_person(person_id: UUID, response: Response, db: Db) -> dict:
-    person = _person(db, person_id)
-    now = utcnow()
+def _assignment_views(db: Session, person_filter: ColumnElement[bool], now: datetime) -> Iterator[tuple[str, dict]]:
     row = InventoryPersonAssignment
     binding = InventoryExternalBinding
     state = InventoryEndpointState
@@ -240,11 +243,10 @@ def read_person(person_id: UUID, response: Response, db: Db) -> dict:
         .outerjoin(state, and_(
             state.binding_id == binding.id, state.asset_id == row.asset_id, state.endpoint_device_id == binding.external_id,
         ))
-        .where(row.person_id == person.id, row.ended_at.is_(None), InventoryAsset.deleted_at.is_(None),
+        .where(person_filter, row.ended_at.is_(None), InventoryAsset.deleted_at.is_(None),
                InventoryAsset.asset_type == InventoryAssetType.PC)
         .order_by(row.created_at, row.id)
     )
-    assignments = []
     for assignment, asset, os_name, link, cached, needs_review in result:
         try:
             device_id = str(UUID(link.external_id)) if link else None
@@ -252,7 +254,7 @@ def read_person(person_id: UUID, response: Response, db: Db) -> dict:
             device_id = None
         binding_state = "confirmed" if device_id else "review" if needs_review or link else "unbound"
         endpoint_status = _endpoint_status(cached, now) if device_id else "unknown" if link else "not_detected"
-        assignments.append({
+        yield assignment.person_id, {
             **_assignment_view(assignment),
             "name": asset.custom_name,
             "inventory_number": asset.inventory_number,
@@ -264,6 +266,57 @@ def read_person(person_id: UUID, response: Response, db: Db) -> dict:
             "endpoint_status": endpoint_status,
             "last_seen_at": cached.last_seen_at if cached and device_id else None,
             "agent_version": cached.agent_version if cached and device_id else None,
-        })
+        }
+
+
+DirectoryState = Literal["all", "no_pcs", "not_detected", "offline", "unknown", "review", "online"]
+
+
+def operator_directory(db: Session, q: str, page: int, state: DirectoryState) -> dict:
+    """Count matches over the search result before slicing the selected filter."""
+    people = _people_query(q)
+    assigned = defaultdict(list)
+    matching_people = people.with_only_columns(InventoryPerson.id)
+    person_filter = InventoryPersonAssignment.person_id.in_(matching_people)
+    for person_id, assignment in _assignment_views(db, person_filter, utcnow()):
+        assigned[person_id].append(assignment)
+
+    size = 50
+    offset = (page - 1) * size
+    rows = []
+    totals = Counter()
+    matched = 0
+    for person in db.scalars(people.order_by(InventoryPerson.search_key, InventoryPerson.id)):
+        devices = assigned.get(person.id, ())
+        statuses = Counter(
+            "review" if device["endpoint_binding_state"] == "review" else device["endpoint_status"]
+            for device in devices
+        )
+        filters = {"all"}
+        if not devices:
+            filters.add("no_pcs")
+        filters.update(status for status in statuses if status != "online")
+        if devices and statuses["online"] == len(devices):
+            filters.add("online")
+        totals.update(filters)
+        if state not in filters:
+            continue
+        matched += 1
+        if offset < matched <= offset + size:
+            seen = [device["last_seen_at"] for device in devices if device["last_seen_at"]]
+            rows.append({
+                **_person_view(person), "pc_count": len(devices),
+                "agent_count": sum(device["endpoint_device_id"] is not None for device in devices),
+                "endpoint_counts": dict(statuses), "last_seen_at": max(seen, default=None),
+            })
+    return {"people": rows, "page": page, "has_more": matched > offset + size, "totals": dict(totals)}
+
+
+@operator_router.get("/{person_id}", dependencies=[Depends(_operator_read)])
+@helpdesk_router.get("/{person_id}", dependencies=[Depends(_helpdesk)])
+def read_person(person_id: UUID, response: Response, db: Db) -> dict:
+    person = _person(db, person_id)
+    now = utcnow()
+    assignments = [item for _, item in _assignment_views(db, InventoryPersonAssignment.person_id == person.id, now)]
     response.headers["Cache-Control"] = "no-store"
     return {**_person_view(person), "observed_at": now, "assignments": assignments}

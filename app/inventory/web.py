@@ -1090,10 +1090,11 @@ def _chosen_pc(db: Session, asset_id: UUID | None) -> InventoryAsset | None:
 
 @router.get("/inventory/people", response_class=HTMLResponse)
 def inventory_people(request: Request, q: str = Query("", max_length=120), page: int = Query(1, ge=1, le=10000),
-                     asset_id: UUID | None = None, db: Session = Depends(get_db)):
+                     asset_id: UUID | None = None, state: people_api.DirectoryState = "all",
+                     db: Session = Depends(get_db)):
     people_api._operator_read(request, db)
-    directory = people_api.list_people(Response(), db, q, page)
-    return _people_page(request, db, {**directory, "q": q, "chosen_pc": _chosen_pc(db, asset_id)})
+    directory = people_api.operator_directory(db, q, page, state)
+    return _people_page(request, db, {**directory, "q": q, "state": state, "chosen_pc": _chosen_pc(db, asset_id)})
 
 
 @router.get("/inventory/people/{person_id}", response_class=HTMLResponse)

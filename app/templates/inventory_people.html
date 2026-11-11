@@ -79,12 +79,23 @@
     </details>
   {% endif %}
 {% else %}
+  {% set filters = {'all': 'Все сотрудники', 'no_pcs': 'Без компьютеров', 'not_detected': 'Агент не обнаружен',
+    'offline': 'Агент не в сети', 'unknown': 'Состояние неизвестно', 'review': 'Проверить привязку',
+    'online': 'Все агенты в сети'} %}
+  {% set presence = {'online': 'В сети', 'offline': 'Не в сети', 'unknown': 'Неизвестно',
+    'not_detected': 'Не обнаружен', 'review': 'Проверить привязку'} %}
   {% if chosen_pc %}<p>Выберите сотрудника для компьютера <strong>{{ chosen_pc.custom_name or chosen_pc.inventory_number or 'Компьютер' }}</strong>.</p>{% endif %}
   <form method="get" action="/inventory/people" class="inventory-search" role="search">
     {% if chosen_pc %}<input type="hidden" name="asset_id" value="{{ chosen_pc.id }}">{% endif %}
     <label for="employee-search">ФИО или подразделение</label>
     <div class="inventory-search-controls">
       <input id="employee-search" type="search" name="q" maxlength="120" value="{{ q }}">
+      <label for="employee-state">Состояние рабочих мест</label>
+      <select id="employee-state" name="state">
+        {% for key, label in filters.items() %}
+          <option value="{{ key }}"{% if state == key %} selected{% endif %}>{{ label }} ({{ totals.get(key, 0) }})</option>
+        {% endfor %}
+      </select>
       <button class="button" type="submit">Найти сотрудника</button>
     </div>
   </form>
@@ -101,10 +112,18 @@
   {% for employee in people %}
     <article class="inventory-card">
       <strong><a href="/inventory/people/{{ employee.inventory_person_id }}{% if chosen_pc %}?asset_id={{ chosen_pc.id }}{% endif %}">{{ employee.full_name }}</a></strong>
-      <p>{{ employee.department }}</p>
+      <p>{{ employee.department }} · ПК {{ employee.pc_count }} · Найдено агентов {{ employee.agent_count }}</p>
+      {% if employee.endpoint_counts %}
+      <ul>
+        {% for key, label in presence.items() if employee.endpoint_counts.get(key) %}
+          <li>{{ label }} · {{ employee.endpoint_counts[key] }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+      {% if employee.last_seen_at %}<p>Последняя связь (UTC) <time datetime="{{ employee.last_seen_at.isoformat() }}">{{ employee.last_seen_at.strftime('%d.%m.%Y %H:%M') }}</time></p>{% endif %}
     </article>
   {% else %}<p>Сотрудники не найдены.</p>{% endfor %}
-  {% set context = 'q=' ~ (q|urlencode) ~ ('&asset_id=' ~ chosen_pc.id if chosen_pc else '') %}
+  {% set context = 'q=' ~ (q|urlencode) ~ '&state=' ~ state ~ ('&asset_id=' ~ chosen_pc.id if chosen_pc else '') %}
   <nav aria-label="Страницы сотрудников">
     {% if page > 1 %}<a href="?{{ context }}&amp;page={{ page - 1 }}">Назад</a>{% endif %}
     <span>Страница {{ page }}</span>
