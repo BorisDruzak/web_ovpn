@@ -463,6 +463,38 @@ def _icmp_check(ip: str) -> dict:
     return {"state": "unknown", "reason": "icmp_probe_error"}
 
 
+def _postgresql(spec: dict) -> dict:
+    try:
+        address = str(ipaddress.ip_address(spec["ip"]))
+        port = spec["port"]
+        if type(port) is not int or not 1 <= port <= 65535:
+            return {"state": "unknown"}
+        with socket.create_connection((address, port), timeout=TIMEOUT) as connection:
+            connection.sendall(struct.pack("!II", 8, 80877103))  # PostgreSQL SSLRequest
+            reply = connection.recv(1)
+            if reply == b"N":
+                return {"state": "reachable", "postgresqlTls": "declined"}
+            if reply != b"S":
+                return {"state": "unreachable", "reason": "unexpected_response"}
+            # Check negotiation only. No PostgreSQL startup or authentication message is sent.
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+            try:
+                with context.wrap_socket(connection) as encrypted:
+                    return {"state": "reachable", "postgresqlTls": "negotiated", "tlsVersion": encrypted.version()}
+            except OSError:
+                return {"state": "unknown", "postgresqlTls": "failed", "reason": "postgresql_tls_handshake"}
+    except TimeoutError:
+        return {"state": "unreachable", "reason": "timeout"}
+    except (ConnectionRefusedError, ConnectionResetError):
+        return {"state": "unreachable", "reason": "transport_error"}
+    except OSError:
+        return {"state": "unknown", "reason": "transport_error"}
+    except (KeyError, ValueError, TypeError):
+        return {"state": "unknown"}
+
+
 def _probe(spec: dict) -> str:
     try:
         protocol = spec["type"]
@@ -472,6 +504,8 @@ def _probe(spec: dict) -> str:
             return _dns(spec)["state"]
         if protocol in {"http", "https"}:
             return _http_probe(spec)["state"]
+        if protocol == "postgresql":
+            return _postgresql(spec)["state"]
         port = spec["port"]
         if type(port) is not int or not 1 <= port <= 65535:
             return "unknown"
@@ -484,10 +518,6 @@ def _probe(spec: dict) -> str:
             return _ldap(ip, port, spec)
         if protocol == "smb":
             return _smb(ip, port)
-        if protocol == "postgresql":
-            with socket.create_connection((ip, port), timeout=TIMEOUT) as connection:
-                connection.sendall(struct.pack("!II", 8, 80877103))  # PostgreSQL SSLRequest
-                return "reachable" if connection.recv(1) in {b"S", b"N"} else "unreachable"
     except (ssl.SSLError, http.client.HTTPException, KeyError, TypeError, ValueError):
         return "unknown"
     except (TimeoutError, ConnectionRefusedError, ConnectionResetError, dns.exception.Timeout):
@@ -533,6 +563,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 details = _dns(spec)
             elif protocol == "icmp":
                 details = _icmp_check(spec.get("ip"))
+            elif protocol == "postgresql":
+                details = _postgresql(spec)
             elif protocol in {"http", "https"}:
                 details = _http_probe(spec)
             else:

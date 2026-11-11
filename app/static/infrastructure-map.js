@@ -687,6 +687,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         http_bad_response: 'Ответ HTTP неполный или некорректный',
         http_connection_refused: 'Отклонено TCP-соединение', http_connection_reset: 'Сброшено TCP-соединение',
         http_configuration: 'Ошибка настройки проверки',
+        postgresql_tls_handshake: 'Не удалось согласовать TLS',
         icmp_identity_unconfirmed: 'Принадлежность адреса этому узлу не подтверждена',
         route_other_gateway: 'Активен другой шлюз', route_inactive: 'Маршрут через ожидаемый шлюз неактивен',
         route_rejecting: 'Активный маршрут отбрасывает трафик',
@@ -715,8 +716,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const http = check.httpStatus ? ' · HTTP ' + check.httpStatus : '';
         const rtt = check.roundTripMs === undefined ? '' : ' · RTT ' +
           check.roundTripMs.toLocaleString('ru-RU', {maximumFractionDigits: 3}) + ' мс';
+        const postgresql = check.postgresqlTls === 'negotiated' ? ' · Согласован ' + (check.tlsVersion ?? 'TLS') :
+          check.postgresqlTls === 'declined' ? ' · Сервер отклонил TLS' : '';
         const scope = check.supplemental ? ' · дополнительная проверка' : '';
-        row.append(make('strong', endpoint || 'Проверка'), make('small', result + http + (reason ? ' · ' + reason + errorSource : '') + dns + rtt + attempts + gateway + management + scope + source + time + (check.stale ? ' · устарело' : '')));
+        row.append(make('strong', endpoint || 'Проверка'), make('small', result + http + postgresql + (reason ? ' · ' + reason + errorSource : '') + dns + rtt + attempts + gateway + management + scope + source + time + (check.stale ? ' · устарело' : '')));
         list.append(row);
       }
       propertiesSection.append(make('h3', 'Проверки'), list);

@@ -708,6 +708,7 @@ def test_zabbix_version_checks_matching_json_rpc_response():
 
 def test_postgresql_probe_requires_protocol_response(monkeypatch):
     from app import infrastructure_service_probes as probes
+    from app.infrastructure_map import _public_service_check
 
     class Connection:
         response = b"S"
@@ -727,12 +728,48 @@ def test_postgresql_probe_requires_protocol_response(monkeypatch):
 
     connection = Connection()
     monkeypatch.setattr(probes.socket, "create_connection", lambda *_args, **_kwargs: connection)
+
+    class TLS:
+        fails = False
+
+        def wrap_socket(self, socket):
+            assert socket is connection and not self.check_hostname
+            assert self.verify_mode == probes.ssl.CERT_NONE
+            if self.fails:
+                raise probes.ssl.SSLError("internal TLS details")
+            return self
+
+        def version(self):
+            return "TLSv1.3"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+    tls = TLS()
+    monkeypatch.setattr(probes.ssl, "SSLContext", lambda *_: tls)
     spec = {"type": "postgresql", "ip": "192.0.2.27", "port": 5432}
     assert probes._probe(spec) == "reachable"
+
+    def public():
+        node = {"id": "db", "kind": "Сервис"}
+        probes.apply_service_probes([node], {"db": [spec]})
+        return _public_service_check(node["serviceChecks"][0], datetime.now(timezone.utc))
+
+    check = public()
+    assert (check["state"], check["postgresqlTls"], check["tlsVersion"]) == ("reachable", "negotiated", "TLSv1.3")
+    tls.fails = True
+    check = public()
+    assert (check["state"], check["postgresqlTls"], check["reason"]) == ("unknown", "failed", "postgresql_tls_handshake")
+    assert "internal TLS details" not in json.dumps(check)
     connection.response = b"N"
     assert probes._probe(spec) == "reachable"
+    assert public()["postgresqlTls"] == "declined"
     connection.response = b"H"
     assert probes._probe(spec) == "unreachable"
+    assert public()["reason"] == "unexpected_response"
 
 
 def test_observer_service_attaches_to_the_vm_with_the_expected_mac():

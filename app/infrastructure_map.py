@@ -292,6 +292,15 @@ def _public_service_check(check: dict, now: datetime) -> dict:
             "http_connection_reset", "http_configuration",
         ):
             result["reason"] = reason
+    if result["method"] == "PostgreSQL SSLRequest":
+        tls_state = check.get("postgresqlTls")
+        if tls_state in ("negotiated", "declined", "failed"):
+            result["postgresqlTls"] = tls_state
+        version = check.get("tlsVersion")
+        if tls_state == "negotiated" and isinstance(version, str) and re.fullmatch(r"TLSv1(?:\.[0-9])?", version):
+            result["tlsVersion"] = version
+        if tls_state == "failed" and reason == "postgresql_tls_handshake":
+            result["reason"] = reason
     if result["method"] == "DNS":
         diagnostic = _public_dns_check(check.get("dns"))
         if diagnostic:
