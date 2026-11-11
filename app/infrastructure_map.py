@@ -331,8 +331,8 @@ def _map_statuses(nodes: dict, links: list[dict]) -> None:
             bool({"critical", "warn"}.intersection(checks)), "unknown" in checks,
         )
 
-    failed = {key for key, node in nodes.items()
-              if local_issues[key][0] or node["reachability"]["state"] in {"unreachable", "stopped"}}
+    down = {key for key, node in nodes.items() if node["reachability"]["state"] in {"unreachable", "stopped"}}
+    failed = down | {key for key, (has_failure, _) in local_issues.items() if has_failure}
     unconfirmed = {key for key, node in nodes.items()
                    if local_issues[key][1] or node["reachability"]["state"] == "unknown"}
     # A dependency can affect every consumer, including services in a cycle.
@@ -344,14 +344,15 @@ def _map_statuses(nodes: dict, links: list[dict]) -> None:
                 pending.append(consumer)
 
     for key, node in nodes.items():
-        unavailable = sorted(services[key] & failed)
+        unavailable = sorted(services[key] & down)
+        degraded = sorted((services[key] & failed) - down)
         unknown = sorted((services[key] & unconfirmed) - failed)
         local_failed, local_unknown = local_issues[key]
         state = node["reachability"]["state"]
-        node["serviceAvailability"] = {"unavailable": unavailable, "unknown": unknown}
+        node["serviceAvailability"] = {"unavailable": unavailable, "degraded": degraded, "unknown": unknown}
         if state in {"unreachable", "stopped"}:
             node["mapStatus"] = "critical"
-        elif state == "reachable" and (unavailable or local_failed):
+        elif state == "reachable" and (unavailable or degraded or local_failed):
             node["mapStatus"] = "warn"
         elif state == "reachable" and not unknown and not local_unknown:
             node["mapStatus"] = "ok"

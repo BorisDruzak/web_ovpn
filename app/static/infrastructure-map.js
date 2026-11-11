@@ -11,7 +11,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   const pathKinds = new Set(['Путь по MAC-таблице', 'Путь через общий порт']);
   const availabilityStates = {
     ok: 'Доступен',
-    warn: 'Доступен, есть недоступные сервисы',
+    warn: 'Доступен, есть сбои проверок',
     critical: 'Недоступен',
     unknown: 'Доступность не подтверждена',
   };
@@ -19,6 +19,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const color = node.mapStatus ?? 'unknown';
     let label = availabilityStates[color];
     if (node.reachability?.state === 'stopped') label = 'Выключен';
+    if (color === 'warn' && node.serviceAvailability?.unavailable?.length) label = 'Доступен, есть недоступные сервисы';
     if (node.id === data.clusterId && color === 'warn') label = 'Кластер доступен, есть сбои';
     return {label, color};
   };
@@ -571,7 +572,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       panel.append(make('summary', 'Проверки Server Observer'), list);
       propertiesSection.append(panel);
     }
-    for (const [key, title] of [['unavailable', 'Недоступные сервисы'], ['unknown', 'Сервисы без подтверждения']]) {
+    for (const [key, title] of [['unavailable', 'Недоступные сервисы'], ['degraded', 'Сервисы со сбоями проверок'],
+                                ['unknown', 'Сервисы без подтверждения']]) {
       const ids = node.serviceAvailability?.[key] ?? [];
       if (!ids.length) continue;
       const list = make('ul', null, 'map-detail-list');

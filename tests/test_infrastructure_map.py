@@ -41,7 +41,9 @@ def test_map_colors_use_node_and_confirmed_service_availability(tmp_path):
         "ok", "warn", "critical", "unknown", "critical", "unknown",
     ]
     assert states["yellow"]["reachability"]["state"] == "reachable"
-    assert states["yellow"]["serviceAvailability"] == {"unavailable": ["role:directum"], "unknown": ["dns"]}
+    assert states["yellow"]["serviceAvailability"] == {
+        "unavailable": ["role:directum"], "degraded": [], "unknown": ["dns"],
+    }
     directum["reachability"]["state"] = "unknown"
     path.write_text(json.dumps(graph), encoding="utf-8")
     states = {item["id"]: item for item in load_infrastructure_map(path, now)["nodes"]}
@@ -83,7 +85,8 @@ def test_service_color_includes_required_observer_checks_and_confirmed_dependenc
         assert observed["role:directum"]["reachability"]["state"] == "reachable"
         assert observed["role:directum"]["mapStatus"] == "warn"
         assert observed["vm"]["mapStatus"] == "warn"
-        assert observed["vm"]["serviceAvailability"]["unavailable"] == ["role:directum"]
+        assert observed["vm"]["serviceAvailability"]["unavailable"] == []
+        assert observed["vm"]["serviceAvailability"]["degraded"] == ["role:directum"]
     assert read(database="unreachable", confirmed=False)["vm"]["mapStatus"] == "ok"
     assert read(component=None)["vm"]["mapStatus"] == "unknown"
     assert read(missing=True)["vm"]["mapStatus"] == "unknown"
