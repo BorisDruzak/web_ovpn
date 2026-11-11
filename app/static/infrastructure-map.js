@@ -497,14 +497,25 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     if (node.checks?.length) {
       const panel = make('details', null, 'map-port-panel');
       panel.dataset.section = 'checks';
-      panel.open = node.checks.some(check => check.required && check.status !== 'ok');
+      panel.open = node.checks.some(check => (check.required && check.status !== 'ok')
+        || (check.unit && ['warn', 'critical'].includes(check.status)));
       const list = make('ul', null, 'map-detail-list');
       const states = {ok: 'В норме', warn: 'Отклонение', critical: 'Ошибка', unknown: 'Нет подтверждения'};
+      const number = new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 2});
+      const measurement = (unit, value) => {
+        if (!Number.isFinite(value)) return '';
+        if (unit === 'percent') return number.format(value) + '%';
+        if (unit === 'bytes') return number.format(value / 2**30) + ' ГиБ';
+        return '';
+      };
       for (const check of node.checks) {
         const row = make('li');
-        const time = check.checkedAt ? ' · ' + formatTime(check.checkedAt) : '';
-        const required = check.required ? ' · обязательная проверка' : '';
-        row.append(make('strong', check.label || check.name), make('small', states[check.status] + required + time + (check.stale ? ' · устарело' : '')));
+        const value = measurement(check.unit, check.observed);
+        const threshold = measurement(check.unit, check.warningThreshold);
+        const notes = [states[check.status], value, threshold && 'порог предупреждения ' + threshold,
+          check.required && 'обязательная проверка', check.checkedAt && formatTime(check.checkedAt),
+          check.stale && 'устарело'];
+        row.append(make('strong', check.label || check.name), make('small', notes.filter(Boolean).join(' · ')));
         list.append(row);
       }
       panel.append(make('summary', 'Проверки Server Observer'), list);

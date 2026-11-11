@@ -92,6 +92,41 @@ def test_service_color_includes_required_observer_checks_and_confirmed_dependenc
     assert read(cycle=True)["vm"]["mapStatus"] == "ok"
 
 
+def test_observer_disk_measurements_publish_units_and_reported_warning_threshold(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    stamp = now.isoformat()
+    snapshot = tmp_path / "infrastructure.json"
+    report = {"freshness": "current", "targets": [
+        {"role": "directum", "status": "critical", "observed_at": stamp, "checks": [
+            {"name": "c_disk_free", "status": "critical", "observed": 5.32, "expected": 15},
+            {"name": "rxdata_log_bytes", "status": "ok", "observed": 9 * 2**30, "expected": 20 * 2**30},
+            {"name": "data_disk_free", "status": "ok", "observed": 102, "expected": "unrelated"},
+            {"name": "unrelated_metric", "status": "ok", "observed": 42, "expected": 45},
+        ]},
+    ]}
+    snapshot.write_text(json.dumps(build_graph({}, {}, report, {}, {}, now)), encoding="utf-8")
+
+    def read(when=now):
+        node, = load_infrastructure_map(snapshot, when)["nodes"]
+        return {c["name"]: c for c in node["checks"]}
+
+    checks = read()
+    disk = checks["c_disk_free"]
+    assert disk["label"] == "Свободно на диске C:"
+    assert (disk["unit"], disk["observed"], disk["warningThreshold"]) == ("percent", 5.32, 15)
+    logs = checks["rxdata_log_bytes"]
+    assert (logs["unit"], logs["observed"], logs["warningThreshold"]) == ("bytes", 9 * 2**30, 20 * 2**30)
+    assert checks["data_disk_free"]["observed"] is None
+    assert "warningThreshold" not in checks["data_disk_free"]
+    assert "warningThreshold" not in checks["unrelated_metric"]
+    old = read(now + timedelta(minutes=26))["c_disk_free"]
+    assert old["stale"] and old["status"] == "unknown"
+    assert old["observed"] == 5.32 and old["checkedAt"] == stamp
+
+
 def test_qemu_prelaunch_reports_guest_state_backup_lock_and_configured_bridge(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map

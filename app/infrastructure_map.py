@@ -33,6 +33,16 @@ OBSERVER_CHECK_LABELS = {
     "watchdog_fresh": "Свежесть отчёта watchdog",
     "backup_snapshot_fresh": "Свежесть резервной копии",
     "repository_capacity": "Ёмкость хранилища копий",
+    "c_disk_free": "Свободно на диске C:",
+    "root_disk_free": "Свободно на корневом разделе",
+    "data_disk_free": "Свободно на разделе данных",
+    "rxdata_log_bytes": "Размер журналов Directum",
+}
+OBSERVER_METRIC_UNITS = {
+    "c_disk_free": "percent",
+    "root_disk_free": "percent",
+    "data_disk_free": "percent",
+    "rxdata_log_bytes": "bytes",
 }
 PUBLIC_PROPERTIES = {
     "Модель", "VMID", "Размещение по GitHub", "Источник сбора",
@@ -78,6 +88,24 @@ def _number(value: object) -> int | float | None:
     if type(value) is int and abs(value) <= 10**20:
         return value
     return value if type(value) is float and math.isfinite(value) else None
+
+
+def _observer_measurement(check: dict, name: str) -> dict:
+    unit = OBSERVER_METRIC_UNITS.get(name)
+    observed = _number(check.get("observed"))
+    if unit is None:
+        return {"observed": observed}
+
+    def valid(value):
+        if unit == "percent":
+            return value is not None and 0 <= value <= 100
+        return type(value) is int and 0 <= value < 2**53
+
+    result = {"unit": unit, "observed": observed if valid(observed) else None}
+    expected = _number(check.get("expected"))
+    if valid(expected):
+        result["warningThreshold"] = expected
+    return result
 
 
 def _network_address(value: object) -> str:
@@ -269,7 +297,7 @@ def _public_node(row: dict, now: datetime) -> dict:
              "status": _state(check.get("status")) if observer and not observer["stale"]
              and (name not in required_names or check_counts[name] == 1) else "unknown",
              "checkedAt": observer["at"] if observer else None, "stale": not observer or observer["stale"],
-             "observed": _number(check.get("observed")), "latency": _number(check.get("latency"))}
+             **_observer_measurement(check, name), "latency": _number(check.get("latency"))}
             for check in checks
             for name in [_text(check.get("name"), 64)]
         ],

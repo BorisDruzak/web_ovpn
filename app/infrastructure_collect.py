@@ -1139,7 +1139,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                                                   if check["name"] == "watchdog_fresh"] == ["ok"]
         item["checks"] = [{"name": check["name"], "status": HEALTH.get(check["status"], "unknown")
                            if valid_report or check["name"] == "watchdog_fresh" else "unknown",
-                           "observed": check.get("observed"), "latency": check.get("latency_ms")}
+                           "observed": check.get("observed"), "expected": check.get("expected"),
+                           "latency": check.get("latency_ms")}
                           for check in target_checks]
         item["requiredObserverChecks"] = configured.get("required_observer_checks", [])
         checked_at = target.get("observed_at")
