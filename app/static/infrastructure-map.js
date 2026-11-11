@@ -314,6 +314,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
 
   const portKey = name => name.trim().toLowerCase().replace(/^(?:gi|gigabitethernet)\s*(\d+\/\d+\/\d+)$/, 'gi$1');
   const portKeys = port => [port.name, ...(port.aliases ?? [])].map(portKey);
+  const proxmoxPortStatus = port => port.proxmoxActive === undefined ? 'Нет подтверждения' :
+    port.proxmoxActive ? 'Интерфейс активен в ОС' : 'Интерфейс не отмечен активным';
 
   function bridgePathLabel(uplink) {
     const label = uplink.viaMacTable ? 'Путь аплинка по MAC-таблице' : 'Аплинк моста';
@@ -597,13 +599,15 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       panel.open = selectedPort !== null;
       const list = make('ul', null, 'map-detail-list');
       const states = {up: 'Линк поднят', down: 'Линк опущен', disabled: 'Отключён', unknown: 'Нет подтверждения'};
+      const proxmox = node.ports.some(port => port.source === 'Proxmox');
       const sorted = [...node.ports].sort((a,b) => a.name.localeCompare(b.name, 'ru', {numeric: true}));
       for (const port of sorted) {
         if (selectedPort && portKey(port.name) !== portKey(selectedPort)) continue;
         const row = make('li');
         const time = port.checkedAt ? formatTime(port.checkedAt) : '';
         const speed = formatPortSpeed(port.speedBps);
-        const status = [states[port.state], speed, port.source, time, port.stale && time ? 'устарело' : ''].filter(Boolean).join(' · ');
+        const state = port.source === 'Proxmox' ? proxmoxPortStatus(port) : states[port.state];
+        const status = [state, speed, port.source, time, port.stale && time ? 'устарело' : ''].filter(Boolean).join(' · ');
         const name = make(selectedPort ? 'strong' : 'button', port.name);
         if (!selectedPort) {
           name.type = 'button';
@@ -645,9 +649,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         }
         list.append(row);
       }
-      const up = node.ports.filter(port => port.state === 'up').length;
-      const summary = selectedPort ? 'Порт ' + selectedPort : 'Интерфейсы (' + node.ports.length + ', линк поднят на ' + up + ')';
-      panel.append(make('summary', summary), make('small', 'Network Observer'), list);
+      const up = node.ports.filter(port => proxmox ? port.proxmoxActive : port.state === 'up').length;
+      const active = proxmox ? 'активны в ОС' : 'линк поднят на';
+      const summary = selectedPort ? 'Порт ' + selectedPort : 'Интерфейсы (' + node.ports.length + ', ' + active + ' ' + up + ')';
+      panel.append(make('summary', summary), make('small', proxmox ? 'Proxmox API' : 'Network Observer'), list);
       if (selectedPort) {
         const reset = make('button', 'Все порты', 'map-close');
         reset.type = 'button';
@@ -774,7 +779,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
             if (!port || renderedPorts.has(key)) continue;
             renderedPorts.add(key);
             const device = byId.get(edge[side]).name;
-            const state = [portLabels[port.state], formatPortSpeed(port.speedBps), port.source ?? 'SNMP', formatTime(port.checkedAt)];
+            const label = port.source === 'Proxmox' ? proxmoxPortStatus(port) : portLabels[port.state];
+            const state = [label, formatPortSpeed(port.speedBps), port.source ?? 'SNMP', formatTime(port.checkedAt)];
             if (port.lldpNeighborCount) state.push('соседей по LLDP ' + port.lldpNeighborCount);
             li.append(make('small', `${device} ${port.name}: ${state.filter(Boolean).join(' · ')}`));
           }

@@ -142,7 +142,8 @@ def _public_reachability(value: object, now: datetime) -> dict:
 def _public_port(row: dict, now: datetime) -> dict:
     stamp = _time(row.get("checkedAt"))
     fresh = observation_is_fresh(row.get("checkedAt"), now)
-    state = row.get("state")
+    source = row.get("source")
+    state = "unknown" if source == "Proxmox" else row.get("state")
     speed = row.get("speedBps")
     result = {
         "name": _text(row.get("name"), 64),
@@ -154,8 +155,10 @@ def _public_port(row: dict, now: datetime) -> dict:
     neighbor_count = row.get("lldpNeighborCount")
     if result["state"] == "up" and type(neighbor_count) is int and 1 <= neighbor_count <= 65535:
         result["lldpNeighborCount"] = neighbor_count
-    if row.get("source") == "RouterOS":
-        result["source"] = "RouterOS"
+    if source in ("RouterOS", "Proxmox"):
+        result["source"] = source
+    if fresh and source == "Proxmox" and type(row.get("proxmoxActive")) is bool:
+        result["proxmoxActive"] = row["proxmoxActive"]
     return result
 
 
@@ -614,7 +617,7 @@ def _attach_storage_assignments(nodes: dict, links: list[dict], cluster_id: str)
 
 
 def _compare_link_ports(ports: dict) -> dict:
-    if set(ports) != {"a", "b"}:
+    if set(ports) != {"a", "b"} or any(port["state"] == "unknown" for port in ports.values()):
         return {}
     a, b = ports["a"], ports["b"]
     first, last = sorted((_time(a["checkedAt"]), _time(b["checkedAt"])))
@@ -657,7 +660,7 @@ def load_infrastructure_map(path: Path, now: datetime | None = None, *, db: Sess
         node = _public_node(row, now)
         if node["id"] and node["name"] and node["id"] not in nodes:
             nodes[node["id"]] = node
-            if node["kind"] in NETWORK_KINDS[:2]:
+            if node["kind"] in (*NETWORK_KINDS[:2], "Гипервизор"):
                 port_states[node["id"]] = index_port_states(_rows(row.get("ports"), 500), now)
             key = _text(row.get("endpointKey"))
             if node["kind"] == "Рабочая станция" and re.fullmatch(r"mac:(?:[0-9A-F]{2}:){5}[0-9A-F]{2}", key):
@@ -684,7 +687,7 @@ def load_infrastructure_map(path: Path, now: datetime | None = None, *, db: Sess
                     states = {}
                     for side in ("a", "b"):
                         port = port_states.get(edge[side], {}).get(port_label_key(evidence[-1][side]))
-                        if port and port["state"] != "unknown":
+                        if port and (port["state"] != "unknown" or "proxmoxActive" in port):
                             states[side] = port
                     if states:
                         evidence[-1]["portStates"] = states

@@ -1274,6 +1274,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             online = host.get("status") == "online"
             if online:
                 online_hypervisors.add(key)
+                item["ports"] = pve.get("physicalPorts", {}).get(key, [])
                 item["resources"] = {
                     "checkedAt": pve_at, "cpuRatio": host.get("cpu"), "logicalCpus": host.get("maxcpu"),
                     "memoryUsedBytes": host.get("mem"), "memoryTotalBytes": host.get("maxmem"),
@@ -1605,15 +1606,26 @@ def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: set[s
         interface = read_interface(node, port)
         return node, port, interface.get("type") == "eth" and interface.get("active") == 1
 
-    def read_storage_list(path):
+    def read_list(path):
         try:
             rows = get(path)
         except (URLError, TimeoutError, ValueError, KeyError):
             return []
         return [row for row in rows[:128] if isinstance(row, dict)] if isinstance(rows, list) else []
 
+    def read_physical_ports(node):
+        rows = read_list(f"nodes/{quote(node, safe='')}/network?type=eth")
+        checked_at = datetime.now(timezone.utc).isoformat()
+        ports = [
+            {"name": row["iface"], "source": "Proxmox", "state": "unknown", "checkedAt": checked_at,
+             "proxmoxActive": row.get("active") == 1}
+            for row in rows if row.get("type") == "eth" and row.get("exists") == 1
+            and isinstance(row.get("iface"), str) and INTERFACE_NAME.fullmatch(row["iface"])
+        ]
+        return node, sorted(ports, key=lambda port: port["name"])
+
     def read_disks(node):
-        rows = read_storage_list(f"nodes/{quote(node, safe='')}/disks/list")
+        rows = read_list(f"nodes/{quote(node, safe='')}/disks/list")
         states = {"OK": "ok", "PASSED": "ok", "FAILED": "critical", "FAILED!": "critical"}
         disks = [{"device": row.get("devpath"), "kind": row.get("type"),
                   "smartState": states.get(str(row.get("health")).strip().upper(), "unknown"),
@@ -1622,13 +1634,13 @@ def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: set[s
         return node, {"checkedAt": datetime.now(timezone.utc).isoformat(), "disks": disks}
 
     def read_zfs(node):
-        rows = read_storage_list(f"nodes/{quote(node, safe='')}/disks/zfs")
+        rows = read_list(f"nodes/{quote(node, safe='')}/disks/zfs")
         pools = [{"name": row.get("name"), "health": row.get("health"),
                   "sizeBytes": row.get("size"), "freeBytes": row.get("free")} for row in rows]
         return node, {"checkedAt": datetime.now(timezone.utc).isoformat(), "pools": pools}
 
     def read_lvm_thin(node):
-        rows = read_storage_list(f"nodes/{quote(node, safe='')}/disks/lvmthin")
+        rows = read_list(f"nodes/{quote(node, safe='')}/disks/lvmthin")
         pools = [{"name": row.get("lv"), "volumeGroup": row.get("vg"),
                   "sizeBytes": row.get("lv_size"), "usedBytes": row.get("used"),
                   "metadataSizeBytes": row.get("metadata_size"), "metadataUsedBytes": row.get("metadata_used")}
@@ -1640,6 +1652,7 @@ def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: set[s
                   and (str(guest["vmid"]) in guests or guest.get("status") == "running"
                        or (not guest.get("template") and guest["node"] in online_nodes))]
     with ThreadPoolExecutor(max_workers=6) as pool:
+        result["physicalPorts"] = dict(pool.map(read_physical_ports, sorted(online_nodes)))
         result["disks"] = dict(pool.map(read_disks, sorted(online_nodes)))
         result["zfs"] = dict(pool.map(read_zfs, sorted(online_nodes)))
         result["lvmThin"] = dict(pool.map(read_lvm_thin, sorted(online_nodes)))

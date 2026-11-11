@@ -981,6 +981,9 @@ def test_direct_link_compares_contemporaneous_port_samples(tmp_path):
     nodes[1]["ports"][0]["checkedAt"] = (now - timedelta(minutes=3)).isoformat()
     assert comparison() is None
     nodes[1]["ports"][0]["checkedAt"] = stamp
+    nodes[1]["ports"][0].update(source="Proxmox", proxmoxActive=True, state="up")
+    assert comparison() is None
+    nodes[1]["ports"][0].pop("source")
     link["kind"] = "Путь по MAC-таблице"
     assert comparison() is None
 
@@ -1328,6 +1331,59 @@ def test_lacp_confirms_only_ports_whose_partner_matches_fresh_arp(tmp_path):
     network["arp"].append({**network["arp"][0], "mac": "02:00:00:00:00:98"})
     assert not link()["confirmed"]
     assert mac not in path.read_text(encoding="utf-8")
+
+
+def test_proxmox_physical_port_inventory_preserves_admin_state_without_carrier(tmp_path, monkeypatch):
+    from io import BytesIO
+    from urllib.error import HTTPError
+    from app import infrastructure_collect as collector
+    from app.infrastructure_map import load_infrastructure_map
+
+    token = tmp_path / "pve-token"
+    token.write_text("PVEAPIToken=test@pve!monitor=test", encoding="utf-8")
+    responses = {
+        "cluster/status": [],
+        "cluster/resources?type=node": [{"node": "pve1", "status": "online"}, {"node": "pve2", "status": "online"}],
+        "cluster/resources?type=vm": [],
+        "nodes/pve1/network?type=eth": [
+            {"iface": "eno1", "type": "eth", "exists": 1, "active": 1},
+            {"iface": "eno2", "type": "eth", "exists": 1},
+            {"iface": "eno3", "type": "eth"},
+            {"iface": "vmbr0", "type": "bridge", "exists": 1, "active": 1},
+        ],
+    }
+
+    class Opener:
+        def open(self, request, timeout):
+            path = request.full_url.split("/api2/json/", 1)[1]
+            if path == "nodes/pve2/network?type=eth":
+                raise HTTPError(request.full_url, 403, "Forbidden", {}, None)
+            return BytesIO(json.dumps({"data": responses.get(path, [])}).encode())
+
+    monkeypatch.setattr(collector, "build_opener", lambda *args: Opener())
+    pve = collector.read_proxmox("https://pve.example", token, None, set())
+    context = {"devices": [{"id": "switch", "name": "Switch", "kind": "switch"},
+                           {"id": "pve1", "name": "pve1", "kind": "hypervisor"}], "links": [{
+        "endpoint_a": {"device": "switch", "interface": "ge1"},
+        "endpoint_b": {"device": "pve1", "interface": "eno1"},
+        "relation": "connected_to",
+    }]}
+    now = datetime.now(timezone.utc)
+    path = tmp_path / "graph.json"
+    collector.publish_snapshot(path, collector.build_graph(context, {}, {}, pve, {}, now))
+    graph = load_infrastructure_map(path, now)
+    nodes = {node["id"]: node for node in graph["nodes"]}
+    assert [(p["name"], p["proxmoxActive"], p["state"]) for p in nodes["pve1"]["ports"]] == [
+        ("eno1", True, "unknown"), ("eno2", False, "unknown"),
+    ]
+    assert not nodes["pve2"]["ports"]
+    link = next(e for e in graph["links"] if e["kind"] == "Сетевое соединение")
+    assert not link["confirmed"]
+    report, = link["portEvidence"]
+    assert report["portStates"]["b"]["proxmoxActive"] is True
+    assert "portComparison" not in report
+    aged = load_infrastructure_map(path, now + timedelta(hours=1))
+    assert all("proxmoxActive" not in port for node in aged["nodes"] for port in node["ports"])
 
 
 def test_proxmox_management_port_joins_unique_fdb_and_active_bridge(tmp_path):
