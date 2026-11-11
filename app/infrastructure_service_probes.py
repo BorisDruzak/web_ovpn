@@ -6,6 +6,7 @@ import hashlib
 import http.client
 import ipaddress
 import json
+import os
 import re
 import socket
 import ssl
@@ -48,16 +49,33 @@ def _http(ip: str, port: int, spec: dict) -> str:
         content_type = content_type or "application/json"
     tls = spec["type"] == "https"
     fingerprint = spec.get("tls_sha256")
+    server_name = spec.get("tls_server_name")
+    ca_file = spec.get("tls_ca_file")
     context = None
+    if server_name is not None or ca_file is not None:
+        if not tls or fingerprint is not None:
+            raise ValueError("CA verification requires HTTPS without a pinned fingerprint")
+        if server_name is not None and (
+            not isinstance(server_name, str) or len(server_name) > 253
+            or any(not re.fullmatch(r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?", label)
+                   for label in server_name.split("."))
+        ):
+            raise ValueError("invalid HTTPS certificate name")
+        if ca_file is not None and (not isinstance(ca_file, str) or not os.path.isabs(ca_file)):
+            raise ValueError("HTTPS CA file requires an absolute path")
+        context = ssl.create_default_context(cafile=ca_file)
     if fingerprint is not None:
         if not tls or not isinstance(fingerprint, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", fingerprint):
             raise ValueError("invalid HTTPS certificate fingerprint")
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
-    connection = (http.client.HTTPSConnection(ip, port, timeout=TIMEOUT, context=context) if tls
+    connection = (http.client.HTTPSConnection(server_name or ip, port, timeout=TIMEOUT, context=context) if tls
                   else http.client.HTTPConnection(ip, port, timeout=TIMEOUT))
     try:
+        if server_name:
+            with socket.create_connection((ip, port), timeout=TIMEOUT) as transport:
+                connection.sock = context.wrap_socket(transport, server_hostname=server_name)
         if fingerprint is not None:
             connection.connect()
             certificate = connection.sock.getpeercert(binary_form=True)

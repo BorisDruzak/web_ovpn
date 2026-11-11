@@ -121,6 +121,64 @@ def test_http_probe_matches_json_health_fields_without_fixing_the_version():
     assert results == ["reachable", "unknown", "unknown", "unknown", "unreachable"]
 
 
+def test_https_probe_checks_dns_name_against_ca_while_connecting_to_verified_ip(monkeypatch, tmp_path):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from app import infrastructure_service_probes as probes
+
+    name = "service.example.test"
+    ip = "192.0.2.15"
+    ca = str(tmp_path / "ca.pem")
+    raw, secured = object(), object()
+    events = []
+
+    class Context:
+        def wrap_socket(self, transport, *, server_hostname):
+            assert transport is raw
+            events.append(("tls", server_hostname))
+            if server_hostname != name:
+                raise probes.ssl.SSLCertVerificationError("hostname mismatch")
+            return secured
+
+    class Connection:
+        def __init__(self, host, port, *, timeout, context):
+            self.host = host
+            assert port == 443
+            assert isinstance(context, Context)
+
+        def request(self, method, path, headers):
+            assert self.sock is secured
+            events.append((self.host, method, path))
+
+        def getresponse(self):
+            return SimpleNamespace(status=200, getheader=lambda *_: "text/plain", read=lambda _: b"ready")
+
+        def close(self):
+            pass
+
+    def connect(address, *, timeout):
+        events.append(("tcp", address))
+        return nullcontext(raw)
+
+    def trust(*, cafile):
+        assert cafile == ca
+        return Context()
+
+    monkeypatch.setattr(probes.socket, "create_connection", connect)
+    monkeypatch.setattr(probes.ssl, "create_default_context", trust)
+    monkeypatch.setattr(probes.http.client, "HTTPSConnection", Connection)
+    spec = {"type": "https", "ip": ip, "port": 443, "path": "/ready", "body": "ready",
+            "tls_server_name": name, "tls_ca_file": ca}
+    assert probes._probe(spec) == "reachable"
+    assert events == [("tcp", (ip, 443)), ("tls", name), (name, "GET", "/ready")]
+    events.clear()
+    assert probes._probe({**spec, "tls_server_name": "wrong.example.test"}) == "unknown"
+    assert events == [("tcp", (ip, 443)), ("tls", "wrong.example.test")]
+    events.clear()
+    assert probes._probe({**spec, "tls_sha256": "0" * 64}) == "unknown"
+    assert not events
+
+
 def test_asset_https_probe_validates_certificate_before_sending_request(monkeypatch):
     from hashlib import sha256
     from types import SimpleNamespace
