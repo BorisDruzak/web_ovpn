@@ -2108,10 +2108,15 @@ def test_transit_peer_management_port_requires_fresh_arp_fdb_and_active_ethernet
                                             "peer": "192.0.2.2", "label": "Transit", "lan_bridge": "bridge-lan"}}}
     learned = {"source": "main", "mac": mac, "bridge": "bridge-lan", "interface": "ether7", "last_seen_at": at}
     network = {
-        "sources": [{"name": "main", "driver": "mikrotik_api", "driver_options": {"intent_stable_id": "rb"}}],
+        "sources": [{"name": "main", "driver": "mikrotik_api", "enabled": 1,
+                     "driver_options": {"intent_stable_id": "rb"}}],
         "arp": [{"source": "main", "ip": address, "mac": mac, "interface": "bridge-lan", "last_seen_at": at}],
         "router_bridge_hosts": [learned],
         "router_interfaces": [{"source": "main", "name": "ether7", "type": "ether",
+                               "running": 1, "disabled": 0, "last_seen_at": at},
+                              {"source": "main", "name": "ether9", "type": "ether",
+                               "running": 0, "disabled": 1, "last_seen_at": at},
+                              {"source": "main", "name": "bridge-lan", "type": "bridge",
                                "running": 1, "disabled": 0, "last_seen_at": at}],
     }
     path = tmp_path / "graph.json"
@@ -2123,8 +2128,15 @@ def test_transit_peer_management_port_requires_fresh_arp_fdb_and_active_ethernet
 
     link, = lan()
     assert link["kind"] == "Путь по MAC-таблице" and link["confirmed"]
-    assert link["portEvidence"] == [{"a": "ether7", "b": "", "source": "MikroTik · ARP + FDB", "at": at, "confirmed": True}]
-    assert not lan(public_at=now + timedelta(hours=1))[0]["confirmed"]
+    expected = {"name": "ether7", "source": "RouterOS", "state": "up",
+                "speedBps": None, "checkedAt": at, "stale": False}
+    assert link["portEvidence"] == [{"a": "ether7", "b": "", "source": "MikroTik · ARP + FDB", "at": at,
+                                     "confirmed": True, "portStates": {"a": expected}}]
+    ports = next(node["ports"] for node in load_infrastructure_map(path, now)["nodes"] if node["id"] == "rb")
+    assert ports == [expected, {**expected, "name": "ether9", "state": "disabled"}]
+    expired = lan(public_at=now + timedelta(hours=1))[0]
+    assert not expired["confirmed"]
+    assert "portStates" not in expired["portEvidence"][0]
     assert lan(at=now + timedelta(hours=1), public_at=now + timedelta(hours=1)) == []
     network["router_bridge_hosts"].append({**learned, "interface": "ether6"})
     assert lan() == []

@@ -154,6 +154,8 @@ def _public_port(row: dict, now: datetime) -> dict:
     neighbor_count = row.get("lldpNeighborCount")
     if result["state"] == "up" and type(neighbor_count) is int and 1 <= neighbor_count <= 65535:
         result["lldpNeighborCount"] = neighbor_count
+    if row.get("source") == "RouterOS":
+        result["source"] = "RouterOS"
     return result
 
 
@@ -655,7 +657,7 @@ def load_infrastructure_map(path: Path, now: datetime | None = None, *, db: Sess
         node = _public_node(row, now)
         if node["id"] and node["name"] and node["id"] not in nodes:
             nodes[node["id"]] = node
-            if node["kind"] == NETWORK_KINDS[0]:
+            if node["kind"] in NETWORK_KINDS[:2]:
                 port_states[node["id"]] = index_port_states(_rows(row.get("ports"), 500), now)
             key = _text(row.get("endpointKey"))
             if node["kind"] == "Рабочая станция" and re.fullmatch(r"mac:(?:[0-9A-F]{2}:){5}[0-9A-F]{2}", key):
@@ -675,7 +677,8 @@ def load_infrastructure_map(path: Path, now: datetime | None = None, *, db: Sess
                         source == "GitHub" or observation_is_fresh(report.get("at"), now)),
                 })
                 paired = edge["kind"] == "Сетевое соединение" or source in {RECIPROCAL_MAC_SOURCE, "netctl FDB + Proxmox"}
-                observed_attachment = source == "netctl FDB" and evidence[-1]["confirmed"]
+                observed_attachment = (source in {"netctl FDB", "MikroTik · ARP", "MikroTik · ARP + FDB"}
+                                       and evidence[-1]["confirmed"])
                 both_ports = paired and evidence[-1]["a"] and evidence[-1]["b"]
                 if both_ports or source == SHARED_LLDP_SOURCE or observed_attachment:
                     states = {}

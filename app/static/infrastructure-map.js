@@ -603,7 +603,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const row = make('li');
         const time = port.checkedAt ? formatTime(port.checkedAt) : '';
         const speed = formatPortSpeed(port.speedBps);
-        const status = [states[port.state], speed, time, port.stale && time ? 'устарело' : ''].filter(Boolean).join(' · ');
+        const status = [states[port.state], speed, port.source, time, port.stale && time ? 'устарело' : ''].filter(Boolean).join(' · ');
         const name = make(selectedPort ? 'strong' : 'button', port.name);
         if (!selectedPort) {
           name.type = 'button';
@@ -774,7 +774,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
             if (!port || renderedPorts.has(key)) continue;
             renderedPorts.add(key);
             const device = byId.get(edge[side]).name;
-            const state = [portLabels[port.state], formatPortSpeed(port.speedBps), 'SNMP', formatTime(port.checkedAt)];
+            const state = [portLabels[port.state], formatPortSpeed(port.speedBps), port.source ?? 'SNMP', formatTime(port.checkedAt)];
             if (port.lldpNeighborCount) state.push('соседей по LLDP ' + port.lldpNeighborCount);
             li.append(make('small', `${device} ${port.name}: ${state.filter(Boolean).join(' · ')}`));
           }
@@ -783,7 +783,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
             if (!comparedPorts.has(pair)) {
               comparedPorts.add(pair);
               const {state, checkedAt} = evidence.portComparison;
-              li.append(make('small', comparisonLabels[state] + ' · SNMP · ' + formatTime(checkedAt)));
+              const sources = [...new Set(['a', 'b'].map(side => evidence.portStates[side].source ?? 'SNMP'))];
+              li.append(make('small', comparisonLabels[state] + ' · ' + sources.join(' + ') + ' · ' + formatTime(checkedAt)));
             }
           }
           if (evidence.confirmed && evidence.virtual) {

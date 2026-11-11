@@ -883,6 +883,16 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             peers_by_sample.setdefault((*local, run, row["observed_at"]), set()).add(identity)
 
     switch_status = {row["source"]: row for row in network.get("switches", [])}
+    router_ports = {}
+    for interface in network.get("router_interfaces", []):
+        name = interface.get("name")
+        if interface.get("type") != "ether" or not isinstance(name, str) or not INTERFACE_NAME.fullmatch(name):
+            continue
+        state = ("disabled" if interface.get("disabled") == 1 else
+                 {1: "up", 0: "down"}.get(interface.get("running"), "unknown"))
+        router_ports.setdefault(interface["source"], []).append({
+            "name": name, "source": "RouterOS", "state": state, "checkedAt": interface.get("last_seen_at"),
+        })
     port_groups = {}
     port_names = {}
     for port in network.get("ports", []):
@@ -930,6 +940,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         elif direct:
             item["reachability"] = direct
         item["properties"]["Источник сбора"] = name
+        if row.get("enabled") and row.get("driver") in {"mikrotik_api", "mikrotik_ssh"} and name in router_ports:
+            item["ports"] = router_ports[name]
         if name in port_groups:
             ports = port_groups[name]
             latest_run = max((port["collector_run_id"] for port in ports
@@ -1746,16 +1758,16 @@ def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | N
                 """,
                 (json.dumps(sorted(route_sources)),),
             )]
+        data["router_interfaces"] = [dict(row) for row in connection.execute(
+            """
+            SELECT s.name AS source, i.name, i.type, i.running, i.disabled, i.last_seen_at
+            FROM network_interfaces AS i
+            JOIN network_sources AS s ON s.id = i.source_id
+            WHERE s.enabled = 1 AND s.driver IN ('mikrotik_api', 'mikrotik_ssh') AND i.type = 'ether'
+            ORDER BY s.name, i.name
+            """
+        )]
         if transit_sources:
-            data["router_interfaces"] = [dict(row) for row in connection.execute(
-                """
-                SELECT s.name AS source, i.name, i.type, i.running, i.disabled, i.last_seen_at
-                FROM network_interfaces AS i
-                JOIN network_sources AS s ON s.id = i.source_id
-                WHERE s.enabled = 1 AND s.name IN (SELECT value FROM json_each(?))
-                """,
-                (json.dumps(sorted(transit_sources)),),
-            )]
             data["router_bridge_hosts"] = [dict(row) for row in connection.execute(
                 """
                 SELECT s.name AS source, b.mac, b.bridge, b.interface, b.last_seen_at
