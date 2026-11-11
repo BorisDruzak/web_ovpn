@@ -1338,10 +1338,15 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 if row["port_key"] == port and row.get("oper_status") == "up" and row.get("admin_status") != "down"
                 and observation_is_fresh(row.get("last_seen_at"), now)]
         if live:
+            management = management_ports.get(asset)
+            remote_port = management[0] if management and management[1] == mac else ""
+            provenance = "netctl FDB + Proxmox" if remote_port else "netctl FDB"
             for row in observations:
                 checked = min(arp_at, datetime.fromisoformat(max(live)), datetime.fromisoformat(row["observed_at"]))
-                edge(switch, asset, "Путь по MAC-таблице", "netctl FDB", details=address,
-                     ports=(port_label(switch_source, port), ""), at=checked.isoformat(), vlan=row["vlan_id"])
+                if remote_port:
+                    checked = min(checked, datetime.fromisoformat(pve_at))
+                edge(switch, asset, "Путь по MAC-таблице", provenance, details=address,
+                     ports=(port_label(switch_source, port), remote_port), at=checked.isoformat(), vlan=row["vlan_id"])
     for report in network.get("lacp", []):
         asset = report["asset"]
         address = address_by_asset.get(asset)
@@ -1527,7 +1532,7 @@ def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | N
         )]
         if asset_fdb_ips:
             macs = {row["mac"].lower() for row in data["arp"] if row["ip"] in asset_fdb_ips and row["mac"]}
-            data["asset_fdb"] = query_observed_mac_ports(connection, macs)
+            data["asset_fdb"] = query_observed_mac_ports(connection, macs, learned_only=True)
         if route_sources:
             data["routes"] = [dict(row) for row in connection.execute(
                 """

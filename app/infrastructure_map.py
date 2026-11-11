@@ -353,7 +353,7 @@ def load_infrastructure_map(path: Path, now: datetime | None = None, *, db: Sess
                     "confirmed": report.get("confirmed") is True and (
                         source == "GitHub" or observation_is_fresh(report.get("at"), now)),
                 })
-                paired = edge["kind"] == "Сетевое соединение" or source == RECIPROCAL_MAC_SOURCE
+                paired = edge["kind"] == "Сетевое соединение" or source in {RECIPROCAL_MAC_SOURCE, "netctl FDB + Proxmox"}
                 if (paired and evidence[-1]["a"] and evidence[-1]["b"]) or source == SHARED_LLDP_SOURCE:
                     states = {}
                     for side in ("a", "b"):

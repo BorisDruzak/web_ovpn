@@ -1517,6 +1517,40 @@ def test_configured_asset_fdb_path_is_scoped_and_requires_a_unique_live_port():
     assert links() == []
 
 
+def test_hypervisor_fdb_path_reports_management_interface_without_claiming_direct_cable():
+    from app.infrastructure_collect import build_graph
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    earlier = (now - timedelta(minutes=1)).isoformat()
+    address, mac = "192.0.2.11", "02:00:00:00:00:11"
+    context = {"devices": [{"id": "pve1", "name": "pve1", "kind": "hypervisor",
+                            "management_ip": address, "mac_addresses": [mac]}]}
+    network = {"sources": [{"id": 1, "name": "core", "driver": "snmp_switch", "enabled": True}],
+               "arp": [{"ip": address, "mac": mac, "last_seen_at": at}],
+               "ports": [{"source": "core", "port_key": "physical:12", "name": "ge12",
+                          "oper_status": "up", "last_seen_at": at}],
+               "asset_fdb": [{"source_id": 1, "mac": mac, "port_key": "physical:12", "vlan_id": 1, "observed_at": at}]}
+    pve = {"at": earlier, "cluster": [], "guests": [], "nodes": [{"node": "pve1", "status": "online"}],
+           "management": {"pve1": {"address": address, "port": "enp134s0"}}}
+    bindings = {"asset_fdb_paths": {"pve1": "core"}}
+
+    def proof():
+        graph = build_graph(context, network, {}, pve, bindings, now)
+        path, = [edge for edge in graph["links"] if edge["a"] == "observer:core"]
+        assert path["kind"] == "Путь по MAC-таблице" and path["confirmed"]
+        report, = path["portEvidence"]
+        return report
+
+    assert proof() == {"a": "ge12", "b": "enp134s0", "source": "netctl FDB + Proxmox",
+                       "at": earlier, "confirmed": True, "vlan": 1}
+    pve["management"]["pve1"]["address"] = "192.0.2.12"
+    assert proof()["b"] == "" and proof()["source"] == "netctl FDB"
+    pve["management"]["pve1"]["address"] = address
+    pve["at"] = (now - timedelta(hours=1)).isoformat()
+    assert proof()["b"] == ""
+
+
 def test_transit_peer_management_port_requires_fresh_arp_fdb_and_active_ethernet(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map
