@@ -611,6 +611,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           name.addEventListener('click', () => selectPort(id, port.name));
         }
         row.append(name, make('small', status));
+        if (selectedPort && port.lldpNeighborCount) {
+          row.append(make('small', 'Соседей по LLDP · ' + port.lldpNeighborCount));
+        }
         if (selectedPort && port.vlanMemberships) {
           const vlans = port.vlanMemberships.vlans;
           for (const [label, selected] of [
@@ -772,6 +775,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
             renderedPorts.add(key);
             const device = byId.get(edge[side]).name;
             const state = [portLabels[port.state], formatPortSpeed(port.speedBps), 'SNMP', formatTime(port.checkedAt)];
+            if (port.lldpNeighborCount) state.push('соседей по LLDP ' + port.lldpNeighborCount);
             li.append(make('small', `${device} ${port.name}: ${state.filter(Boolean).join(' · ')}`));
           }
           if (evidence.portComparison) {

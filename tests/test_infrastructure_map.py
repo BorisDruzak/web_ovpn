@@ -916,6 +916,43 @@ def test_map_reports_port_state_for_declared_pair_without_confirming_cable(tmp_p
     assert set(load()) == {"b"}
 
 
+def test_lldp_neighbor_count_on_ports_and_declared_links_uses_current_poll(tmp_path):
+    from app.infrastructure_collect import build_graph, publish_snapshot
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    stamp = now.isoformat()
+    devices = [{"id": key, "name": key, "kind": "switch", "management_ip": f"192.0.2.{index}"}
+               for index, key in enumerate(("a", "b"), 1)]
+    context = {"devices": devices, "links": [{
+        "endpoint_a": {"device": "a", "interface": "ge1"}, "endpoint_b": {"device": "b", "interface": "ge1"},
+        "relation": "connected_to",
+    }]}
+    sources = [{"id": index, "name": key, "driver": "snmp_switch", "host": f"192.0.2.{index}", "enabled": 1}
+               for index, key in enumerate(("a", "b"), 1)]
+    ports = [{"source": key, "name": "ge1", "port_key": "ifindex:1", "if_index": 1,
+              "oper_status": "up", "last_seen_at": stamp, "collector_run_id": 7} for key in ("a", "b")]
+    neighbor = {"source": "a", "local_port_key": "ifindex:1", "observed_at": stamp, "collector_run_id": 7,
+                "chassis_id": "00:11:22:33:44:55", "port_id": "eth0"}
+    lldp = [neighbor, neighbor.copy(), {**neighbor, "port_id": "eth1"},
+            {**neighbor, "port_id": "eth2", "collector_run_id": 6},
+            {**neighbor, "port_id": "eth3", "observed_at": (now - timedelta(minutes=1)).isoformat()}]
+    graph = build_graph(context, {"sources": sources, "ports": ports, "lldp": lldp}, {}, {}, {}, now)
+    path = tmp_path / "map.json"
+    publish_snapshot(path, graph)
+    public = load_infrastructure_map(path, now)
+    nodes = {node["id"]: node for node in public["nodes"]}
+    assert nodes["a"]["ports"][0]["lldpNeighborCount"] == 2
+    assert "lldpNeighborCount" not in nodes["b"]["ports"][0]
+    direct = next(edge for edge in public["links"] if edge["kind"] == "Сетевое соединение")
+    assert not direct["confirmed"]
+    report = direct["portEvidence"][0]
+    assert report["portStates"]["a"]["lldpNeighborCount"] == 2
+    assert "lldpNeighborCount" not in report["portStates"]["b"]
+    aged = load_infrastructure_map(path, now + timedelta(hours=1))
+    assert all("lldpNeighborCount" not in port for node in aged["nodes"] for port in node["ports"])
+
+
 def test_direct_link_compares_contemporaneous_port_samples(tmp_path):
     from app.infrastructure_map import load_infrastructure_map
 

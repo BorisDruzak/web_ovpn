@@ -870,6 +870,18 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                         and nodes.get(host["device"], {}).get("kind") == "Гипервизор"):
                     verified_host_ports.add((host["device"], switch["device"], (switch.get("interface") or "").casefold()))
 
+    fresh_lldp = [row for row in network.get("lldp", []) if observation_is_fresh(row.get("observed_at"), now)]
+    peers_by_port = {}
+    peers_by_sample = {}
+    for row in fresh_lldp:
+        local = (row.get("source"), row.get("local_port_key"))
+        chassis = str(row.get("chassis_id") or row.get("system_name") or "").casefold()
+        identity = (chassis, str(row.get("port_id") or "").casefold())
+        peers_by_port.setdefault(local, set()).add(identity)
+        run = row.get("collector_run_id")
+        if chassis and type(run) is int:
+            peers_by_sample.setdefault((*local, run, row["observed_at"]), set()).add(identity)
+
     switch_status = {row["source"]: row for row in network.get("switches", [])}
     port_groups = {}
     port_names = {}
@@ -933,6 +945,9 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             ]
             for port, raw_port in zip(item["ports"], current):
                 scope = (name, latest_run, port["checkedAt"])
+                neighbors = peers_by_sample.get((name, port["key"], latest_run, port["checkedAt"]))
+                if neighbors and port["state"] == "up":
+                    port["lldpNeighborCount"] = len(neighbors)
                 learned_vlans = fdb_vlans.get((*scope, port["key"]))
                 if learned_vlans and port["state"] == "up":
                     port["fdbVlans"] = {"checkedAt": port["checkedAt"], "vlans": learned_vlans}
@@ -1036,15 +1051,11 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 edge(a, b, "Сетевое соединение", "netctl", confirmed, ports=ports, at=observed)
             elif any(ports):
                 fdb_reports.append((a, b, confirmed, ports, observed))
-    fresh_lldp = [row for row in network.get("lldp", []) if observation_is_fresh(row.get("observed_at"), now)]
-    peers_by_port = {}
     lldp_chassis_ports = {}
     lldp_address_owners = {}
     for row in fresh_lldp:
         local = (row.get("source"), row.get("local_port_key"))
         chassis = str(row.get("chassis_id") or row.get("system_name") or "").casefold()
-        identity = (chassis, str(row.get("port_id") or "").casefold())
-        peers_by_port.setdefault(local, set()).add(identity)
         if MAC.fullmatch(chassis):
             lldp_chassis_ports.setdefault((local[0], chassis), set()).add(local[1])
         for address in row.get("management_addresses", []):

@@ -144,13 +144,17 @@ def _public_port(row: dict, now: datetime) -> dict:
     fresh = observation_is_fresh(row.get("checkedAt"), now)
     state = row.get("state")
     speed = row.get("speedBps")
-    return {
+    result = {
         "name": _text(row.get("name"), 64),
         "state": state if fresh and state in ("up", "down", "disabled") else "unknown",
         "speedBps": speed if fresh and state == "up" and type(speed) is int and 0 < speed <= 10**15 else None,
         "checkedAt": stamp.isoformat() if stamp is not None and stamp <= now else None,
         "stale": not fresh,
     }
+    neighbor_count = row.get("lldpNeighborCount")
+    if result["state"] == "up" and type(neighbor_count) is int and 1 <= neighbor_count <= 65535:
+        result["lldpNeighborCount"] = neighbor_count
+    return result
 
 
 def _physical_port_alias(row: dict) -> str:
