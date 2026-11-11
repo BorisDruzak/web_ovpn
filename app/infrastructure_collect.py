@@ -112,9 +112,9 @@ def _arp_mappings(rows: list[dict], now: datetime) -> dict:
     return {ip: next(iter(macs.items())) for ip, macs in mappings.items() if len(macs) == 1}
 
 
-def _verified_arp_checks(rows: list[dict], hosts: dict, now: datetime) -> dict:
+def _verified_arp_checks(mappings: dict, hosts: dict, now: datetime) -> dict:
     checks = {}
-    for ip, (mac, arp_at) in _arp_mappings(rows, now).items():
+    for ip, (mac, arp_at) in mappings.items():
         probe = _host_observation(hosts.get(ip, {}), now)
         if probe and probe["state"] == "reachable" and datetime.fromisoformat(probe["checkedAt"]) >= arp_at:
             checks.setdefault(mac, []).append((ip, {**probe, "method": probe["method"] + " · ARP"}))
@@ -459,12 +459,20 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 item["reachability"] = _observation(state, "Server Observer", method, checked_at)
         edge(host, item["id"], "Цель проверки", "Настройки карты")
 
+    guest_services = {}
+    for service_id, spec in bindings.get("guest_services", {}).items():
+        if service_id not in nodes:
+            item = node(service_id, spec["label"], "Сервис", origin="UI_VPN")
+            item["guestProbeIP"] = None
+            guest_services.setdefault(str(spec["vmid"]), []).append((item, spec))
+
     cluster_id = ""
     hypervisors = []
     overview_guests = []
     pve_at = pve.get("at", now.isoformat())
     if pve:
-        arp_checks = _verified_arp_checks(network.get("arp", []), host_ips, now)
+        arp_mappings = _arp_mappings(network.get("arp", []), now)
+        arp_checks = _verified_arp_checks(arp_mappings, host_ips, now)
         for mac, checks in network.get("guest_arp_probes", {}).items():
             arp_checks.setdefault(mac, []).extend(checks)
         cluster = next((row for row in pve["cluster"] if row.get("type") == "cluster"), {})
@@ -512,6 +520,16 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             source(item, "Proxmox", status, pve_at, label)
             item.pop("reachability", None)
             interfaces = guest_interfaces.get(str(vmid), {})
+            if observation_is_fresh(pve_at, now):
+                for service, spec in guest_services.get(str(vmid), []):
+                    mac = str(spec.get("mac") or "").lower()
+                    if mac_counts[mac] != 1 or mac not in guest_macs.get(str(vmid), set()):
+                        continue
+                    edge(key, service["id"], "Размещение", "Proxmox", at=pve_at)
+                    address = bindings.get("guest_probe_ips", {}).get(str(vmid))
+                    if (status == "ok" and arp_mappings.get(address, (None,))[0] == mac
+                            and any(nic_mac == mac and not disabled for _, _, disabled, nic_mac in interfaces.values())):
+                        service["guestProbeIP"] = address
             if not guest.get("template") and guest.get("status") == "stopped":
                 item["reachability"] = _observation("stopped", "Proxmox", "Состояние ВМ", pve_at)
             elif guest.get("status") == "running" and not guest.get("template") and observation_is_fresh(pve_at, now):
@@ -596,7 +614,7 @@ class _NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: dict) -> dict:
+def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: set[str]) -> dict:
     origin = urlsplit(url)
     if origin.scheme != "https" or not origin.hostname or origin.username or origin.path not in ("", "/") or origin.query or origin.fragment:
         raise ValueError("Proxmox requires an HTTPS origin")
@@ -747,7 +765,9 @@ def main() -> int:
         bindings = json.loads(args.bindings.read_text(encoding="utf-8")) if args.bindings else {}
         pve = {}
         if args.proxmox_url:
-            pve = read_proxmox(args.proxmox_url, args.proxmox_token_file, args.proxmox_ca, bindings.get("guests", {}))
+            guest_ids = set(bindings.get("guests", {}))
+            guest_ids.update(str(service["vmid"]) for service in bindings.get("guest_services", {}).values())
+            pve = read_proxmox(args.proxmox_url, args.proxmox_token_file, args.proxmox_ca, guest_ids)
         elif args.proxmox_export:
             pve = json.loads(args.proxmox_export.read_text(encoding="utf-8"))
             if not pve.get("at"):

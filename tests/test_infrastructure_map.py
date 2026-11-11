@@ -87,6 +87,76 @@ def test_service_requires_all_http_checks_and_rejects_unexpected_response():
     assert nodes[1]["serviceChecks"][1]["path"] == "/unexpected"
 
 
+def test_zabbix_version_checks_matching_json_rpc_response():
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+    from app.infrastructure_service_probes import apply_service_probes
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            assert request == {"jsonrpc": "2.0", "method": "apiinfo.version", "params": [], "id": 1}
+            code = 503 if self.path == "/failed" else 200
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            response = {"jsonrpc": "2.0", "id": 2 if self.path == "/wrong-id" else 1, "result": "7.0.21"}
+            self.wfile.write(json.dumps(response).encode())
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        worker = Thread(target=server.serve_forever)
+        worker.start()
+        try:
+            paths = ("/zabbix/api_jsonrpc.php", "/wrong-id", "/failed")
+            nodes = [{"id": path, "kind": "Сервис"} for path in paths]
+            specs = {path: [{"type": "zabbix_api", "ip": "127.0.0.1", "port": server.server_port, "path": path}]
+                     for path in paths}
+            apply_service_probes(nodes, specs)
+        finally:
+            server.shutdown()
+            worker.join()
+    assert [n["reachability"]["state"] for n in nodes] == ["reachable", "unknown", "unreachable"]
+    assert nodes[0]["serviceChecks"][0]["path"] == paths[0]
+
+
+def test_guest_service_requires_matching_mac_and_arp_to_enable_probe(monkeypatch):
+    from app.infrastructure_collect import build_graph
+    from app import infrastructure_service_probes as probes
+
+    now = datetime.now(timezone.utc)
+    mac, address = "02:00:00:00:00:03", "192.0.2.21"
+    pve = {
+        "cluster": [], "nodes": [],
+        "guests": [{"vmid": 108, "node": "pve1", "type": "qemu", "status": "running"}],
+        "configs": {"108": {"net0": f"virtio={mac},bridge=vmbr0"}},
+    }
+    arp = {"ip": address, "mac": mac, "last_seen_at": now.isoformat()}
+    network = {"arp": [arp]}
+    binding = {"guest_probe_ips": {"108": address},
+               "guest_services": {"zabbix-api": {"label": "Zabbix API", "vmid": 108, "mac": mac}}}
+    configured = {"zabbix-api": [{"ip": address, "port": 80, "type": "zabbix_api"}]}
+    monkeypatch.setattr(probes, "_probe", lambda spec: "reachable")
+
+    def build():
+        graph = build_graph({}, network, {}, pve, binding, now)
+        probes.apply_service_probes(graph["nodes"], configured)
+        return graph, next(n for n in graph["nodes"] if n["id"] == "zabbix-api")
+
+    graph, service = build()
+    assert service["reachability"]["state"] == "reachable"
+    assert any(e["a"] == "pve-guest:108" and e["b"] == "zabbix-api" and e["confirmed"] for e in graph["links"])
+    configured["zabbix-api"][0]["ip"] = "192.0.2.22"
+    assert "reachability" not in build()[1]
+    configured["zabbix-api"][0]["ip"] = address
+    network["arp"] = []
+    assert "reachability" not in build()[1]
+    network["arp"] = [arp]
+    pve["configs"]["108"]["net0"] = "virtio=02:00:00:00:00:99,bridge=vmbr0"
+    graph, service = build()
+    assert "reachability" not in service
+    assert not any(e["b"] == "zabbix-api" for e in graph["links"])
+
+
 def test_port_evidence_keeps_direction_and_parallel_links(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map

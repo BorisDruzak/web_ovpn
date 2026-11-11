@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import http.client
 import ipaddress
+import json
 import re
 import socket
 import ssl
@@ -24,10 +25,14 @@ TIMEOUT = 3
 HTTP_BODY_LIMIT = 32 * 1024
 
 
-def _http(ip: str, port: int, spec: dict) -> str:
-    path = spec.get("path")
+def _http_path(path: object) -> str:
     if not isinstance(path, str) or not re.fullmatch(r"/[A-Za-z0-9._/-]{0,159}", path) or path.startswith("//"):
         raise ValueError("invalid service probe path")
+    return path
+
+
+def _http(ip: str, port: int, spec: dict) -> str:
+    path = _http_path(spec.get("path"))
     body_expected = spec.get("body")
     body_marker = spec.get("body_contains")
     content_type = spec.get("content_type")
@@ -50,6 +55,31 @@ def _http(ip: str, port: int, spec: dict) -> str:
         if body_marker:
             return "reachable" if body_marker.encode() in response.read(HTTP_BODY_LIMIT) else "unknown"
         return "reachable" if response.read(1) else "unknown"
+    finally:
+        connection.close()
+
+
+def _zabbix_api(ip: str, port: int, spec: dict) -> str:
+    path = _http_path(spec.get("path"))
+    connection = http.client.HTTPConnection(ip, port, timeout=TIMEOUT)
+    try:
+        connection.request("POST", path, b'{"jsonrpc":"2.0","method":"apiinfo.version","params":[],"id":1}',
+                           {"Content-Type": "application/json-rpc", "Accept-Encoding": "identity"})
+        response = connection.getresponse()
+        if 500 <= response.status < 600:
+            return "unreachable"
+        content_type = response.getheader("Content-Type", "").split(";", 1)[0].strip().lower()
+        if response.status != 200 or content_type != "application/json":
+            return "unknown"
+        body = response.read(HTTP_BODY_LIMIT + 1)
+        if len(body) > HTTP_BODY_LIMIT:
+            return "unknown"
+        payload = json.loads(body)
+        if (isinstance(payload, dict) and payload.keys() == {"jsonrpc", "id", "result"}
+                and payload["jsonrpc"] == "2.0" and type(payload["id"]) is int and payload["id"] == 1
+                and isinstance(payload["result"], str) and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", payload["result"])):
+            return "reachable"
+        return "unknown"
     finally:
         connection.close()
 
@@ -201,6 +231,8 @@ def _probe(spec: dict) -> str:
         ip = str(ipaddress.ip_address(spec["ip"]))
         if protocol in {"http", "https"}:
             return _http(ip, port, spec)
+        if protocol == "zabbix_api":
+            return _zabbix_api(ip, port, spec)
         if protocol == "dns":
             return _dns(ip, port, spec)
         if protocol == "ldap":
@@ -228,7 +260,12 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
         node, specs = target
         if not isinstance(specs, list) or not specs or len(specs) > 4 or not all(isinstance(spec, dict) for spec in specs):
             return node, None
+        if "guestProbeIP" in node:
+            guest_address = node["guestProbeIP"]
+            if not guest_address or any(spec.get("ip") != guest_address for spec in specs):
+                return node, None
         methods = {"http": "HTTP", "https": "HTTPS", "dns": "DNS", "ldap": "LDAP", "smb": "SMB2",
+                   "zabbix_api": "Zabbix API",
                    "openvpn_management": "OpenVPN Management (UDP)", "sip_options": "SIP OPTIONS (UDP)", "icmp": "ICMP"}
         checks = []
         required = []
@@ -239,8 +276,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
             observation = {
                 "state": _probe(spec), "method": method,
                 "port": port if type(port) is int and 1 <= port <= 65535 else None,
-                "path": spec.get("path") if method in {"HTTP", "HTTPS"} else None,
-                "target": spec.get("ip") if protocol in {"icmp", "sip_options"} else None,
+                "path": spec.get("path") if protocol in {"http", "https", "zabbix_api"} else None,
+                "target": spec.get("ip") if protocol in {"icmp", "sip_options", "zabbix_api"} else None,
                 "checkedAt": datetime.now(timezone.utc).isoformat(),
             }
             checks.append(observation)
