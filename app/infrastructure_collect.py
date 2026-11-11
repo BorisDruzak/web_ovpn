@@ -543,6 +543,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         mac_counts = Counter(mac for macs in guest_macs.values() for mac in macs)
         guest_interfaces = {key: _guest_interfaces(config) for key, config in pve.get("configs", {}).items()}
         interface_mac_counts = Counter(mac for interfaces in guest_interfaces.values() for _, _, _, mac in interfaces.values())
+        uplink_evidence = {}
         for guest in sorted(pve["guests"], key=lambda row: row["vmid"]):
             vmid, host = guest["vmid"], guest["node"]
             binding = bindings.get("guests", {}).get(str(vmid), {})
@@ -611,10 +612,24 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                         report for report in guest_switch_ports.get(mac, [])
                         if (host, report["id"], report["port"].casefold()) in verified_host_ports
                     ]
+                uplink = observed_bridge.get("bridge_ports")
+                if (host in online_hypervisors and active == 1 and observation_is_fresh(pve_at, now)
+                        and uplink in pve.get("activePorts", {}).get(host, [])):
+                    for report in switch_ports:
+                        checked = min(datetime.fromisoformat(pve_at), datetime.fromisoformat(report["at"]))
+                        ports = uplink_evidence.setdefault((host, report["id"], report["port"]), {})
+                        ports[uplink] = max(ports.get(uplink, checked), checked)
                 virtual = {"linkDisabled": disabled, "bridgeActive": bool(active) if active in (0, 1) else None,
                            "uplinks": uplinks, "switchPorts": switch_ports}
                 edge(host, key, "Размещение ВМ", "Proxmox", details=f"VM {vmid}", at=pve_at,
                      ports=(bridge, name), vlan=vlan, virtual=virtual)
+        locations = Counter((host, uplink) for (host, _, _), ports in uplink_evidence.items() for uplink in ports)
+        for (host, switch, port), uplinks in uplink_evidence.items():
+            if len(uplinks) == 1:
+                (uplink, checked_at), = uplinks.items()
+                if locations[(host, uplink)] == 1:
+                    edge(switch, host, "Сетевое соединение", "netctl FDB + Proxmox",
+                         ports=(port, uplink), at=checked_at.isoformat())
         for key, value in list(edges.items()):
             if value["kind"] == "Размещение ВМ" and value["source"] == "GitHub":
                 value["confirmed"] = False
@@ -743,15 +758,10 @@ def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: set[s
             return node, bridge, {}
         return node, bridge, {key: data.get(key) for key in ("active", "bridge_ports", "address")}
 
-    def read_management_port(pair):
-        node, bridge = pair
-        data = result["bridges"].get(node, {}).get(bridge, {})
-        port = data.get("bridge_ports")
-        if data.get("active") == 1 and isinstance(port, str) and INTERFACE_NAME.fullmatch(port):
-            interface = read_interface(node, port)
-            if interface.get("type") == "eth" and interface.get("active") == 1:
-                return node, {"address": data.get("address"), "port": port}
-        return node, {}
+    def read_physical_port(pair):
+        node, port = pair
+        interface = read_interface(node, port)
+        return node, port, interface.get("type") == "eth" and interface.get("active") == 1
 
     candidates = [guest for guest in result["guests"] if guest["type"] in {"qemu", "lxc"}
                   and (str(guest["vmid"]) in guests or guest.get("status") == "running")]
@@ -766,7 +776,19 @@ def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: set[s
         for node, bridge, data in pool.map(read_bridge, sorted(used_bridges)):
             if data:
                 result["bridges"].setdefault(node, {})[bridge] = data
-        result["management"] = dict(pool.map(read_management_port, sorted(management)))
+        physical_candidates = {(node, port) for node, bridges in result["bridges"].items() for data in bridges.values()
+                               for port in [data.get("bridge_ports")] if data.get("active") == 1
+                               and isinstance(port, str) and INTERFACE_NAME.fullmatch(port)}
+        active_ports = {}
+        for node, port, active in pool.map(read_physical_port, sorted(physical_candidates)):
+            if active:
+                active_ports.setdefault(node, []).append(port)
+        result["activePorts"] = active_ports
+        result["management"] = {}
+        for node, bridge in management:
+            data = result["bridges"].get(node, {}).get(bridge, {})
+            if data.get("active") == 1 and data.get("bridge_ports") in active_ports.get(node, []):
+                result["management"][node] = {"address": data.get("address"), "port": data["bridge_ports"]}
     result["at"] = datetime.now(timezone.utc).isoformat()
     return result
 

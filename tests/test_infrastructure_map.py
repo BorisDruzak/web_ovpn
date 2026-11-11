@@ -569,6 +569,8 @@ def test_vm_switch_observation_requires_current_mac_and_declared_host_port(tmp_p
         "at": at, "cluster": [], "nodes": [{"node": "pve1", "status": "online"}],
         "guests": [{"vmid": 103, "node": "pve1", "type": "qemu", "status": "running"}],
         "configs": {"103": {"net0": f"virtio={mac},bridge=vmbr1"}},
+        "bridges": {"pve1": {"vmbr1": {"active": 1, "bridge_ports": "ens7f1np1"}}},
+        "activePorts": {"pve1": ["ens7f1np1"]},
     }
     network = {
         "sources": [{"id": 1, "name": "switch-source", "driver": "snmp_switch",
@@ -586,10 +588,23 @@ def test_vm_switch_observation_requires_current_mac_and_declared_host_port(tmp_p
         link = next(edge for edge in load_infrastructure_map(path, rendered_at)["links"] if edge["b"] == "pve-guest:103")
         return link["portEvidence"][0]["virtual"]["switchPorts"]
 
+    def physical_ports():
+        graph = build_graph(context, network, {}, pve, {}, now)
+        link = next(e for e in graph["links"] if {e["a"], e["b"]} == {"sw", "pve1"})
+        return [(p["a"], p["b"]) for p in link["portEvidence"] if p["source"] == "netctl FDB + Proxmox"]
+
     assert switch_ports(now) == [{"id": "sw", "port": "xe3", "vlan": 1, "at": at}]
+    assert physical_ports() == [("xe3", "ens7f1np1")]
+    pve["activePorts"]["pve1"] = []
+    assert physical_ports() == []
+    pve["activePorts"]["pve1"] = ["ens7f1np1"]
+    pve["bridges"]["pve1"]["vmbr1"]["bridge_ports"] += " ens7f0np0"
+    assert physical_ports() == []
+    pve["bridges"]["pve1"]["vmbr1"]["bridge_ports"] = "ens7f1np1"
     assert switch_ports(now + timedelta(hours=1)) == []
     pve["configs"]["103"]["net0"] += ",link_down=1"
     assert switch_ports(now) == []
+    assert physical_ports() == []
 
 
 def test_collection_reads_source_registry_without_syncing_config(monkeypatch):
