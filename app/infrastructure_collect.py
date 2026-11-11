@@ -190,8 +190,12 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         item["properties"]["Источник сбора"] = name
         if name in port_groups:
             ports = port_groups[name]
-            active = sum(port.get("oper_status") == "up" for port in ports)
-            item["properties"]["Порты (линк поднят / всего)"] = f"{active} / {len(ports)}"
+            item["ports"] = [
+                {"name": port.get("name") or port.get("port_key"),
+                 "state": "disabled" if port.get("admin_status") == "down" else port.get("oper_status"),
+                 "speedBps": port.get("speed_bps"), "checkedAt": port.get("last_seen_at")}
+                for port in ports
+            ]
         if "fdb_entries" in status:
             item["properties"]["Записи MAC-таблицы"] = str(status["fdb_entries"])
     for row in network.get("links", []):

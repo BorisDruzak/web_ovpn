@@ -392,6 +392,33 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const columns = make('div', null, 'map-detail-columns');
     const propertiesSection = make('section');
     propertiesSection.append(make('h3', 'Доступность'), properties);
+    const measurements = Object.entries(node.properties ?? {})
+      .filter(([name, value]) => value && !items[name]);
+    if (measurements.length) {
+      const list = make('dl');
+      for (const [name, value] of measurements) {
+        list.append(make('dt', name), make('dd', value));
+      }
+      propertiesSection.append(make('h3', 'Параметры узла'), list);
+    }
+    if (node.ports?.length) {
+      const panel = make('details', null, 'map-port-panel');
+      const list = make('ul', null, 'map-detail-list');
+      const states = {up: 'Линк поднят', down: 'Линк опущен', disabled: 'Отключён', unknown: 'Нет подтверждения'};
+      const sorted = [...node.ports].sort((a,b) => a.name.localeCompare(b.name, 'ru', {numeric: true}));
+      for (const port of sorted) {
+        const row = make('li');
+        const time = port.checkedAt ? formatTime(port.checkedAt) : '';
+        const speed = port.speedBps ? (port.speedBps / 1e6).toLocaleString('ru-RU') + ' Мбит/с' : '';
+        const status = [states[port.state], speed, time, port.stale && time ? 'устарело' : ''].filter(Boolean).join(' · ');
+        row.append(make('strong', port.name), make('small', status));
+        list.append(row);
+      }
+      const up = node.ports.filter(port => port.state === 'up').length;
+      const summary = 'Интерфейсы (' + node.ports.length + ', линк поднят на ' + up + ')';
+      panel.append(make('summary', summary), make('small', 'Network Observer'), list);
+      propertiesSection.append(panel);
+    }
     if (node.serviceChecks?.length) {
       const list = make('ul', null, 'map-detail-list');
       for (const check of node.serviceChecks) {
@@ -403,6 +430,19 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         list.append(row);
       }
       propertiesSection.append(make('h3', 'Проверки службы'), list);
+    }
+    if (node.checks?.length) {
+      const panel = make('details', null, 'map-port-panel');
+      const list = make('ul', null, 'map-detail-list');
+      const states = {ok: 'В норме', warn: 'Отклонение', critical: 'Ошибка', unknown: 'Нет подтверждения'};
+      for (const check of node.checks) {
+        const row = make('li');
+        const time = check.checkedAt ? ' · ' + formatTime(check.checkedAt) : '';
+        row.append(make('strong', check.name), make('small', states[check.status] + time + (check.stale ? ' · устарело' : '')));
+        list.append(row);
+      }
+      panel.append(make('summary', 'Проверки Server Observer'), list);
+      propertiesSection.append(panel);
     }
     for (const [key, title] of [['unavailable', 'Недоступные сервисы'], ['unknown', 'Сервисы без подтверждения']]) {
       const ids = node.serviceAvailability?.[key] ?? [];

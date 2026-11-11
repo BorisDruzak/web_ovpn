@@ -72,6 +72,20 @@ def _public_reachability(value: object, now: datetime) -> dict:
     }
 
 
+def _public_port(row: dict, now: datetime) -> dict:
+    stamp = _time(row.get("checkedAt"))
+    fresh = observation_is_fresh(row.get("checkedAt"), now)
+    state = row.get("state")
+    speed = row.get("speedBps")
+    return {
+        "name": _text(row.get("name"), 64),
+        "state": state if fresh and state in ("up", "down", "disabled") else "unknown",
+        "speedBps": speed if fresh and state == "up" and type(speed) is int and 0 < speed <= 10**15 else None,
+        "checkedAt": stamp.isoformat() if stamp is not None and stamp <= now else None,
+        "stale": not fresh,
+    }
+
+
 def _public_node(row: dict, now: datetime) -> dict:
     sources = []
     for item in _rows(row.get("sources"), 12):
@@ -93,6 +107,11 @@ def _public_node(row: dict, now: datetime) -> dict:
     if not any(source["name"] == "Proxmox" for source in fresh):
         for key in RUNTIME_PROPERTIES:
             properties.pop(key, None)
+    if not any(source["name"] == "Network Observer" for source in fresh):
+        properties.pop("Записи MAC-таблицы", None)
+        properties.pop("Порты (линк поднят / всего)", None)
+    ports = [_public_port(port, now) for port in _rows(row.get("ports"), 500)]
+    observer = next((source for source in sources if source["name"] == "Server Observer"), None)
     aliases = row.get("aliases")
     return {
         **{key: _text(row.get(key)) for key in ("id", "name", "kind", "site", "origin", "pveHost")},
@@ -103,6 +122,7 @@ def _public_node(row: dict, now: datetime) -> dict:
         "reachability": _public_reachability(row.get("reachability"), now),
         "sources": sources,
         "properties": properties,
+        "ports": [port for port in ports if port["name"]],
         "serviceChecks": [
             {**_public_reachability(check, now),
              "port": check["port"] if type(check.get("port")) is int and 1 <= check["port"] <= 65535 else None,
@@ -111,7 +131,9 @@ def _public_node(row: dict, now: datetime) -> dict:
             for path in [_text(check.get("path"))]
         ],
         "checks": [
-            {"name": _text(check.get("name"), 64), "status": _state(check.get("status")) if fresh else "unknown",
+            {"name": _text(check.get("name"), 64),
+             "status": _state(check.get("status")) if observer and not observer["stale"] else "unknown",
+             "checkedAt": observer["at"] if observer else None, "stale": not observer or observer["stale"],
              "observed": _number(check.get("observed")), "latency": _number(check.get("latency"))}
             for check in _rows(row.get("checks"), 80)
         ],

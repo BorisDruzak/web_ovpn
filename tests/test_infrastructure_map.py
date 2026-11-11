@@ -202,6 +202,35 @@ def test_openvpn_requires_connected_daemon_and_active_session(monkeypatch):
         assert probes._probe(spec) == "unknown"
 
 
+def test_switch_ports_expose_fresh_link_state_and_age(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    recent = (now - timedelta(minutes=2)).isoformat()
+    old = (now - timedelta(hours=1)).isoformat()
+    network = {
+        "sources": [{"id": 1, "name": "sw", "driver": "snmp_switch"}],
+        "ports": [
+            {"source": "sw", "name": "ge1", "oper_status": "up", "admin_status": "up",
+             "speed_bps": 1_000_000_000, "last_seen_at": recent, "mac": "hidden"},
+            {"source": "sw", "name": "ge2", "oper_status": "up", "last_seen_at": old},
+            {"source": "sw", "name": "ge3", "oper_status": "down", "admin_status": "down",
+             "last_seen_at": recent},
+        ],
+    }
+    graph = build_graph({}, network, {}, {}, {}, now)
+    path = tmp_path / "graph.json"
+    path.write_text(json.dumps(graph), encoding="utf-8")
+    node, = load_infrastructure_map(path, now)["nodes"]
+    assert "hidden" not in path.read_text(encoding="utf-8")
+    assert node["ports"] == [
+        {"name": "ge1", "state": "up", "speedBps": 1_000_000_000, "checkedAt": recent, "stale": False},
+        {"name": "ge2", "state": "unknown", "speedBps": None, "checkedAt": old, "stale": True},
+        {"name": "ge3", "state": "disabled", "speedBps": None, "checkedAt": recent, "stale": False},
+    ]
+
+
 def test_collection_reads_source_registry_without_syncing_config(monkeypatch):
     from app import infrastructure_collect as collector
 

@@ -99,6 +99,9 @@
 #infra-map-review .map-detail-list li { padding: 4px 0; border-bottom: 1px solid var(--map-border); }
 #infra-map-review .map-detail-list button { display: block; border: 0; padding: 3px 0; background: transparent; color: var(--map-active); text-align: left; cursor: pointer; text-decoration: underline; }
 #infra-map-review .map-detail-list small { display: block; color: var(--map-muted); font-size: 11px; }
+#infra-map-review .map-port-panel { margin: 10px 0; font-size: 12px; }
+#infra-map-review .map-port-panel summary { cursor: pointer; font-weight: 600; }
+#infra-map-review .map-port-panel small { color: var(--map-muted); }
 #infra-map-review .map-related-list { list-style: none; padding: 0; margin: 8px 0 0; }
 #infra-map-review .map-related-node {
   width: 100%; display: grid; grid-template-columns: 8px minmax(0, 1fr) auto;

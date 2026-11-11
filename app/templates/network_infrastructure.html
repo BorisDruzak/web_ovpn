@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Инфраструктура · OpenVPN Web{% endblock %}
 {% block page_title %}Инфраструктура{% endblock %}
-{% block page_styles %}<link rel="stylesheet" href="{{ url_for('static', path='infrastructure-map.css') }}?v=availability-1">{% endblock %}
+{% block page_styles %}<link rel="stylesheet" href="{{ url_for('static', path='infrastructure-map.css') }}?v=evidence-3">{% endblock %}
 {% block content %}
 <section id="infra-map-review" aria-label="Карта инфраструктуры">
   <header class="map-heading">
@@ -35,5 +35,5 @@
 <script id="infrastructure-data" type="application/json">{{ graph | tojson }}</script>
 {% endblock %}
 {% block page_scripts %}
-<script type="module" src="{{ url_for('static', path='infrastructure-map.js') }}?v=evidence-2"></script>
+<script type="module" src="{{ url_for('static', path='infrastructure-map.js') }}?v=evidence-3"></script>
 {% endblock %}
