@@ -23,7 +23,7 @@ from netctl.context import load_context_bytes, load_schema, validate_context
 from netctl.db import connect_read_only, list_sources
 from netctl.switch_queries import query_confirmed_attachment_ports
 
-from .infrastructure_map import MAX_SNAPSHOT_BYTES, NETWORK_KINDS, observation_is_fresh
+from .infrastructure_map import INTERFACE_NAME, MAX_SNAPSHOT_BYTES, NETWORK_KINDS, observation_is_fresh
 from .infrastructure_service_probes import apply_service_probes
 from .netctl_client import NetctlError, run_netctl
 from .server_health_view import build_server_health_view
@@ -67,6 +67,20 @@ def _guest_macs(config: dict) -> set[str]:
             for match in MAC.findall(value)}
 
 
+def _guest_interfaces(config: dict) -> dict:
+    interfaces = {}
+    for name, raw in config.items():
+        if not re.fullmatch(r"net[0-9]+", name) or not isinstance(raw, str):
+            continue
+        options = dict(part.split("=", 1) for part in raw.split(",") if "=" in part)
+        bridge = options.get("bridge", "")
+        if INTERFACE_NAME.fullmatch(bridge):
+            tag = options.get("tag", "")
+            interfaces[name] = (bridge, int(tag) if re.fullmatch(r"[0-9]{1,4}", tag) else None,
+                                options.get("link_down") == "1")
+    return interfaces
+
+
 def _guest_observation(macs: set[str], host_macs: dict, counts: Counter, now: datetime) -> dict | None:
     observations = [
         _host_observation(host, now)
@@ -91,7 +105,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             "properties": {}, "sources": [], "checks": [],
         })
 
-    def edge(a, b, kind, source, confirmed=True, details="", ports=None, at=None, vlan=None):
+    def edge(a, b, kind, source, confirmed=True, details="", ports=None, at=None, vlan=None, virtual=None):
         if a not in nodes or b not in nodes or a == b:
             return
         key = (tuple(sorted((a, b))), kind)
@@ -107,6 +121,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 ports = ports[::-1]
             report = {"a": ports[0], "b": ports[1], "source": source, "at": at,
                       "confirmed": confirmed}
+            if virtual is not None:
+                report.update({"source": "Proxmox · конфигурация ВМ", "virtual": virtual})
             if vlan is not None:
                 report["vlan"] = vlan
             if report not in evidence:
@@ -329,7 +345,16 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 item["properties"]["Память по Proxmox"] = _gib(guest["mem"])
             if status == "ok" and guest.get("cpu") is not None:
                 item["properties"]["CPU по Proxmox"] = f"{100 * guest['cpu']:.1f}%"
-            edge(host, key, "Размещение ВМ", "Proxmox", True, f"VM {vmid}")
+            edge(host, key, "Размещение ВМ", "Proxmox", details=f"VM {vmid}", at=pve_at)
+            for name, (bridge, vlan, disabled) in _guest_interfaces(pve.get("configs", {}).get(str(vmid), {})).items():
+                observed_bridge = pve.get("bridges", {}).get(host, {}).get(bridge, {})
+                uplinks = [value for value in re.split(r"[\s,]+", observed_bridge.get("bridge_ports") or "")
+                           if INTERFACE_NAME.fullmatch(value) and value != "none"]
+                active = observed_bridge.get("active")
+                virtual = {"linkDisabled": disabled, "bridgeActive": bool(active) if active in (0, 1) else None,
+                           "uplinks": uplinks}
+                edge(host, key, "Размещение ВМ", "Proxmox", details=f"VM {vmid}", at=pve_at,
+                     ports=(bridge, name), vlan=vlan, virtual=virtual)
         for key, value in list(edges.items()):
             if value["kind"] == "Размещение ВМ" and value["source"] == "GitHub":
                 value["confirmed"] = False
@@ -394,20 +419,35 @@ def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: dict)
         return json.loads(payload)["data"]
 
     result = {"cluster": get("cluster/status"), "nodes": get("cluster/resources?type=node"),
-              "guests": get("cluster/resources?type=vm"), "configs": {}}
+              "guests": get("cluster/resources?type=vm"), "configs": {}, "bridges": {}}
     def read_guest(guest):
         key = str(guest["vmid"])
         node = quote(guest["node"], safe="")
         try:
-            config = get(f"nodes/{node}/{guest['type']}/{int(key)}/config")
+            config = get(f"nodes/{node}/{guest['type']}/{int(key)}/config?current=1")
         except (URLError, TimeoutError):
             return key, {}
         return key, {name: value for name, value in config.items() if re.fullmatch(r"net[0-9]+", name)}
+
+    def read_bridge(pair):
+        node, bridge = pair
+        try:
+            data = get(f"nodes/{quote(node, safe='')}/network/{quote(bridge, safe='')}")
+        except (URLError, TimeoutError):
+            return node, bridge, {}
+        if not isinstance(data, dict) or data.get("type") not in ("bridge", "OVSBridge"):
+            return node, bridge, {}
+        return node, bridge, {key: data.get(key) for key in ("active", "bridge_ports")}
 
     candidates = [guest for guest in result["guests"] if guest["type"] in {"qemu", "lxc"}
                   and (str(guest["vmid"]) in guests or guest.get("status") == "running")]
     with ThreadPoolExecutor(max_workers=6) as pool:
         result["configs"] = dict(pool.map(read_guest, candidates))
+        used_bridges = {(guest["node"], bridge) for guest in candidates
+                        for bridge, _, _ in _guest_interfaces(result["configs"][str(guest["vmid"])]).values()}
+        for node, bridge, data in pool.map(read_bridge, sorted(used_bridges)):
+            if data:
+                result["bridges"].setdefault(node, {})[bridge] = data
     result["at"] = datetime.now(timezone.utc).isoformat()
     return result
 

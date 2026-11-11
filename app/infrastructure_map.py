@@ -10,6 +10,7 @@ MAX_SNAPSHOT_BYTES = 1_000_000
 MAX_AGE = timedelta(minutes=25)
 STATES = ("critical", "warn", "ok", "unknown")
 NETWORK_KINDS = ("Коммутатор", "Маршрутизатор", "Точка доступа", "Сетевое устройство")
+INTERFACE_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}")
 REACHABILITY_STATES = ("reachable", "unreachable", "stopped", "unknown")
 SERVICE_LINKS = {"Размещение", "Цель проверки"}
 PUBLIC_PROPERTIES = {
@@ -206,8 +207,17 @@ def load_infrastructure_map(path: Path, now: datetime | None = None) -> dict:
                 vlan = report.get("vlan")
                 if type(vlan) is int and 1 <= vlan <= 4094:
                     evidence[-1]["vlan"] = vlan
+                virtual = report.get("virtual")
+                if source == "Proxmox · конфигурация ВМ" and isinstance(virtual, dict):
+                    uplinks = virtual.get("uplinks")
+                    evidence[-1]["virtual"] = {
+                        "linkDisabled": virtual.get("linkDisabled") is True,
+                        "bridgeActive": virtual["bridgeActive"] if type(virtual.get("bridgeActive")) is bool else None,
+                        "uplinks": [value for value in uplinks[:32] if isinstance(value, str) and INTERFACE_NAME.fullmatch(value)]
+                        if isinstance(uplinks, list) else [],
+                    }
             confirmed = row.get("confirmed") is True
-            if edge["source"] in {"netctl", "LLDP UI_VPN", "netctl FDB"} and "observedAt" in row:
+            if edge["source"] in {"netctl", "LLDP UI_VPN", "netctl FDB", "Proxmox"} and row.get("observedAt"):
                 confirmed = confirmed and observation_is_fresh(row["observedAt"], now)
             links.append({**edge, "confirmed": confirmed, "portEvidence": evidence})
     _map_statuses(nodes, links)

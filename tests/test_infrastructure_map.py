@@ -259,6 +259,35 @@ def test_switch_ports_expose_fresh_link_state_and_age(tmp_path):
     ]
 
 
+def test_guest_placement_includes_current_bridge_and_configured_members(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    pve = {
+        "at": at, "cluster": [], "nodes": [{"node": "pve1", "status": "online"}],
+        "guests": [{"vmid": 103, "node": "pve1", "type": "qemu", "status": "running"}],
+        "configs": {"103": {"net0": "virtio=02:00:00:00:00:03,bridge=vmbr1,tag=100,link_down=1",
+                            "net1": "virtio=02:00:00:00:00:04", "net2": "bridge=bad/path"}},
+        "bridges": {"pve1": {"vmbr1": {"type": "bridge", "bridge_ports": "bond0 eno2", "active": 1}}},
+    }
+    graph = build_graph({}, {}, {}, pve, {}, now)
+    path = tmp_path / "graph.json"
+    path.write_text(json.dumps(graph), encoding="utf-8")
+    assert "02:00:00:00:00:03" not in path.read_text(encoding="utf-8")
+    link = next(link for link in load_infrastructure_map(path, now)["links"] if link["b"] == "pve-guest:103")
+    assert link["portEvidence"] == [{
+        "a": "vmbr1", "b": "net0", "source": "Proxmox · конфигурация ВМ", "at": at,
+        "confirmed": True, "vlan": 100,
+        "virtual": {"linkDisabled": True, "bridgeActive": True, "uplinks": ["bond0", "eno2"]},
+    }]
+    stale_link = next(link for link in load_infrastructure_map(path, now + timedelta(hours=1))["links"]
+                      if link["b"] == "pve-guest:103")
+    assert not stale_link["confirmed"]
+    assert not stale_link["portEvidence"][0]["confirmed"]
+
+
 def test_collection_reads_source_registry_without_syncing_config(monkeypatch):
     from app import infrastructure_collect as collector
 

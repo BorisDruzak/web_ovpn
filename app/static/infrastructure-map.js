@@ -478,6 +478,15 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           const vlan = evidence.vlan ? ' · VLAN ' + evidence.vlan : '';
           const time = evidence.at ? ' · ' + formatTime(evidence.at) : '';
           li.append(make('small', ports + vlan + ' · ' + source + time + (evidence.confirmed ? '' : ' · без подтверждения')));
+          if (evidence.confirmed && evidence.virtual) {
+            const network = evidence.virtual;
+            const notes = [];
+            if (network.linkDisabled) notes.push('Интерфейс отключён в настройках ВМ');
+            if (network.bridgeActive === true) notes.push('Мост активен');
+            if (network.bridgeActive === false) notes.push('Мост неактивен');
+            if (network.uplinks.length) notes.push('Интерфейсы моста: ' + network.uplinks.join(', '));
+            if (notes.length) li.append(make('small', notes.join(' · ')));
+          }
         }
         list.append(li);
       }
