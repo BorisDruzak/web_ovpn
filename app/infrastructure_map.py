@@ -274,6 +274,9 @@ def _public_service_check(check: dict, now: datetime) -> dict:
     reason = check.get("reason")
     if check.get("supplemental") is True:
         result["supplemental"] = True
+    if (check.get("skipped") is True and result["checkedAt"] and result["state"] == "unknown"
+            and reason in ("probe_target_unconfirmed", "probe_target_mismatch")):
+        return {**result, "target": "", "skipped": True, "reason": reason}
     icmp = result["method"] in ("ICMP", "ICMP адреса из инвентаря")
     if icmp:
         round_trip = check.get("roundTripMs")

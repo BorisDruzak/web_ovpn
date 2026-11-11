@@ -694,6 +694,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         http_bad_response: 'Ответ HTTP неполный или некорректный',
         http_connection_refused: 'Отклонено TCP-соединение', http_connection_reset: 'Сброшено TCP-соединение',
         http_configuration: 'Ошибка настройки проверки',
+        probe_target_unconfirmed: 'Адрес цели не подтверждён',
+        probe_target_mismatch: 'Адрес в настройках проверок не совпал с подтверждённым',
         postgresql_tls_handshake: 'Не удалось согласовать TLS',
         icmp_identity_unconfirmed: 'Принадлежность адреса этому узлу не подтверждена',
         route_other_gateway: 'Активен другой шлюз', route_inactive: 'Маршрут через ожидаемый шлюз неактивен',
@@ -704,7 +706,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const row = make('li');
         const endpoint = [check.method, check.target, check.port, check.path, check.dns?.name, check.dns?.record].filter(Boolean).join(' ');
         const confirmed = check.method === 'Маршрут' ? 'Подтверждён' : node.id === data.clusterId ? 'В норме' : 'Отвечает';
-        const result = {reachable:confirmed, unreachable:'Сбой проверки'}[check.state] ?? 'Нет подтверждения';
+        const result = check.skipped ? 'Не запущена' :
+          ({reachable:confirmed, unreachable:'Сбой проверки'}[check.state] ?? 'Нет подтверждения');
         const reason = check.responseCode ? 'SIP ' + check.responseCode : reasons[check.reason];
         const errorSource = check.errorSource ? ' от ' + check.errorSource : '';
         const gatewayLabel = check.method === 'Маршрут' && check.state !== 'reachable' ? 'ожидаемый шлюз' : 'через';

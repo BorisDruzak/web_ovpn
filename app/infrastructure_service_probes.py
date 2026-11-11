@@ -567,8 +567,7 @@ def _probe(spec: dict) -> str:
 
 
 def apply_service_probes(nodes: list[dict], configured: dict) -> None:
-    targets = [(node, configured[node["id"]]) for node in nodes
-               if (node["kind"] == "Сервис" or "probeTargetIP" in node) and node["id"] in configured]
+    targets = [(node, configured[node["id"]]) for node in nodes if node["id"] in configured]
     if not targets:
         return
 
@@ -576,10 +575,13 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
         node, specs = target
         if not isinstance(specs, list) or not specs or len(specs) > 4 or not all(isinstance(spec, dict) for spec in specs):
             return node, None
-        if "probeTargetIP" in node:
-            target_address = node["probeTargetIP"]
-            if not target_address or any(spec.get("ip") != target_address for spec in specs):
-                return node, None
+        skip_reason = ""
+        if node["kind"] != "Сервис" or "probeTargetIP" in node:
+            target_address = node.get("probeTargetIP")
+            if not target_address:
+                skip_reason = "probe_target_unconfirmed"
+            elif any(spec.get("ip") != target_address for spec in specs):
+                skip_reason = "probe_target_mismatch"
         methods = {"http": "HTTP", "https": "HTTPS", "dns": "DNS", "ldap": "LDAP", "smb": "SMB2",
                    "zabbix_api": "Zabbix API", "postgresql": "PostgreSQL SSLRequest",
                    "openvpn_management": "OpenVPN Management", "sip_options": "SIP OPTIONS (UDP)", "icmp": "ICMP"}
@@ -593,7 +595,9 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 method = "ICMP адреса из инвентаря"
             port = spec.get("port")
             valid_port = port if type(port) is int and 1 <= port <= 65535 else None
-            if protocol == "openvpn_management" and valid_port is not None:
+            if skip_reason:
+                details = {"state": "unknown", "skipped": True, "reason": skip_reason}
+            elif protocol == "openvpn_management" and valid_port is not None:
                 details = {**_openvpn_management(), "configuredPort": valid_port}
                 valid_port = None
             elif protocol == "sip_options":
@@ -618,12 +622,13 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 "source": "UI_VPN", "method": method,
                 "port": valid_port,
                 "path": spec.get("path") if protocol in {"http", "https", "zabbix_api"} else None,
-                "target": spec.get("ip") if protocol in {"icmp", "sip_options", "zabbix_api", "postgresql", "dns", "smb"}
-                or "probeTargetIP" in node else None,
+                "target": spec.get("ip") if not skip_reason and (
+                    protocol in {"icmp", "sip_options", "zabbix_api", "postgresql", "dns", "smb"} or "probeTargetIP" in node
+                ) else None,
                 "checkedAt": datetime.now(timezone.utc).isoformat(),
             }
             checks.append(observation)
-            if not supplemental:
+            if not supplemental and not skip_reason:
                 required.append(observation)
         node.setdefault("serviceChecks", []).extend(checks)
         if not required:

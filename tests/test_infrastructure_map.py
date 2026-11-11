@@ -851,6 +851,7 @@ def test_observer_service_attaches_to_the_vm_with_the_expected_mac():
 
 def test_guest_service_requires_matching_mac_and_arp_to_enable_probe(monkeypatch):
     from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import _public_service_check
     from app import infrastructure_service_probes as probes
 
     now = datetime.now(timezone.utc)
@@ -867,7 +868,8 @@ def test_guest_service_requires_matching_mac_and_arp_to_enable_probe(monkeypatch
                                                 "used_by": ["consumer"]}}}
     context = {"services": [{"id": "consumer", "name": "Consumer"}]}
     configured = {"zabbix-api": [{"ip": address, "port": 80, "type": "zabbix_api"}]}
-    monkeypatch.setattr(probes, "_probe", lambda spec: "reachable")
+    calls = []
+    monkeypatch.setattr(probes, "_probe", lambda spec: calls.append(spec["ip"]) or "reachable")
 
     def build():
         graph = build_graph(context, network, {}, pve, binding, now)
@@ -880,10 +882,18 @@ def test_guest_service_requires_matching_mac_and_arp_to_enable_probe(monkeypatch
     assert any(e["a"] == "consumer" and e["b"] == "zabbix-api" and e["confirmed"]
                and e["kind"] == "Зависимость сервиса" for e in graph["links"])
     configured["zabbix-api"][0]["ip"] = "192.0.2.22"
-    assert "reachability" not in build()[1]
+    mismatch = build()[1]
+    assert "reachability" not in mismatch
+    assert mismatch["serviceChecks"][0]["reason"] == "probe_target_mismatch"
+    assert mismatch["serviceChecks"][0]["skipped"] is True
     configured["zabbix-api"][0]["ip"] = address
     network["arp"] = []
-    assert "reachability" not in build()[1]
+    unconfirmed = build()[1]
+    assert "reachability" not in unconfirmed
+    check = _public_service_check(unconfirmed["serviceChecks"][0], datetime.now(timezone.utc))
+    assert check["state"] == "unknown" and check["skipped"] is True and check["reason"] == "probe_target_unconfirmed"
+    assert check["target"] == "" and check["method"] == "Zabbix API"
+    assert calls == [address]
     network["arp"] = [arp]
     pve["configs"]["108"]["net0"] = "virtio=02:00:00:00:00:99,bridge=vmbr0"
     graph, service = build()
@@ -1397,7 +1407,8 @@ def test_matching_fdb_attachment_adds_evidence_and_supplemental_ip_check(monkeyp
     network["attachments"][0]["port_key"] = "Port8"
     graph, node = build()
     assert len(graph["links"]) == 2
-    assert "serviceChecks" not in node
+    skipped, = node["serviceChecks"]
+    assert skipped["skipped"] and skipped["supplemental"] and skipped["reason"] == "probe_target_unconfirmed"
 
 
 def test_lacp_confirms_only_ports_whose_partner_matches_fresh_arp(tmp_path):
