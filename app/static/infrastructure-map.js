@@ -660,6 +660,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         connection_refused: 'Отказ на UDP-запрос, источник не определён', timeout: 'Ответ не получен вовремя',
         icmp_port_unreachable: 'ICMP: UDP-порт недоступен', icmp_rejected: 'Получен отказ ICMP',
         transport_error: 'Ошибка сетевого запроса', unexpected_response: 'Ответ не соответствует запросу',
+        dns_no_answer: 'Нет записи запрошенного типа', dns_address_mismatch: 'Адреса не совпадают с ожидаемыми',
         icmp_identity_unconfirmed: 'Принадлежность адреса этому узлу не подтверждена',
         route_other_gateway: 'Активен другой шлюз', route_inactive: 'Маршрут через ожидаемый шлюз неактивен',
         route_rejecting: 'Активный маршрут отбрасывает трафик',
@@ -667,7 +668,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       };
       for (const check of node.serviceChecks) {
         const row = make('li');
-        const endpoint = [check.method, check.target, check.port, check.path].filter(Boolean).join(' ');
+        const endpoint = [check.method, check.target, check.port, check.path, check.dns?.name, check.dns?.record].filter(Boolean).join(' ');
         const confirmed = check.method === 'Маршрут' ? 'Подтверждён' : node.id === data.clusterId ? 'В норме' : 'Отвечает';
         const result = {reachable:confirmed, unreachable:'Сбой проверки'}[check.state] ?? 'Нет подтверждения';
         const reason = check.responseCode ? 'SIP ' + check.responseCode : reasons[check.reason];
@@ -683,7 +684,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const source = check.source ? ' · ' + check.source : '';
         const time = check.checkedAt ? ' · ' + formatTime(check.checkedAt) : '';
         const attempts = check.attempts ? ' · попыток: ' + check.attempts : '';
-        row.append(make('strong', endpoint || 'Проверка'), make('small', result + (reason ? ' · ' + reason + errorSource : '') + attempts + gateway + management + source + time + (check.stale ? ' · устарело' : '')));
+        const dns = [check.dns?.rcode, check.dns?.transport, check.dns?.addresses?.join(', ')]
+          .filter(Boolean).map(value => ' · ' + value).join('');
+        row.append(make('strong', endpoint || 'Проверка'), make('small', result + (reason ? ' · ' + reason + errorSource : '') + dns + attempts + gateway + management + source + time + (check.stale ? ' · устарело' : '')));
         list.append(row);
       }
       propertiesSection.append(make('h3', 'Проверки'), list);

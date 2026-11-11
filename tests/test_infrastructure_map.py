@@ -515,6 +515,7 @@ def test_dns_probe_requires_an_answer_to_the_actual_query(monkeypatch):
     import dns.rrset
 
     from app import infrastructure_service_probes as probes
+    from app.infrastructure_map import _public_service_check
 
     spec = {"type": "dns", "ip": "192.0.2.53", "port": 53, "name": "service.example.", "record": "A"}
 
@@ -536,6 +537,12 @@ def test_dns_probe_requires_an_answer_to_the_actual_query(monkeypatch):
     assert check(alias, ("host.example.", "A", ["192.0.2.11"])) == "unreachable"
     assert check(alias, ("host.example.", "A", ["192.0.2.11", "192.0.2.10"])) == "reachable"
     assert check(alias, ("host.example.", "A", ["192.0.2.11", "192.0.2.10", "192.0.2.12"])) == "unreachable"
+    node = {"id": "dns", "kind": "Сервис"}
+    probes.apply_service_probes([node], {"dns": [spec]})
+    detail = _public_service_check(node["serviceChecks"][0], datetime.now(timezone.utc))
+    assert detail["state"] == "unreachable" and detail["reason"] == "dns_address_mismatch"
+    assert detail["dns"] == {"name": "service.example.", "record": "A", "rcode": "NOERROR",
+                             "transport": "UDP", "addresses": ["192.0.2.10", "192.0.2.11", "192.0.2.12"]}
     spec["expected_addresses"] = ["2001:db8::10"]
     assert check(alias, ("host.example.", "A", ["192.0.2.10"])) == "unknown"
 

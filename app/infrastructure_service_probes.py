@@ -145,7 +145,7 @@ def _zabbix_api(ip: str, port: int, spec: dict) -> str:
         connection.close()
 
 
-def _dns(ip: str, port: int, spec: dict) -> str:
+def _dns_query(spec: dict) -> tuple[dns.message.QueryMessage, set[ipaddress.IPv4Address | ipaddress.IPv6Address]]:
     record = spec.get("record")
     name = spec.get("name")
     if record not in {"A", "AAAA", "SOA"} or not isinstance(name, str) or not name.endswith("."):
@@ -159,17 +159,46 @@ def _dns(ip: str, port: int, spec: dict) -> str:
         expected_ips = {ipaddress.ip_address(value) for value in expected}
         if any(value.version != (4 if record == "A" else 6) for value in expected_ips):
             raise ValueError("DNS address family must match the record type")
-    query = dns.message.make_query(name, record)
-    response, _ = dns.query.udp_with_fallback(query, ip, timeout=TIMEOUT, port=port)
-    rcode = response.rcode()
-    if rcode in {dns.rcode.SERVFAIL, dns.rcode.NXDOMAIN}:
-        return "unreachable"
-    if rcode != dns.rcode.NOERROR:
-        return "unknown"
-    answer = response.resolve_chaining().answer
-    if not answer or (expected_ips and {ipaddress.ip_address(value.address) for value in answer} != expected_ips):
-        return "unreachable"
-    return "reachable"
+    return dns.message.make_query(name, record), expected_ips
+
+
+def _dns(spec: dict) -> dict:
+    try:
+        port = spec["port"]
+        if type(port) is not int or not 1 <= port <= 65535:
+            return {"state": "unknown"}
+        ip = str(ipaddress.ip_address(spec["ip"]))
+        query, expected = _dns_query(spec)
+    except (KeyError, TypeError, ValueError, dns.exception.DNSException):
+        return {"state": "unknown"}
+    record = spec["record"]
+    diagnostic = {"name": query.question[0].name.to_text(), "record": record}
+    result = {"state": "unknown", "dns": diagnostic}
+    try:
+        response, used_tcp = dns.query.udp_with_fallback(query, ip, timeout=TIMEOUT, port=port)
+        rcode = response.rcode()
+        diagnostic.update(rcode=dns.rcode.to_text(rcode), transport="TCP" if used_tcp else "UDP")
+        if rcode in {dns.rcode.SERVFAIL, dns.rcode.NXDOMAIN}:
+            return {**result, "state": "unreachable"}
+        if rcode != dns.rcode.NOERROR:
+            return result
+        answer = response.resolve_chaining().answer
+        if not answer:
+            return {**result, "state": "unreachable", "reason": "dns_no_answer"}
+        if record in {"A", "AAAA"}:
+            addresses = {ipaddress.ip_address(value.address) for value in answer}
+            diagnostic["addresses"] = [str(address) for address in sorted(addresses)[:16]]
+            if expected and addresses != expected:
+                return {**result, "state": "unreachable", "reason": "dns_address_mismatch"}
+        return {**result, "state": "reachable"}
+    except (TimeoutError, dns.exception.Timeout):
+        return {**result, "state": "unreachable", "reason": "timeout"}
+    except (ConnectionRefusedError, ConnectionResetError):
+        return {**result, "state": "unreachable", "reason": "transport_error"}
+    except OSError:
+        return {**result, "reason": "transport_error"}
+    except (ValueError, dns.exception.DNSException):
+        return {**result, "reason": "unexpected_response"}
 
 
 def _ldap(ip: str, port: int, spec: dict) -> str:
@@ -363,6 +392,8 @@ def _probe(spec: dict) -> str:
         protocol = spec["type"]
         if protocol == "icmp":
             return "reachable" if probe_icmp(spec["ip"]) else "unknown"
+        if protocol == "dns":
+            return _dns(spec)["state"]
         port = spec["port"]
         if type(port) is not int or not 1 <= port <= 65535:
             return "unknown"
@@ -373,8 +404,6 @@ def _probe(spec: dict) -> str:
             return _http(ip, port, spec)
         if protocol == "zabbix_api":
             return _zabbix_api(ip, port, spec)
-        if protocol == "dns":
-            return _dns(ip, port, spec)
         if protocol == "ldap":
             return _ldap(ip, port, spec)
         if protocol == "smb":
@@ -423,6 +452,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 valid_port = None
             elif protocol == "sip_options":
                 details = _sip_options(spec)
+            elif protocol == "dns":
+                details = _dns(spec)
             else:
                 details = {"state": _probe(spec)}
             if node["kind"] != "Сервис" and protocol == "icmp" and details["state"] == "reachable":

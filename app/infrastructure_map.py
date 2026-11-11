@@ -236,6 +236,23 @@ def index_port_states(rows: list[dict], now: datetime) -> dict:
             if len(candidates) == 1 and not candidates[0]["stale"]}
 
 
+def _public_dns_check(value: object) -> dict:
+    if not isinstance(value, dict):
+        return {}
+    name, record = _text(value.get("name"), 255), value.get("record")
+    if record not in ("A", "AAAA", "SOA") or not re.fullmatch(r"\.|(?:[A-Za-z0-9_-]{1,63}\.){1,127}", name):
+        return {}
+    result = {"name": name, "record": record}
+    rcode, transport = value.get("rcode"), value.get("transport")
+    if isinstance(rcode, str) and re.fullmatch(r"[A-Z0-9]{1,16}", rcode) and transport in ("UDP", "TCP"):
+        result.update(rcode=rcode, transport=transport)
+        addresses = value.get("addresses")
+        if record in ("A", "AAAA") and isinstance(addresses, list):
+            result["addresses"] = [address for item in addresses[:16] if (address := _network_address(item))
+                                   and "/" not in address and (":" in address) == (record == "AAAA")]
+    return result
+
+
 def _public_service_check(check: dict, now: datetime) -> dict:
     path = _text(check.get("path"))
     port = check.get("port")
@@ -246,6 +263,12 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         "path": path if re.fullmatch(r"/[A-Za-z0-9._/-]{0,159}", path) and not path.startswith("//") else "",
     }
     reason = check.get("reason")
+    if result["method"] == "DNS":
+        diagnostic = _public_dns_check(check.get("dns"))
+        if diagnostic:
+            result["dns"] = diagnostic
+            if reason in ("dns_no_answer", "dns_address_mismatch"):
+                result["reason"] = reason
     if check.get("method") == "OpenVPN Management":
         configured_port = check.get("configuredPort")
         sessions = check.get("sessionCount")
