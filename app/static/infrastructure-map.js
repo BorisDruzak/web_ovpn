@@ -298,6 +298,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         }
         const path = document.createElementNS('http://www.w3.org/2000/svg','path');
         path.setAttribute('d',d);
+        if (edge.kind === 'Путь по MAC-таблице') path.setAttribute('stroke-dasharray', '5 4');
         if (active.has(pair)) path.classList.add('active');
         svg.append(path);
       }

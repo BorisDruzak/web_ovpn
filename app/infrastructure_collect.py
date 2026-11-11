@@ -27,9 +27,13 @@ from netctl.db import connect_read_only, list_sources
 from netctl.drivers import legacy_driver_for
 from netctl.snmp.lacp import read_lacp_members
 from netctl.snmp.transport import SnmpTransport
+from netctl.source_identity import list_source_identities
 from netctl.switch_queries import query_confirmed_attachment_ports, query_observed_mac_ports
 
-from .infrastructure_map import INTERFACE_NAME, MAX_SNAPSHOT_BYTES, NETWORK_KINDS, observation_is_fresh
+from .infrastructure_map import (
+    INTERFACE_NAME, MAX_SNAPSHOT_BYTES, NETWORK_KINDS, RECIPROCAL_MAC_SOURCE,
+    index_port_states, observation_is_fresh, port_label_key,
+)
 from .infrastructure_service_probes import apply_service_probes, probe_icmp
 from .netctl_client import NetctlError, run_netctl
 from .server_health_view import build_server_health_view
@@ -556,6 +560,35 @@ def _corroborate_fdb_ports(links, nodes: dict, now: datetime) -> None:
         else:
             reports.append({"a": pair["a"], "b": pair["b"], "source": "SNMP · двусторонний FDB",
                             "at": min(stamps).isoformat(), "confirmed": True})
+
+
+def _reciprocal_management_paths(links, nodes: dict, sightings: dict, now: datetime):
+    if not sightings:
+        return
+    ports = {key: index_port_states(item.get("ports", []), now) for key, item in nodes.items()
+             if item["kind"] == NETWORK_KINDS[0]}
+    for link in links:
+        a, b = link["a"], link["b"]
+        if link["kind"] != "Сетевое соединение" or link["confirmed"] or a not in ports or b not in ports:
+            continue
+        declared = [report for report in link.get("portEvidence", []) if report["source"] == "GitHub"]
+        if len(declared) != 1:
+            continue
+        pair, = declared
+        names = []
+        stamps = []
+        for side, local, remote in (("a", a, b), ("b", b, a)):
+            expected = ports[local].get(port_label_key(pair[side]))
+            observations = sightings.get((local, remote), [])
+            if not expected or expected["state"] != "up" or not observations:
+                break
+            actual_names = {port_label_key(name) for name, _ in observations}
+            if actual_names != {port_label_key(expected["name"])}:
+                break
+            names.append(expected["name"])
+            stamps.extend((datetime.fromisoformat(expected["checkedAt"]), max(at for _, at in observations)))
+        else:
+            yield a, b, tuple(names), min(stamps).isoformat()
 
 
 def _add_guest_switch_uplinks(links, nodes: dict, pve: dict, now: datetime) -> None:
@@ -1194,6 +1227,16 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
     _reconcile_fdb_ports(edges.values())
     _corroborate_fdb_ports(edges.values(), nodes, now)
     _add_guest_switch_uplinks(edges.values(), nodes, pve, now)
+    management_sightings = {}
+    for row in network.get("switch_management_fdb", []):
+        source_id = row["source_id"]
+        local, remote = source_ids.get(source_id), source_ids.get(row["peer_source_id"])
+        if local and remote and local != remote and observation_is_fresh(row["observed_at"], now):
+            port = port_label(source_names[source_id], row["port_key"])
+            management_sightings.setdefault((local, remote), []).append((port, datetime.fromisoformat(row["observed_at"])))
+    for a, b, ports, at in list(_reciprocal_management_paths(edges.values(), nodes, management_sightings, now)):
+        edge(a, b, "Путь по MAC-таблице", RECIPROCAL_MAC_SOURCE, ports=ports, at=at,
+             details="Оба коммутатора видят MAC управления друг друга")
     return {"schema": 1, "snapshotAt": now.isoformat(), "nodes": list(nodes.values()),
             "links": list(edges.values()), "clusterId": cluster_id, "nodeOrder": hypervisors,
             "overviewGuests": overview_guests}
@@ -1295,6 +1338,20 @@ def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: set[s
     return result
 
 
+def _switch_management_fdb(connection, sources: list[dict]) -> list[dict]:
+    enabled = {row["id"] for row in sources if row.get("enabled") and row.get("driver") == "snmp_switch"}
+    if not enabled:
+        return []
+    owners = {}
+    for identity in list_source_identities(connection):
+        for mac in identity.management_macs:
+            owners.setdefault(mac.lower(), set()).add(identity.source_id)
+    unique = {mac: next(iter(ids)) for mac, ids in owners.items() if len(ids) == 1 and ids <= enabled}
+    return [{**row, "peer_source_id": unique[row["mac"].lower()]}
+            for row in query_observed_mac_ports(connection, set(unique), learned_only=True)
+            if row["source_id"] in enabled and row["source_id"] != unique[row["mac"].lower()]]
+
+
 def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | None = None,
                  transit_sources: set[str] | None = None, *, asset_fdb_ips: set[str] | None = None) -> dict:
     commands = {
@@ -1303,6 +1360,7 @@ def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | N
     }
     with closing(connect_read_only(DEFAULT_DB_URL)) as connection:
         data = {"sources": list_sources(connection), "attachments": query_confirmed_attachment_ports(connection)}
+        data["switch_management_fdb"] = _switch_management_fdb(connection, data["sources"])
         data["router_neighbors"] = [dict(row) for row in connection.execute(
             """
             SELECT n.identity, n.address, n.mac, n.last_seen_at

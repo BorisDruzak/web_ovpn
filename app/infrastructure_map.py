@@ -14,6 +14,7 @@ NETWORK_KINDS = ("Коммутатор", "Маршрутизатор", "Точк
 INTERFACE_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}")
 REACHABILITY_STATES = ("reachable", "unreachable", "stopped", "unknown")
 SERVICE_LINKS = {"Размещение", "Цель проверки"}
+RECIPROCAL_MAC_SOURCE = "SNMP · взаимные MAC"
 PUBLIC_PROPERTIES = {
     "Модель", "VMID", "Размещение по GitHub", "Источник сбора",
     "Порты (линк поднят / всего)", "Записи MAC-таблицы", "Соседство LLDP", "Адрес управления по LLDP", "IP по MAC",
@@ -98,17 +99,17 @@ def _public_port(row: dict, now: datetime) -> dict:
     }
 
 
-def _port_label_key(label: str) -> str:
+def port_label_key(label: str) -> str:
     label = label.strip().casefold()
     gigabit = re.fullmatch(r"(?:gi|gigabitethernet)\s*(\d+/\d+/\d+)", label)
     return f"gi{gigabit[1]}" if gigabit else label
 
 
-def _port_state_index(rows: list[dict], now: datetime) -> dict:
+def index_port_states(rows: list[dict], now: datetime) -> dict:
     by_label = {}
     for row in rows:
         port = _public_port(row, now)
-        label = _port_label_key(port["name"])
+        label = port_label_key(port["name"])
         if not label:
             continue
         aliases = {label}
@@ -238,7 +239,7 @@ def load_infrastructure_map(path: Path, now: datetime | None = None) -> dict:
         if node["id"] and node["name"] and node["id"] not in nodes:
             nodes[node["id"]] = node
             if node["kind"] == NETWORK_KINDS[0]:
-                port_states[node["id"]] = _port_state_index(_rows(row.get("ports"), 500), now)
+                port_states[node["id"]] = index_port_states(_rows(row.get("ports"), 500), now)
     links = []
     for row in _rows(raw.get("links"), 2400):
         edge = {key: _text(row.get(key)) for key in ("a", "b", "kind", "source", "details")}
@@ -253,10 +254,11 @@ def load_infrastructure_map(path: Path, now: datetime | None = None) -> dict:
                     "confirmed": report.get("confirmed") is True and (
                         source == "GitHub" or observation_is_fresh(report.get("at"), now)),
                 })
-                if edge["kind"] == "Сетевое соединение" and evidence[-1]["a"] and evidence[-1]["b"]:
+                paired = edge["kind"] == "Сетевое соединение" or source == RECIPROCAL_MAC_SOURCE
+                if paired and evidence[-1]["a"] and evidence[-1]["b"]:
                     states = {}
                     for side in ("a", "b"):
-                        port = port_states.get(edge[side], {}).get(_port_label_key(evidence[-1][side]))
+                        port = port_states.get(edge[side], {}).get(port_label_key(evidence[-1][side]))
                         if port and port["state"] != "unknown":
                             states[side] = port
                     if states:
@@ -292,7 +294,7 @@ def load_infrastructure_map(path: Path, now: datetime | None = None) -> dict:
             confirmed = row.get("confirmed") is True
             if edge["source"] in {"netctl", "LLDP UI_VPN", "LLDP · двустороннее", "netctl FDB",
                                   "netctl FDB + Proxmox", "Proxmox", "SNMP LACP + ARP", "MikroTik · ARP",
-                                  "MikroTik · ARP + FDB"} and row.get("observedAt"):
+                                  "MikroTik · ARP + FDB", RECIPROCAL_MAC_SOURCE} and row.get("observedAt"):
                 confirmed = confirmed and observation_is_fresh(row["observedAt"], now)
             links.append({**edge, "confirmed": confirmed, "portEvidence": evidence})
     _map_statuses(nodes, links)

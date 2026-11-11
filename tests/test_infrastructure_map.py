@@ -470,6 +470,55 @@ def test_map_reports_port_state_for_declared_pair_without_confirming_cable(tmp_p
     assert set(load()) == {"b"}
 
 
+def test_reciprocal_switch_management_macs_verify_path_without_proving_direct_link(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    context = {"devices": [{"id": key, "name": key, "kind": "switch"} for key in ("core", "access")],
+               "links": [{"relation": "connected_to", "state": {"verified": False},
+                          "endpoint_a": {"device": "core", "interface": "Gi1/0/18"},
+                          "endpoint_b": {"device": "access", "interface": "Port5"}}]}
+    sources = [{"id": i, "name": key, "driver": "snmp_switch", "driver_options": {"intent_stable_id": key}}
+               for i, key in enumerate(("core", "access"), 1)]
+    ports = [
+        {"source": "core", "port_key": "ifindex:49170", "name": "gigabitEthernet 1/0/18",
+         "oper_status": "up", "last_seen_at": at},
+        {"source": "access", "port_key": "physical:5", "name": "p5_uplink_IT_TP",
+         "oper_status": "up", "last_seen_at": at},
+    ]
+    sightings = [
+        {"source_id": 1, "peer_source_id": 2, "port_key": "ifindex:49170", "observed_at": at},
+        {"source_id": 2, "peer_source_id": 1, "port_key": "physical:5", "observed_at": at},
+    ]
+
+    def paths(when=now):
+        graph = build_graph(context, {"sources": sources, "ports": ports, "switch_management_fdb": sightings},
+                            {}, {}, {}, now)
+        path = tmp_path / "snapshot.json"
+        path.write_text(json.dumps(graph), encoding="utf-8")
+        graph = load_infrastructure_map(path, when)
+        assert not next(e for e in graph["links"] if e["kind"] == "Сетевое соединение")["confirmed"]
+        return [e for e in graph["links"] if e["kind"] == "Путь по MAC-таблице"]
+
+    path, = paths()
+    assert path["confirmed"]
+    assert [(p["a"], p["b"], p["at"]) for p in path["portEvidence"]] == [
+        ("gigabitEthernet 1/0/18", "p5_uplink_IT_TP", at),
+    ]
+    expired, = paths(now + timedelta(hours=1))
+    assert not expired["confirmed"] and not expired["portEvidence"][0]["confirmed"]
+    sightings.append({**sightings[0], "port_key": "ifindex:999"})
+    assert not paths()
+    sightings.pop()
+    sightings[1]["observed_at"] = (now - timedelta(hours=1)).isoformat()
+    assert not paths()
+    sightings[1]["observed_at"] = at
+    ports[1]["oper_status"] = "down"
+    assert not paths()
+
+
 def test_verified_switch_ports_require_fresh_bidirectional_fdb_and_live_ports(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map
@@ -1209,6 +1258,10 @@ def test_observed_fdb_resolves_ifindex_only_with_matching_live_port_collection()
         macs = {"02:00:00:00:00:23"}
         report, = query_observed_mac_ports(conn, macs)
         assert report["port_key"] == "ifindex:49175"
+        assert query_observed_mac_ports(conn, macs, learned_only=True) == [report]
+        conn.execute("UPDATE current_switch_fdb SET status='static'")
+        assert query_observed_mac_ports(conn, macs, learned_only=True) == []
+        assert query_observed_mac_ports(conn, macs) == [report]
         conn.execute("UPDATE switch_ports SET collector_run_id=6")
         assert query_observed_mac_ports(conn, macs) == []
         conn.execute("UPDATE switch_ports SET collector_run_id=5")

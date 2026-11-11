@@ -48,7 +48,9 @@ def query_confirmed_attachment_ports(conn: sqlite3.Connection) -> list[dict[str,
     ]
 
 
-def query_observed_mac_ports(conn: sqlite3.Connection, macs: set[str]) -> list[dict[str, Any]]:
+def query_observed_mac_ports(
+    conn: sqlite3.Connection, macs: set[str], *, learned_only: bool = False,
+) -> list[dict[str, Any]]:
     if not macs:
         return []
     return [dict(row) for row in conn.execute(
@@ -68,9 +70,10 @@ def query_observed_mac_ports(conn: sqlite3.Connection, macs: set[str]) -> list[d
           )
         WHERE lower(f.mac) IN (SELECT value FROM json_each(?))
           AND s.enabled = 1 AND p.oper_status = 'up' AND lower(f.status) NOT IN ('self', 'mgmt')
+          AND (? = 0 OR lower(f.status) = 'learned')
         ORDER BY f.source_id, f.port_key, f.vlan_id, f.mac
         """,
-        (json.dumps(sorted(macs)),),
+        (json.dumps(sorted(macs)), learned_only),
     )]
 
 
