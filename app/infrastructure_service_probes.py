@@ -232,6 +232,51 @@ def _openvpn_management() -> str:
     return "unknown"
 
 
+def _enable_udp_error_queue(connection: socket.socket, family: int) -> tuple[int, int] | None:
+    if not hasattr(socket, "MSG_ERRQUEUE") or not hasattr(connection, "recvmsg"):
+        return None
+    # Linux UAPI values are needed on Python versions that lack these constants.
+    level, option = ((socket.IPPROTO_IP, getattr(socket, "IP_RECVERR", 11)) if family == socket.AF_INET
+                     else (socket.IPPROTO_IPV6, getattr(socket, "IPV6_RECVERR", 25)))
+    try:
+        connection.setsockopt(level, option, 1)
+    except OSError:
+        return None
+    return level, option
+
+
+def _sip_udp_failure(connection: socket.socket, option: tuple[int, int] | None,
+                     family: int, ip: str, port: int, error: OSError) -> dict:
+    fallback = {"state": "unknown", "reason": "connection_refused" if isinstance(error, ConnectionRefusedError)
+                else "transport_error"}
+    if option is None:
+        return fallback
+    try:
+        connection.setblocking(False)
+        _, ancillary, _, destination = connection.recvmsg(1, 128, socket.MSG_ERRQUEUE | getattr(socket, "MSG_DONTWAIT", 0))
+    except OSError:
+        return fallback
+    ip = ip.split("%", 1)[0]
+    if not isinstance(destination, tuple) or destination[:2] != (ip, port):
+        return fallback
+
+    # sock_extended_err (16 bytes), followed by the offender's sockaddr.
+    origin, unreachable_type, port_code, start, end = (
+        (2, 3, 3, 20, 24) if family == socket.AF_INET else (3, 1, 4, 24, 40)
+    )
+    for level, kind, payload in ancillary:
+        if (level, kind) != option or len(payload) < end or struct.unpack_from("=H", payload, 16)[0] != family:
+            continue
+        _, observed_origin, observed_type, code = struct.unpack_from("=IBBB", payload)
+        if (observed_origin, observed_type) != (origin, unreachable_type):
+            continue
+        offender = str(ipaddress.ip_address(payload[start:end]))
+        if offender == ip and code == port_code:
+            return {"state": "unreachable", "reason": "icmp_port_unreachable", "errorSource": offender}
+        return {"state": "unknown", "reason": "icmp_rejected", "errorSource": offender}
+    return fallback
+
+
 def _sip_options(spec: dict) -> dict:
     port = spec.get("port")
     try:
@@ -246,6 +291,7 @@ def _sip_options(spec: dict) -> dict:
     try:
         with socket.socket(family, socket.SOCK_DGRAM) as connection:
             connection.settimeout(TIMEOUT)
+            error_option = _enable_udp_error_queue(connection, family)
             connection.connect((ip, port))
             local, local_port, *_ = connection.getsockname()
             if family == socket.AF_INET6:
@@ -258,10 +304,13 @@ def _sip_options(spec: dict) -> dict:
                 f"From: <sip:monitor@{local}>;tag={transaction}", f"Call-ID: {transaction}",
                 "CSeq: 1 OPTIONS", "Content-Length: 0", "", "",
             ]
-            connection.sendall("\r\n".join(request).encode("ascii"))
-            response = connection.recv(8192)
-    except ConnectionRefusedError:
-        return {"state": "unreachable", "reason": "connection_refused"}
+            try:
+                connection.sendall("\r\n".join(request).encode("ascii"))
+                response = connection.recv(8192)
+            except TimeoutError:
+                raise
+            except OSError as exc:
+                return _sip_udp_failure(connection, error_option, family, ip, port, exc)
     except TimeoutError:
         return {"state": "unknown", "reason": "timeout"}
     except OSError:

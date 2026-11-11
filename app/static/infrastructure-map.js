@@ -471,7 +471,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     if (node.serviceChecks?.length) {
       const list = make('ul', null, 'map-detail-list');
       const reasons = {
-        connection_refused: 'Получен отказ на UDP-запрос', timeout: 'Ответ не получен вовремя',
+        connection_refused: 'Отказ на UDP-запрос, источник не определён', timeout: 'Ответ не получен вовремя',
+        icmp_port_unreachable: 'ICMP: UDP-порт недоступен', icmp_rejected: 'Получен отказ ICMP',
         transport_error: 'Ошибка сетевого запроса', unexpected_response: 'Ответ не соответствует запросу',
       };
       for (const check of node.serviceChecks) {
@@ -480,10 +481,11 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const confirmed = check.method === 'Маршрут' ? 'Подтверждён' : node.id === data.clusterId ? 'В норме' : 'Отвечает';
         const result = {reachable:confirmed, unreachable:'Сбой проверки'}[check.state] ?? 'Нет подтверждения';
         const reason = check.responseCode ? 'SIP ' + check.responseCode : reasons[check.reason];
+        const errorSource = check.errorSource ? ' от ' + check.errorSource : '';
         const gateway = check.via ? ' · через ' + check.via : '';
         const source = check.source ? ' · ' + check.source : '';
         const time = check.checkedAt ? ' · ' + formatTime(check.checkedAt) : '';
-        row.append(make('strong', endpoint || 'Проверка'), make('small', result + (reason ? ' · ' + reason : '') + gateway + source + time + (check.stale ? ' · устарело' : '')));
+        row.append(make('strong', endpoint || 'Проверка'), make('small', result + (reason ? ' · ' + reason + errorSource : '') + gateway + source + time + (check.stale ? ' · устарело' : '')));
         list.append(row);
       }
       propertiesSection.append(make('h3', 'Проверки'), list);

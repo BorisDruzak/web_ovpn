@@ -1620,6 +1620,8 @@ def test_route_evidence_is_scoped_and_does_not_mark_service_available():
 
 
 def test_sip_options_validates_transaction_and_treats_silence_as_unknown(monkeypatch):
+    import ipaddress
+    import struct
     from app import infrastructure_service_probes as probes
     from app.infrastructure_map import _public_node
 
@@ -1632,6 +1634,12 @@ def test_sip_options_validates_transaction_and_treats_silence_as_unknown(monkeyp
 
         def settimeout(self, timeout):
             pass
+
+        def setsockopt(self, level, option, value):
+            self.option = (level, option)
+
+        def setblocking(self, blocking):
+            assert not blocking
 
         def connect(self, address):
             assert address == ("192.0.2.13", 5060)
@@ -1651,23 +1659,34 @@ def test_sip_options_validates_transaction_and_treats_silence_as_unknown(monkeyp
             headers = self.headers if self.match else [b"Call-ID: unrelated", b"CSeq: 1 OPTIONS"]
             return b"\r\n".join([b"SIP/2.0 " + self.code, *headers, b"", b""])
 
+        def recvmsg(self, size, ancillary_size, flags):
+            if not self.offender:
+                raise BlockingIOError
+            extended = struct.pack("=IBBBBII", 111, 2, 3, 3, 0, 0, 0)
+            address = struct.pack("=HH", probes.socket.AF_INET, 0) + ipaddress.ip_address(self.offender).packed
+            return b"", [(*self.option, extended + address)], 0, ("192.0.2.13", 5060)
+
     wire = Datagram()
     monkeypatch.setattr(probes.socket, "socket", lambda *args: wire)
+    monkeypatch.setattr(probes.socket, "MSG_ERRQUEUE", 8192, raising=False)
     spec = {"type": "sip_options", "ip": "192.0.2.13", "port": 5060}
     node = {"id": "pbx", "kind": "Сервис"}
-    for code, match, state, reason, response_code in [
-        (b"200 OK", True, "reachable", "sip_response", 200),
-        (b"503 Busy", True, "unreachable", "sip_response", 503),
-        (b"200 OK", False, "unknown", "unexpected_response", None),
-        (None, True, "unknown", "timeout", None),
-        (b"refused", True, "unreachable", "connection_refused", None),
+    for code, match, offender, state, reason, response_code in [
+        (b"200 OK", True, None, "reachable", "sip_response", 200),
+        (b"503 Busy", True, None, "unreachable", "sip_response", 503),
+        (b"200 OK", False, None, "unknown", "unexpected_response", None),
+        (None, True, None, "unknown", "timeout", None),
+        (b"refused", True, None, "unknown", "connection_refused", None),
+        (b"refused", True, "192.0.2.13", "unreachable", "icmp_port_unreachable", None),
+        (b"refused", True, "192.0.2.1", "unknown", "icmp_rejected", None),
     ]:
-        wire.code, wire.match = code, match
+        wire.code, wire.match, wire.offender = code, match, offender
         probes.apply_service_probes([node], {"pbx": [spec]})
         check = node["serviceChecks"][-1]
         assert node["reachability"]["state"] == check["state"] == state
         public = _public_node(node, datetime.now(timezone.utc))["serviceChecks"][-1]
         assert (public["source"], public["reason"], public.get("responseCode")) == ("UI_VPN", reason, response_code)
+        assert public.get("errorSource") == offender
     node["serviceChecks"][-1].update(reason="arbitrary output", responseCode=900)
     public = _public_node(node, datetime.now(timezone.utc))["serviceChecks"][-1]
     assert "reason" not in public and "responseCode" not in public

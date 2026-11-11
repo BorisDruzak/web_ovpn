@@ -151,8 +151,12 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         "path": path if re.fullmatch(r"/[A-Za-z0-9._/-]{0,159}", path) and not path.startswith("//") else "",
     }
     reason = check.get("reason")
-    if reason in ("connection_refused", "timeout", "transport_error", "unexpected_response", "sip_response"):
+    if reason in ("connection_refused", "timeout", "transport_error", "unexpected_response", "sip_response",
+                  "icmp_port_unreachable", "icmp_rejected"):
         result["reason"] = reason
+    error_source = _network_address(check.get("errorSource"))
+    if reason in ("icmp_port_unreachable", "icmp_rejected") and error_source and "/" not in error_source:
+        result["errorSource"] = error_source
     code = check.get("responseCode")
     if reason == "sip_response" and type(code) is int and 100 <= code <= 699:
         result["responseCode"] = code
