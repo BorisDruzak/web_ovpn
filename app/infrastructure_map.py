@@ -248,6 +248,26 @@ def _public_hypervisor_resources(row: object, now: datetime) -> dict:
     return values
 
 
+def project_hypervisor_disks(row: object, now: datetime) -> dict:
+    if not isinstance(row, dict) or not observation_is_fresh(row.get("checkedAt"), now):
+        return {}
+    disks = []
+    for entry in _rows(row.get("disks"), 128):
+        device = entry.get("device")
+        if not isinstance(device, str) or not re.fullmatch(r"/dev/[A-Za-z0-9][A-Za-z0-9_-]{0,31}", device):
+            continue
+        kind, state = entry.get("kind"), entry.get("smartState")
+        disk = {"device": device, "kind": kind if kind in ("ssd", "hdd", "nvme", "usb") else "",
+                "smartState": state if state in ("ok", "critical") else "unknown"}
+        size, endurance = entry.get("sizeBytes"), entry.get("endurancePercent")
+        if type(size) is int and 0 < size < 2**53:
+            disk["sizeBytes"] = size
+        if type(endurance) in (int, float) and 0 <= endurance <= 100:
+            disk["endurancePercent"] = endurance
+        disks.append(disk)
+    return {"checkedAt": _time(row["checkedAt"]).isoformat(), "disks": disks} if disks else {}
+
+
 def _public_guest_storage(row: object, now: datetime) -> dict:
     if not isinstance(row, dict) or not observation_is_fresh(row.get("checkedAt"), now):
         return {}
@@ -300,8 +320,10 @@ def _public_node(row: dict, now: datetime) -> dict:
     observer = next((source for source in sources if source["name"] == "Server Observer"), None)
     aliases = row.get("aliases")
     resources = {}
+    hardware_disks = {}
     if row.get("kind") == "Гипервизор" and any(s["name"] == "Proxmox" and s["status"] == "ok" for s in fresh):
         resources = _public_hypervisor_resources(row.get("resources"), now)
+        hardware_disks = project_hypervisor_disks(row.get("hardwareDisks"), now)
     guest_storage = _public_guest_storage(row.get("guestStorage"), now) if row.get("guest") is True else {}
     required = row.get("requiredObserverChecks")
     required_names = dict.fromkeys(
@@ -320,6 +342,7 @@ def _public_node(row: dict, now: datetime) -> dict:
         "sources": sources,
         "properties": properties,
         **({"resources": resources} if resources else {}),
+        **({"hardwareDisks": hardware_disks} if hardware_disks else {}),
         **({"guestStorage": guest_storage} if guest_storage else {}),
         "ports": [port for port in ports if port["name"]],
         "serviceChecks": [_public_service_check(check, now) for check in _rows(row.get("serviceChecks"), 16)],
@@ -348,6 +371,8 @@ def _map_statuses(nodes: dict, links: list[dict]) -> None:
     local_issues = {}
     for key, node in nodes.items():
         checks = [check["status"] for check in node["checks"] if check.get("required")]
+        if any(disk["smartState"] == "critical" for disk in node.get("hardwareDisks", {}).get("disks", [])):
+            checks.append("critical")
         if node["kind"] == CLUSTER_KIND:
             cluster = {check["method"]: check["state"] for check in node["serviceChecks"]}
             check_state = {"reachable": "ok", "unreachable": "critical"}

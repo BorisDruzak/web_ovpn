@@ -241,6 +241,34 @@ def test_guest_disks_publish_storage_assignments_without_volume_paths(tmp_path):
     assert "guestStorage" not in read(103, now + timedelta(hours=1))
 
 
+def test_hypervisor_smart_checks_report_fresh_disk_health(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    pve = {"at": at, "cluster": [], "nodes": [{"node": "pve1", "status": "online"}], "guests": [],
+           "disks": {"pve1": {"checkedAt": at, "disks": [
+               {"device": "/dev/sda", "kind": "ssd", "smartState": "ok", "endurancePercent": 95,
+                "sizeBytes": 2**40, "serial": "private serial"},
+               {"device": "/dev/sdb", "kind": "hdd", "smartState": "critical", "endurancePercent": "N/A"},
+           ]}}}
+    snapshot = tmp_path / "map.json"
+    snapshot.write_text(json.dumps(build_graph({}, {}, {}, pve, {}, now)), encoding="utf-8")
+    assert "private serial" not in snapshot.read_text(encoding="utf-8")
+
+    def node(when):
+        return next(n for n in load_infrastructure_map(snapshot, when)["nodes"] if n["id"] == "pve1")
+
+    current = node(now)
+    assert current["reachability"]["state"] == "reachable" and current["mapStatus"] == "warn"
+    assert current["hardwareDisks"]["disks"] == [
+        {"device": "/dev/sda", "kind": "ssd", "smartState": "ok", "endurancePercent": 95, "sizeBytes": 2**40},
+        {"device": "/dev/sdb", "kind": "hdd", "smartState": "critical"},
+    ]
+    assert "hardwareDisks" not in node(now + timedelta(hours=1))
+
+
 def test_hypervisor_resources_require_current_online_node_data(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map

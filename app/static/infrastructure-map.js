@@ -501,6 +501,24 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       list.append(make('dt', 'Опрос ресурсов'), make('dd', formatTime(checkedAt)));
       propertiesSection.append(make('h3', 'Ресурсы Proxmox'), list);
     }
+    if (node.hardwareDisks) {
+      const {checkedAt, disks} = node.hardwareDisks;
+      const panel = make('details', null, 'map-port-panel');
+      panel.dataset.section = 'hardware-disks';
+      panel.open = disks.some(disk => disk.smartState === 'critical');
+      const status = {ok: 'SMART в норме', critical: 'Ошибка SMART', unknown: 'Нет данных SMART'};
+      const number = new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 1});
+      const list = make('ul', null, 'map-detail-list');
+      for (const disk of disks) {
+        const row = make('li');
+        const size = disk.sizeBytes ? number.format(disk.sizeBytes / 2**30) + ' ГиБ' : '';
+        const endurance = disk.endurancePercent !== undefined ? 'Ресурс по Proxmox ' + number.format(disk.endurancePercent) + '%' : '';
+        row.append(make('strong', disk.device), make('small', [disk.kind.toUpperCase(), status[disk.smartState], size, endurance].filter(Boolean).join(' · ')));
+        list.append(row);
+      }
+      panel.append(make('summary', `Физические диски (${disks.length})`), make('small', 'Proxmox · ' + formatTime(checkedAt)), list);
+      propertiesSection.append(panel);
+    }
     if (node.guestStorage) {
       const list = make('dl');
       const number = new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 2});

@@ -35,7 +35,7 @@ from .infrastructure_map import (
     CLUSTER_HEALTH_METHODS, CLUSTER_KIND, INTERFACE_NAME, MAX_SNAPSHOT_BYTES, NETWORK_KINDS,
     PVE_DISK_DEVICE, PVE_STORAGE_ID, RECIPROCAL_MAC_SOURCE,
     SHARED_LLDP_KIND, SHARED_LLDP_SOURCE,
-    index_port_states, observation_is_fresh, port_label_key,
+    index_port_states, observation_is_fresh, port_label_key, project_hypervisor_disks,
 )
 from .infrastructure_service_probes import apply_service_probes, probe_icmp
 from .netctl_client import NetctlError, run_netctl
@@ -1215,6 +1215,9 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                     "rootUsedBytes": host.get("disk"), "rootTotalBytes": host.get("maxdisk"),
                     "uptimeSeconds": host.get("uptime"),
                 }
+                disks = project_hypervisor_disks(pve.get("disks", {}).get(key), now)
+                if disks:
+                    item["hardwareDisks"] = disks
             label = {"online": "В сети", "offline": "Не в сети"}.get(host.get("status"), "Неизвестно")
             item["properties"]["Состояние узла"] = label
             source(item, "Proxmox", "ok" if online else "critical" if label == "Не в сети" else "unknown", pve_at, label)
@@ -1531,11 +1534,26 @@ def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: set[s
         interface = read_interface(node, port)
         return node, port, interface.get("type") == "eth" and interface.get("active") == 1
 
+    def read_disks(node):
+        try:
+            rows = get(f"nodes/{quote(node, safe='')}/disks/list")
+        except (URLError, TimeoutError, ValueError, KeyError):
+            return node, {}
+        if not isinstance(rows, list):
+            return node, {}
+        states = {"OK": "ok", "PASSED": "ok", "FAILED": "critical", "FAILED!": "critical"}
+        disks = [{"device": row.get("devpath"), "kind": row.get("type"),
+                  "smartState": states.get(str(row.get("health")).strip().upper(), "unknown"),
+                  "sizeBytes": row.get("size"), "endurancePercent": row.get("wearout")}
+                 for row in rows[:128] if isinstance(row, dict)]
+        return node, {"checkedAt": datetime.now(timezone.utc).isoformat(), "disks": disks}
+
     online_nodes = {node["node"] for node in result["nodes"] if node.get("status") == "online"}
     candidates = [guest for guest in result["guests"] if guest["type"] in {"qemu", "lxc"}
                   and (str(guest["vmid"]) in guests or guest.get("status") == "running"
                        or (not guest.get("template") and guest["node"] in online_nodes))]
     with ThreadPoolExecutor(max_workers=6) as pool:
+        result["disks"] = dict(pool.map(read_disks, sorted(online_nodes)))
         result["configs"] = dict(pool.map(read_guest, candidates))
         used_bridges = {(guest["node"], bridge) for guest in candidates
                         for bridge, _, _, _ in _guest_interfaces(result["configs"][str(guest["vmid"])]).values()}
