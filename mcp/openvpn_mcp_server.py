@@ -173,6 +173,7 @@ TOOLS: dict[str, dict[str, Any]] = {
     "openvpn_connections": tool_schema("List current OpenVPN connections."),
     "openvpn_nat_status": tool_schema("Show ViPNet NAT counters."),
     "openvpn_network_dashboard": tool_schema("Show network observer dashboard summary and source health."),
+    "openvpn_network_infrastructure": tool_schema("Read the infrastructure map snapshot with node states, sources and links."),
     "openvpn_network_hosts": tool_schema(
         "List observed network hosts with optional filters.",
         {
@@ -566,6 +567,8 @@ def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         return api_request("GET", "/api/v1/nat-status")
     if name == "openvpn_network_dashboard":
         return api_request("GET", "/api/v1/network/dashboard")
+    if name == "openvpn_network_infrastructure":
+        return api_request("GET", "/api/v1/network/infrastructure")
     if name == "openvpn_network_hosts":
         return api_request(
             "GET",

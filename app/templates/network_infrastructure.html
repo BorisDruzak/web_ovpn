@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Инфраструктура · OpenVPN Web{% endblock %}
+{% block page_title %}Инфраструктура{% endblock %}
+{% block page_styles %}<link rel="stylesheet" href="{{ url_for('static', path='infrastructure-map.css') }}">{% endblock %}
+{% block content %}
+<section id="infra-map-review" aria-label="Карта инфраструктуры">
+  <header class="map-heading">
+    <p id="map-sources"></p>
+    <div id="map-search" role="search">
+      <input id="map-query" type="search" placeholder="Найти узел…" aria-label="Найти узел">
+      <button type="button">Найти</button>
+      <span id="map-search-result" role="status"></span>
+    </div>
+  </header>
+  <ul class="map-legend" aria-label="Цвета состояний">
+    <li><i data-state="ok"></i>Норма</li>
+    <li><i data-state="warn"></i>Предупреждение</li>
+    <li><i data-state="critical"></i>Проблема</li>
+    <li><i data-state="unknown"></i>Нет данных</li>
+  </ul>
+  <nav class="map-views" aria-label="Раздел карты">
+    <button type="button" data-view="overview" aria-pressed="true">Общая карта</button>
+    <button type="button" data-view="cluster" aria-pressed="false">Кластер Proxmox</button>
+    <button type="button" data-view="switches" aria-pressed="false">Коммутаторы</button>
+    <button type="button" id="map-vr" hidden>Открыть в VR</button>
+  </nav>
+  <p id="map-vr-status" role="status" hidden></p>
+  <p id="map-availability" role="status" hidden></p>
+  <div class="map-layout">
+    <aside id="map-details" aria-label="Свойства узла" hidden></aside>
+    <div id="map-groups"></div>
+  </div>
+</section>
+<script id="infrastructure-data" type="application/json">{{ graph | tojson }}</script>
+{% endblock %}
+{% block page_scripts %}
+<script type="module" src="{{ url_for('static', path='infrastructure-map.js') }}"></script>
+{% endblock %}

@@ -93,6 +93,7 @@ class Settings:
     workstations_known_hosts: Path = Path('/etc/openvpn-web/workstations_known_hosts')
     workstations_reconcile_lock: Path = Path('/var/lib/openvpn-web/workstations/reconcile.lock')
     workstations_api_credentials_file: Path = Path('/etc/openvpn-web/workstations/api-credentials.json')
+    infrastructure_map_snapshot_path: Path = Path('/var/lib/openvpn-web/infrastructure/latest.json')
 
     @property
     def allowed_download_roots(self) -> tuple[Path, ...]:
@@ -131,6 +132,9 @@ def get_settings() -> Settings:
         ),
         server_observer_snapshot_path=_path_env(
             "SERVER_OBSERVER_SNAPSHOT_PATH", "/var/lib/openvpn-web/server-observer/latest.json"
+        ),
+        infrastructure_map_snapshot_path=_path_env(
+            "INFRASTRUCTURE_MAP_SNAPSHOT_PATH", "/var/lib/openvpn-web/infrastructure/latest.json"
         ),
         out_dir=_path_env("OUT_DIR", "/etc/openvpn/client-generator/output"),
         share_out_dir=_path_env("SHARE_OUT_DIR", "/mnt/antares_soft/vpn_config"),

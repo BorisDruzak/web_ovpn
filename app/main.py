@@ -50,6 +50,7 @@ from .network_observer import CATEGORY_LABELS, DEVICE_TYPE_LABELS, HOST_STATUS_F
 from .network_paths_adapter import get_network_path, list_network_paths
 from .routeros_backups import list_routeros_backups
 from .server_health_view import build_server_health_view
+from .infrastructure_map import load_infrastructure_map
 from .server_drafts import create_draft_request, make_draft_request, observer_public_key, read_public_result
 from .ui_snapshot_cache import SnapshotCache
 from .vpnctl_client import VpnctlError, run_vpnctl
@@ -1687,6 +1688,15 @@ def network_runtime_health(request: Request, db: Session = Depends(get_db)):
         return run_vpnctl(["runtime-health"], timeout=15)
     except VpnctlError as exc:
         raise HTTPException(status_code=502, detail=str(exc.message)) from exc
+
+
+@app.get("/network/infrastructure", response_class=HTMLResponse)
+def network_infrastructure(request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    graph = load_infrastructure_map(get_settings().infrastructure_map_snapshot_path)
+    response = render(request, "network_infrastructure.html", {"graph": graph}, db)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.get("/network/dashboard", response_class=HTMLResponse)
