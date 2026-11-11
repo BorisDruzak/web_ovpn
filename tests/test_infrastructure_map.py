@@ -1605,6 +1605,47 @@ def test_observed_fdb_resolves_ifindex_only_with_matching_live_port_collection()
         assert query_observed_mac_ports(conn, macs) == []
 
 
+def test_confirmed_attachment_requires_fdb_and_port_from_same_collection():
+    import sqlite3
+    from contextlib import closing
+    from netctl.switch_queries import query_confirmed_attachment_ports
+
+    with closing(sqlite3.connect(":memory:")) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.executescript("""
+            CREATE TABLE network_sources (id INTEGER, enabled INTEGER);
+            CREATE TABLE asset_interfaces (id INTEGER, mac TEXT, lifecycle TEXT);
+            CREATE TABLE asset_attachment_resolutions (asset_interface_id INTEGER, selected_source_id INTEGER,
+                selected_port_key TEXT, selected_vlan_key TEXT, correlation_run_id INTEGER, status TEXT);
+            CREATE TABLE asset_attachment_candidates (asset_interface_id INTEGER, switch_source_id INTEGER,
+                port_key TEXT, vlan_key TEXT, vlan_id INTEGER, correlation_run_id INTEGER,
+                candidate_class TEXT, observed_at TEXT);
+            CREATE TABLE switch_ports (source_id INTEGER, port_key TEXT, collector_run_id INTEGER, oper_status TEXT);
+            CREATE TABLE current_switch_fdb (source_id INTEGER, port_key TEXT, if_index INTEGER,
+                collector_run_id INTEGER, mac TEXT, vlan_key TEXT, status TEXT);
+            INSERT INTO network_sources VALUES (1, 1);
+            INSERT INTO asset_interfaces VALUES (2, '02:00:00:00:00:17', 'active');
+            INSERT INTO asset_attachment_resolutions VALUES (2, 1, 'physical:17', '1', 50, 'confirmed');
+            INSERT INTO asset_attachment_candidates VALUES (2, 1, 'physical:17', '1', 1, 50,
+                'direct', '2026-11-11T20:40:00Z');
+            INSERT INTO switch_ports VALUES (1, 'physical:17', 4, 'up');
+            INSERT INTO current_switch_fdb VALUES (1, 'physical:17', 5017, 5,
+                '02:00:00:00:00:17', '1', 'learned');
+        """)
+        assert query_confirmed_attachment_ports(conn) == []
+        conn.execute("INSERT INTO switch_ports VALUES (1, 'ifindex:5017', 5, 'up')")
+        report, = query_confirmed_attachment_ports(conn)
+        assert report["port_key"] == "ifindex:5017"
+        assert report["observed_at"] == "2026-11-11T20:40:00Z"
+        conn.execute("UPDATE switch_ports SET collector_run_id=5, oper_status='down' WHERE port_key='physical:17'")
+        assert query_confirmed_attachment_ports(conn) == []
+        conn.execute("UPDATE switch_ports SET oper_status='up' WHERE port_key='physical:17'")
+        report, = query_confirmed_attachment_ports(conn)
+        assert report["port_key"] == "physical:17"
+        conn.execute("UPDATE current_switch_fdb SET mac='02:00:00:00:00:18'")
+        assert query_confirmed_attachment_ports(conn) == []
+
+
 def test_configured_asset_fdb_path_is_scoped_and_requires_a_unique_live_port():
     from app.infrastructure_collect import build_graph
 

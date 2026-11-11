@@ -15,6 +15,18 @@ _LLDP_FINGERPRINT_TYPES = {
     "telephone": "phone",
     "wlan_access_point": "network",
 }
+_FDB_PORT_MATCH = """
+    p.source_id = f.source_id AND p.collector_run_id = f.collector_run_id
+    AND (
+        p.port_key = f.port_key
+        OR (f.port_key LIKE 'physical:%' AND f.if_index > 0 AND p.port_key = 'ifindex:' || f.if_index
+            AND NOT EXISTS (
+                SELECT 1 FROM switch_ports AS exact
+                WHERE exact.source_id = f.source_id AND exact.port_key = f.port_key
+                  AND exact.collector_run_id = f.collector_run_id
+            ))
+    )
+"""
 
 
 def query_confirmed_attachment_ports(conn: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -22,8 +34,8 @@ def query_confirmed_attachment_ports(conn: sqlite3.Connection) -> list[dict[str,
     return [
         dict(row)
         for row in conn.execute(
-            """
-            SELECT DISTINCT candidates.switch_source_id AS source_id, candidates.port_key,
+            f"""
+            SELECT DISTINCT candidates.switch_source_id AS source_id, p.port_key,
                    candidates.vlan_id, interfaces.mac, candidates.observed_at
             FROM asset_attachment_resolutions AS resolutions
             JOIN asset_attachment_candidates AS candidates
@@ -34,15 +46,14 @@ def query_confirmed_attachment_ports(conn: sqlite3.Connection) -> list[dict[str,
              AND candidates.correlation_run_id = resolutions.correlation_run_id
             JOIN asset_interfaces AS interfaces ON interfaces.id = candidates.asset_interface_id
             JOIN network_sources AS sources ON sources.id = candidates.switch_source_id
-            JOIN switch_ports AS ports
-              ON ports.source_id = candidates.switch_source_id AND ports.port_key = candidates.port_key
-            JOIN current_switch_fdb AS fdb
-              ON fdb.source_id = candidates.switch_source_id AND fdb.port_key = candidates.port_key
-             AND fdb.vlan_key = candidates.vlan_key AND fdb.mac = interfaces.mac COLLATE NOCASE
+            JOIN current_switch_fdb AS f
+              ON f.source_id = candidates.switch_source_id AND f.port_key = candidates.port_key
+             AND f.vlan_key = candidates.vlan_key AND f.mac = interfaces.mac COLLATE NOCASE
+            JOIN switch_ports AS p ON {_FDB_PORT_MATCH}
             WHERE resolutions.status = 'confirmed' AND candidates.candidate_class = 'direct'
-              AND interfaces.lifecycle = 'active' AND sources.enabled = 1 AND ports.oper_status = 'up'
-              AND lower(fdb.status) NOT IN ('self', 'mgmt')
-            ORDER BY candidates.switch_source_id, candidates.port_key, candidates.vlan_id, interfaces.mac
+              AND interfaces.lifecycle = 'active' AND sources.enabled = 1 AND p.oper_status = 'up'
+              AND lower(f.status) NOT IN ('self', 'mgmt')
+            ORDER BY candidates.switch_source_id, p.port_key, candidates.vlan_id, interfaces.mac
             """
         )
     ]
@@ -54,21 +65,11 @@ def query_observed_mac_ports(
     if not macs:
         return []
     return [dict(row) for row in conn.execute(
-        """
+        f"""
         SELECT f.source_id, p.port_key, f.mac, f.vlan_id, f.last_seen_at AS observed_at
         FROM current_switch_fdb AS f
         JOIN network_sources AS s ON s.id = f.source_id
-        JOIN switch_ports AS p ON p.source_id = f.source_id
-          AND p.collector_run_id = f.collector_run_id
-          AND (
-            p.port_key = f.port_key
-            OR (f.port_key LIKE 'physical:%' AND f.if_index > 0 AND p.port_key = 'ifindex:' || f.if_index
-                AND NOT EXISTS (
-                    SELECT 1 FROM switch_ports AS exact
-                    WHERE exact.source_id = f.source_id AND exact.port_key = f.port_key
-                      AND exact.collector_run_id = f.collector_run_id
-                ))
-          )
+        JOIN switch_ports AS p ON {_FDB_PORT_MATCH}
         WHERE lower(f.mac) IN (SELECT value FROM json_each(?))
           AND s.enabled = 1 AND p.oper_status = 'up' AND lower(f.status) NOT IN ('self', 'mgmt')
           AND (? = 0 OR lower(f.status) = 'learned')
