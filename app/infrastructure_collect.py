@@ -16,6 +16,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from urllib.error import URLError
 from urllib.parse import quote, urlsplit
@@ -31,7 +32,8 @@ from netctl.source_identity import list_source_identities
 from netctl.switch_queries import query_confirmed_attachment_ports, query_observed_mac_ports
 
 from .infrastructure_map import (
-    CLUSTER_HEALTH_METHODS, CLUSTER_KIND, INTERFACE_NAME, MAX_SNAPSHOT_BYTES, NETWORK_KINDS, RECIPROCAL_MAC_SOURCE,
+    CLUSTER_HEALTH_METHODS, CLUSTER_KIND, INTERFACE_NAME, MAX_SNAPSHOT_BYTES, NETWORK_KINDS,
+    PVE_DISK_DEVICE, PVE_STORAGE_ID, RECIPROCAL_MAC_SOURCE,
     index_port_states, observation_is_fresh, port_label_key,
 )
 from .infrastructure_service_probes import apply_service_probes, probe_icmp
@@ -114,6 +116,34 @@ def _guest_interfaces(config: dict) -> dict:
             interfaces[name] = (bridge, int(tag) if re.fullmatch(r"[0-9]{1,4}", tag) else None,
                                 options.get("link_down") == "1", mac.lower() if MAC.fullmatch(mac) else "")
     return interfaces
+
+
+def _guest_disks(config: dict, guest_type: str) -> list[dict]:
+    disks = []
+    volume_key = "volume" if guest_type == "lxc" else "file"
+    for device, raw in config.items():
+        if not PVE_DISK_DEVICE.fullmatch(device) or not isinstance(raw, str):
+            continue
+        is_mount = device == "rootfs" or device.startswith("mp")
+        if is_mount != (guest_type == "lxc"):
+            continue
+        parts = raw.split(",")
+        options = dict(part.split("=", 1) for part in parts if "=" in part)
+        reference = options.get(volume_key, parts[0] if "=" not in parts[0] else "")
+        storage, _, volume = reference.partition(":")
+        if (not PVE_STORAGE_ID.fullmatch(storage) or not volume or volume.isdecimal()
+                or volume.startswith(("/", "iso/")) or options.get("media") == "cdrom"
+                or re.fullmatch(r"(?:vm-[0-9]+-)?cloudinit(?:\.[a-z0-9]+)?", volume.rsplit("/", 1)[-1])):
+            continue
+        disk = {"device": device, "storage": storage}
+        size = re.fullmatch(r"([0-9]{1,16}(?:\.[0-9]{1,6})?)([KMGTPE]?)", options.get("size", ""))
+        if size:
+            power = ("", "K", "M", "G", "T", "P", "E").index(size[2])
+            size_bytes = Decimal(size[1]) * 1024**power
+            if 0 < size_bytes < 2**53 and size_bytes == int(size_bytes):
+                disk["sizeBytes"] = int(size_bytes)
+        disks.append(disk)
+    return sorted(disks, key=lambda disk: (disk["device"] != "rootfs", disk["device"]))
 
 
 def _guest_observation(macs: set[str], host_macs: dict, counts: Counter, now: datetime) -> dict | None:
@@ -1099,6 +1129,9 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             config = pve.get("configs", {}).get(str(vmid), {})
             interfaces = guest_interfaces.get(str(vmid), {})
             if observation_is_fresh(pve_at, now):
+                disks = _guest_disks(config, guest.get("type")) if not guest.get("template") else []
+                if disks:
+                    item["guestStorage"] = {"checkedAt": pve_at, "disks": disks}
                 for service, spec in guest_services.get(str(vmid), []):
                     mac = str(spec.get("mac") or "").lower()
                     if mac_counts[mac] != 1 or mac not in guest_macs.get(str(vmid), set()):
@@ -1335,12 +1368,14 @@ def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: set[s
             config = get(f"nodes/{node}/{guest['type']}/{int(key)}/config?current=1")
         except (URLError, TimeoutError):
             return key, {}
-        network = {name: value for name, value in config.items() if re.fullmatch(r"net[0-9]+", name)}
-        if guest["type"] == "qemu":
-            network["directNetworkOnly"] = not any(
-                re.fullmatch(r"args|hookscript|(?:hostpci|usb)[0-9]+", name) for name in config
-            )
-        return key, network
+        selected = {name: value for name, value in config.items() if PVE_DISK_DEVICE.fullmatch(name)}
+        if key in guests or guest.get("status") == "running":
+            selected.update({name: value for name, value in config.items() if re.fullmatch(r"net[0-9]+", name)})
+            if guest["type"] == "qemu":
+                selected["directNetworkOnly"] = not any(
+                    re.fullmatch(r"args|hookscript|(?:hostpci|usb)[0-9]+", name) for name in config
+                )
+        return key, selected
 
     def read_interface(node, interface):
         try:
@@ -1361,8 +1396,10 @@ def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: set[s
         interface = read_interface(node, port)
         return node, port, interface.get("type") == "eth" and interface.get("active") == 1
 
+    online_nodes = {node["node"] for node in result["nodes"] if node.get("status") == "online"}
     candidates = [guest for guest in result["guests"] if guest["type"] in {"qemu", "lxc"}
-                  and (str(guest["vmid"]) in guests or guest.get("status") == "running")]
+                  and (str(guest["vmid"]) in guests or guest.get("status") == "running"
+                       or (not guest.get("template") and guest["node"] in online_nodes))]
     with ThreadPoolExecutor(max_workers=6) as pool:
         result["configs"] = dict(pool.map(read_guest, candidates))
         used_bridges = {(guest["node"], bridge) for guest in candidates

@@ -436,6 +436,18 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       list.append(make('dt', 'Опрос ресурсов'), make('dd', formatTime(checkedAt)));
       propertiesSection.append(make('h3', 'Ресурсы Proxmox'), list);
     }
+    if (node.guestStorage) {
+      const list = make('dl');
+      const number = new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 2});
+      for (const {device, storage, sizeBytes} of node.guestStorage.disks) {
+        const size = sizeBytes >= 2**30 ? `${number.format(sizeBytes / 2**30)} ГиБ`
+          : sizeBytes >= 2**20 ? `${number.format(sizeBytes / 2**20)} МиБ`
+          : sizeBytes ? `${number.format(sizeBytes)} Б` : '';
+        list.append(make('dt', device), make('dd', [storage, size].filter(Boolean).join(' · ')));
+      }
+      list.append(make('dt', 'Конфигурация прочитана'), make('dd', formatTime(node.guestStorage.checkedAt)));
+      propertiesSection.append(make('h3', 'Диски по конфигурации Proxmox'), list);
+    }
     if (node.ports?.length) {
       const panel = make('details', null, 'map-port-panel');
       panel.dataset.section = 'ports';

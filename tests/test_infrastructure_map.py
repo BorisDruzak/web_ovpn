@@ -86,6 +86,43 @@ def test_cluster_health_distinguishes_quorum_members_and_api(tmp_path):
     assert read(now + timedelta(hours=1))["reachability"]["state"] == "unknown"
 
 
+def test_guest_disks_publish_storage_assignments_without_volume_paths(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    pve = {"at": now.isoformat(), "cluster": [], "nodes": [{"node": "pve1", "status": "online"}],
+           "guests": [{"vmid": 103, "node": "pve1", "type": "qemu", "status": "stopped"},
+                      {"vmid": 105, "node": "pve1", "type": "lxc", "status": "running"}],
+           "configs": {"103": {"sata0": "zfs-vm-storage:private-volume-name,size=450G",
+                                "scsi1": "file=main-zfs:private-volume-name,size=1.5T",
+                                "ide2": "local:iso/private-image.iso,media=cdrom,size=9G",
+                                "ide3": "local:vm-103-cloudinit,size=4M",
+                                "unused0": "zfs-vm-storage:detached,size=10G",
+                                "virtio0": "/dev/disk/by-id/private-device,size=2G"},
+                       "105": {"rootfs": "volume=local-lvm:private-volume-name,size=8G",
+                               "mp0": "/srv/private-path,mp=/private-directory",
+                               "mp1": "local-lvm:private-volume-name,mp=/private-directory,size=bad"}}}
+    path = tmp_path / "infrastructure.json"
+    graph = build_graph({}, {}, {}, pve, {}, now)
+    raw = json.dumps(graph)
+    assert "private-" not in raw
+    path.write_text(raw, encoding="utf-8")
+
+    def read(vmid, when=now):
+        return next(node for node in load_infrastructure_map(path, when)["nodes"] if node["vmid"] == vmid)
+
+    assert read(103)["guestStorage"] == {"checkedAt": now.isoformat(), "disks": [
+        {"device": "sata0", "storage": "zfs-vm-storage", "sizeBytes": 450 * 2**30},
+        {"device": "scsi1", "storage": "main-zfs", "sizeBytes": 1536 * 2**30},
+    ]}
+    assert read(105)["guestStorage"]["disks"] == [
+        {"device": "rootfs", "storage": "local-lvm", "sizeBytes": 8 * 2**30},
+        {"device": "mp1", "storage": "local-lvm"},
+    ]
+    assert "guestStorage" not in read(103, now + timedelta(hours=1))
+
+
 def test_hypervisor_resources_require_current_online_node_data(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map

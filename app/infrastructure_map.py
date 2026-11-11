@@ -20,6 +20,8 @@ MAX_AGE = timedelta(minutes=25)
 STATES = ("critical", "warn", "ok", "unknown")
 NETWORK_KINDS = ("Коммутатор", "Маршрутизатор", "Точка доступа", "Сетевое устройство")
 INTERFACE_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}")
+PVE_DISK_DEVICE = re.compile(r"(?:scsi|sata|virtio|ide|mp)[0-9]{1,3}|rootfs")
+PVE_STORAGE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 REACHABILITY_STATES = ("reachable", "unreachable", "stopped", "unknown")
 SERVICE_LINKS = {"Размещение", "Цель проверки"}
 CLUSTER_KIND = "Кластер Proxmox"
@@ -176,6 +178,23 @@ def _public_hypervisor_resources(row: object, now: datetime) -> dict:
     return values
 
 
+def _public_guest_storage(row: object, now: datetime) -> dict:
+    if not isinstance(row, dict) or not observation_is_fresh(row.get("checkedAt"), now):
+        return {}
+    disks = []
+    for disk in _rows(row.get("disks"), 257):
+        device, storage = disk.get("device"), disk.get("storage")
+        if not (isinstance(device, str) and PVE_DISK_DEVICE.fullmatch(device)
+                and isinstance(storage, str) and PVE_STORAGE_ID.fullmatch(storage)):
+            continue
+        public = {"device": device, "storage": storage}
+        size = disk.get("sizeBytes")
+        if type(size) is int and 0 < size < 2**53:
+            public["sizeBytes"] = size
+        disks.append(public)
+    return {"checkedAt": _time(row["checkedAt"]).isoformat(), "disks": disks} if disks else {}
+
+
 def _public_node(row: dict, now: datetime) -> dict:
     sources = []
     for item in _rows(row.get("sources"), 12):
@@ -206,6 +225,7 @@ def _public_node(row: dict, now: datetime) -> dict:
     resources = {}
     if row.get("kind") == "Гипервизор" and any(s["name"] == "Proxmox" and s["status"] == "ok" for s in fresh):
         resources = _public_hypervisor_resources(row.get("resources"), now)
+    guest_storage = _public_guest_storage(row.get("guestStorage"), now) if row.get("guest") is True else {}
     return {
         **{key: _text(row.get(key)) for key in ("id", "name", "kind", "site", "origin", "pveHost")},
         "guest": row.get("guest") is True,
@@ -216,6 +236,7 @@ def _public_node(row: dict, now: datetime) -> dict:
         "sources": sources,
         "properties": properties,
         **({"resources": resources} if resources else {}),
+        **({"guestStorage": guest_storage} if guest_storage else {}),
         "ports": [port for port in ports if port["name"]],
         "serviceChecks": [_public_service_check(check, now) for check in _rows(row.get("serviceChecks"), 16)],
         "checks": [
