@@ -676,6 +676,15 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         icmp_port_unreachable: 'ICMP: UDP-порт недоступен', icmp_rejected: 'Получен отказ ICMP',
         transport_error: 'Ошибка сетевого запроса', unexpected_response: 'Ответ не соответствует запросу',
         dns_no_answer: 'Нет записи запрошенного типа', dns_address_mismatch: 'Адреса не совпадают с ожидаемыми',
+        http_content_type: 'Неожиданный тип ответа', http_body_limit: 'Ответ превышает лимит проверки',
+        http_invalid_json: 'Ответ не содержит ожидаемый объект JSON',
+        http_reported_unavailable: 'Приложение сообщило о сбое',
+        http_payload_mismatch: 'Содержимое ответа не совпало с ожидаемым',
+        http_certificate_pin: 'Не совпал отпечаток сертификата',
+        http_tls_certificate: 'Сертификат TLS не прошёл проверку', http_tls_error: 'Ошибка TLS',
+        http_bad_response: 'Ответ HTTP неполный или некорректный',
+        http_connection_refused: 'Отклонено TCP-соединение', http_connection_reset: 'Сброшено TCP-соединение',
+        http_configuration: 'Ошибка настройки проверки',
         icmp_identity_unconfirmed: 'Принадлежность адреса этому узлу не подтверждена',
         route_other_gateway: 'Активен другой шлюз', route_inactive: 'Маршрут через ожидаемый шлюз неактивен',
         route_rejecting: 'Активный маршрут отбрасывает трафик',
@@ -701,7 +710,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const attempts = check.attempts ? ' · попыток: ' + check.attempts : '';
         const dns = [check.dns?.rcode, check.dns?.transport, check.dns?.addresses?.join(', ')]
           .filter(Boolean).map(value => ' · ' + value).join('');
-        row.append(make('strong', endpoint || 'Проверка'), make('small', result + (reason ? ' · ' + reason + errorSource : '') + dns + attempts + gateway + management + source + time + (check.stale ? ' · устарело' : '')));
+        const http = check.httpStatus ? ' · HTTP ' + check.httpStatus : '';
+        row.append(make('strong', endpoint || 'Проверка'), make('small', result + http + (reason ? ' · ' + reason + errorSource : '') + dns + attempts + gateway + management + source + time + (check.stale ? ' · устарело' : '')));
         list.append(row);
       }
       propertiesSection.append(make('h3', 'Проверки'), list);

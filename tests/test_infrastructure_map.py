@@ -439,6 +439,7 @@ def test_acti_service_reflects_backup_dependency_on_inventory_host(tmp_path):
 def test_service_requires_all_http_checks_and_rejects_unexpected_response():
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from threading import Thread
+    from app.infrastructure_map import _public_service_check
     from app.infrastructure_service_probes import apply_service_probes
 
     class Handler(BaseHTTPRequestHandler):
@@ -448,9 +449,12 @@ def test_service_requires_all_http_checks_and_rejects_unexpected_response():
                 "/healthy": (200, b"Healthy"),
                 "/unexpected": (200, b"Sign in"),
                 "/unavailable": (503, b"Unavailable"),
+                "/redirect": (302, b"Redirect"),
             }[self.path]
             self.send_response(code)
             self.send_header("Content-Type", "text/html")
+            if code == 302:
+                self.send_header("Location", "/login?session=private")
             self.end_headers()
             self.wfile.write(payload)
 
@@ -460,18 +464,27 @@ def test_service_requires_all_http_checks_and_rejects_unexpected_response():
         try:
             base = {"ip": "127.0.0.1", "port": server.server_port, "type": "http"}
             client = {**base, "path": "/client", "body_contains": "client.js"}
-            nodes = [{"id": path, "kind": "Сервис"} for path in ("/healthy", "/unexpected", "/unavailable")]
+            nodes = [{"id": path, "kind": "Сервис"} for path in ("/healthy", "/unexpected", "/unavailable", "/redirect")]
             apply_service_probes(nodes, {
                 node["id"]: [client, {**base, "path": node["id"], "body": "Healthy"}] for node in nodes
             })
         finally:
             server.shutdown()
             worker.join()
-    assert [node["reachability"]["state"] for node in nodes] == ["reachable", "unknown", "unreachable"]
+    assert [node["reachability"]["state"] for node in nodes] == ["reachable", "unknown", "unreachable", "unknown"]
     assert [[check["state"] for check in node["serviceChecks"]] for node in nodes] == [
-        ["reachable", "reachable"], ["reachable", "unknown"], ["reachable", "unreachable"],
+        ["reachable", "reachable"], ["reachable", "unknown"], ["reachable", "unreachable"], ["reachable", "unknown"],
     ]
     assert nodes[1]["serviceChecks"][1]["path"] == "/unexpected"
+    now = datetime.now(timezone.utc)
+    checks = [_public_service_check(node["serviceChecks"][1], now) for node in nodes]
+    assert [(check["httpStatus"], check.get("reason")) for check in checks] == [
+        (200, None), (200, "http_payload_mismatch"), (503, "http_status"), (302, "http_status"),
+    ]
+    assert "private" not in json.dumps(checks)
+    foreign = {**nodes[0]["serviceChecks"][1], "method": "DNS", "reason": "http_status"}
+    assert "httpStatus" not in _public_service_check(foreign, now)
+    assert "reason" not in _public_service_check(foreign, now)
 
 
 def test_http_probe_matches_json_health_fields_without_fixing_the_version():
@@ -651,11 +664,14 @@ def test_asset_https_probe_validates_certificate_before_sending_request(monkeypa
     probes.apply_service_probes(graph["nodes"], configured)
     assert events == ["connect", "close"]
     assert node["reachability"]["state"] == "unknown"
+    assert node["serviceChecks"][-1]["reason"] == "http_certificate_pin"
+    assert "httpStatus" not in node["serviceChecks"][-1]
     events.clear()
     spec["tls_sha256"] = sha256(cert).hexdigest()
     probes.apply_service_probes(graph["nodes"], configured)
     assert events == ["connect", ("GET", "/"), "close"]
     assert node["reachability"]["state"] == "reachable"
+    assert node["serviceChecks"][-1]["httpStatus"] == 200
 
 
 def test_zabbix_version_checks_matching_json_rpc_response():

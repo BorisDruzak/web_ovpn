@@ -33,7 +33,7 @@ def _http_path(path: object) -> str:
     return path
 
 
-def _http(ip: str, port: int, spec: dict) -> str:
+def _http(ip: str, port: int, spec: dict) -> dict:
     path = _http_path(spec.get("path"))
     body_expected = spec.get("body")
     body_marker = spec.get("body_contains")
@@ -78,6 +78,7 @@ def _http(ip: str, port: int, spec: dict) -> str:
         context.verify_mode = ssl.CERT_NONE
     connection = (http.client.HTTPSConnection(server_name or ip, port, timeout=TIMEOUT, context=context) if tls
                   else http.client.HTTPConnection(ip, port, timeout=TIMEOUT))
+    observed = {}
     try:
         if server_name:
             with socket.create_connection((ip, port), timeout=TIMEOUT) as transport:
@@ -86,38 +87,65 @@ def _http(ip: str, port: int, spec: dict) -> str:
             connection.connect()
             certificate = connection.sock.getpeercert(binary_form=True)
             if not certificate or hashlib.sha256(certificate).hexdigest() != fingerprint.lower():
-                return "unknown"
+                return {"state": "unknown", "reason": "http_certificate_pin"}
         connection.request("GET", path, headers={"Accept-Encoding": "identity"})
         response = connection.getresponse()
+        observed["httpStatus"] = response.status
         if 500 <= response.status < 600:
-            return "unreachable"
+            return {**observed, "state": "unreachable", "reason": "http_status"}
         if response.status != 200:
-            return "unknown"
+            return {**observed, "state": "unknown", "reason": "http_status"}
         if content_type and response.getheader("Content-Type", "").split(";", 1)[0].strip().lower() != content_type:
-            return "unknown"
+            return {**observed, "state": "unknown", "reason": "http_content_type"}
         if json_fields is not None:
             payload = response.read(HTTP_BODY_LIMIT + 1)
             if len(payload) > HTTP_BODY_LIMIT:
-                return "unknown"
+                return {**observed, "state": "unknown", "reason": "http_body_limit"}
             try:
                 document = json.loads(payload)
             except (ValueError, RecursionError):
-                return "unknown"
+                return {**observed, "state": "unknown", "reason": "http_invalid_json"}
             if not isinstance(document, dict):
-                return "unknown"
+                return {**observed, "state": "unknown", "reason": "http_invalid_json"}
             if json_unavailable and all(document.get(key) == value for key, value in json_unavailable.items()):
-                return "unreachable"
-            if all(document.get(key) == value for key, value in json_fields.items()):
-                return "reachable"
-            return "unknown"
-        if body_expected:
+                return {**observed, "state": "unreachable", "reason": "http_reported_unavailable"}
+            matches = all(document.get(key) == value for key, value in json_fields.items())
+        elif body_expected:
             payload = response.read(HTTP_BODY_LIMIT + 1)
-            return "reachable" if payload.strip() == body_expected.encode() else "unknown"
-        if body_marker:
-            return "reachable" if body_marker.encode() in response.read(HTTP_BODY_LIMIT) else "unknown"
-        return "reachable" if response.read(1) else "unknown"
+            matches = payload.strip() == body_expected.encode()
+        elif body_marker:
+            matches = body_marker.encode() in response.read(HTTP_BODY_LIMIT)
+        else:
+            matches = bool(response.read(1))
+        if matches:
+            return {**observed, "state": "reachable"}
+        return {**observed, "state": "unknown", "reason": "http_payload_mismatch"}
+    except ssl.SSLCertVerificationError:
+        return {**observed, "state": "unknown", "reason": "http_tls_certificate"}
+    except ssl.SSLError:
+        return {**observed, "state": "unknown", "reason": "http_tls_error"}
+    except http.client.HTTPException:
+        return {**observed, "state": "unknown", "reason": "http_bad_response"}
+    except TimeoutError:
+        return {**observed, "state": "unreachable", "reason": "timeout"}
+    except ConnectionRefusedError:
+        return {**observed, "state": "unreachable", "reason": "http_connection_refused"}
+    except ConnectionResetError:
+        return {**observed, "state": "unreachable", "reason": "http_connection_reset"}
+    except OSError:
+        return {**observed, "state": "unknown", "reason": "transport_error"}
     finally:
         connection.close()
+
+
+def _http_probe(spec: dict) -> dict:
+    try:
+        port = spec["port"]
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise ValueError("invalid HTTP probe port")
+        return _http(str(ipaddress.ip_address(spec["ip"])), port, spec)
+    except (KeyError, TypeError, ValueError, OSError):
+        return {"state": "unknown", "reason": "http_configuration"}
 
 
 def _zabbix_api(ip: str, port: int, spec: dict) -> str:
@@ -413,14 +441,14 @@ def _probe(spec: dict) -> str:
             return "reachable" if probe_icmp(spec["ip"]) else "unknown"
         if protocol == "dns":
             return _dns(spec)["state"]
+        if protocol in {"http", "https"}:
+            return _http_probe(spec)["state"]
         port = spec["port"]
         if type(port) is not int or not 1 <= port <= 65535:
             return "unknown"
         if protocol == "openvpn_management":
             return _openvpn_management()["state"]
         ip = str(ipaddress.ip_address(spec["ip"]))
-        if protocol in {"http", "https"}:
-            return _http(ip, port, spec)
         if protocol == "zabbix_api":
             return _zabbix_api(ip, port, spec)
         if protocol == "ldap":
@@ -473,6 +501,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 details = _sip_options(spec)
             elif protocol == "dns":
                 details = _dns(spec)
+            elif protocol in {"http", "https"}:
+                details = _http_probe(spec)
             else:
                 details = {"state": _probe(spec)}
             if node["kind"] != "Сервис" and protocol == "icmp" and details["state"] == "reachable":
