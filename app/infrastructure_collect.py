@@ -29,7 +29,7 @@ from netctl.drivers import legacy_driver_for
 from netctl.snmp.lacp import read_lacp_members
 from netctl.snmp.transport import SnmpTransport
 from netctl.source_identity import list_source_identities
-from netctl.switch_queries import query_confirmed_attachment_ports, query_observed_mac_ports
+from netctl.switch_queries import FDB_PORT_MATCH, query_confirmed_attachment_ports, query_observed_mac_ports
 
 from .infrastructure_map import (
     CLUSTER_HEALTH_METHODS, CLUSTER_KIND, INTERFACE_NAME, MAX_SNAPSHOT_BYTES, NETWORK_KINDS,
@@ -878,6 +878,10 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         port_names[(port["source"], port.get("port_key"))] = port.get("name") or port.get("port_key")
     port_telemetry = {(row["source"], row["port_key"], row["collector_run_id"], row["observed_at"]): row
                       for row in network.get("port_telemetry", [])}
+    fdb_vlans = {}
+    for row in network.get("port_fdb_vlans", []):
+        key = (row["source"], row["collector_run_id"], row["observed_at"], row["port_key"])
+        fdb_vlans.setdefault(key, []).append({"id": row["vlan_id"], "learnedMacCount": row["learned_mac_count"]})
     vlans_by_key, vlans_by_index = {}, {}
     for row in network.get("port_vlans", []):
         scope = (row["source"], row["collector_run_id"], row["observed_at"])
@@ -929,6 +933,9 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             ]
             for port, raw_port in zip(item["ports"], current):
                 scope = (name, latest_run, port["checkedAt"])
+                learned_vlans = fdb_vlans.get((*scope, port["key"]))
+                if learned_vlans and port["state"] == "up":
+                    port["fdbVlans"] = {"checkedAt": port["checkedAt"], "vlans": learned_vlans}
                 index = raw_port.get("if_index")
                 memberships = [row for row in vlans_by_key.get((*scope, port["key"]), [])
                                if index is None or row.get("if_index") in (None, index)]
@@ -1679,6 +1686,19 @@ def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | N
             FROM current_switch_vlan_memberships AS v
             JOIN network_sources AS s ON s.id = v.source_id
             WHERE s.enabled = 1 AND s.driver = 'snmp_switch'
+            """
+        )]
+        data["port_fdb_vlans"] = [dict(row) for row in connection.execute(
+            f"""
+            SELECT s.name AS source, p.port_key, f.collector_run_id, f.last_seen_at AS observed_at,
+                   f.vlan_id, COUNT(DISTINCT lower(f.mac)) AS learned_mac_count
+            FROM current_switch_fdb AS f
+            JOIN network_sources AS s ON s.id = f.source_id
+            JOIN switch_ports AS p ON {FDB_PORT_MATCH}
+            WHERE s.enabled = 1 AND s.driver = 'snmp_switch'
+              AND lower(f.status) = 'learned' AND f.vlan_id BETWEEN 1 AND 4094
+              AND p.last_seen_at = f.last_seen_at AND p.oper_status = 'up'
+            GROUP BY s.name, p.port_key, f.collector_run_id, f.last_seen_at, f.vlan_id
             """
         )]
         data["switch_management_fdb"] = _switch_management_fdb(connection, data["sources"])

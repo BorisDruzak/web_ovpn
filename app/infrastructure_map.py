@@ -178,20 +178,35 @@ def _public_port_telemetry(sample: object, port: dict, now: datetime) -> dict:
     return {"checkedAt": port["checkedAt"], "intervalSeconds": interval, **metrics} if metrics else {}
 
 
-def _public_port_vlans(sample: object, port: dict, now: datetime) -> dict:
+def _current_port_vlan_rows(sample: object, port: dict) -> list[dict]:
     if port["stale"] or not isinstance(sample, dict):
-        return {}
+        return []
     stamp = _time(sample.get("checkedAt"))
-    if stamp is None or stamp.isoformat() != port["checkedAt"] or not observation_is_fresh(sample["checkedAt"], now):
-        return {}
+    if stamp is None or stamp.isoformat() != port["checkedAt"]:
+        return []
+    return _rows(sample.get("vlans"), 4094)
+
+
+def _public_port_vlans(sample: object, port: dict) -> dict:
     vlans = {}
-    for row in _rows(sample.get("vlans"), 4094):
+    for row in _current_port_vlan_rows(sample, port):
         vlan_id, egress, pvid = row.get("id"), row.get("egress"), row.get("pvid")
         if (type(vlan_id) is int and 1 <= vlan_id <= 4094 and egress in ("", "tagged", "untagged")
                 and type(pvid) is bool and (egress or pvid)):
             vlans.setdefault(vlan_id, []).append({"id": vlan_id, "egress": egress, "pvid": pvid})
     unique = [rows[0] for _, rows in sorted(vlans.items()) if len(rows) == 1]
     return {"checkedAt": port["checkedAt"], "vlans": unique} if unique else {}
+
+
+def _public_port_fdb_vlans(sample: object, port: dict) -> dict:
+    if port["state"] != "up":
+        return {}
+    vlans = []
+    for row in _current_port_vlan_rows(sample, port):
+        vlan_id, count = row.get("id"), row.get("learnedMacCount")
+        if type(vlan_id) is int and 1 <= vlan_id <= 4094 and type(count) is int and 0 < count < 2**53:
+            vlans.append({"id": vlan_id, "learnedMacCount": count})
+    return {"checkedAt": port["checkedAt"], "vlans": sorted(vlans, key=lambda row: row["id"])} if vlans else {}
 
 
 def port_label_key(label: str) -> str:
@@ -399,9 +414,12 @@ def _public_node(row: dict, now: datetime) -> dict:
         telemetry = _public_port_telemetry(raw_port.get("telemetry"), port, now)
         if telemetry:
             port["telemetry"] = telemetry
-        memberships = _public_port_vlans(raw_port.get("vlanMemberships"), port, now)
+        memberships = _public_port_vlans(raw_port.get("vlanMemberships"), port)
         if memberships:
             port["vlanMemberships"] = memberships
+        fdb_vlans = _public_port_fdb_vlans(raw_port.get("fdbVlans"), port)
+        if fdb_vlans:
+            port["fdbVlans"] = fdb_vlans
     observer = next((source for source in sources if source["name"] == "Server Observer"), None)
     aliases = row.get("aliases")
     resources = {}

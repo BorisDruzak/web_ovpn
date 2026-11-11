@@ -620,6 +620,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
             if (selected.length) row.append(make('small', label + ' · ' + selected.map(vlan => vlan.id).join(', ')));
           }
         }
+        if (selectedPort && port.fdbVlans) {
+          const vlans = port.fdbVlans.vlans.map(vlan => `${vlan.id} (${vlan.learnedMacCount} MAC)`);
+          row.append(make('small', 'VLAN по MAC-таблице · ' + vlans.join(', ')));
+        }
         if (selectedPort && port.telemetry) {
           const number = new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 2});
           const rate = (label, value) => value === undefined ? '' : label + ' ' + number.format(value / 1e6) + ' Мбит/с';

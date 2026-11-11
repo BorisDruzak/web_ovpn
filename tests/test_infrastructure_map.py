@@ -1619,7 +1619,11 @@ def test_switch_vlans_join_current_port_by_unique_ifindex(tmp_path):
                "ports": [{**base, "port_key": "ifindex:5012", "name": "ge12",
                           "oper_status": "up", "last_seen_at": at}],
                "port_vlans": [membership, {**membership, "vlan_id": 1, "untagged": 1, "pvid": 1},
-                              {**membership, "vlan_id": 99, "collector_run_id": 10}]}
+                              {**membership, "vlan_id": 99, "collector_run_id": 10}],
+               "port_fdb_vlans": [{**base, "port_key": "ifindex:5012", "observed_at": at,
+                                   "vlan_id": 30, "learned_mac_count": 2},
+                                  {**base, "port_key": "ifindex:5012", "observed_at": at,
+                                   "vlan_id": 99, "learned_mac_count": 4, "collector_run_id": 10}]}
     path = tmp_path / "map.json"
 
     def read(when=now):
@@ -1629,7 +1633,9 @@ def test_switch_vlans_join_current_port_by_unique_ifindex(tmp_path):
     assert read()[0]["vlanMemberships"] == {"checkedAt": at, "vlans": [
         {"id": 1, "egress": "untagged", "pvid": True}, {"id": 20, "egress": "tagged", "pvid": False},
     ]}
+    assert read()[0]["fdbVlans"] == {"checkedAt": at, "vlans": [{"id": 30, "learnedMacCount": 2}]}
     assert "vlanMemberships" not in read(now + timedelta(hours=1))[0]
+    assert "fdbVlans" not in read(now + timedelta(hours=1))[0]
     network["ports"].append({**network["ports"][0], "port_key": "alternate", "name": "ge13"})
     assert all("vlanMemberships" not in port for port in read())
 
