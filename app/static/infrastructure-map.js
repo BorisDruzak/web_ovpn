@@ -47,7 +47,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     invalid: 'Снимок инфраструктуры недоступен.',
     stale: 'Снимок устарел. Связи показаны по последним доступным данным.',
   };
-  function showAvailability(message = availabilityLabels[data.availability] ?? '') {
+  const proxmoxUnavailable = () => data.collectionIssues?.includes('proxmox');
+  function showAvailability(message = [availabilityLabels[data.availability], proxmoxUnavailable() &&
+    'Опрос Proxmox завершился ошибкой. Текущее состояние и размещение ВМ не подтверждены.'].filter(Boolean).join(' ')) {
     availability.textContent = message;
     availability.hidden = !message;
   }
@@ -190,7 +192,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       hosts.get(guest.pveHost).push(guest);
     }
     for (const [host, entries] of hosts) {
-      addGrid((host || 'Без размещения') + ' · ВМ и контейнеры (' + entries.length + ')',
+      addGrid((host || 'Размещение не подтверждено') + ' · ВМ и контейнеры (' + entries.length + ')',
               entries.sort((a,b) => a.vmid - b.vmid).map(node => node.id));
     }
   }
@@ -218,8 +220,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       for (const id of data.nodeOrder) {
         const guests = data.nodes.filter(node => node.pveHost === id).sort((a,b) => a.vmid - b.vmid);
         if (guests.length) addGrid(id + ' · ВМ (' + guests.length + ')', guests.map(node => node.id));
-        else group(id + ' · ВМ отсутствуют');
+        else if (!proxmoxUnavailable()) group(id + ' · ВМ отсутствуют');
       }
+      if (proxmoxUnavailable()) addGuestGroups(data.nodes.filter(node => node.guest && !node.pveHost));
     } else {
       const isOverview = mode === 'overview';
       const visible = new Set(data.nodes.filter(node => isOverview

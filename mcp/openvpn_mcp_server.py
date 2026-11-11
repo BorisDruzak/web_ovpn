@@ -546,7 +546,7 @@ def _infrastructure_snapshot(node_id: str | None, query: str | None, port_name: 
     graph = response.get("infrastructure")
     if not isinstance(graph, dict) or (node_id is None and query is None):
         return response
-    metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git") if key in graph}
+    metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
     if query is not None:
         search = _infrastructure_matches(graph["nodes"], " ".join(query.casefold().split()))
         return {**response, "infrastructure": {**metadata, **search}}

@@ -507,7 +507,7 @@ def test_mcp_infrastructure_returns_one_node_and_its_linked_peers(monkeypatch):
     import mcp.openvpn_mcp_server as server
 
     graph = {
-        "snapshotAt": "2026-11-11T12:00:00Z", "availability": "ready",
+        "snapshotAt": "2026-11-11T12:00:00Z", "availability": "ready", "collectionIssues": ["proxmox"],
         "nodes": [{"id": "vm:103", "name": "Directum", "mapStatus": "ok", "checks": []},
                   {"id": "sw", "name": "Switch", "mapStatus": "ok"}, {"id": "other"}],
         "links": [{"a": "sw", "b": "vm:103", "portEvidence": [{"a": "xe3"}]},
@@ -525,6 +525,7 @@ def test_mcp_infrastructure_returns_one_node_and_its_linked_peers(monkeypatch):
     assert scoped["neighbors"] == [graph["nodes"][1]]
     assert scoped["links"] == graph["links"][:1]
     assert scoped["snapshotAt"] == graph["snapshotAt"]
+    assert scoped["collectionIssues"] == ["proxmox"]
     absent = server.call_tool("openvpn_network_infrastructure", {"node_id": "unknown"})["infrastructure"]
     assert absent["node"] is None and absent["links"] == absent["neighbors"] == []
 

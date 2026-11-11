@@ -11,6 +11,7 @@ import os
 import re
 import ssl
 import subprocess
+import sys
 import tempfile
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
@@ -1567,10 +1568,16 @@ def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: set[s
             payload = response.read(MAX_SNAPSHOT_BYTES + 1)
         if len(payload) > MAX_SNAPSHOT_BYTES:
             raise ValueError("Proxmox response exceeds limit")
-        return json.loads(payload)["data"]
+        response_data = json.loads(payload)
+        if not isinstance(response_data, dict) or "data" not in response_data:
+            raise ValueError("invalid Proxmox response")
+        return response_data["data"]
 
     result = {"cluster": get("cluster/status"), "nodes": get("cluster/resources?type=node"),
               "guests": get("cluster/resources?type=vm"), "configs": {}, "bridges": {}}
+    if any(not isinstance(result[key], list) or not all(isinstance(row, dict) for row in result[key])
+           for key in ("cluster", "nodes", "guests")):
+        raise ValueError("invalid Proxmox inventory")
     def read_guest(guest):
         key = str(guest["vmid"])
         node = quote(guest["node"], safe="")
@@ -1813,6 +1820,55 @@ def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | N
     return data
 
 
+def _retain_proxmox_inventory(graph: dict, path: Path) -> None:
+    try:
+        with path.open("rb") as handle:
+            body = handle.read(MAX_SNAPSHOT_BYTES + 1)
+        if len(body) > MAX_SNAPSHOT_BYTES:
+            return
+        previous = json.loads(body)
+    except (OSError, ValueError, RecursionError):
+        return
+    if (not isinstance(previous, dict) or previous.get("schema") != 1
+            or previous.get("contextSha256") != graph["contextSha256"]
+            or not isinstance(previous.get("nodes"), list)):
+        return
+    current = {node["id"]: node for node in graph["nodes"]}
+    retained = set()
+    for old in previous["nodes"][:600]:
+        keys = ("id", "kind", "name")
+        if not isinstance(old, dict) or not all(isinstance(old.get(key), str) and old[key] for key in keys):
+            continue
+        kind, node_id = old["kind"], old["id"]
+        guest = kind in ("Виртуальная машина", "Контейнер") and old.get("guest") is True and type(old.get("vmid")) is int
+        if not guest and kind not in ("Гипервизор", CLUSTER_KIND):
+            continue
+        identity = {key: old[key] for key in keys}
+        item = current.setdefault(node_id, {**identity, "origin": "Последний снимок Proxmox"})
+        if guest:
+            item.update(kind=kind, guest=True, vmid=old["vmid"])
+        retained.add(node_id)
+    graph["nodes"] = list(current.values())
+    cluster_id = previous.get("clusterId")
+    if isinstance(cluster_id, str) and cluster_id in retained:
+        graph["clusterId"] = cluster_id
+    graph["nodeOrder"] = sorted(node_id for node_id in retained if current[node_id]["kind"] == "Гипервизор")
+
+    previous_links = previous.get("links")
+    if not isinstance(previous_links, list):
+        return
+    existing = {(edge["a"], edge["b"], edge["kind"]) for edge in graph["links"]}
+    for edge in previous_links[:2400]:
+        if not isinstance(edge, dict):
+            continue
+        a, b, kind = (edge.get(key) for key in ("a", "b", "kind"))
+        if not isinstance(a, str) or not isinstance(b, str) or a not in retained or b not in retained:
+            continue
+        if kind in ("Размещение ВМ", "Узел кластера") and (a, b, kind) not in existing:
+            graph["links"].append({"a": a, "b": b, "kind": kind, "source": "Последний снимок Proxmox", "confirmed": False})
+            existing.add((a, b, kind))
+
+
 def publish_snapshot(path: Path, graph: dict) -> None:
     body = json.dumps(graph, ensure_ascii=False, allow_nan=False).encode("utf-8")
     if len(body) > MAX_SNAPSHOT_BYTES:
@@ -1853,13 +1909,18 @@ def main() -> int:
             raise ValueError("network context did not validate")
         bindings = json.loads(args.bindings.read_text(encoding="utf-8")) if args.bindings else {}
         pve = {}
+        proxmox_failed = False
         if args.proxmox_url:
             guest_ids = set(bindings.get("guests", {}))
             guest_ids.update(str(service["vmid"]) for service in bindings.get("guest_services", {}).values())
             guest_ids.update(str(role["vmid"]) for role in bindings.get("roles", {}).values()
                              if type(role.get("vmid")) is int and not role.get("asset"))
-            pve = read_proxmox(args.proxmox_url, args.proxmox_token_file, args.proxmox_ca, guest_ids,
-                               bindings.get("hypervisor_management_bridges"))
+            try:
+                pve = read_proxmox(args.proxmox_url, args.proxmox_token_file, args.proxmox_ca, guest_ids,
+                                   bindings.get("hypervisor_management_bridges"))
+            except (OSError, KeyError, ValueError) as exc:
+                proxmox_failed = True
+                print(f"Proxmox inventory unavailable ({type(exc).__name__})", file=sys.stderr)
         elif args.proxmox_export:
             pve = json.loads(args.proxmox_export.read_text(encoding="utf-8"))
             if not pve.get("at"):
@@ -1896,6 +1957,9 @@ def main() -> int:
         graph["snapshotAt"] = datetime.now(timezone.utc).isoformat()
         graph["git"] = args.git_revision
         graph["contextSha256"] = hashlib.sha256(context_raw).hexdigest()
+        if proxmox_failed:
+            graph["collectionIssues"] = ["proxmox"]
+            _retain_proxmox_inventory(graph, args.output)
         publish_snapshot(args.output, graph)
     except Exception as exc:
         parser.exit(1, f"Снимок инфраструктуры не обновлён ({type(exc).__name__}).\n")

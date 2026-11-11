@@ -1437,6 +1437,61 @@ def test_lacp_confirms_only_ports_whose_partner_matches_fresh_arp(tmp_path):
     assert mac not in path.read_text(encoding="utf-8")
 
 
+def test_collection_keeps_network_fresh_during_proxmox_api_failure(tmp_path, monkeypatch):
+    import hashlib
+    import sys
+    from urllib.error import URLError
+    from app import infrastructure_collect as collector
+    from app.infrastructure_map import load_infrastructure_map
+
+    context = tmp_path / "context.yaml"
+    context.write_text("devices: []\n", encoding="utf-8")
+    path = tmp_path / "graph.json"
+    now = datetime.now(timezone.utc)
+    stamp = (now - timedelta(minutes=2)).isoformat()
+    guest = {"id": "vm", "name": "Directum VM", "kind": "Виртуальная машина", "vmid": 103, "guest": True,
+             "pveHost": "pve1", "reachability": {"state": "stopped", "checkedAt": stamp, "source": "Proxmox"}}
+    collector.publish_snapshot(path, {
+        "schema": 1, "snapshotAt": stamp, "contextSha256": hashlib.sha256(context.read_bytes()).hexdigest(),
+        "clusterId": "proxmox:cluster", "nodeOrder": ["pve1"], "nodes": [
+            {"id": "proxmox:cluster", "name": "Proxmox", "kind": "Кластер Proxmox"},
+            {"id": "pve1", "name": "pve1", "kind": "Гипервизор"}, guest,
+        ], "links": [{"a": "pve1", "b": "vm", "kind": "Размещение ВМ", "confirmed": True, "source": "Proxmox"}],
+    })
+
+    def unavailable(*args):
+        raise URLError("internal exception detail")
+
+    monkeypatch.setattr(collector, "read_proxmox", unavailable)
+    monkeypatch.setattr(collector, "load_schema", lambda _: {})
+    monkeypatch.setattr(collector, "validate_context", lambda *_: [])
+    monkeypatch.setattr(collector, "read_network", lambda *args, **kwargs: {"sources": [
+        {"name": "switch", "driver": "snmp_switch", "enabled": 1, "last_status": "success",
+         "last_collect_at": now.isoformat()},
+    ]})
+    monkeypatch.setattr(collector, "build_server_health_view", lambda *_: {})
+    monkeypatch.setattr(sys, "argv", ["infrastructure_collect", "--context", str(context), "--schema", str(context),
+                                     "--server-health", str(context), "--output", str(path),
+                                     "--proxmox-url", "https://pve.example", "--proxmox-token-file", str(context)])
+    assert collector.main() == 0
+    result = load_infrastructure_map(path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    assert result["snapshotAt"] > stamp and result["collectionIssues"] == ["proxmox"]
+    assert nodes["observer:switch"]["mapStatus"] == "ok"
+    assert nodes["vm"]["vmid"] == 103 and nodes["vm"]["mapStatus"] == "unknown"
+    assert not nodes["vm"]["pveHost"]
+    assert result["nodeOrder"] == ["pve1"] and result["clusterId"] == "proxmox:cluster"
+    assert len(result["links"]) == 1 and not result["links"][0]["confirmed"]
+    assert "internal exception detail" not in path.read_text(encoding="utf-8")
+    assert collector.main() == 0
+    assert any(n["id"] == "vm" for n in load_infrastructure_map(path)["nodes"])
+    monkeypatch.setattr(collector, "read_proxmox", lambda *args: {"cluster": [], "nodes": [], "guests": []})
+    assert collector.main() == 0
+    recovered = load_infrastructure_map(path)
+    assert "collectionIssues" not in recovered
+    assert all(n["id"] != "vm" for n in recovered["nodes"])
+
+
 def test_proxmox_physical_port_inventory_preserves_admin_state_without_carrier(tmp_path, monkeypatch):
     from io import BytesIO
     from urllib.error import HTTPError
