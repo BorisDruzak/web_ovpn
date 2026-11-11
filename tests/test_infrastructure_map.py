@@ -269,6 +269,32 @@ def test_hypervisor_smart_checks_report_fresh_disk_health(tmp_path):
     assert "hardwareDisks" not in node(now + timedelta(hours=1))
 
 
+def test_hypervisor_zfs_health_is_current_and_warns_on_degraded_pool(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    pool = {"name": "pool", "health": "DEGRADED", "sizeBytes": 100, "freeBytes": 30}
+    pve = {"at": at, "cluster": [], "nodes": [{"node": "pve1", "status": "online"}], "guests": [],
+           "zfs": {"pve1": {"checkedAt": at, "pools": [pool, {"name": "../private", "health": "ONLINE"}]}}}
+    snapshot = tmp_path / "map.json"
+
+    def node(when=now):
+        snapshot.write_text(json.dumps(build_graph({}, {}, {}, pve, {}, now)), encoding="utf-8")
+        assert "../private" not in snapshot.read_text(encoding="utf-8")
+        return next(n for n in load_infrastructure_map(snapshot, when)["nodes"] if n["id"] == "pve1")
+
+    current = node()
+    assert current["reachability"]["state"] == "reachable" and current["mapStatus"] == "warn"
+    assert current["zfsPools"] == {"checkedAt": at, "pools": [pool]}
+    assert "zfsPools" not in node(now + timedelta(hours=1))
+    pool["health"] = "ONLINE"
+    assert node()["mapStatus"] == "ok"
+    pool["freeBytes"] = 101
+    assert "freeBytes" not in node()["zfsPools"]["pools"][0]
+
+
 def test_hypervisor_resources_require_current_online_node_data(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map

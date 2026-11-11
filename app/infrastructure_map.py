@@ -22,6 +22,7 @@ NETWORK_KINDS = ("Коммутатор", "Маршрутизатор", "Точк
 INTERFACE_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}")
 PVE_DISK_DEVICE = re.compile(r"(?:scsi|sata|virtio|ide|mp)[0-9]{1,3}|rootfs")
 PVE_STORAGE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
+ZFS_PROBLEM_STATES = {"DEGRADED", "FAULTED", "OFFLINE", "REMOVED", "UNAVAIL", "SUSPENDED"}
 REACHABILITY_STATES = ("reachable", "unreachable", "stopped", "unknown")
 SERVICE_LINKS = {"Размещение", "Цель проверки", "Зависимость сервиса"}
 CLUSTER_KIND = "Кластер Proxmox"
@@ -268,6 +269,25 @@ def project_hypervisor_disks(row: object, now: datetime) -> dict:
     return {"checkedAt": _time(row["checkedAt"]).isoformat(), "disks": disks} if disks else {}
 
 
+def project_hypervisor_zfs(row: object, now: datetime) -> dict:
+    if not isinstance(row, dict) or not observation_is_fresh(row.get("checkedAt"), now):
+        return {}
+    pools = []
+    for entry in _rows(row.get("pools"), 128):
+        name, health = entry.get("name"), entry.get("health")
+        if not isinstance(name, str) or not PVE_STORAGE_ID.fullmatch(name):
+            continue
+        known = isinstance(health, str) and (health == "ONLINE" or health in ZFS_PROBLEM_STATES)
+        pool = {"name": name, "health": health if known else "UNKNOWN"}
+        size, free = entry.get("sizeBytes"), entry.get("freeBytes")
+        if type(size) is int and 0 < size < 2**53:
+            pool["sizeBytes"] = size
+            if type(free) is int and 0 <= free <= size:
+                pool["freeBytes"] = free
+        pools.append(pool)
+    return {"checkedAt": _time(row["checkedAt"]).isoformat(), "pools": pools} if pools else {}
+
+
 def _public_guest_storage(row: object, now: datetime) -> dict:
     if not isinstance(row, dict) or not observation_is_fresh(row.get("checkedAt"), now):
         return {}
@@ -321,9 +341,11 @@ def _public_node(row: dict, now: datetime) -> dict:
     aliases = row.get("aliases")
     resources = {}
     hardware_disks = {}
+    zfs_pools = {}
     if row.get("kind") == "Гипервизор" and any(s["name"] == "Proxmox" and s["status"] == "ok" for s in fresh):
         resources = _public_hypervisor_resources(row.get("resources"), now)
         hardware_disks = project_hypervisor_disks(row.get("hardwareDisks"), now)
+        zfs_pools = project_hypervisor_zfs(row.get("zfsPools"), now)
     guest_storage = _public_guest_storage(row.get("guestStorage"), now) if row.get("guest") is True else {}
     required = row.get("requiredObserverChecks")
     required_names = dict.fromkeys(
@@ -343,6 +365,7 @@ def _public_node(row: dict, now: datetime) -> dict:
         "properties": properties,
         **({"resources": resources} if resources else {}),
         **({"hardwareDisks": hardware_disks} if hardware_disks else {}),
+        **({"zfsPools": zfs_pools} if zfs_pools else {}),
         **({"guestStorage": guest_storage} if guest_storage else {}),
         "ports": [port for port in ports if port["name"]],
         "serviceChecks": [_public_service_check(check, now) for check in _rows(row.get("serviceChecks"), 16)],
@@ -373,6 +396,8 @@ def _map_statuses(nodes: dict, links: list[dict]) -> None:
         checks = [check["status"] for check in node["checks"] if check.get("required")]
         if any(disk["smartState"] == "critical" for disk in node.get("hardwareDisks", {}).get("disks", [])):
             checks.append("critical")
+        if any(pool["health"] in ZFS_PROBLEM_STATES for pool in node.get("zfsPools", {}).get("pools", [])):
+            checks.append("warn")
         if node["kind"] == CLUSTER_KIND:
             cluster = {check["method"]: check["state"] for check in node["serviceChecks"]}
             check_state = {"reachable": "ok", "unreachable": "critical"}

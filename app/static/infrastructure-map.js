@@ -519,6 +519,24 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       panel.append(make('summary', `Физические диски (${disks.length})`), make('small', 'Proxmox · ' + formatTime(checkedAt)), list);
       propertiesSection.append(panel);
     }
+    if (node.zfsPools) {
+      const {checkedAt, pools} = node.zfsPools;
+      const panel = make('details', null, 'map-port-panel');
+      panel.dataset.section = 'zfs-pools';
+      panel.open = pools.some(pool => !['ONLINE', 'UNKNOWN'].includes(pool.health));
+      const number = new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 1});
+      const list = make('ul', null, 'map-detail-list');
+      for (const pool of pools) {
+        const row = make('li');
+        const health = pool.health === 'UNKNOWN' ? 'Нет данных о состоянии' : pool.health;
+        const capacity = pool.sizeBytes ? number.format(pool.sizeBytes / 2**30) + ' ГиБ всего' : '';
+        const free = pool.freeBytes !== undefined ? number.format(pool.freeBytes / 2**30) + ' ГиБ свободно' : '';
+        row.append(make('strong', pool.name), make('small', [health, free, capacity].filter(Boolean).join(' · ')));
+        list.append(row);
+      }
+      panel.append(make('summary', `Пулы ZFS (${pools.length})`), make('small', 'Proxmox · ' + formatTime(checkedAt)), list);
+      propertiesSection.append(panel);
+    }
     if (node.guestStorage) {
       const list = make('dl');
       const number = new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 2});

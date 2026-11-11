@@ -35,7 +35,7 @@ from .infrastructure_map import (
     CLUSTER_HEALTH_METHODS, CLUSTER_KIND, INTERFACE_NAME, MAX_SNAPSHOT_BYTES, NETWORK_KINDS,
     PVE_DISK_DEVICE, PVE_STORAGE_ID, RECIPROCAL_MAC_SOURCE,
     SHARED_LLDP_KIND, SHARED_LLDP_SOURCE,
-    index_port_states, observation_is_fresh, port_label_key, project_hypervisor_disks,
+    index_port_states, observation_is_fresh, port_label_key, project_hypervisor_disks, project_hypervisor_zfs,
 )
 from .infrastructure_service_probes import apply_service_probes, probe_icmp
 from .netctl_client import NetctlError, run_netctl
@@ -1218,6 +1218,9 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 disks = project_hypervisor_disks(pve.get("disks", {}).get(key), now)
                 if disks:
                     item["hardwareDisks"] = disks
+                zfs = project_hypervisor_zfs(pve.get("zfs", {}).get(key), now)
+                if zfs:
+                    item["zfsPools"] = zfs
             label = {"online": "В сети", "offline": "Не в сети"}.get(host.get("status"), "Неизвестно")
             item["properties"]["Состояние узла"] = label
             source(item, "Proxmox", "ok" if online else "critical" if label == "Не в сети" else "unknown", pve_at, label)
@@ -1534,19 +1537,27 @@ def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: set[s
         interface = read_interface(node, port)
         return node, port, interface.get("type") == "eth" and interface.get("active") == 1
 
-    def read_disks(node):
+    def read_storage_list(path):
         try:
-            rows = get(f"nodes/{quote(node, safe='')}/disks/list")
+            rows = get(path)
         except (URLError, TimeoutError, ValueError, KeyError):
-            return node, {}
-        if not isinstance(rows, list):
-            return node, {}
+            return []
+        return [row for row in rows[:128] if isinstance(row, dict)] if isinstance(rows, list) else []
+
+    def read_disks(node):
+        rows = read_storage_list(f"nodes/{quote(node, safe='')}/disks/list")
         states = {"OK": "ok", "PASSED": "ok", "FAILED": "critical", "FAILED!": "critical"}
         disks = [{"device": row.get("devpath"), "kind": row.get("type"),
                   "smartState": states.get(str(row.get("health")).strip().upper(), "unknown"),
                   "sizeBytes": row.get("size"), "endurancePercent": row.get("wearout")}
-                 for row in rows[:128] if isinstance(row, dict)]
+                 for row in rows]
         return node, {"checkedAt": datetime.now(timezone.utc).isoformat(), "disks": disks}
+
+    def read_zfs(node):
+        rows = read_storage_list(f"nodes/{quote(node, safe='')}/disks/zfs")
+        pools = [{"name": row.get("name"), "health": row.get("health"),
+                  "sizeBytes": row.get("size"), "freeBytes": row.get("free")} for row in rows]
+        return node, {"checkedAt": datetime.now(timezone.utc).isoformat(), "pools": pools}
 
     online_nodes = {node["node"] for node in result["nodes"] if node.get("status") == "online"}
     candidates = [guest for guest in result["guests"] if guest["type"] in {"qemu", "lxc"}
@@ -1554,6 +1565,7 @@ def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: set[s
                        or (not guest.get("template") and guest["node"] in online_nodes))]
     with ThreadPoolExecutor(max_workers=6) as pool:
         result["disks"] = dict(pool.map(read_disks, sorted(online_nodes)))
+        result["zfs"] = dict(pool.map(read_zfs, sorted(online_nodes)))
         result["configs"] = dict(pool.map(read_guest, candidates))
         used_bridges = {(guest["node"], bridge) for guest in candidates
                         for bridge, _, _, _ in _guest_interfaces(result["configs"][str(guest["vmid"])]).values()}
