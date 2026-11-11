@@ -564,10 +564,6 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         observation = _host_observation(host_ips.get(device.get("management_ip"), {}), now)
         if observation:
             item["reachability"] = observation
-        layer2 = network.get("asset_mac_checks", {}).get(key)
-        if layer2 and observation_is_fresh(layer2["checkedAt"], now):
-            item.setdefault("reachability", layer2)
-            item["serviceChecks"] = [layer2]
         names.setdefault(device["name"].casefold(), []).append(key)
         declared_macs[key] = {mac.lower() for mac in device.get("mac_addresses", []) if MAC.fullmatch(mac)}
         for mac in declared_macs[key]:
@@ -1034,6 +1030,10 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             edge(switch, asset, "Сетевое соединение", "SNMP LACP + ARP", at=checked_at,
                  details=f"LACP: подтверждено {len(confirmed)} из {report['expected']} портов",
                  ports=(f"{report['aggregate']} / {member['port']}", f"LACP {member['partner_port']}"))
+    for key, observation in network.get("asset_mac_checks", {}).items():
+        if key in nodes and observation_is_fresh(observation["checkedAt"], now):
+            nodes[key].setdefault("reachability", observation)
+            nodes[key].setdefault("serviceChecks", []).append(observation)
     _reconcile_fdb_ports(edges.values())
     return {"schema": 1, "snapshotAt": now.isoformat(), "nodes": list(nodes.values()),
             "links": list(edges.values()), "clusterId": cluster_id, "nodeOrder": hypervisors,

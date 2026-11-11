@@ -523,6 +523,21 @@ def test_lldp_management_address_requires_matching_inventory_and_host_mac():
     host["availability"] = available
     network["hosts"].pop()
 
+    layer2 = {"state": "reachable", "source": "router", "method": "MAC ping · L2", "checkedAt": at}
+    network["asset_mac_checks"] = {"remote": layer2}
+    graph = build_graph(context, network, {}, {}, {}, now)
+    remote = next(node for node in graph["nodes"] if node["id"] == "remote")
+    assert remote["properties"]["Адрес управления по LLDP"] == address
+    assert remote["reachability"]["method"] == "ICMP"
+    assert remote["serviceChecks"] == [layer2]
+    host["availability"] = {}
+    graph = build_graph(context, network, {}, {}, {}, now)
+    remote = next(node for node in graph["nodes"] if node["id"] == "remote")
+    assert remote["properties"]["Адрес управления по LLDP"] == address
+    assert remote["reachability"] == layer2
+    host["availability"] = available
+    del network["asset_mac_checks"]
+
     network["lldp"][0]["chassis_id"] = host["mac"]
     graph = build_graph(context, network, {}, {}, {}, now)
     remote = next(node for node in graph["nodes"] if node["id"] == "remote")
