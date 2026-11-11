@@ -190,11 +190,13 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         item["properties"]["Источник сбора"] = name
         if name in port_groups:
             ports = port_groups[name]
+            latest_run = max((port["collector_run_id"] for port in ports
+                              if type(port.get("collector_run_id")) is int), default=None)
             item["ports"] = [
                 {"name": port.get("name") or port.get("port_key"),
                  "state": "disabled" if port.get("admin_status") == "down" else port.get("oper_status"),
                  "speedBps": port.get("speed_bps"), "checkedAt": port.get("last_seen_at")}
-                for port in ports
+                for port in ports if port.get("collector_run_id") == latest_run
             ]
         if "fdb_entries" in status:
             item["properties"]["Записи MAC-таблицы"] = str(status["fdb_entries"])

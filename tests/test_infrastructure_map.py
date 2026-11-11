@@ -213,10 +213,11 @@ def test_switch_ports_expose_fresh_link_state_and_age(tmp_path):
         "sources": [{"id": 1, "name": "sw", "driver": "snmp_switch"}],
         "ports": [
             {"source": "sw", "name": "ge1", "oper_status": "up", "admin_status": "up",
-             "speed_bps": 1_000_000_000, "last_seen_at": recent, "mac": "hidden"},
-            {"source": "sw", "name": "ge2", "oper_status": "up", "last_seen_at": old},
+             "speed_bps": 1_000_000_000, "last_seen_at": recent, "mac": "hidden", "collector_run_id": 2},
+            {"source": "sw", "name": "ge2", "oper_status": "up", "last_seen_at": old, "collector_run_id": 2},
             {"source": "sw", "name": "ge3", "oper_status": "down", "admin_status": "down",
-             "last_seen_at": recent},
+             "last_seen_at": recent, "collector_run_id": 2},
+            {"source": "sw", "name": "ge1", "oper_status": "up", "last_seen_at": old, "collector_run_id": 1},
         ],
     }
     graph = build_graph({}, network, {}, {}, {}, now)
