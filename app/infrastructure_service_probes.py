@@ -246,26 +246,65 @@ def _ldap(ip: str, port: int, spec: dict) -> str:
     return "reachable" if result.returncode == 0 and expected in answers else "unknown"
 
 
-def _smb(ip: str, port: int) -> str:
+def _smb(spec: dict) -> dict:
     # SMB2 NEGOTIATE validates protocol availability without authenticating or opening a share.
-    dialects = (0x0202, 0x0210, 0x0300, 0x0302)
+    dialects = {0x0202: "2.0.2", 0x0210: "2.1", 0x0300: "3.0", 0x0302: "3.0.2"}
     header = bytearray(64)
     header[:4] = b"\xfeSMB"
     struct.pack_into("<H", header, 4, 64)
     struct.pack_into("<H", header, 14, 1)
     request = bytes(header) + struct.pack("<HHHHI16sQ4H", 36, len(dialects), 1, 0, 0, uuid.uuid4().bytes, 0, *dialects)
-    with socket.create_connection((ip, port), timeout=TIMEOUT) as connection:
-        connection.sendall(len(request).to_bytes(4, "big") + request)
-        with connection.makefile("rb") as wire:
-            length = int.from_bytes(wire.read(4), "big")
-            if not 70 <= length <= 16384:
-                return "unknown"
-            response = wire.read(length)
+    unexpected = {"state": "unknown", "reason": "unexpected_response"}
+    try:
+        ip = str(ipaddress.ip_address(spec["ip"]))
+        port = spec["port"]
+        if type(port) is not int or not 1 <= port <= 65535:
+            return {"state": "unknown"}
+        with socket.create_connection((ip, port), timeout=TIMEOUT) as connection:
+            connection.sendall(len(request).to_bytes(4, "big") + request)
+            deadline = monotonic() + TIMEOUT
+
+            def read_exact(size):
+                data = bytearray()
+                while len(data) < size:
+                    remaining = deadline - monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError
+                    connection.settimeout(remaining)
+                    chunk = connection.recv(size - len(data))
+                    if not chunk:
+                        break
+                    data.extend(chunk)
+                return data
+
+            frame = read_exact(4)
+            if len(frame) != 4 or frame[0] != 0:
+                return unexpected
+            length = int.from_bytes(frame, "big")
+            if not 128 <= length <= 16384:
+                return unexpected
+            response = read_exact(length)
+    except TimeoutError:
+        return {"state": "unreachable", "reason": "timeout"}
+    except (ConnectionRefusedError, ConnectionResetError):
+        return {"state": "unreachable", "reason": "transport_error"}
+    except OSError:
+        return {"state": "unknown", "reason": "transport_error"}
+    except (KeyError, TypeError, ValueError):
+        return {"state": "unknown"}
     if len(response) != length or response[:4] != b"\xfeSMB":
-        return "unknown"
-    status, command = struct.unpack_from("<IH", response, 8)
-    structure, _, dialect = struct.unpack_from("<HHH", response, 64)
-    return "reachable" if status == command == 0 and structure == 65 and dialect in dialects else "unknown"
+        return unexpected
+    header_size, _, status, command = struct.unpack_from("<HHIH", response, 4)
+    flags, next_command, message_id = struct.unpack_from("<IIQ", response, 16)
+    if header_size != 64 or status or command or (flags & 3) != 1 or next_command or message_id:
+        return unexpected
+    structure, security_mode, dialect = struct.unpack_from("<HHH", response, 64)
+    buffer_offset, buffer_length = struct.unpack_from("<HH", response, 120)
+    if structure != 65 or dialect not in dialects:
+        return unexpected
+    if buffer_length and not 128 <= buffer_offset <= length - buffer_length:
+        return unexpected
+    return {"state": "reachable", "smbDialect": dialects[dialect], "smbSigningRequired": bool(security_mode & 2)}
 
 
 def _openvpn_management() -> dict:
@@ -506,6 +545,8 @@ def _probe(spec: dict) -> str:
             return _http_probe(spec)["state"]
         if protocol == "postgresql":
             return _postgresql(spec)["state"]
+        if protocol == "smb":
+            return _smb(spec)["state"]
         port = spec["port"]
         if type(port) is not int or not 1 <= port <= 65535:
             return "unknown"
@@ -516,8 +557,6 @@ def _probe(spec: dict) -> str:
             return _zabbix_api(ip, port, spec)
         if protocol == "ldap":
             return _ldap(ip, port, spec)
-        if protocol == "smb":
-            return _smb(ip, port)
     except (ssl.SSLError, http.client.HTTPException, KeyError, TypeError, ValueError):
         return "unknown"
     except (TimeoutError, ConnectionRefusedError, ConnectionResetError, dns.exception.Timeout):
@@ -565,6 +604,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 details = _icmp_check(spec.get("ip"))
             elif protocol == "postgresql":
                 details = _postgresql(spec)
+            elif protocol == "smb":
+                details = _smb(spec)
             elif protocol in {"http", "https"}:
                 details = _http_probe(spec)
             else:
@@ -577,7 +618,7 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 "source": "UI_VPN", "method": method,
                 "port": valid_port,
                 "path": spec.get("path") if protocol in {"http", "https", "zabbix_api"} else None,
-                "target": spec.get("ip") if protocol in {"icmp", "sip_options", "zabbix_api", "postgresql", "dns"}
+                "target": spec.get("ip") if protocol in {"icmp", "sip_options", "zabbix_api", "postgresql", "dns", "smb"}
                 or "probeTargetIP" in node else None,
                 "checkedAt": datetime.now(timezone.utc).isoformat(),
             }

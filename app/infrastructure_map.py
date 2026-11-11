@@ -301,6 +301,10 @@ def _public_service_check(check: dict, now: datetime) -> dict:
             result["tlsVersion"] = version
         if tls_state == "failed" and reason == "postgresql_tls_handshake":
             result["reason"] = reason
+    if result["method"] == "SMB2":
+        dialect = check.get("smbDialect")
+        if dialect in ("2.0.2", "2.1", "3.0", "3.0.2") and type(check.get("smbSigningRequired")) is bool:
+            result.update(smbDialect=dialect, smbSigningRequired=check["smbSigningRequired"])
     if result["method"] == "DNS":
         diagnostic = _public_dns_check(check.get("dns"))
         if diagnostic:

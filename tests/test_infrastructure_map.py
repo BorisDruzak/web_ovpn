@@ -706,6 +706,57 @@ def test_zabbix_version_checks_matching_json_rpc_response():
     assert nodes[0]["serviceChecks"][0]["path"] == paths[0]
 
 
+def test_smb_requires_complete_negotiate_reply_and_reports_dialect(monkeypatch):
+    from io import BytesIO
+    import struct
+    from app import infrastructure_service_probes as probes
+    from app.infrastructure_map import _public_service_check
+
+    response = bytearray(128)
+    response[:4] = b"\xfeSMB"
+    struct.pack_into("<H", response, 4, 64)
+    struct.pack_into("<I", response, 16, 1)
+    struct.pack_into("<HHH", response, 64, 65, 3, 0x0302)
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+        def sendall(self, request):
+            assert request[4:8] == b"\xfeSMB"
+            self.wire = BytesIO(len(self.payload).to_bytes(4, "big") + self.payload)
+
+        def recv(self, size):
+            return self.wire.read(min(size, 11))
+
+        def settimeout(self, timeout):
+            assert 0 < timeout <= probes.TIMEOUT
+
+    connection = Connection()
+    monkeypatch.setattr(probes.socket, "create_connection", lambda *_args, **_kwargs: connection)
+    spec = {"type": "smb", "ip": "192.0.2.20", "port": 445}
+
+    def check(payload):
+        connection.payload = payload
+        node = {"id": "share", "kind": "Сервис"}
+        probes.apply_service_probes([node], {"share": [spec]})
+        return _public_service_check(node["serviceChecks"][0], datetime.now(timezone.utc))
+
+    assert check(response[:70])["state"] == "unknown"
+    check_result = check(response)
+    assert check_result["state"] == "reachable"
+    assert check_result["smbDialect"] == "3.0.2"
+    assert check_result["smbSigningRequired"] is True
+    struct.pack_into("<Q", response, 24, 1)
+    assert check(response)["state"] == "unknown"
+    struct.pack_into("<Q", response, 24, 0)
+    struct.pack_into("<HH", response, 120, 128, 12)
+    assert check(response)["state"] == "unknown"
+
+
 def test_postgresql_probe_requires_protocol_response(monkeypatch):
     from app import infrastructure_service_probes as probes
     from app.infrastructure_map import _public_service_check
