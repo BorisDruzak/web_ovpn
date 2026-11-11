@@ -1127,6 +1127,71 @@ def test_transit_port_requires_direct_route_running_ethernet_and_neighbor_arp():
     assert build()[0]["probeTargetIP"] is None
 
 
+def test_observed_fdb_resolves_ifindex_only_with_matching_live_port_collection():
+    import sqlite3
+    from contextlib import closing
+    from netctl.switch_queries import query_observed_mac_ports
+
+    with closing(sqlite3.connect(":memory:")) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.executescript("""
+            CREATE TABLE network_sources (id INTEGER, enabled INTEGER);
+            CREATE TABLE switch_ports (source_id INTEGER, port_key TEXT, collector_run_id INTEGER, oper_status TEXT);
+            CREATE TABLE current_switch_fdb (source_id INTEGER, port_key TEXT, if_index INTEGER,
+                collector_run_id INTEGER, mac TEXT, vlan_id INTEGER, last_seen_at TEXT, status TEXT);
+            INSERT INTO network_sources VALUES (1, 1);
+            INSERT INTO switch_ports VALUES (1, 'ifindex:49175', 5, 'up');
+            INSERT INTO current_switch_fdb VALUES (1, 'physical:23', 49175, 5,
+                '02:00:00:00:00:23', 1, '2026-11-11T18:36:04Z', 'learned');
+        """)
+        macs = {"02:00:00:00:00:23"}
+        report, = query_observed_mac_ports(conn, macs)
+        assert report["port_key"] == "ifindex:49175"
+        conn.execute("UPDATE switch_ports SET collector_run_id=6")
+        assert query_observed_mac_ports(conn, macs) == []
+        conn.execute("UPDATE switch_ports SET collector_run_id=5")
+        conn.execute("INSERT INTO switch_ports VALUES (1, 'physical:23', 5, 'down')")
+        assert query_observed_mac_ports(conn, macs) == []
+
+
+def test_configured_asset_fdb_path_is_scoped_and_requires_a_unique_live_port():
+    from app.infrastructure_collect import build_graph
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    address, mac = "192.0.2.22", "02:00:00:00:00:23"
+    context = {"devices": [{"id": "gateway", "name": "Gateway", "kind": "fxs_gateway",
+                            "management_ip": address, "mac_addresses": [mac]}]}
+    network = {
+        "sources": [{"id": 1, "name": "access", "driver": "snmp_switch", "enabled": True},
+                    {"id": 2, "name": "core", "driver": "snmp_switch", "enabled": True}],
+        "arp": [{"ip": address, "mac": mac, "last_seen_at": at}],
+        "ports": [{"source": "access", "port_key": "physical:23", "name": "Gi1/0/23",
+                   "oper_status": "up", "last_seen_at": at}],
+        "asset_fdb": [{"source_id": 1, "mac": mac, "port_key": "physical:23", "vlan_id": 1, "observed_at": at},
+                      {"source_id": 2, "mac": mac, "port_key": "physical:47", "vlan_id": 1, "observed_at": at}],
+    }
+    bindings = {"asset_fdb_paths": {"gateway": "access"}}
+
+    def links(at=now):
+        return build_graph(context, network, {}, {}, bindings, at)["links"]
+
+    path, = links()
+    assert path["a"] == "observer:access" and path["b"] == "gateway"
+    assert path["kind"] == "Путь по MAC-таблице" and path["confirmed"]
+    assert path["portEvidence"] == [{"a": "Gi1/0/23", "b": "", "source": "netctl FDB",
+                                     "at": at, "confirmed": True, "vlan": 1}]
+    assert links(now + timedelta(hours=1)) == []
+    network["asset_fdb"].append({**network["asset_fdb"][0], "port_key": "physical:24"})
+    assert links() == []
+    network["asset_fdb"].pop()
+    network["ports"][0]["oper_status"] = "down"
+    assert links() == []
+    network["ports"][0]["oper_status"] = "up"
+    network["arp"][0]["mac"] = "02:00:00:00:00:24"
+    assert links() == []
+
+
 def test_transit_peer_management_port_requires_fresh_arp_fdb_and_active_ethernet(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map

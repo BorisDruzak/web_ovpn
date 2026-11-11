@@ -1092,6 +1092,33 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             target = asset_ip_checks.get(device)
             if matches and mac in declared_macs[device] and target in observed_addresses[device]:
                 nodes[device]["probeTargetIP"] = target
+    switch_sources = {row["name"]: row["id"] for row in network.get("sources", [])
+                      if row.get("enabled") and row.get("driver") == "snmp_switch" and row.get("id") is not None}
+    for asset, switch_source in bindings.get("asset_fdb_paths", {}).items():
+        address = address_by_asset.get(asset)
+        switch = source_nodes.get(switch_source)
+        source_id = switch_sources.get(switch_source)
+        if (source_id is None or not switch or addresses.get(address) != [asset] or address not in arp_mappings
+                or asset in virtual_assets or nodes[asset].get("guest")):
+            continue
+        mac, arp_at = arp_mappings[address]
+        if (declared_macs[asset] and mac not in declared_macs[asset]) or devices_by_mac.get(mac, set()) - {asset}:
+            continue
+        observations = [row for row in network.get("asset_fdb", [])
+                        if row["source_id"] == source_id and row["mac"].lower() == mac
+                        and observation_is_fresh(row["observed_at"], now)]
+        ports = {row["port_key"] for row in observations}
+        if len(ports) != 1:
+            continue
+        port, = ports
+        live = [row["last_seen_at"] for row in port_groups.get(switch_source, [])
+                if row["port_key"] == port and row.get("oper_status") == "up" and row.get("admin_status") != "down"
+                and observation_is_fresh(row.get("last_seen_at"), now)]
+        if live:
+            for row in observations:
+                checked = min(arp_at, datetime.fromisoformat(max(live)), datetime.fromisoformat(row["observed_at"]))
+                edge(switch, asset, "Путь по MAC-таблице", "netctl FDB", details=address,
+                     ports=(port_label(switch_source, port), ""), at=checked.isoformat(), vlan=row["vlan_id"])
     for report in network.get("lacp", []):
         asset = report["asset"]
         address = address_by_asset.get(asset)
@@ -1219,7 +1246,7 @@ def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: set[s
 
 
 def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | None = None,
-                 transit_sources: set[str] | None = None) -> dict:
+                 transit_sources: set[str] | None = None, *, asset_fdb_ips: set[str] | None = None) -> dict:
     commands = {
         "switches": (["switches", "status"], "switches"),
         "links": (["topology", "links"], "links"),
@@ -1245,6 +1272,9 @@ def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | N
               AND a.complete = 1 AND a.dynamic = 1
             """
         )]
+        if asset_fdb_ips:
+            macs = {row["mac"].lower() for row in data["arp"] if row["ip"] in asset_fdb_ips and row["mac"]}
+            data["asset_fdb"] = query_observed_mac_ports(connection, macs)
         if route_sources:
             data["routes"] = [dict(row) for row in connection.execute(
                 """
@@ -1354,7 +1384,10 @@ def main() -> int:
         lacp_links = bindings.get("lacp_links", [])
         transit_links = bindings.get("transit_links", {})
         transit_sources = {spec["source"] for spec in transit_links.values()}
-        network = read_network(guest_macs, route_sources | transit_sources, transit_sources)
+        asset_fdb_paths = bindings.get("asset_fdb_paths", {})
+        asset_fdb_ips = {device["management_ip"] for device in context.get("devices", [])
+                         if device["id"] in asset_fdb_paths and device.get("management_ip")}
+        network = read_network(guest_macs, route_sources | transit_sources, transit_sources, asset_fdb_ips=asset_fdb_ips)
         if lacp_links:
             network["lacp"] = asyncio.run(_collect_lacp(network, lacp_links, datetime.now(timezone.utc)))
         if bindings.get("ipsec_links"):

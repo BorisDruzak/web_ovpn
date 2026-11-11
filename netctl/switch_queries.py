@@ -53,10 +53,19 @@ def query_observed_mac_ports(conn: sqlite3.Connection, macs: set[str]) -> list[d
         return []
     return [dict(row) for row in conn.execute(
         """
-        SELECT f.source_id, f.port_key, f.mac, f.vlan_id, f.last_seen_at AS observed_at
+        SELECT f.source_id, p.port_key, f.mac, f.vlan_id, f.last_seen_at AS observed_at
         FROM current_switch_fdb AS f
         JOIN network_sources AS s ON s.id = f.source_id
-        JOIN switch_ports AS p ON p.source_id = f.source_id AND p.port_key = f.port_key
+        JOIN switch_ports AS p ON p.source_id = f.source_id
+          AND (
+            p.port_key = f.port_key
+            OR (f.port_key LIKE 'physical:%' AND f.if_index > 0 AND p.port_key = 'ifindex:' || f.if_index
+                AND p.collector_run_id = f.collector_run_id
+                AND NOT EXISTS (
+                    SELECT 1 FROM switch_ports AS exact
+                    WHERE exact.source_id = f.source_id AND exact.port_key = f.port_key
+                ))
+          )
         WHERE lower(f.mac) IN (SELECT value FROM json_each(?))
           AND s.enabled = 1 AND p.oper_status = 'up' AND lower(f.status) NOT IN ('self', 'mgmt')
         ORDER BY f.source_id, f.port_key, f.vlan_id, f.mac
