@@ -834,6 +834,43 @@ def test_routeros_ping_uses_one_packet_and_rejects_injected_addresses(monkeypatc
     assert calls == ["/ping address=192.0.2.30 src-address=198.51.100.1 count=1"]
 
 
+def test_transit_port_requires_direct_route_running_ethernet_and_neighbor_arp():
+    from app.infrastructure_collect import build_graph
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    context = {"devices": [{"id": name, "name": name, "kind": "router"} for name in ("rb", "coordinator")],
+               "segments": [{"id": "transit", "cidr": "192.0.2.0/30", "local_address": "192.0.2.1", "gateway_device": "rb"}]}
+    binding = {"transit_links": {"transit": {"asset": "coordinator", "source": "main",
+                                              "peer": "192.0.2.2", "label": "Transit"}}}
+    network = {
+        "sources": [{"id": 1, "name": "main", "driver": "mikrotik_api", "driver_options": {"intent_stable_id": "rb"}}],
+        "routes": [{"source": "main", "dst_address": "192.0.2.0/30", "gateway": "ether8", "immediate_gateway": "ether8",
+                    "routing_table": "main", "active": 1, "disabled": 0, "dynamic": 1, "route_type": "unicast", "last_seen_at": at}],
+        "router_interfaces": [{"source": "main", "name": "ether8", "type": "ether", "running": 1, "disabled": 0, "last_seen_at": at}],
+        "arp": [{"ip": "192.0.2.2", "mac": "02:00:00:00:00:08", "source": "main", "interface": "ether8", "last_seen_at": at}],
+    }
+
+    def build():
+        graph = build_graph(context, network, {}, {}, binding, now)
+        service = next(n for n in graph["nodes"] if n["id"] == "transit:transit")
+        edges = [e for e in graph["links"] if {e["a"], e["b"]} == {"rb", "coordinator"}]
+        return service, edges
+
+    service, (link,) = build()
+    assert service["probeTargetIP"] == "192.0.2.2"
+    assert link["confirmed"] and link["portEvidence"][0]["a"] == "ether8"
+    assert link["portEvidence"][0]["b"] == ""
+    network["arp"][0]["interface"] = "bridge1"
+    assert build()[0]["probeTargetIP"] is None and build()[1] == []
+    network["arp"][0]["interface"] = "ether8"
+    network["routes"][0]["immediate_gateway"] = "192.0.2.1%ether8"
+    assert build()[0]["probeTargetIP"] is None
+    network["routes"][0]["immediate_gateway"] = "ether8"
+    network["router_interfaces"][0]["running"] = 0
+    assert build()[0]["probeTargetIP"] is None
+
+
 def test_route_evidence_is_scoped_and_does_not_mark_service_available():
     from app.infrastructure_collect import build_graph
 

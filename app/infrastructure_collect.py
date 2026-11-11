@@ -296,6 +296,43 @@ def _route_checks(intent: dict, source: str, routes: list[dict], now: datetime) 
     return checks
 
 
+def _transit_port(segment: dict, spec: dict, network: dict, arp_mappings: dict, now: datetime) -> tuple[str, str] | None:
+    try:
+        subnet = ipaddress.IPv4Network(segment["cidr"])
+        local, remote = ipaddress.IPv4Address(segment["local_address"]), ipaddress.IPv4Address(spec["peer"])
+    except (KeyError, ValueError):
+        return None
+    if subnet.prefixlen not in {30, 31} or set(subnet.hosts()) != {local, remote}:
+        return None
+    peer = str(remote)
+    if peer not in arp_mappings:
+        return None
+    mac, _ = arp_mappings[peer]
+    source = spec["source"]
+    routes = {
+        row["gateway"]: row["last_seen_at"] for row in network.get("routes", [])
+        if row.get("source") == source and row.get("dst_address") == str(subnet)
+        and row.get("routing_table") == "main" and row.get("route_type") == "unicast"
+        and row.get("active") == 1 and row.get("disabled") == 0 and row.get("dynamic") == 1
+        and row.get("gateway") == row.get("immediate_gateway")
+        and observation_is_fresh(row.get("last_seen_at"), now)
+    }
+    if len(routes) != 1:
+        return None
+    (port, route_at), = routes.items()
+    if not isinstance(port, str) or not INTERFACE_NAME.fullmatch(port):
+        return None
+    interfaces = [row["last_seen_at"] for row in network.get("router_interfaces", [])
+                  if row.get("source") == source and row.get("name") == port and row.get("type") == "ether"
+                  and row.get("running") == 1 and row.get("disabled") == 0 and observation_is_fresh(row.get("last_seen_at"), now)]
+    neighbors = [row["last_seen_at"] for row in network.get("arp", [])
+                 if row.get("source") == source and row.get("ip") == peer and row.get("interface") == port
+                 and str(row.get("mac") or "").lower() == mac and observation_is_fresh(row.get("last_seen_at"), now)]
+    if interfaces and neighbors:
+        return port, min(datetime.fromisoformat(stamp) for stamp in (route_at, max(interfaces), max(neighbors))).isoformat()
+    return None
+
+
 def _collect_ipsec_policies(sources: list[dict], configured: dict) -> dict:
     names = {spec[side] for spec in configured.values() for side in ("local_source", "remote_source")}
     targets = [source for source in sources if source["name"] in names and source.get("enabled")
@@ -596,6 +633,23 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                                                     min(r["checkedAt"] for r in readings))
             for device in (local_device, remote_device):
                 edge(device, path["id"], "Цель проверки", "Настройки карты")
+    arp_mappings = _arp_mappings(network.get("arp", []), now)
+    transit_segments = {segment["id"]: segment for segment in context.get("segments", [])}
+    for segment_id, spec in bindings.get("transit_links", {}).items():
+        segment = transit_segments.get(segment_id, {})
+        router, asset = segment.get("gateway_device"), spec.get("asset")
+        if not router or source_nodes.get(spec["source"]) != router or asset not in address_by_asset or asset == router:
+            continue
+        item = node(f"transit:{segment_id}", spec["label"], "Сервис", nodes[asset]["site"], "UI_VPN")
+        item["probeTargetIP"] = None
+        evidence = _transit_port(segment, spec, network, arp_mappings, now)
+        if evidence:
+            port, observed = evidence
+            item["probeTargetIP"] = spec["peer"]
+            edge(router, asset, "Транзитный сегмент", "MikroTik · ARP",
+                 details=f"{segment['local_address']} ↔ {spec['peer']}", ports=(port, ""), at=observed)
+        for endpoint in (router, asset):
+            edge(endpoint, item["id"], "Цель проверки", "Настройки карты")
     for row in network.get("links", []):
         a_id, b_id = row.get("source_a_id"), row.get("source_b_id")
         a, b = source_ids.get(a_id), source_ids.get(b_id)
@@ -623,7 +677,6 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         peers_by_port.setdefault(local, set()).add(identity)
         for address in row.get("management_addresses", []):
             lldp_address_owners.setdefault(address, set()).add(chassis)
-    arp_mappings = _arp_mappings(network.get("arp", []), now)
     router_neighbor_macs = {}
     for row in network.get("router_neighbors", []):
         mac = str(row.get("mac") or "").lower()
@@ -1031,7 +1084,8 @@ def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: set[s
     return result
 
 
-def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | None = None) -> dict:
+def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | None = None,
+                 transit_sources: set[str] | None = None) -> dict:
     commands = {
         "switches": (["switches", "status"], "switches"),
         "links": (["topology", "links"], "links"),
@@ -1050,7 +1104,7 @@ def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | N
             data["guest_fdb"] = query_observed_mac_ports(connection, guest_macs)
         data["arp"] = [dict(row) for row in connection.execute(
             """
-            SELECT a.ip, a.mac, a.last_seen_at
+            SELECT a.ip, a.mac, a.interface, a.last_seen_at, s.name AS source
             FROM arp_entries AS a
             JOIN network_sources AS s ON s.id = a.source_id
             WHERE s.enabled = 1 AND s.driver IN ('mikrotik_api', 'mikrotik_ssh')
@@ -1061,12 +1115,22 @@ def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | N
             data["routes"] = [dict(row) for row in connection.execute(
                 """
                 SELECT s.name AS source, r.dst_address, r.gateway, r.routing_table,
-                       r.active, r.disabled, r.last_seen_at
+                       r.immediate_gateway, r.active, r.disabled, r.dynamic, r.route_type, r.last_seen_at
                 FROM network_routes AS r
                 JOIN network_sources AS s ON s.id = r.source_id
                 WHERE s.enabled = 1 AND s.name IN (SELECT value FROM json_each(?))
                 """,
                 (json.dumps(sorted(route_sources)),),
+            )]
+        if transit_sources:
+            data["router_interfaces"] = [dict(row) for row in connection.execute(
+                """
+                SELECT s.name AS source, i.name, i.type, i.running, i.disabled, i.last_seen_at
+                FROM network_interfaces AS i
+                JOIN network_sources AS s ON s.id = i.source_id
+                WHERE s.enabled = 1 AND s.name IN (SELECT value FROM json_each(?))
+                """,
+                (json.dumps(sorted(transit_sources)),),
             )]
     data.update({name: run_netctl(args, timeout=15)[key] for name, (args, key) in commands.items()})
     try:
@@ -1142,7 +1206,9 @@ def main() -> int:
         guest_macs = {mac for config in pve.get("configs", {}).values() for mac in _guest_macs(config)}
         route_sources = {item["source"] for item in bindings.get("route_evidence", {}).values() if item.get("source")}
         lacp_links = bindings.get("lacp_links", [])
-        network = read_network(guest_macs, route_sources)
+        transit_links = bindings.get("transit_links", {})
+        transit_sources = {spec["source"] for spec in transit_links.values()}
+        network = read_network(guest_macs, route_sources | transit_sources, transit_sources)
         if lacp_links:
             network["lacp"] = asyncio.run(_collect_lacp(network, lacp_links, datetime.now(timezone.utc)))
         if bindings.get("ipsec_links"):
@@ -1155,7 +1221,9 @@ def main() -> int:
         graph = build_graph(context, network, build_server_health_view(args.server_health, now), pve, bindings, now)
         probes = {**bindings.get("service_probes", {}),
                   **{asset: [{"type": "icmp", "ip": address}]
-                     for asset, address in bindings.get("asset_ip_checks", {}).items()}}
+                     for asset, address in bindings.get("asset_ip_checks", {}).items()},
+                  **{f"transit:{segment}": [{"type": "icmp", "ip": spec["peer"]}]
+                     for segment, spec in transit_links.items()}}
         apply_service_probes(graph["nodes"], probes)
         graph["snapshotAt"] = datetime.now(timezone.utc).isoformat()
         graph["git"] = args.git_revision
