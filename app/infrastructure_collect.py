@@ -169,6 +169,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 fresh_macs_by_ip.setdefault(host["ip"], set()).add(mac)
     addresses = {}
     names = {}
+    declared_macs = {}
     declared_devices_by_mac = {}
     for device in context.get("devices", []):
         key = device["id"]
@@ -178,9 +179,9 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         if observation:
             item["reachability"] = observation
         names.setdefault(device["name"].casefold(), []).append(key)
-        for mac in device.get("mac_addresses", []):
-            if MAC.fullmatch(mac):
-                declared_devices_by_mac.setdefault(mac.lower(), set()).add(key)
+        declared_macs[key] = {mac.lower() for mac in device.get("mac_addresses", []) if MAC.fullmatch(mac)}
+        for mac in declared_macs[key]:
+            declared_devices_by_mac.setdefault(mac, set()).add(key)
         if device.get("model"):
             item["properties"]["Модель"] = device["model"]
     intents = {item["id"]: item for item in context.get("routing_intent", []) if "id" in item}
@@ -271,11 +272,20 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             edge(a, b, "Сетевое соединение", "netctl", confirmed, ports=ports, at=observed)
     fresh_lldp = [row for row in network.get("lldp", []) if observation_is_fresh(row.get("observed_at"), now)]
     peers_by_port = {}
+    lldp_address_owners = {}
     for row in fresh_lldp:
         local = (row.get("source"), row.get("local_port_key"))
         chassis = str(row.get("chassis_id") or row.get("system_name") or "").casefold()
         identity = (chassis, str(row.get("port_id") or "").casefold())
         peers_by_port.setdefault(local, set()).add(identity)
+        for address in row.get("management_addresses", []):
+            lldp_address_owners.setdefault(address, set()).add(chassis)
+    router_neighbor_macs = {}
+    for row in network.get("router_neighbors", []):
+        mac = str(row.get("mac") or "").lower()
+        if MAC.fullmatch(mac) and observation_is_fresh(row.get("last_seen_at"), now):
+            name = str(row.get("identity") or "").casefold()
+            router_neighbor_macs.setdefault((name, row.get("address")), set()).add(mac)
     for row in fresh_lldp:
         a = source_nodes.get(row.get("source"))
         name = str(row.get("system_name") or "").casefold()
@@ -287,22 +297,36 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             port = port_label(row.get("source"), raw_port)
             is_interface_name = str(row.get("port_id_subtype")) in {"1", "5", "interface_alias", "interface_name"}
             remote = row.get("port_id") if is_interface_name else ""
+            chassis_mac = str(row.get("chassis_id") or "").lower()
+            conflict = bool(declared_macs[neighbor] and MAC.fullmatch(chassis_mac)
+                            and chassis_mac not in declared_macs[neighbor])
             direct = bool(raw_port) and len(peers_by_port[(row.get("source"), raw_port)]) == 1
             note = "" if direct else " · несколько соседей на порту"
             item["properties"]["Соседство LLDP"] = f"{nodes[a]['name']} · {port}{note}"
-            edge(a, neighbor, "Сетевое соединение", "LLDP UI_VPN", direct,
+            if conflict:
+                item["properties"]["Сопоставление LLDP"] = "MAC шасси отличается от инвентаря"
+            edge(a, neighbor, "Сетевое соединение", "LLDP UI_VPN", direct and not conflict,
                  details=note.removeprefix(" · "), ports=(port, remote or ""), at=row.get("observed_at"))
-            chassis_mac = str(row.get("chassis_id") or "").lower()
-            if declared_devices_by_mac.get(chassis_mac) == {neighbor} and "reachability" not in item:
-                verified = {ip for ip in row.get("management_addresses", [])
-                            if fresh_macs_by_ip.get(ip) == {chassis_mac}
-                            and str(host_ips[ip].get("mac") or "").lower() == chassis_mac}
-                if len(verified) == 1:
-                    address, = verified
-                    item["properties"]["Адрес управления по LLDP"] = address
-                    observation = _host_observation(host_ips[address], now)
-                    if observation:
-                        item["reachability"] = observation
+            advertised = row.get("management_addresses", [])
+            if len(advertised) == 1 and "Адрес управления по LLDP" not in item["properties"]:
+                item["properties"]["IP заявлен в LLDP"] = advertised[0]
+            if declared_devices_by_mac.get(chassis_mac) != {neighbor} or "reachability" in item:
+                continue
+            verified = []
+            for address in advertised:
+                host_mac = str(host_ips.get(address, {}).get("mac") or "").lower()
+                same_identity = host_mac == chassis_mac or router_neighbor_macs.get((name, address)) == {host_mac}
+                if (same_identity and fresh_macs_by_ip.get(address) == {host_mac}
+                        and lldp_address_owners.get(address) == {chassis_mac}
+                        and set(addresses.get(address, [])) <= {neighbor}):
+                    verified.append(address)
+            if len(verified) == 1:
+                address, = verified
+                item["properties"].pop("IP заявлен в LLDP", None)
+                item["properties"]["Адрес управления по LLDP"] = address
+                observation = _host_observation(host_ips[address], now)
+                if observation:
+                    item["reachability"] = observation
 
     for device in context.get("devices", []):
         key = device["id"]
@@ -310,8 +334,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         if device.get("management_ip") or "reachability" in item or item["kind"] not in NETWORK_KINDS:
             continue
         matches = {}
-        for declared_mac in device.get("mac_addresses", []):
-            mac = declared_mac.lower()
+        for mac in declared_macs[key]:
             if declared_devices_by_mac.get(mac) != {key}:
                 continue
             for host in host_macs.get(mac, []):
@@ -321,7 +344,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                     matches[address] = host
         if len(matches) == 1:
             address, = matches
-            item["properties"]["IP по MAC"] = address
+            if address != item["properties"].get("Адрес управления по LLDP"):
+                item["properties"]["IP по MAC"] = address
             observation = _host_observation(matches[address], now)
             if observation and observation["state"] == "reachable":
                 item["reachability"] = observation
@@ -540,6 +564,14 @@ def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | N
     }
     with closing(connect_read_only(DEFAULT_DB_URL)) as connection:
         data = {"sources": list_sources(connection), "attachments": query_confirmed_attachment_ports(connection)}
+        data["router_neighbors"] = [dict(row) for row in connection.execute(
+            """
+            SELECT n.identity, n.address, n.mac, n.last_seen_at
+            FROM network_neighbors AS n
+            JOIN network_sources AS s ON s.id = n.source_id
+            WHERE s.enabled = 1 AND s.driver IN ('mikrotik_api', 'mikrotik_ssh')
+            """
+        )]
         if guest_macs:
             data["guest_fdb"] = query_observed_mac_ports(connection, guest_macs)
         if route_sources:

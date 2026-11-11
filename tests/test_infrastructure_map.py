@@ -207,6 +207,32 @@ def test_lldp_management_address_requires_matching_inventory_and_host_mac():
     remote = next(node for node in graph["nodes"] if node["id"] == "remote")
     assert "reachability" not in remote
 
+    network["router_neighbors"] = [{"identity": "Remote", "address": address, "mac": host["mac"], "last_seen_at": at}]
+    graph = build_graph(context, network, {}, {}, {}, now)
+    remote = next(node for node in graph["nodes"] if node["id"] == "remote")
+    assert remote["reachability"]["state"] == "reachable"
+    assert remote["properties"]["Адрес управления по LLDP"] == address
+
+    available = host["availability"]
+    host["availability"] = {}
+    alternate = {**host, "ip": "192.0.2.14", "mac": mac, "availability": available}
+    network["hosts"].append(alternate)
+    graph = build_graph(context, network, {}, {}, {}, now)
+    remote = next(node for node in graph["nodes"] if node["id"] == "remote")
+    assert remote["reachability"]["state"] == "reachable"
+    assert remote["properties"]["Адрес управления по LLDP"] == address
+    assert remote["properties"]["IP по MAC"] == alternate["ip"]
+    host["availability"] = available
+    network["hosts"].pop()
+
+    network["lldp"][0]["chassis_id"] = host["mac"]
+    graph = build_graph(context, network, {}, {}, {}, now)
+    remote = next(node for node in graph["nodes"] if node["id"] == "remote")
+    assert "reachability" not in remote
+    assert remote["properties"]["IP заявлен в LLDP"] == address
+    assert "MAC шасси" in remote["properties"]["Сопоставление LLDP"]
+    assert not graph["links"][0]["confirmed"]
+
 
 def test_openvpn_requires_connected_daemon_and_active_session(monkeypatch):
     from io import BytesIO
@@ -374,6 +400,10 @@ def test_collection_reads_source_registry_without_syncing_config(monkeypatch):
     calls = []
 
     class ReadConnection:
+        def execute(self, statement):
+            assert statement.lstrip().startswith("SELECT")
+            return []
+
         def close(self):
             calls.append("closed")
 
