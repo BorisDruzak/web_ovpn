@@ -340,6 +340,25 @@ def test_interfaces_join_if_table_ifx_table_and_bridge_map() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    ("speed", "high_speed", "expected"),
+    [
+        (2_147_483_647, 10_000, 10_000_000_000),
+        (4_294_967_295, 25_000, 25_000_000_000),
+        (2_147_483_647, None, None),
+        (4_294_967_295, 0, None),
+        (2_000_000_000, 2000, 2_000_000_000),
+        (1_234_567, 1, 1_234_567),
+    ],
+)
+def test_interface_speed_uses_if_high_speed_when_if_speed_is_saturated(speed, high_speed, expected):
+    from netctl.snmp.interfaces import parse_interfaces
+
+    ifx = (_vb(IF_HIGH_SPEED + (1,), high_speed, "gauge32"),) if high_speed is not None else ()
+    port, = parse_interfaces((_vb(IF_INDEX + (1,), 1), _vb(IF_SPEED + (1,), speed, "gauge32")), ifx)
+    assert port.speed_bps == expected
+
+
 def test_interface_parser_rejects_conflicting_duplicate_and_ambiguous_bridge_map() -> None:
     from netctl.snmp.interfaces import parse_bridge_port_map, parse_interfaces
 

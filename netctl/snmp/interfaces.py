@@ -217,10 +217,10 @@ def parse_interfaces(
         speed = values.get(IF_SPEED)
         high_speed = values.get(IF_HIGH_SPEED)
         speed_bps = int(speed) if isinstance(speed, int) else None
-        if (
-            isinstance(high_speed, int)
-            and (speed_bps is None or speed_bps == 0 or speed_bps >= 4_294_967_295)
-        ):
+        # Some agents cap ifSpeed at the signed 32-bit limit instead of Gauge32's limit.
+        if speed_bps in (2_147_483_647, 4_294_967_295):
+            speed_bps = None
+        if not speed_bps and isinstance(high_speed, int) and high_speed > 0:
             speed_bps = high_speed * 1_000_000
         admin_value = values.get(IF_ADMIN_STATUS)
         oper_value = values.get(IF_OPER_STATUS)
