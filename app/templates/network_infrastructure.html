@@ -13,9 +13,9 @@
     </div>
   </header>
   <ul class="map-legend" aria-label="Цвета состояний">
-    <li><i data-state="ok"></i>Доступен</li>
-    <li><i data-state="critical"></i>Не отвечает</li>
-    <li><i data-state="warn"></i>Выключен</li>
+    <li><i data-state="ok"></i>Узел и сервисы доступны</li>
+    <li><i data-state="warn"></i>Узел доступен, есть недоступные сервисы</li>
+    <li><i data-state="critical"></i>Узел недоступен</li>
     <li><i data-state="unknown"></i>Нет подтверждения</li>
   </ul>
   <nav class="map-views" aria-label="Раздел карты">
@@ -35,5 +35,5 @@
 <script id="infrastructure-data" type="application/json">{{ graph | tojson }}</script>
 {% endblock %}
 {% block page_scripts %}
-<script type="module" src="{{ url_for('static', path='infrastructure-map.js') }}?v=availability-1"></script>
+<script type="module" src="{{ url_for('static', path='infrastructure-map.js') }}?v=availability-2"></script>
 {% endblock %}

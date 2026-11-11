@@ -9,12 +9,16 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   const search = root.querySelector('#map-query');
   const feedback = root.querySelector('#map-search-result');
   const availabilityStates = {
-    reachable: {label:'Доступен', color:'ok'},
-    unreachable: {label:'Не отвечает', color:'critical'},
-    stopped: {label:'Выключен', color:'warn'},
-    unknown: {label:'Доступность не подтверждена', color:'unknown'},
+    ok: 'Доступен',
+    warn: 'Доступен, есть недоступные сервисы',
+    critical: 'Недоступен',
+    unknown: 'Доступность не подтверждена',
   };
-  const availabilityOf = node => availabilityStates[node.reachability?.state] ?? availabilityStates.unknown;
+  const availabilityOf = node => {
+    const color = node.mapStatus ?? 'unknown';
+    const label = node.reachability?.state === 'stopped' ? 'Выключен' : availabilityStates[color];
+    return {label, color};
+  };
   const byId = new Map(data.nodes.map(node => [node.id, node]));
   const incident = new Map(data.nodes.map(node => [node.id, []]));
   const connected = new Map(data.nodes.map(node => [node.id, []]));
@@ -379,6 +383,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const checked = observation.checkedAt ? formatTime(observation.checkedAt) + (observation.stale ? ' · устарело' : '') : '';
     const items = {
       'Тип': node.kind, 'VMID': node.guest ? String(node.vmid) : '', 'Узел Proxmox': node.pveHost,
+      'Доступность узла': {reachable:'Доступен', unreachable:'Недоступен', stopped:'Выключен'}[observation.state] ?? 'Нет подтверждения',
       'Источник': observation.source, 'Способ проверки': observation.method, 'Проверено': checked,
     };
     for (const [name,value] of Object.entries(items)) {
@@ -387,6 +392,20 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const columns = make('div', null, 'map-detail-columns');
     const propertiesSection = make('section');
     propertiesSection.append(make('h3', 'Доступность'), properties);
+    for (const [key, title] of [['unavailable', 'Недоступные сервисы'], ['unknown', 'Сервисы без подтверждения']]) {
+      const ids = node.serviceAvailability?.[key] ?? [];
+      if (!ids.length) continue;
+      const list = make('ul', null, 'map-detail-list');
+      for (const service of ids) {
+        const row = make('li');
+        const open = make('button', byId.get(service).name);
+        open.type = 'button';
+        open.addEventListener('click', () => select(service));
+        row.append(open);
+        list.append(row);
+      }
+      propertiesSection.append(make('h3', title), list);
+    }
     columns.append(propertiesSection);
     details.append(heading, columns);
     const links = incident.get(id);

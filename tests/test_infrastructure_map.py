@@ -4,6 +4,51 @@ from datetime import datetime, timedelta, timezone
 from test_context_api import make_client
 
 
+def test_map_colors_use_node_and_confirmed_service_availability(tmp_path):
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    stamp = now.isoformat()
+
+    def node(key, state, kind="Сервер", **extra):
+        return {"id": key, "name": key, "kind": kind,
+                "reachability": {"state": state, "checkedAt": stamp}, **extra}
+
+    directum = node("role:directum", "unknown", "Сервис",
+                    sources=[{"name": "Server Observer", "at": stamp}],
+                    checks=[{"name": "directumrx_active", "status": "critical"}])
+    graph = {
+        "schema": 1, "snapshotAt": stamp,
+        "nodes": [node("green", "reachable"), node("yellow", "reachable"),
+                  node("red", "unreachable"), node("grey", "reachable"),
+                  node("off", "stopped"), node("unknown-host", "unknown"),
+                  node("http", "reachable", "Сервис"), node("dns", "unknown", "Сервис"), directum],
+        "links": [
+            {"a": host, "b": service, "kind": "Цель проверки", "confirmed": confirmed}
+            for host, service, confirmed in [
+                ("green", "http", True), ("green", "dns", False),
+                ("yellow", "role:directum", True), ("yellow", "dns", True),
+                ("red", "http", True), ("grey", "dns", True), ("unknown-host", "role:directum", True),
+            ]
+        ],
+    }
+    path = tmp_path / "infrastructure.json"
+    path.write_text(json.dumps(graph), encoding="utf-8")
+
+    states = {item["id"]: item for item in load_infrastructure_map(path, now)["nodes"]}
+    assert [states[key]["mapStatus"] for key in ("green", "yellow", "red", "grey", "off", "unknown-host")] == [
+        "ok", "warn", "critical", "unknown", "critical", "unknown",
+    ]
+    assert states["yellow"]["reachability"]["state"] == "reachable"
+    assert states["yellow"]["serviceAvailability"] == {"unavailable": ["role:directum"], "unknown": ["dns"]}
+    assert states["role:directum"]["reachability"]["source"] == "Server Observer"
+
+    directum["sources"][0]["stale"] = True
+    path.write_text(json.dumps(graph), encoding="utf-8")
+    states = {item["id"]: item for item in load_infrastructure_map(path, now)["nodes"]}
+    assert states["yellow"]["mapStatus"] == "unknown"
+
+
 def test_collection_reads_source_registry_without_syncing_config(monkeypatch):
     from app import infrastructure_collect as collector
 

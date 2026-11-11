@@ -11,6 +11,12 @@ MAX_AGE = timedelta(minutes=25)
 STATES = ("critical", "warn", "ok", "unknown")
 NETWORK_KINDS = ("Коммутатор", "Маршрутизатор", "Точка доступа", "Сетевое устройство")
 REACHABILITY_STATES = ("reachable", "unreachable", "stopped")
+SERVICE_LINKS = {"Размещение", "Цель проверки"}
+REQUIRED_SERVICE_CHECKS = {
+    "role:directum": "directumrx_active",
+    "role:file_server": "smb_active",
+    "role:active_directory": "ntds_active",
+}
 PUBLIC_PROPERTIES = {
     "Модель", "VMID", "Размещение по GitHub", "Источник сбора",
     "Порты (линк поднят / всего)", "Записи MAC-таблицы", "Соседство LLDP",
@@ -110,6 +116,40 @@ def _public_node(row: dict, now: datetime) -> dict:
     }
 
 
+def _map_statuses(nodes: dict, links: list[dict]) -> None:
+    services = {key: set() for key in nodes}
+    for edge in links:
+        if edge["confirmed"] and edge["kind"] in SERVICE_LINKS and nodes[edge["b"]]["kind"] == "Сервис":
+            services[edge["a"]].add(edge["b"])
+
+    for key, check_name in REQUIRED_SERVICE_CHECKS.items():
+        node = nodes.get(key)
+        if not node or node["reachability"]["state"] != "unknown":
+            continue
+        observer = next((source for source in node["sources"]
+                         if source["name"] == "Server Observer" and not source["stale"]), None)
+        if observer and any(check["name"] == check_name and check["status"] == "critical" for check in node["checks"]):
+            node["reachability"] = {
+                "state": "unreachable", "source": "Server Observer", "method": "Состояние обязательной службы",
+                "checkedAt": observer["at"], "stale": False,
+            }
+
+    for key, node in nodes.items():
+        states = {peer: nodes[peer]["reachability"]["state"] for peer in sorted(services[key])}
+        unavailable = [peer for peer, state in states.items() if state in {"unreachable", "stopped"}]
+        unknown = [peer for peer, state in states.items() if state == "unknown"]
+        state = node["reachability"]["state"]
+        node["serviceAvailability"] = {"unavailable": unavailable, "unknown": unknown}
+        if state in {"unreachable", "stopped"}:
+            node["mapStatus"] = "critical"
+        elif state == "reachable" and unavailable:
+            node["mapStatus"] = "warn"
+        elif state == "reachable" and not unknown:
+            node["mapStatus"] = "ok"
+        else:
+            node["mapStatus"] = "unknown"
+
+
 def load_infrastructure_map(path: Path, now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
     empty = {
@@ -142,6 +182,7 @@ def load_infrastructure_map(path: Path, now: datetime | None = None) -> dict:
         edge = {key: _text(row.get(key)) for key in ("a", "b", "kind", "source", "details")}
         if edge["a"] in nodes and edge["b"] in nodes and edge["a"] != edge["b"]:
             links.append({**edge, "confirmed": row.get("confirmed") is True})
+    _map_statuses(nodes, links)
     revision = _text(raw.get("git"), 41)
 
     def node_ids(key: str) -> list[str]:
