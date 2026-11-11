@@ -1175,17 +1175,23 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 item["aliases"] = [item["name"]]
                 item["name"] = guest.get("name") or item["name"]
             item.update(kind=kind, guest=True, vmid=vmid, pveHost=host)
+            prelaunch = guest.get("type") == "qemu" and guest.get("status") == "prelaunch"
             status, label = {
                 "running": ("ok", "Запущена"), "stopped": ("warn", "Выключена"),
                 "paused": ("warn", "Приостановлена"),
             }.get(guest.get("status"), ("unknown", "Неизвестно"))
             if guest.get("template"):
                 status, label = "unknown", "Шаблон"
+            elif prelaunch:
+                status, label = "critical", "Гостевая ОС ещё не запущена"
             source(item, "Proxmox", status, pve_at, label)
             item.pop("reachability", None)
             config = pve.get("configs", {}).get(str(vmid), {})
             interfaces = guest_interfaces.get(str(vmid), {})
             if observation_is_fresh(pve_at, now):
+                lock = guest.get("lock")
+                if isinstance(lock, str) and re.fullmatch(r"[a-z][a-z0-9-]{0,31}", lock):
+                    item["properties"]["Блокировка Proxmox"] = {"backup": "Резервное копирование"}.get(lock, lock)
                 disks = _guest_disks(config, guest.get("type")) if not guest.get("template") else []
                 if disks:
                     item["guestStorage"] = {"checkedAt": pve_at, "disks": disks}
@@ -1203,6 +1209,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                         service["probeTargetIP"] = address
             if not guest.get("template") and guest.get("status") == "stopped":
                 item["reachability"] = _observation("stopped", "Proxmox", "Состояние ВМ", pve_at)
+            elif prelaunch and not guest.get("template") and observation_is_fresh(pve_at, now):
+                item["reachability"] = _observation("unreachable", "Proxmox", "QEMU prelaunch", pve_at)
             elif guest.get("status") == "running" and not guest.get("template") and observation_is_fresh(pve_at, now):
                 disabled_macs = {mac for _, _, disabled, mac in interfaces.values() if disabled}
                 usable_macs = guest_macs.get(str(vmid), set()) - disabled_macs
@@ -1431,7 +1439,9 @@ def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: set[s
         except (URLError, TimeoutError):
             return key, {}
         selected = {name: value for name, value in config.items() if PVE_DISK_DEVICE.fullmatch(name)}
-        if key in guests or guest.get("status") == "running":
+        if key in guests or guest.get("status") == "running" or (
+            guest["type"] == "qemu" and guest.get("status") == "prelaunch"
+        ):
             selected.update({name: value for name, value in config.items() if re.fullmatch(r"net[0-9]+", name)})
             if guest["type"] == "qemu":
                 selected["directNetworkOnly"] = not any(

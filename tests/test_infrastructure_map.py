@@ -92,6 +92,43 @@ def test_service_color_includes_required_observer_checks_and_confirmed_dependenc
     assert read(cycle=True)["vm"]["mapStatus"] == "ok"
 
 
+def test_qemu_prelaunch_reports_guest_state_backup_lock_and_configured_bridge(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    stamp = now.isoformat()
+    path = tmp_path / "infrastructure.json"
+    guest = {"vmid": 104, "node": "pve1", "name": "Sirius", "type": "qemu",
+             "status": "prelaunch", "lock": "backup"}
+    pve = {"at": stamp, "cluster": [], "nodes": [{"node": "pve1", "status": "online"}],
+           "guests": [guest], "configs": {"104": {"net0": "virtio=02:00:00:00:00:04,bridge=vmbr1"}}}
+
+    def read(when=now):
+        path.write_text(json.dumps(build_graph({}, {}, {}, pve, {}, now)), encoding="utf-8")
+        graph = load_infrastructure_map(path, when)
+        return next(node for node in graph["nodes"] if node["id"] == "pve-guest:104"), graph["links"]
+
+    node, links = read()
+    assert node["reachability"]["state"] == "unreachable"
+    assert node["reachability"]["source"] == "Proxmox"
+    assert node["mapStatus"] == "critical"
+    assert node["properties"]["Состояние ВМ"] == "Гостевая ОС ещё не запущена"
+    assert node["properties"]["Блокировка Proxmox"] == "Резервное копирование"
+    placement = next(link for link in links if link["b"] == "pve-guest:104")
+    port, = placement["portEvidence"]
+    assert (port["a"], port["b"]) == ("vmbr1", "net0")
+    assert port["virtual"]["switchPorts"] == []
+
+    node, _ = read(now + timedelta(minutes=26))
+    assert node["mapStatus"] == "unknown"
+    assert "Блокировка Proxmox" not in node["properties"]
+    guest.update(status="running")
+    node, _ = read()
+    assert node["reachability"]["state"] == "unknown"
+    assert node["properties"]["Блокировка Proxmox"] == "Резервное копирование"
+
+
 def test_cluster_health_distinguishes_quorum_members_and_api(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map
