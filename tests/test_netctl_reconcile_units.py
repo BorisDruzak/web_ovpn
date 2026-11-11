@@ -16,15 +16,18 @@ def test_reconcile_service_preserves_local_hardening_without_device_commands() -
     assert "snmp" not in service
 
 
-def test_reconcile_timer_runs_after_the_collection_window_and_persists():
+def test_reconciliation_runs_on_boot_and_after_collection_failure():
     timer = (ROOT / "deploy" / "netctl-reconcile.timer").read_text(encoding="utf-8")
+    collect = (ROOT / "deploy" / "netctl-collect.service").read_text(encoding="utf-8")
+    reconcile = (ROOT / "deploy" / "netctl-reconcile.service").read_text(encoding="utf-8")
 
     assert "OnBootSec=5min" in timer
-    assert "OnCalendar=*:2/5" in timer
+    assert "OnCalendar=" not in timer
     assert "OnUnitActiveSec" not in timer
     assert "AccuracySec=30s" in timer
-    assert "Persistent=true" in timer
     assert "Unit=netctl-reconcile.service" in timer
+    assert "OnFailure=netctl-reconcile.service" in collect
+    assert "After=netctl-collect.service" in reconcile
 
 
 def test_availability_timer_runs_after_collection_and_reconcile_windows():

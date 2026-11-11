@@ -1,5 +1,6 @@
 [Unit]
 Description=Network Observer collection
+OnFailure=netctl-reconcile.service
 
 [Service]
 Type=oneshot

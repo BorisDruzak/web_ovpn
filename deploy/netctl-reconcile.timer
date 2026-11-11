@@ -1,11 +1,9 @@
 [Unit]
-Description=Reconcile netctl context after collection
+Description=Reconcile netctl context after boot
 
 [Timer]
 OnBootSec=5min
-OnCalendar=*:2/5
 AccuracySec=30s
-Persistent=true
 Unit=netctl-reconcile.service
 
 [Install]

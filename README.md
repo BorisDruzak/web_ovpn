@@ -137,7 +137,7 @@ Main files:
 - `/etc/netctl/secrets.env` - root-owned secrets file readable by the `netctl` group.
 - `/var/lib/netctl/netctl.sqlite` - SQLite snapshots owned by the `netctl` service user.
 - `netctl-collect.timer` - primary collection every 5 minutes as the `netctl` user; a fully successful collection also reconciles topology and device attachments.
-- `netctl-reconcile.timer` - five-minute recovery reconciliation for current topology and attachments.
+- `netctl-reconcile.timer` - reconciliation for current topology and attachments after boot. Failed collection also triggers reconciliation through `netctl-collect.service`.
 - `netctl-retention.timer` - daily 03:17 cleanup of local Netctl history older than 30 days. It does not run `VACUUM`; see the [backup-first compaction runbook](docs/runbooks/netctl-retention-compact.md) for the separate operator procedure.
 
 ### Persistent host snapshots
