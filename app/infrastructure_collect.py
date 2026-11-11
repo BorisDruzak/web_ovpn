@@ -929,6 +929,9 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                     if mac_counts[mac] != 1 or mac not in guest_macs.get(str(vmid), set()):
                         continue
                     edge(key, service["id"], "Размещение", "Proxmox", at=pve_at)
+                    for consumer in spec.get("used_by", []):
+                        if nodes.get(consumer, {}).get("kind") == "Сервис":
+                            edge(consumer, service["id"], "Зависимость сервиса", "Настройки карты")
                     address = bindings.get("guest_probe_ips", {}).get(str(vmid))
                     if (status == "ok" and arp_mappings.get(address, (None,))[0] == mac
                             and any(nic_mac == mac and not disabled for _, _, disabled, nic_mac in interfaces.values())):

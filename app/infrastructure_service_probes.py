@@ -257,6 +257,10 @@ def _probe(spec: dict) -> str:
             return _ldap(ip, port, spec)
         if protocol == "smb":
             return _smb(ip, port)
+        if protocol == "postgresql":
+            with socket.create_connection((ip, port), timeout=TIMEOUT) as connection:
+                connection.sendall(struct.pack("!II", 8, 80877103))  # PostgreSQL SSLRequest
+                return "reachable" if connection.recv(1) in {b"S", b"N"} else "unreachable"
         if protocol == "sip_options":
             return _sip_options(ip, port)
     except (ssl.SSLError, http.client.HTTPException, KeyError, TypeError, ValueError):
@@ -283,7 +287,7 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
             if not target_address or any(spec.get("ip") != target_address for spec in specs):
                 return node, None
         methods = {"http": "HTTP", "https": "HTTPS", "dns": "DNS", "ldap": "LDAP", "smb": "SMB2",
-                   "zabbix_api": "Zabbix API",
+                   "zabbix_api": "Zabbix API", "postgresql": "PostgreSQL SSLRequest",
                    "openvpn_management": "OpenVPN Management (UDP)", "sip_options": "SIP OPTIONS (UDP)", "icmp": "ICMP"}
         checks = []
         required = []
@@ -297,7 +301,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 "state": _probe(spec), "method": method,
                 "port": port if type(port) is int and 1 <= port <= 65535 else None,
                 "path": spec.get("path") if protocol in {"http", "https", "zabbix_api"} else None,
-                "target": spec.get("ip") if protocol in {"icmp", "sip_options", "zabbix_api"} or "probeTargetIP" in node else None,
+                "target": spec.get("ip") if protocol in {"icmp", "sip_options", "zabbix_api", "postgresql"}
+                or "probeTargetIP" in node else None,
                 "checkedAt": datetime.now(timezone.utc).isoformat(),
             }
             checks.append(observation)

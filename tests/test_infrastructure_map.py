@@ -172,6 +172,35 @@ def test_zabbix_version_checks_matching_json_rpc_response():
     assert nodes[0]["serviceChecks"][0]["path"] == paths[0]
 
 
+def test_postgresql_probe_requires_protocol_response(monkeypatch):
+    from app import infrastructure_service_probes as probes
+
+    class Connection:
+        response = b"S"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+        def sendall(self, payload):
+            assert payload.hex() == "0000000804d2162f"
+
+        def recv(self, size):
+            assert size == 1
+            return self.response
+
+    connection = Connection()
+    monkeypatch.setattr(probes.socket, "create_connection", lambda *_args, **_kwargs: connection)
+    spec = {"type": "postgresql", "ip": "192.0.2.27", "port": 5432}
+    assert probes._probe(spec) == "reachable"
+    connection.response = b"N"
+    assert probes._probe(spec) == "reachable"
+    connection.response = b"H"
+    assert probes._probe(spec) == "unreachable"
+
+
 def test_guest_service_requires_matching_mac_and_arp_to_enable_probe(monkeypatch):
     from app.infrastructure_collect import build_graph
     from app import infrastructure_service_probes as probes
@@ -186,18 +215,22 @@ def test_guest_service_requires_matching_mac_and_arp_to_enable_probe(monkeypatch
     arp = {"ip": address, "mac": mac, "last_seen_at": now.isoformat()}
     network = {"arp": [arp]}
     binding = {"guest_probe_ips": {"108": address},
-               "guest_services": {"zabbix-api": {"label": "Zabbix API", "vmid": 108, "mac": mac}}}
+               "guest_services": {"zabbix-api": {"label": "Zabbix API", "vmid": 108, "mac": mac,
+                                                "used_by": ["consumer"]}}}
+    context = {"services": [{"id": "consumer", "name": "Consumer"}]}
     configured = {"zabbix-api": [{"ip": address, "port": 80, "type": "zabbix_api"}]}
     monkeypatch.setattr(probes, "_probe", lambda spec: "reachable")
 
     def build():
-        graph = build_graph({}, network, {}, pve, binding, now)
+        graph = build_graph(context, network, {}, pve, binding, now)
         probes.apply_service_probes(graph["nodes"], configured)
         return graph, next(n for n in graph["nodes"] if n["id"] == "zabbix-api")
 
     graph, service = build()
     assert service["reachability"]["state"] == "reachable"
     assert any(e["a"] == "pve-guest:108" and e["b"] == "zabbix-api" and e["confirmed"] for e in graph["links"])
+    assert any(e["a"] == "consumer" and e["b"] == "zabbix-api" and e["confirmed"]
+               and e["kind"] == "Зависимость сервиса" for e in graph["links"])
     configured["zabbix-api"][0]["ip"] = "192.0.2.22"
     assert "reachability" not in build()[1]
     configured["zabbix-api"][0]["ip"] = address
