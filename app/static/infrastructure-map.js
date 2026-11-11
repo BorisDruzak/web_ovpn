@@ -485,14 +485,16 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const links = incident.get(id);
     if (links.length) {
       const list = make('ul',null,'map-detail-list');
+      const observations = make('ul',null,'map-detail-list');
       const portLabels = {up: 'линк поднят', down: 'линк опущен', disabled: 'порт отключён'};
       for (const edge of links.slice().sort((a,b) => Number(b.confirmed)-Number(a.confirmed))) {
+        const unconfirmedPath = !edge.confirmed && edge.kind === 'Путь по MAC-таблице';
         const peer = byId.get(edge.a === id ? edge.b : edge.a);
         const li = make('li');
         const go = make('button',peer.name);
         go.type = 'button';
         go.addEventListener('click',() => select(peer.id));
-        const status = edge.confirmed ? edge.source : 'Связь не подтверждена · ' + edge.source;
+        const status = edge.confirmed || unconfirmedPath ? edge.source : 'Связь не подтверждена · ' + edge.source;
         li.append(go,make('small',edge.kind+' · '+status+(edge.details ? ' · '+edge.details : '')));
         const renderedPorts = new Set();
         for (const evidence of edge.portEvidence ?? []) {
@@ -529,10 +531,17 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
             }
           }
         }
-        list.append(li);
+        (unconfirmedPath ? observations : list).append(li);
       }
       const relationships = make('section');
-      relationships.append(make('h3','Наблюдения о связях'), list);
+      relationships.append(make('h3','Наблюдения о связях'));
+      if (list.children.length) relationships.append(list);
+      if (observations.children.length) {
+        const panel = make('details', null, 'map-port-panel');
+        panel.dataset.section = 'mac-paths';
+        panel.append(make('summary', `Неподтверждённые пути по MAC (${observations.children.length})`), observations);
+        relationships.append(panel);
+      }
       columns.append(relationships);
     }
     renderRelated(id);

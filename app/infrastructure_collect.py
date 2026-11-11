@@ -849,10 +849,12 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                      details=f"{address} · {bridge}", ports=(port, ""), at=observed)
         for endpoint in (router, asset):
             edge(endpoint, item["id"], "Цель проверки", "Настройки карты")
+    fdb_reports = []
     for row in network.get("links", []):
         a_id, b_id = row.get("source_a_id"), row.get("source_b_id")
         a, b = source_ids.get(a_id), source_ids.get(b_id)
-        edge(a, b, "Сетевое соединение", "netctl", False)
+        if not a or not b or a == b:
+            continue
         for report in row.get("evidence", []):
             evidence_type = report.get("evidence_type")
             if evidence_type not in {"lldp_chassis_mac", "fdb_management_mac", "fdb_subtree"}:
@@ -864,8 +866,10 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             confirmed = row.get("state") == "confirmed" and observation_is_fresh(observed, now)
             ports = (port_label(source_names.get(a_id), end_a.get("port_key") or ""),
                      port_label(source_names.get(b_id), end_b.get("port_key") or ""))
-            source_name = "netctl" if evidence_type == "lldp_chassis_mac" else "netctl FDB"
-            edge(a, b, "Сетевое соединение", source_name, confirmed, ports=ports, at=observed)
+            if evidence_type == "lldp_chassis_mac":
+                edge(a, b, "Сетевое соединение", "netctl", confirmed, ports=ports, at=observed)
+            elif any(ports):
+                fdb_reports.append((a, b, confirmed, ports, observed))
     fresh_lldp = [row for row in network.get("lldp", []) if observation_is_fresh(row.get("observed_at"), now)]
     peers_by_port = {}
     lldp_address_owners = {}
@@ -927,6 +931,14 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
     for a, b, port_a, port_b, at in _reciprocal_lldp(network, fresh_lldp, peers_by_port, arp_mappings, now):
         edge(source_nodes.get(a), source_nodes.get(b), "Сетевое соединение", "LLDP · двустороннее",
              ports=(port_a, port_b), at=at)
+
+    for a, b, confirmed, ports, observed in fdb_reports:
+        physical = edges.get((tuple(sorted((a, b))), "Сетевое соединение"))
+        if physical:
+            edge(a, b, "Сетевое соединение", "netctl FDB", confirmed and physical["confirmed"],
+                 ports=ports, at=observed, evidence_only=True)
+        else:
+            edge(a, b, "Путь по MAC-таблице", "netctl FDB", False, ports=ports, at=observed)
 
     for device in context.get("devices", []):
         key = device["id"]

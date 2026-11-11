@@ -435,6 +435,27 @@ def test_port_evidence_keeps_direction_and_parallel_links(tmp_path):
     assert not graph["links"][0]["confirmed"]
 
 
+def test_fdb_only_topology_does_not_create_or_confirm_physical_links():
+    from app.infrastructure_collect import build_graph
+
+    now = datetime.now(timezone.utc)
+    context = {"devices": [{"id": key, "name": key, "kind": "switch"} for key in ("core", "access", "remote")],
+               "links": [{"relation": "connected_to", "state": {"verified": False},
+                          "endpoint_a": {"device": "core", "interface": "ge5"},
+                          "endpoint_b": {"device": "access", "interface": "Port1"}}]}
+    sources = [{"id": i, "name": key, "driver": "snmp_switch", "driver_options": {"intent_stable_id": key}}
+               for i, key in enumerate(("core", "access", "remote"), 1)]
+    network = {"sources": sources, "links": [{"source_a_id": 1, "source_b_id": peer, "state": "confirmed",
+                "evidence": [{"evidence_type": "fdb_management_mac", "observed_at": now.isoformat(),
+                              "endpoint_a": {"source_id": 1, "port_key": "ge5"},
+                              "endpoint_b": {"source_id": peer}}]} for peer in (2, 3)]}
+    links = {edge["b"]: edge for edge in build_graph(context, network, {}, {}, {}, now)["links"]}
+    assert links["access"]["kind"] == "Сетевое соединение" and not links["access"]["confirmed"]
+    assert all(not p["confirmed"] for p in links["access"]["portEvidence"])
+    assert links["remote"]["kind"] == "Путь по MAC-таблице" and not links["remote"]["confirmed"]
+    assert links["remote"]["portEvidence"][0]["a"] == "ge5"
+
+
 def test_lldp_direct_neighbor_overrides_conflicting_fdb_ports():
     from app.infrastructure_collect import build_graph
 
@@ -457,7 +478,8 @@ def test_lldp_direct_neighbor_overrides_conflicting_fdb_ports():
     links = {e["b"]: e for e in graph["links"] if e["a"] == "core"}
     assert links["ito"]["confirmed"]
     assert links["router"]["confirmed"]
-    assert [(p["a"], p["confirmed"]) for p in links["router"]["portEvidence"]] == [("ge23", False), ("ge24", True)]
+    assert [(p["a"], p["confirmed"]) for p in links["router"]["portEvidence"]] == [("ge24", True), ("ge23", False)]
+    assert links["other"]["kind"] == "Путь по MAC-таблице"
     assert not links["other"]["confirmed"]
     assert not links["other"]["portEvidence"][0]["confirmed"]
 
