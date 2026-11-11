@@ -237,7 +237,7 @@ def load_infrastructure_map(path: Path, now: datetime | None = None) -> dict:
                         ],
                     }
             confirmed = row.get("confirmed") is True
-            if edge["source"] in {"netctl", "LLDP UI_VPN", "netctl FDB", "Proxmox"} and row.get("observedAt"):
+            if edge["source"] in {"netctl", "LLDP UI_VPN", "netctl FDB", "netctl FDB + Proxmox", "Proxmox"} and row.get("observedAt"):
                 confirmed = confirmed and observation_is_fresh(row["observedAt"], now)
             links.append({**edge, "confirmed": confirmed, "portEvidence": evidence})
     _map_statuses(nodes, links)

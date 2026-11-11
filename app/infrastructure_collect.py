@@ -468,10 +468,11 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
 
     cluster_id = ""
     hypervisors = []
+    online_hypervisors = set()
     overview_guests = []
     pve_at = pve.get("at", now.isoformat())
+    arp_mappings = _arp_mappings(network.get("arp", []), now) if pve else {}
     if pve:
-        arp_mappings = _arp_mappings(network.get("arp", []), now)
         arp_checks = _verified_arp_checks(arp_mappings, host_ips, now)
         for mac, checks in network.get("guest_arp_probes", {}).items():
             arp_checks.setdefault(mac, []).extend(checks)
@@ -486,6 +487,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             item = node(key, key, "Гипервизор", origin="Proxmox")
             hypervisors.append(key)
             online = host.get("status") == "online"
+            if online:
+                online_hypervisors.add(key)
             label = {"online": "В сети", "offline": "Не в сети"}.get(host.get("status"), "Неизвестно")
             source(item, "Proxmox", "ok" if online else "critical" if label == "Не в сети" else "unknown", pve_at, label)
             if host.get("status") in {"online", "offline"} and observation_is_fresh(pve_at, now):
@@ -575,6 +578,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
     virtual_assets = {link["endpoint_a"]["device"] for link in context.get("links", [])
                       if link.get("relation") == "virtualized_on" and link.get("state", {}).get("intent") != "absent"}
     devices_by_mac = {}
+    management_ports = {}
     for device in context.get("devices", []):
         key = device["id"]
         address = device.get("management_ip")
@@ -583,19 +587,38 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         macs = declared or (observed if len(observed) == 1 and len(addresses.get(address, [])) == 1 else set())
         for mac in macs:
             devices_by_mac.setdefault(mac, set()).add(key)
-    for report in network.get("attachments", []):
+        management = pve.get("management", {}).get(key, {})
+        port = management.get("port")
+        arp = arp_mappings.get(address)
+        if (key in online_hypervisors and observation_is_fresh(pve_at, now) and management.get("address") == address
+                and len(addresses.get(address, [])) == 1 and arp and arp[0] in macs
+                and isinstance(port, str) and INTERFACE_NAME.fullmatch(port)):
+            management_ports[key] = (port, *arp)
+    attachments = [report for report in network.get("attachments", [])
+                   if observation_is_fresh(report.get("observed_at"), now)]
+    locations = {}
+    for report in attachments:
+        locations.setdefault(report["mac"].lower(), set()).add((report["source_id"], report["port_key"]))
+    for report in attachments:
         observed = report["observed_at"]
         switch = source_ids.get(report["source_id"])
-        candidates = devices_by_mac.get(str(report["mac"]).lower(), set())
-        if not switch or len(candidates) != 1 or not observation_is_fresh(observed, now):
+        mac = report["mac"].lower()
+        candidates = devices_by_mac.get(mac, set())
+        if not switch or len(candidates) != 1:
             continue
         device, = candidates
         if device in virtual_assets or nodes[device].get("guest"):
             continue
         port_key = report["port_key"]
         port = port_label(source_names[report["source_id"]], port_key)
-        edge(switch, device, "Путь по MAC-таблице", "netctl FDB",
-             ports=(port, ""), at=observed, vlan=report["vlan_id"])
+        management = management_ports.get(device)
+        if management and management[1] == mac and len(locations[mac]) == 1:
+            checked_at = min(datetime.fromisoformat(observed), datetime.fromisoformat(pve_at), management[2])
+            edge(switch, device, "Сетевое соединение", "netctl FDB + Proxmox",
+                 ports=(port, management[0]), at=checked_at.isoformat(), vlan=report["vlan_id"])
+        else:
+            edge(switch, device, "Путь по MAC-таблице", "netctl FDB",
+                 ports=(port, ""), at=observed, vlan=report["vlan_id"])
     return {"schema": 1, "snapshotAt": now.isoformat(), "nodes": list(nodes.values()),
             "links": list(edges.values()), "clusterId": cluster_id, "nodeOrder": hypervisors,
             "overviewGuests": overview_guests}
@@ -614,7 +637,8 @@ class _NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: set[str]) -> dict:
+def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: set[str],
+                 management_bridges: dict[str, str] | None = None) -> dict:
     origin = urlsplit(url)
     if origin.scheme != "https" or not origin.hostname or origin.username or origin.path not in ("", "/") or origin.query or origin.fragment:
         raise ValueError("Proxmox requires an HTTPS origin")
@@ -642,15 +666,29 @@ def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: set[s
             return key, {}
         return key, {name: value for name, value in config.items() if re.fullmatch(r"net[0-9]+", name)}
 
+    def read_interface(node, interface):
+        try:
+            data = get(f"nodes/{quote(node, safe='')}/network/{quote(interface, safe='')}")
+        except (URLError, TimeoutError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
     def read_bridge(pair):
         node, bridge = pair
-        try:
-            data = get(f"nodes/{quote(node, safe='')}/network/{quote(bridge, safe='')}")
-        except (URLError, TimeoutError):
+        data = read_interface(node, bridge)
+        if data.get("type") not in ("bridge", "OVSBridge"):
             return node, bridge, {}
-        if not isinstance(data, dict) or data.get("type") not in ("bridge", "OVSBridge"):
-            return node, bridge, {}
-        return node, bridge, {key: data.get(key) for key in ("active", "bridge_ports")}
+        return node, bridge, {key: data.get(key) for key in ("active", "bridge_ports", "address")}
+
+    def read_management_port(pair):
+        node, bridge = pair
+        data = result["bridges"].get(node, {}).get(bridge, {})
+        port = data.get("bridge_ports")
+        if data.get("active") == 1 and isinstance(port, str) and INTERFACE_NAME.fullmatch(port):
+            interface = read_interface(node, port)
+            if interface.get("type") == "eth" and interface.get("active") == 1:
+                return node, {"address": data.get("address"), "port": port}
+        return node, {}
 
     candidates = [guest for guest in result["guests"] if guest["type"] in {"qemu", "lxc"}
                   and (str(guest["vmid"]) in guests or guest.get("status") == "running")]
@@ -658,14 +696,20 @@ def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: set[s
         result["configs"] = dict(pool.map(read_guest, candidates))
         used_bridges = {(guest["node"], bridge) for guest in candidates
                         for bridge, _, _, _ in _guest_interfaces(result["configs"][str(guest["vmid"])]).values()}
+        management = {(row["node"], bridge) for row in result["nodes"] if row.get("status") == "online"
+                      for bridge in [(management_bridges or {}).get(row["node"])]
+                      if isinstance(bridge, str) and INTERFACE_NAME.fullmatch(bridge)}
+        used_bridges.update(management)
         for node, bridge, data in pool.map(read_bridge, sorted(used_bridges)):
             if data:
                 result["bridges"].setdefault(node, {})[bridge] = data
+        result["management"] = dict(pool.map(read_management_port, sorted(management)))
     result["at"] = datetime.now(timezone.utc).isoformat()
     return result
 
 
-def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | None = None) -> dict:
+def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | None = None,
+                 *, include_arp: bool = False) -> dict:
     commands = {
         "switches": (["switches", "status"], "switches"),
         "links": (["topology", "links"], "links"),
@@ -682,6 +726,7 @@ def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | N
         )]
         if guest_macs:
             data["guest_fdb"] = query_observed_mac_ports(connection, guest_macs)
+        if guest_macs or include_arp:
             data["arp"] = [dict(row) for row in connection.execute(
                 """
                 SELECT a.ip, a.mac, a.last_seen_at
@@ -767,14 +812,15 @@ def main() -> int:
         if args.proxmox_url:
             guest_ids = set(bindings.get("guests", {}))
             guest_ids.update(str(service["vmid"]) for service in bindings.get("guest_services", {}).values())
-            pve = read_proxmox(args.proxmox_url, args.proxmox_token_file, args.proxmox_ca, guest_ids)
+            pve = read_proxmox(args.proxmox_url, args.proxmox_token_file, args.proxmox_ca, guest_ids,
+                               bindings.get("hypervisor_management_bridges"))
         elif args.proxmox_export:
             pve = json.loads(args.proxmox_export.read_text(encoding="utf-8"))
             if not pve.get("at"):
                 raise ValueError("Proxmox export requires observation time")
         guest_macs = {mac for config in pve.get("configs", {}).values() for mac in _guest_macs(config)}
         route_sources = {item["source"] for item in bindings.get("route_evidence", {}).values() if item.get("source")}
-        network = read_network(guest_macs, route_sources)
+        network = read_network(guest_macs, route_sources, include_arp=bool(pve.get("management")))
         network["guest_arp_probes"] = _collect_guest_arp_probes(
             pve, network, bindings.get("guest_probe_ips", {}), datetime.now(timezone.utc),
         )

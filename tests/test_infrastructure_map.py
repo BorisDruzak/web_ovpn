@@ -251,6 +251,44 @@ def test_fdb_ports_require_fresh_unambiguous_device_identity(tmp_path):
     assert first not in path.read_text(encoding="utf-8")
 
 
+def test_proxmox_management_port_joins_unique_fdb_and_active_bridge(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    mac, address = "02:00:00:00:00:13", "192.0.2.13"
+    context = {"devices": [
+        {"id": "pve3", "name": "pve3", "kind": "hypervisor", "management_ip": address},
+        {"id": "sw", "name": "SNR", "kind": "switch", "management_ip": "192.0.2.254"},
+    ], "links": [{"endpoint_a": {"device": "sw", "interface": "ge11"},
+                  "endpoint_b": {"device": "pve3", "interface": "data_1g"}, "relation": "connected_to"}]}
+    source = {"id": 1, "name": "snr", "host": "192.0.2.254", "driver": "snmp_switch"}
+    attachment = {"mac": mac, "source_id": 1, "port_key": "ge11", "vlan_id": 1, "observed_at": at}
+    network = {"sources": [source], "attachments": [attachment],
+               "hosts": [{"ip": address, "mac": mac, "last_seen_at": at}],
+               "arp": [{"ip": address, "mac": mac, "last_seen_at": at}]}
+    pve = {"at": at, "nodes": [{"node": "pve3", "status": "online"}], "cluster": [], "guests": [],
+           "management": {"pve3": {"address": address, "port": "enp2s0f0"}}}
+    path = tmp_path / "map.json"
+
+    def load(stamp=now):
+        graph = build_graph(context, network, {}, pve, {}, now)
+        path.write_text(json.dumps(graph), encoding="utf-8")
+        return [link for link in load_infrastructure_map(path, stamp)["links"]
+                if {link["a"], link["b"]} == {"sw", "pve3"}]
+
+    link, = load()
+    assert link["confirmed"]
+    assert any(p["confirmed"] and p["a"] == "ge11" and p["b"] == "enp2s0f0" for p in link["portEvidence"])
+    assert not load(now + timedelta(hours=1))[0]["confirmed"]
+    network["attachments"].append({**attachment, "port_key": "ge12"})
+    assert not any(p["b"] == "enp2s0f0" for link in load() for p in link["portEvidence"])
+    network["attachments"].pop()
+    network["arp"].clear()
+    assert not any(p["b"] == "enp2s0f0" for link in load() for p in link["portEvidence"])
+
+
 def test_lldp_management_address_requires_matching_inventory_and_host_mac():
     from app.infrastructure_collect import build_graph
 
