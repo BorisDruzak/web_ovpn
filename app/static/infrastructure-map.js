@@ -29,6 +29,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   const viewButtons = Array.from(root.querySelectorAll('[data-view]'));
   let view = 'overview';
   let selected = null;
+  let selectedPort = null;
   let focusedRanks = null;
   const make = (tag, text, className) => {
     const element = document.createElement(tag);
@@ -309,16 +310,34 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   }
   const edgeKey = (a, b) => JSON.stringify([a, b].sort());
 
-  function updateNodeUrl(id) {
+  const portKey = name => name.trim().toLowerCase().replace(/^(?:gi|gigabitethernet)\s*(\d+\/\d+\/\d+)$/, 'gi$1');
+
+  function linksForPort(id, port) {
+    const key = portKey(port);
+    return incident.get(id).flatMap(edge => {
+      const side = edge.a === id ? 'a' : 'b';
+      const evidence = (edge.portEvidence ?? []).filter(report => {
+        const label = report[side];
+        return [label, ...label.split(' / ')].some(name => portKey(name) === key);
+      });
+      if (!evidence.length) return [];
+      return [{...edge, portEvidence: evidence, confirmed: edge.confirmed && evidence.some(report => report.confirmed)}];
+    });
+  }
+
+  function updateNodeUrl(id, port=null) {
     const url = new URL(window.location.href);
     if (id) url.searchParams.set('node', id);
     else url.searchParams.delete('node');
+    if (port) url.searchParams.set('port', port);
+    else url.searchParams.delete('port');
     window.history.replaceState(null, '', url);
   }
 
   function clearSelection() {
     buttons.get(selected)?.setAttribute('aria-pressed','false');
     selected = null;
+    selectedPort = null;
     updateNodeUrl(null);
     for (const panel of [related, details]) {
       panel.replaceChildren();
@@ -374,12 +393,23 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     renderSelection(id, reveal);
   }
 
-  function renderSelection(id, reveal) {
+  function selectPort(id, port) {
+    const previous = selectedPort;
+    renderSelection(id, false, port);
+    const panel = details.querySelector('details[data-section="ports"]');
+    panel.open = true;
+    const control = [...panel.querySelectorAll('button[data-port]')]
+      .find(button => button.dataset.port === (port ? '' : previous));
+    control?.focus();
+  }
+
+  function renderSelection(id, reveal, port=null) {
     buttons.get(selected)?.setAttribute('aria-pressed','false');
     selected = id;
-    updateNodeUrl(id);
-    details.replaceChildren();
     const node = byId.get(id);
+    selectedPort = port ? node.ports?.find(item => portKey(item.name) === portKey(port))?.name ?? null : null;
+    updateNodeUrl(id, selectedPort);
+    details.replaceChildren();
     const button = buttons.get(id);
     button.setAttribute('aria-pressed','true');
     details.hidden = false;
@@ -452,20 +482,35 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     if (node.ports?.length) {
       const panel = make('details', null, 'map-port-panel');
       panel.dataset.section = 'ports';
+      panel.open = selectedPort !== null;
       const list = make('ul', null, 'map-detail-list');
       const states = {up: 'Линк поднят', down: 'Линк опущен', disabled: 'Отключён', unknown: 'Нет подтверждения'};
       const sorted = [...node.ports].sort((a,b) => a.name.localeCompare(b.name, 'ru', {numeric: true}));
       for (const port of sorted) {
+        if (selectedPort && portKey(port.name) !== portKey(selectedPort)) continue;
         const row = make('li');
         const time = port.checkedAt ? formatTime(port.checkedAt) : '';
         const speed = port.speedBps ? (port.speedBps / 1e6).toLocaleString('ru-RU') + ' Мбит/с' : '';
         const status = [states[port.state], speed, time, port.stale && time ? 'устарело' : ''].filter(Boolean).join(' · ');
-        row.append(make('strong', port.name), make('small', status));
+        const name = make(selectedPort ? 'strong' : 'button', port.name);
+        if (!selectedPort) {
+          name.type = 'button';
+          name.dataset.port = port.name;
+          name.addEventListener('click', () => selectPort(id, port.name));
+        }
+        row.append(name, make('small', status));
         list.append(row);
       }
       const up = node.ports.filter(port => port.state === 'up').length;
-      const summary = 'Интерфейсы (' + node.ports.length + ', линк поднят на ' + up + ')';
+      const summary = selectedPort ? 'Порт ' + selectedPort : 'Интерфейсы (' + node.ports.length + ', линк поднят на ' + up + ')';
       panel.append(make('summary', summary), make('small', 'Network Observer'), list);
+      if (selectedPort) {
+        const reset = make('button', 'Все порты', 'map-close');
+        reset.type = 'button';
+        reset.dataset.port = '';
+        reset.addEventListener('click', () => selectPort(id, null));
+        panel.append(reset);
+      }
       propertiesSection.append(panel);
     }
     if (node.serviceChecks?.length) {
@@ -542,13 +587,13 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     }
     columns.append(propertiesSection);
     details.append(heading, columns);
-    const links = incident.get(id);
-    if (links.length) {
+    const links = selectedPort ? linksForPort(id, selectedPort) : incident.get(id);
+    if (links.length || selectedPort) {
       const list = make('ul',null,'map-detail-list');
       const observations = make('ul',null,'map-detail-list');
       const portLabels = {up: 'линк поднят', down: 'линк опущен', disabled: 'порт отключён'};
       for (const edge of links.slice().sort((a,b) => Number(b.confirmed)-Number(a.confirmed))) {
-        const unconfirmedPath = !edge.confirmed && pathKinds.has(edge.kind);
+        const unconfirmedPath = !selectedPort && !edge.confirmed && pathKinds.has(edge.kind);
         const peer = byId.get(edge.a === id ? edge.b : edge.a);
         const li = make('li');
         const go = make('button',peer.name);
@@ -595,7 +640,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         (unconfirmedPath ? observations : list).append(li);
       }
       const relationships = make('section');
-      relationships.append(make('h3','Наблюдения о связях'));
+      relationships.append(make('h3', selectedPort ? 'Наблюдения по порту ' + selectedPort : 'Наблюдения о связях'));
+      if (!links.length) relationships.append(make('p', 'Для этого порта нет наблюдений о связях'));
       if (list.children.length) relationships.append(list);
       if (observations.children.length) {
         const panel = make('details', null, 'map-port-panel');
@@ -635,12 +681,15 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     if (button.dataset.view !== view || focusedRanks) renderView(button.dataset.view);
   }));
   function displaySnapshot(graph) {
-    const wanted = selected ?? new URLSearchParams(window.location.search).get('node');
+    const params = new URLSearchParams(window.location.search);
+    const wanted = selected ?? params.get('node');
+    const wantedPort = selected ? selectedPort : params.get('port');
     const panelStates = new Map(Array.from(details.querySelectorAll('details'),
       panel => [panel.dataset.section, panel.open]));
     const active = document.activeElement;
     const activeNode = [...buttons].find(([, button]) => button === active)?.[0];
     const activePanel = active?.closest('summary')?.parentElement.dataset.section;
+    const activePort = active?.dataset.port;
     const inCard = details.contains(active) || related.contains(active);
     data = graph;
     indexSnapshot();
@@ -648,13 +697,15 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const focus = view === 'overview' && byId.has(wanted) ? wanted : null;
     renderView(view, focus);
     if (buttons.has(wanted)) {
-      renderSelection(wanted, false);
+      renderSelection(wanted, false, wantedPort);
       for (const panel of details.querySelectorAll('details')) {
         if (panelStates.has(panel.dataset.section)) panel.open = panelStates.get(panel.dataset.section);
       }
     }
     const summary = activePanel && details.querySelector(`[data-section="${activePanel}"] summary`);
-    const replacement = summary || buttons.get(activeNode ?? (inCard ? wanted : null));
+    const portControl = activePort === undefined ? null : [...details.querySelectorAll('button[data-port]')]
+      .find(button => button.dataset.port === activePort);
+    const replacement = summary || portControl || buttons.get(activeNode ?? (inCard ? wanted : null));
     replacement?.focus({preventScroll: true});
   }
 
