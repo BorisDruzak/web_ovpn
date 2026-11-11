@@ -31,7 +31,7 @@ EXPECTED_EXEC_STARTS = {
         "all",
         "--reconcile",
     ],
-    "netctl-reconcile.service": ["/usr/local/sbin/netctl", "--json", "reconcile"],
+    "netctl-reconcile.service": ["/usr/local/sbin/netctl", "--json", "reconcile", "--availability"],
     "netctl-retention.service": [
         "/usr/local/sbin/netctl",
         "--json",
@@ -76,9 +76,9 @@ EXPECTED_PROPERTIES = {
     },
     "netctl-availability.timer": {
         "TimersMonotonic": ("OnBootUSec=6min",),
-        "TimersCalendar": "*-*-* *:04/5:00",
+        "TimersCalendar": "",
         "AccuracyUSec": "30s",
-        "Persistent": "yes",
+        "Persistent": "no",
         "Unit": "netctl-availability.service",
     },
     "inventory-netctl-sync.service": {
@@ -214,7 +214,7 @@ def _verify_installed_units(unit_directory: Path) -> None:
         )
         actual_properties = parse_show_properties(result.stdout)
         for property_name, expected_value in expected_properties.items():
-            actual_value = actual_properties.get(property_name)
+            actual_value = actual_properties.get(property_name, "" if expected_value == "" else None)
             if actual_value is None:
                 raise RuntimeError(f"{unit} is missing systemd property {property_name}")
             if not property_matches(property_name, actual_value, expected_value):

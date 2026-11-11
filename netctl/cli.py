@@ -594,6 +594,14 @@ def reconcile_current_locked(conn, observed_at: str) -> dict[str, Any]:
     }
 
 
+def _collect_availability_safely(conn: sqlite3.Connection) -> dict[str, Any]:
+    try:
+        collection = collect_due_availability(conn, default_probe_executor(), now=utc_now)
+        return _availability_payload(collection)
+    except Exception:
+        return {"status": "failed", "runs": [], "summary": {"targets": 0, "completed": 0}}
+
+
 def cmd_collect(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     conn = None
     try:
@@ -602,17 +610,7 @@ def cmd_collect(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
             if args.source == "all":
                 rc, results = collect_all_locked(conn, args)
                 if rc == 0:
-                    try:
-                        collection = collect_due_availability(
-                            conn, default_probe_executor(), now=utc_now
-                        )
-                        availability = _availability_payload(collection)
-                    except Exception:
-                        availability = {
-                            "status": "failed",
-                            "runs": [],
-                            "summary": {"targets": 0, "completed": 0},
-                        }
+                    availability = _collect_availability_safely(conn)
                     results.append({"availability": availability})
                 if args.reconcile:
                     if rc != 0:
@@ -635,7 +633,11 @@ def cmd_reconcile(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     try:
         with CollectLock(args.db):
             conn = prepare_conn(args)
-            return 0, ok(**reconcile_current_locked(conn, utc_now()))
+            availability = _collect_availability_safely(conn) if args.availability else None
+            result = reconcile_current_locked(conn, utc_now())
+            if availability is not None:
+                result["availability"] = availability
+            return 0, ok(**result)
     except RuntimeError as exc:
         return 1, err(str(exc))
     finally:
@@ -656,19 +658,7 @@ def cmd_observations(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
                     results=results,
                     reconciliation_skipped="collection_failed",
                 )
-            try:
-                collection = collect_due_availability(
-                    conn,
-                    default_probe_executor(),
-                    now=utc_now,
-                )
-                availability = _availability_payload(collection)
-            except Exception:
-                availability = {
-                    "status": "failed",
-                    "runs": [],
-                    "summary": {"targets": 0, "completed": 0},
-                }
+            availability = _collect_availability_safely(conn)
             results.append({"availability": availability})
             return 0, ok(
                 results=results,
@@ -1705,7 +1695,8 @@ def build_parser() -> argparse.ArgumentParser:
     availability_force = availability_sub.add_parser("force")
     availability_force.add_argument("--ip", required=True)
     availability_force.add_argument("--enabled", required=True, choices=("true", "false"))
-    sub.add_parser("reconcile")
+    reconcile = sub.add_parser("reconcile")
+    reconcile.add_argument("--availability", action="store_true", help="Collect due host availability before reconciling.")
 
     retention = sub.add_parser("retention")
     retention_sub = retention.add_subparsers(dest="retention_command", required=True)

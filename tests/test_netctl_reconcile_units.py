@@ -30,13 +30,15 @@ def test_reconciliation_runs_on_boot_and_after_collection_failure():
     assert "After=netctl-collect.service" in reconcile
 
 
-def test_availability_timer_runs_after_collection_and_reconcile_windows():
+def test_availability_fallback_runs_on_boot_or_under_the_reconciliation_lock():
     timer = (ROOT / "deploy" / "netctl-availability.timer").read_text(encoding="utf-8")
+    recovery = (ROOT / "deploy" / "netctl-reconcile.service").read_text(encoding="utf-8")
 
     assert "OnBootSec=6min" in timer
-    assert "OnCalendar=*:4/5" in timer
+    assert "OnCalendar=" not in timer
     service = (ROOT / "deploy" / "netctl-availability.service").read_text(encoding="utf-8")
     assert "After=netctl-collect.service netctl-reconcile.service" in service
     assert "OnUnitActiveSec" not in timer
     assert "AccuracySec=30s" in timer
-    assert "Persistent=true" in timer
+    assert "ExecStart=/usr/local/sbin/netctl --json reconcile --availability" in recovery
+    assert "AmbientCapabilities=CAP_NET_RAW" in recovery

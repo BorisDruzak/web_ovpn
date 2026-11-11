@@ -430,7 +430,7 @@ def test_installer_does_not_enable_timers_after_verification_failure(tmp_path: P
             "netctl-collect.execstart",
             ["/usr/local/sbin/netctl", "--json", "collect", "all", "--reconcile"],
         ),
-        ("netctl-reconcile.execstart", ["/usr/local/sbin/netctl", "--json", "reconcile"]),
+        ("netctl-reconcile.execstart", ["/usr/local/sbin/netctl", "--json", "reconcile", "--availability"]),
     ],
 )
 def test_exec_start_parser_reads_captured_systemctl_show_output(

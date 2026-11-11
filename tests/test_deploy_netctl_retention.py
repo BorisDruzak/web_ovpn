@@ -69,9 +69,9 @@ def test_systemd_verifier_expects_hardened_read_only_availability_recovery() -> 
     }
     assert verifier["EXPECTED_PROPERTIES"]["netctl-availability.timer"] == {
         "TimersMonotonic": ("OnBootUSec=6min",),
-        "TimersCalendar": "*-*-* *:04/5:00",
+        "TimersCalendar": "",
         "AccuracyUSec": "30s",
-        "Persistent": "yes",
+        "Persistent": "no",
         "Unit": "netctl-availability.service",
     }
 
@@ -85,8 +85,9 @@ def test_systemd_verifier_accepts_captured_availability_timer_dbus_properties() 
         "TimersMonotonic", properties["TimersMonotonic"], ("OnBootUSec=6min",)
     ) is True
     assert verifier["property_matches"](
-        "TimersCalendar", properties["TimersCalendar"], "*-*-* *:04/5:00"
+        "TimersCalendar", properties.get("TimersCalendar", ""), ""
     ) is True
+    assert not verifier["property_matches"]("TimersCalendar", "{ OnCalendar=*-*-* *:04/5:00 ; next_elapse=0 }", "")
 
 
 def test_systemd_verifier_accepts_repeated_monotonic_timer_properties() -> None:

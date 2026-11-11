@@ -821,6 +821,41 @@ def test_collect_all_reconciles_after_a_partial_snmp_result(monkeypatch):
     assert payload["reconciliation"]["topology_run_id"] == 1
 
 
+def test_reconcile_with_availability_uses_one_lock_and_keeps_correlation_on_probe_error(monkeypatch, capsys):
+    import netctl.cli as cli
+    from contextlib import contextmanager
+
+    calls = []
+
+    class Connection:
+        def close(self):
+            pass
+
+    @contextmanager
+    def lock(_url):
+        calls.append("lock")
+        yield
+        calls.append("unlock")
+
+    def unavailable(*args, **kwargs):
+        calls.append("availability")
+        raise RuntimeError("temporary probe failure")
+
+    def reconcile(*args):
+        calls.append("reconcile")
+        return {"topology_run_id": 1, "attachment_run_id": 2}
+
+    monkeypatch.setattr(cli, "CollectLock", lock)
+    monkeypatch.setattr(cli, "prepare_conn", lambda args: Connection())
+    monkeypatch.setattr(cli, "collect_due_availability", unavailable)
+    monkeypatch.setattr(cli, "reconcile_current_locked", reconcile)
+    rc, data = run_cli(["--json", "reconcile", "--availability"], capsys)
+    assert rc == 0
+    assert data["availability"]["status"] == "failed"
+    assert data["topology_run_id"] == 1
+    assert calls == ["lock", "availability", "reconcile", "unlock"]
+
+
 def test_reconcile_rejects_a_concurrent_collection_lock(tmp_path):
     """Dropping the recovery command lock would allow conflicting state replacement."""
     from netctl.cli import build_parser, dispatch
