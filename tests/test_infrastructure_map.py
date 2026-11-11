@@ -1470,6 +1470,9 @@ def test_vm_switch_observation_requires_current_mac_and_declared_host_port(tmp_p
     pve["configs"]["104"] = {"net0": "virtio=02:00:00:00:00:04,bridge=vmbr1"}
     assert guest_uplink(103) is None
     assert guest_uplink(104) == {"id": "sw", "port": "xe3", "at": at}
+    pve["guests"][1]["status"] = "stopped"
+    assert guest_uplink(104) == {"id": "sw", "port": "xe3", "at": at, "configuredOnly": True}
+    pve["guests"][1]["status"] = "running"
     assert guest_uplink(104, now + timedelta(hours=1)) is None
     context["devices"].append({"id": "other", "name": "Other", "kind": "router"})
     network["lldp"] = [{"source": "switch-source", "local_port_key": "index:3",
@@ -1477,7 +1480,7 @@ def test_vm_switch_observation_requires_current_mac_and_declared_host_port(tmp_p
     assert guest_uplink(104) is None
     del network["lldp"]
     pve["configs"]["104"]["net0"] += ",link_down=1"
-    assert guest_uplink(104) is None
+    assert guest_uplink(104) == {"id": "sw", "port": "xe3", "at": at, "configuredOnly": True}
     pve["configs"]["104"]["net0"] = pve["configs"]["104"]["net0"].removesuffix(",link_down=1")
     pve["activePorts"]["pve1"] = []
     assert physical_ports() == []

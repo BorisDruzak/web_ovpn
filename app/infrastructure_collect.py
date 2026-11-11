@@ -699,17 +699,18 @@ def _add_guest_switch_uplinks(links, nodes: dict, pve: dict, now: datetime) -> N
                 if hypervisor_port:
                     candidates.setdefault(endpoint, {})[switch_port] = evidence
 
-    running = {(row["node"], row["vmid"]) for row in pve.get("guests", [])
-               if row.get("status") == "running" and not row.get("template")}
+    guest_states = {(row["node"], row["vmid"]): row.get("status") for row in pve.get("guests", [])
+                    if not row.get("template")}
     for link in links:
         host, guest = link["a"], link["b"]
+        guest_state = guest_states.get((host, nodes[guest].get("vmid")))
         if (not link["confirmed"] or link["kind"] != "Размещение ВМ"
-                or (host, nodes[guest].get("vmid")) not in running):
+                or guest_state not in {"running", "stopped", "paused", "prelaunch"}):
             continue
         for report in link.get("portEvidence", []):
             virtual = report.get("virtual")
             if (not virtual or not report["confirmed"] or not observation_is_fresh(report["at"], now)
-                    or virtual["linkDisabled"] or not virtual["bridgeActive"] or virtual["switchPorts"]):
+                    or not virtual["bridgeActive"] or virtual["switchPorts"]):
                 continue
             bridge = pve.get("bridges", {}).get(host, {}).get(report["a"], {})
             uplink = bridge.get("bridge_ports")
@@ -726,6 +727,8 @@ def _add_guest_switch_uplinks(links, nodes: dict, pve: dict, now: datetime) -> N
                 continue
             checked_at = min(datetime.fromisoformat(stamp) for stamp in (evidence["at"], report["at"]))
             virtual["switchUplink"] = {**evidence, "at": checked_at.isoformat()}
+            if guest_state != "running" or virtual["linkDisabled"]:
+                virtual["switchUplink"]["configuredOnly"] = True
 
 
 def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings: dict, now: datetime) -> dict:
@@ -1485,9 +1488,7 @@ def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: set[s
         except (URLError, TimeoutError):
             return key, {}
         selected = {name: value for name, value in config.items() if PVE_DISK_DEVICE.fullmatch(name)}
-        if key in guests or guest.get("status") == "running" or (
-            guest["type"] == "qemu" and guest.get("status") == "prelaunch"
-        ):
+        if key in guests or not guest.get("template"):
             selected.update({name: value for name, value in config.items() if re.fullmatch(r"net[0-9]+", name)})
             if guest["type"] == "qemu":
                 selected["directNetworkOnly"] = not any(

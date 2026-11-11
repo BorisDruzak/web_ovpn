@@ -313,6 +313,11 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
 
   const portKey = name => name.trim().toLowerCase().replace(/^(?:gi|gigabitethernet)\s*(\d+\/\d+\/\d+)$/, 'gi$1');
 
+  function bridgePathLabel(uplink) {
+    const label = uplink.viaMacTable ? 'Путь аплинка по MAC-таблице' : 'Аплинк моста';
+    return uplink.configuredOnly ? label + ' · гостевой линк неактивен' : label;
+  }
+
   function linksForPort(id, port) {
     const key = portKey(port);
     return incident.get(id).flatMap(edge => {
@@ -338,8 +343,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const macLabel = guest.kind === 'Контейнер' ? 'MAC контейнера замечен' : 'MAC ВМ замечен';
         const observations = (switchPorts ?? []).map(match => ({match, label: macLabel + ' · netctl FDB'}));
         if (switchUplink) {
-          const label = switchUplink.viaMacTable ? 'Путь аплинка по MAC-таблице' : 'Аплинк моста';
-          observations.push({match: switchUplink, label});
+          observations.push({match: switchUplink, label: bridgePathLabel(switchUplink)});
         }
         for (const {match, label} of observations) {
           if (match.id !== id || portKey(match.port) !== key) continue;
@@ -655,8 +659,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
             if (network.uplinks.length) notes.push('Интерфейсы моста: ' + network.uplinks.join(', '));
             if (notes.length) li.append(make('small', notes.join(' · ')));
             if (network.switchUplink) {
-              const {id, port, at, viaMacTable} = network.switchUplink;
-              const label = viaMacTable ? 'Путь аплинка по MAC-таблице' : 'Аплинк моста';
+              const {id, port, at} = network.switchUplink;
+              const label = bridgePathLabel(network.switchUplink);
               li.append(make('small', label + ': ' + byId.get(id).name + ' ' + port + ' · ' + formatTime(at)));
             }
             for (const observed of network.switchPorts ?? []) {
