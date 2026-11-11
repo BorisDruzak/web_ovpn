@@ -537,6 +537,27 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       panel.append(make('summary', `Пулы ZFS (${pools.length})`), make('small', 'Proxmox · ' + formatTime(checkedAt)), list);
       propertiesSection.append(panel);
     }
+    if (node.lvmThinPools) {
+      const {checkedAt, warningThresholdPercent, pools} = node.lvmThinPools;
+      const panel = make('details', null, 'map-port-panel');
+      panel.dataset.section = 'lvm-thin-pools';
+      panel.open = pools.some(pool => pool.capacityStatus === 'warn');
+      const number = new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 1});
+      const usage = (used, size) => size === undefined ? 'нет данных'
+        : `${number.format(used / 2**30)} из ${number.format(size / 2**30)} ГиБ (${number.format(100 * used / size)}%)`;
+      const list = make('ul', null, 'map-detail-list');
+      for (const pool of pools) {
+        const row = make('li');
+        row.append(make('strong', pool.volumeGroup + '/' + pool.name),
+          make('small', 'Данные · ' + usage(pool.usedBytes, pool.sizeBytes)),
+          make('small', 'Метаданные · ' + usage(pool.metadataUsedBytes, pool.metadataSizeBytes)));
+        if (pool.capacityStatus === 'warn') row.append(make('small', 'Порог заполнения достигнут'));
+        list.append(row);
+      }
+      panel.append(make('summary', `Пулы LVM-thin (${pools.length})`),
+        make('small', 'Порог ' + warningThresholdPercent + '% · Proxmox · ' + formatTime(checkedAt)), list);
+      propertiesSection.append(panel);
+    }
     if (node.guestStorage) {
       const list = make('dl');
       const number = new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 2});

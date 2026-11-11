@@ -23,6 +23,7 @@ INTERFACE_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}")
 PVE_DISK_DEVICE = re.compile(r"(?:scsi|sata|virtio|ide|mp)[0-9]{1,3}|rootfs")
 PVE_STORAGE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 ZFS_PROBLEM_STATES = {"DEGRADED", "FAULTED", "OFFLINE", "REMOVED", "UNAVAIL", "SUSPENDED"}
+LVM_THIN_WARNING_PERCENT = 90
 REACHABILITY_STATES = ("reachable", "unreachable", "stopped", "unknown")
 SERVICE_LINKS = {"Размещение", "Цель проверки", "Зависимость сервиса"}
 CLUSTER_KIND = "Кластер Proxmox"
@@ -288,6 +289,27 @@ def project_hypervisor_zfs(row: object, now: datetime) -> dict:
     return {"checkedAt": _time(row["checkedAt"]).isoformat(), "pools": pools} if pools else {}
 
 
+def project_hypervisor_lvm_thin(row: object, now: datetime) -> dict:
+    if not isinstance(row, dict) or not observation_is_fresh(row.get("checkedAt"), now):
+        return {}
+    pools = []
+    for entry in _rows(row.get("pools"), 128):
+        name, group = entry.get("name"), entry.get("volumeGroup")
+        if not all(isinstance(value, str) and PVE_STORAGE_ID.fullmatch(value) for value in (name, group)):
+            continue
+        pool = {"name": name, "volumeGroup": group}
+        capacity_checks = []
+        for size_key, used_key in (("sizeBytes", "usedBytes"), ("metadataSizeBytes", "metadataUsedBytes")):
+            size, used = entry.get(size_key), entry.get(used_key)
+            if type(size) is int and type(used) is int and 0 <= used <= size < 2**53 and size > 0:
+                pool.update({size_key: size, used_key: used})
+                capacity_checks.append(100 * used >= LVM_THIN_WARNING_PERCENT * size)
+        pool["capacityStatus"] = "warn" if any(capacity_checks) else "ok" if len(capacity_checks) == 2 else "unknown"
+        pools.append(pool)
+    return {"checkedAt": _time(row["checkedAt"]).isoformat(),
+            "warningThresholdPercent": LVM_THIN_WARNING_PERCENT, "pools": pools} if pools else {}
+
+
 def _public_guest_storage(row: object, now: datetime) -> dict:
     if not isinstance(row, dict) or not observation_is_fresh(row.get("checkedAt"), now):
         return {}
@@ -342,10 +364,12 @@ def _public_node(row: dict, now: datetime) -> dict:
     resources = {}
     hardware_disks = {}
     zfs_pools = {}
+    lvm_thin_pools = {}
     if row.get("kind") == "Гипервизор" and any(s["name"] == "Proxmox" and s["status"] == "ok" for s in fresh):
         resources = _public_hypervisor_resources(row.get("resources"), now)
         hardware_disks = project_hypervisor_disks(row.get("hardwareDisks"), now)
         zfs_pools = project_hypervisor_zfs(row.get("zfsPools"), now)
+        lvm_thin_pools = project_hypervisor_lvm_thin(row.get("lvmThinPools"), now)
     guest_storage = _public_guest_storage(row.get("guestStorage"), now) if row.get("guest") is True else {}
     required = row.get("requiredObserverChecks")
     required_names = dict.fromkeys(
@@ -366,6 +390,7 @@ def _public_node(row: dict, now: datetime) -> dict:
         **({"resources": resources} if resources else {}),
         **({"hardwareDisks": hardware_disks} if hardware_disks else {}),
         **({"zfsPools": zfs_pools} if zfs_pools else {}),
+        **({"lvmThinPools": lvm_thin_pools} if lvm_thin_pools else {}),
         **({"guestStorage": guest_storage} if guest_storage else {}),
         "ports": [port for port in ports if port["name"]],
         "serviceChecks": [_public_service_check(check, now) for check in _rows(row.get("serviceChecks"), 16)],
@@ -397,6 +422,8 @@ def _map_statuses(nodes: dict, links: list[dict]) -> None:
         if any(disk["smartState"] == "critical" for disk in node.get("hardwareDisks", {}).get("disks", [])):
             checks.append("critical")
         if any(pool["health"] in ZFS_PROBLEM_STATES for pool in node.get("zfsPools", {}).get("pools", [])):
+            checks.append("warn")
+        if any(pool["capacityStatus"] == "warn" for pool in node.get("lvmThinPools", {}).get("pools", [])):
             checks.append("warn")
         if node["kind"] == CLUSTER_KIND:
             cluster = {check["method"]: check["state"] for check in node["serviceChecks"]}

@@ -295,6 +295,33 @@ def test_hypervisor_zfs_health_is_current_and_warns_on_degraded_pool(tmp_path):
     assert "freeBytes" not in node()["zfsPools"]["pools"][0]
 
 
+def test_lvm_thin_capacity_warns_for_either_dimension(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    pool = {"volumeGroup": "pve", "name": "data", "sizeBytes": 100, "usedBytes": 30,
+            "metadataSizeBytes": 100, "metadataUsedBytes": 90}
+    pve = {"at": at, "cluster": [], "nodes": [{"node": "pve1", "status": "online"}], "guests": [],
+           "lvmThin": {"pve1": {"checkedAt": at, "pools": [pool]}}}
+    path = tmp_path / "map.json"
+
+    def read(when=now):
+        path.write_text(json.dumps(build_graph({}, {}, {}, pve, {}, now)), encoding="utf-8")
+        return next(n for n in load_infrastructure_map(path, when)["nodes"] if n["id"] == "pve1")
+
+    assert read()["mapStatus"] == "warn"
+    assert read()["lvmThinPools"]["pools"][0] == {**pool, "capacityStatus": "warn"}
+    pool.update(usedBytes=100, metadataUsedBytes=1)
+    assert read()["mapStatus"] == "warn"
+    pool["usedBytes"] = 5
+    assert read()["lvmThinPools"]["pools"][0]["capacityStatus"] == "ok"
+    pool["metadataUsedBytes"] = 101
+    assert read()["lvmThinPools"]["pools"][0]["capacityStatus"] == "unknown"
+    assert "lvmThinPools" not in read(now + timedelta(hours=1))
+
+
 def test_hypervisor_resources_require_current_online_node_data(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map
