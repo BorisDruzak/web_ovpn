@@ -1725,6 +1725,38 @@ def test_route_evidence_is_scoped_and_does_not_mark_service_available():
     ]
 
 
+def test_route_checks_report_mismatch_inactive_and_missing_observation():
+    from app.infrastructure_collect import _route_checks
+    from app.infrastructure_map import _public_service_check
+
+    now = datetime.now(timezone.utc)
+    current = now.isoformat()
+    stale = (now - timedelta(minutes=26)).isoformat()
+    destination, gateway = "198.51.100.0/24", "192.0.2.1"
+    intent = {"destinations": [destination], "next_hop": gateway}
+    route = {"source": "router", "routing_table": "main", "dst_address": destination,
+             "gateway": gateway, "active": 1, "disabled": 0, "last_seen_at": current}
+
+    def read(*routes):
+        check, = _route_checks(intent, "router", list(routes), now)
+        return _public_service_check(check, now)
+
+    other = read({**route, "gateway": "192.0.2.2"})
+    assert (other["state"], other["reason"], other["via"], other["observedVia"]) == (
+        "unreachable", "route_other_gateway", gateway, "192.0.2.2",
+    )
+    assert read({**route, "active": 0})["reason"] == "route_inactive"
+    assert read({**route, "disabled": 1})["state"] == "unreachable"
+    assert read({**route, "route_type": "blackhole"})["reason"] == "route_rejecting"
+    assert read({**route, "gateway": "192.0.2.2"}, {**route, "gateway": "192.0.2.3"})["state"] == "unknown"
+    old = read({**route, "active": 0, "last_seen_at": stale})
+    assert old["state"] == "unknown" and old["stale"] and old["checkedAt"] == stale
+    assert "reason" not in old
+    missing = read({**route, "routing_table": "other"})
+    assert missing["state"] == "unknown" and missing["method"] == "Маршрут"
+    assert missing["checkedAt"] is None
+
+
 def test_sip_options_validates_transaction_and_treats_silence_as_unknown(monkeypatch):
     import ipaddress
     import struct

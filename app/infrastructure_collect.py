@@ -380,20 +380,42 @@ def _collect_guest_arp_probes(pve: dict, network: dict, configured: dict, now: d
 def _route_checks(intent: dict, source: str, routes: list[dict], now: datetime) -> list[dict]:
     gateway = intent.get("next_hop")
     table = intent.get("routing_table", "main")
+    rejecting_types = {"blackhole", "unreachable", "prohibit"}
     checks = []
     for destination in intent.get("destinations", [])[:12]:
-        matches = [
-            row["last_seen_at"] for row in routes
+        scoped = [
+            row for row in routes
             if row.get("source") == source and row.get("routing_table") == table
-            and row.get("dst_address") == destination and row.get("gateway") == gateway
-            and row.get("active") == 1 and row.get("disabled") == 0
-            and observation_is_fresh(row.get("last_seen_at"), now)
+            and row.get("dst_address") == destination and isinstance(row.get("last_seen_at"), str)
         ]
-        checks.append({
-            "state": "reachable" if matches else "unknown", "source": "Network Observer",
+        checked_at = max((row["last_seen_at"] for row in scoped), default=None)
+        check = {
+            "state": "unknown", "source": "Network Observer",
             "method": "Маршрут", "target": destination, "via": gateway,
-            "checkedAt": max(matches) if matches else now.isoformat(),
-        })
+            "checkedAt": checked_at,
+        }
+        checks.append(check)
+        if not observation_is_fresh(checked_at, now):
+            continue
+        latest = [row for row in scoped if row["last_seen_at"] == checked_at]
+        active = [row for row in latest if row.get("active") == 1 and row.get("disabled") == 0]
+        active_types = {row.get("route_type", "unicast") for row in active}
+        if active_types == {"unicast"}:
+            active_gateways = {row.get("gateway") for row in active}
+            if gateway in active_gateways:
+                check["state"] = "reachable"
+            elif len(active_gateways) == 1:
+                observed, = active_gateways
+                try:
+                    observed = str(ipaddress.ip_address(observed))
+                except ValueError:
+                    continue
+                check.update(state="unreachable", reason="route_other_gateway", observedVia=observed)
+        elif active_types and active_types <= rejecting_types:
+            check.update(state="unreachable", reason="route_rejecting")
+        elif not active and any(row.get("gateway") == gateway and
+                                (row.get("active") == 0 or row.get("disabled") == 1) for row in latest):
+            check.update(state="unreachable", reason="route_inactive")
     return checks
 
 

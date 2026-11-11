@@ -474,6 +474,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         connection_refused: 'Отказ на UDP-запрос, источник не определён', timeout: 'Ответ не получен вовремя',
         icmp_port_unreachable: 'ICMP: UDP-порт недоступен', icmp_rejected: 'Получен отказ ICMP',
         transport_error: 'Ошибка сетевого запроса', unexpected_response: 'Ответ не соответствует запросу',
+        route_other_gateway: 'Активен другой шлюз', route_inactive: 'Маршрут через ожидаемый шлюз неактивен',
+        route_rejecting: 'Активный маршрут отбрасывает трафик',
       };
       for (const check of node.serviceChecks) {
         const row = make('li');
@@ -482,7 +484,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const result = {reachable:confirmed, unreachable:'Сбой проверки'}[check.state] ?? 'Нет подтверждения';
         const reason = check.responseCode ? 'SIP ' + check.responseCode : reasons[check.reason];
         const errorSource = check.errorSource ? ' от ' + check.errorSource : '';
-        const gateway = check.via ? ' · через ' + check.via : '';
+        const gatewayLabel = check.method === 'Маршрут' && check.state !== 'reachable' ? 'ожидаемый шлюз' : 'через';
+        let gateway = check.via ? ' · ' + gatewayLabel + ' ' + check.via : '';
+        if (check.observedVia) gateway = ' ' + check.observedVia + gateway;
         const source = check.source ? ' · ' + check.source : '';
         const time = check.checkedAt ? ' · ' + formatTime(check.checkedAt) : '';
         row.append(make('strong', endpoint || 'Проверка'), make('small', result + (reason ? ' · ' + reason + errorSource : '') + gateway + source + time + (check.stale ? ' · устарело' : '')));

@@ -151,6 +151,16 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         "path": path if re.fullmatch(r"/[A-Za-z0-9._/-]{0,159}", path) and not path.startswith("//") else "",
     }
     reason = check.get("reason")
+    if check.get("method") == "Маршрут":
+        if result["checkedAt"] is None and check.get("state") == "unknown":
+            result.update(method="Маршрут", source=_text(check.get("source"), 48))
+        if result["state"] == "unreachable" and reason in (
+            "route_other_gateway", "route_inactive", "route_rejecting",
+        ):
+            result["reason"] = reason
+            observed_via = _network_address(check.get("observedVia"))
+            if reason == "route_other_gateway" and observed_via and "/" not in observed_via:
+                result["observedVia"] = observed_via
     if reason in ("connection_refused", "timeout", "transport_error", "unexpected_response", "sip_response",
                   "icmp_port_unreachable", "icmp_rejected"):
         result["reason"] = reason
