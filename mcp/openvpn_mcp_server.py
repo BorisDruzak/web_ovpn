@@ -480,7 +480,12 @@ def _infrastructure_port(graph: dict, node: dict | None, port_name: str) -> dict
         return result
     node_id = node["id"]
     port_key = _port_key(port_name)
-    result["ports"] = [port for port in node.get("ports", []) if _port_key(port["name"]) == port_key]
+    port_keys = {port_key}
+    for port in node.get("ports", []):
+        keys = {_port_key(label) for label in [port["name"], *port.get("aliases", [])]}
+        if port_key in keys:
+            result["ports"].append(port)
+            port_keys.update(keys)
     by_id = {item["id"]: item for item in graph["nodes"]}
 
     for edge in graph["links"]:
@@ -492,7 +497,7 @@ def _infrastructure_port(graph: dict, node: dict | None, port_name: str) -> dict
                 label = report.get(side, "")
                 # LACP members are shown as "aggregate / member".
                 labels = [label, *label.split(" / ")]
-                if any(_port_key(value) == port_key for value in labels):
+                if any(_port_key(value) in port_keys for value in labels):
                     matches.append(report)
             if matches:
                 confirmed = edge.get("confirmed") is True and any(report.get("confirmed") is True for report in matches)
@@ -510,7 +515,7 @@ def _infrastructure_port(graph: dict, node: dict | None, port_name: str) -> dict
             if uplink:
                 observations.append(("bridge_uplink", uplink))
             for basis, match in observations:
-                if match["id"] == node_id and _port_key(match["port"]) == port_key:
+                if match["id"] == node_id and _port_key(match["port"]) in port_keys:
                     result["guestObservations"].append({
                         "guest": {key: guest[key] for key in ("id", "name", "vmid", "mapStatus") if key in guest},
                         "hypervisor": edge["a"], "bridge": report["a"], "guestPort": report["b"],

@@ -146,6 +146,11 @@ def _public_port(row: dict, now: datetime) -> dict:
     }
 
 
+def _physical_port_alias(row: dict) -> str:
+    physical = re.fullmatch(r"physical:([1-9]\d{0,3})", _text(row.get("key")))
+    return f"Port{physical[1]}" if physical else ""
+
+
 def port_label_key(label: str) -> str:
     label = label.strip().casefold()
     gigabit = re.fullmatch(r"(?:gi|gigabitethernet)\s*(\d+/\d+/\d+)", label)
@@ -160,9 +165,9 @@ def index_port_states(rows: list[dict], now: datetime) -> dict:
         if not label:
             continue
         aliases = {label}
-        physical = re.fullmatch(r"physical:([1-9]\d{0,3})", _text(row.get("key")))
+        physical = _physical_port_alias(row)
         if physical:
-            aliases.add(f"port{physical[1]}")
+            aliases.add(port_label_key(physical))
         for alias in aliases:
             by_label.setdefault(alias, []).append(port)
     return {alias: candidates[0] for alias, candidates in by_label.items()
@@ -271,7 +276,14 @@ def _public_node(row: dict, now: datetime) -> dict:
     if not any(source["name"] == "Network Observer" for source in fresh):
         properties.pop("Записи MAC-таблицы", None)
         properties.pop("Порты (линк поднят / всего)", None)
-    ports = [_public_port(port, now) for port in _rows(row.get("ports"), 500)]
+    port_rows = _rows(row.get("ports"), 500)
+    ports = [_public_port(port, now) for port in port_rows]
+    physical_aliases = [_physical_port_alias(port) for port in port_rows]
+    label_counts = Counter(key for port, alias in zip(ports, physical_aliases)
+                           for key in {port_label_key(port["name"]), port_label_key(alias)} if key)
+    for port, alias in zip(ports, physical_aliases):
+        if alias and port_label_key(alias) != port_label_key(port["name"]) and label_counts[port_label_key(alias)] == 1:
+            port["aliases"] = [alias]
     observer = next((source for source in sources if source["name"] == "Server Observer"), None)
     aliases = row.get("aliases")
     resources = {}

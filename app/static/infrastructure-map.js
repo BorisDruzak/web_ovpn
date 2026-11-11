@@ -312,6 +312,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   const edgeKey = (a, b) => JSON.stringify([a, b].sort());
 
   const portKey = name => name.trim().toLowerCase().replace(/^(?:gi|gigabitethernet)\s*(\d+\/\d+\/\d+)$/, 'gi$1');
+  const portKeys = port => [port.name, ...(port.aliases ?? [])].map(portKey);
 
   function bridgePathLabel(uplink) {
     const label = uplink.viaMacTable ? 'Путь аплинка по MAC-таблице' : 'Аплинк моста';
@@ -319,12 +320,12 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   }
 
   function linksForPort(id, port) {
-    const key = portKey(port);
+    const keys = portKeys(port);
     return incident.get(id).flatMap(edge => {
       const side = edge.a === id ? 'a' : 'b';
       const evidence = (edge.portEvidence ?? []).filter(report => {
         const label = report[side];
-        return [label, ...label.split(' / ')].some(name => portKey(name) === key);
+        return [label, ...label.split(' / ')].some(name => keys.includes(portKey(name)));
       });
       if (!evidence.length) return [];
       return [{...edge, portEvidence: evidence, confirmed: edge.confirmed && evidence.some(report => report.confirmed)}];
@@ -332,7 +333,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   }
 
   function guestsForPort(id, port) {
-    const key = portKey(port);
+    const keys = portKeys(port);
     const guests = new Map();
     for (const edge of data.links) {
       if (!edge.confirmed) continue;
@@ -346,7 +347,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           observations.push({match: switchUplink, label: bridgePathLabel(switchUplink)});
         }
         for (const {match, label} of observations) {
-          if (match.id !== id || portKey(match.port) !== key) continue;
+          if (match.id !== id || !keys.includes(portKey(match.port))) continue;
           if (!guests.has(guest.id)) guests.set(guest.id, new Set());
           const host = byId.get(edge.a).name;
           const vlan = match.vlan ? 'VLAN ' + match.vlan : '';
@@ -439,7 +440,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     buttons.get(selected)?.setAttribute('aria-pressed','false');
     selected = id;
     const node = byId.get(id);
-    selectedPort = port ? node.ports?.find(item => portKey(item.name) === portKey(port))?.name ?? null : null;
+    const chosenPort = port ? node.ports?.find(item => portKeys(item).includes(portKey(port))) : null;
+    selectedPort = chosenPort?.name ?? null;
     updateNodeUrl(id, selectedPort);
     details.replaceChildren();
     const button = buttons.get(id);
@@ -620,7 +622,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     }
     columns.append(propertiesSection);
     details.append(heading, columns);
-    const links = selectedPort ? linksForPort(id, selectedPort) : incident.get(id);
+    const links = chosenPort ? linksForPort(id, chosenPort) : incident.get(id);
     if (links.length || selectedPort) {
       const list = make('ul',null,'map-detail-list');
       const observations = make('ul',null,'map-detail-list');
@@ -674,7 +676,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       }
       const relationships = make('section');
       relationships.append(make('h3', selectedPort ? 'Наблюдения по порту ' + selectedPort : 'Наблюдения о связях'));
-      const guests = selectedPort ? guestsForPort(id, selectedPort) : null;
+      const guests = chosenPort ? guestsForPort(id, chosenPort) : null;
       if (!links.length && !guests?.size) relationships.append(make('p', 'Для этого порта нет наблюдений о связях'));
       if (list.children.length) relationships.append(list);
       if (observations.children.length) {

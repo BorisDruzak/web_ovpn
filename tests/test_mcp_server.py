@@ -613,6 +613,21 @@ def test_mcp_infrastructure_port_scope_preserves_evidence_and_guest_observations
             server.call_tool(tool, args)
 
 
+def test_mcp_infrastructure_port_resolves_physical_alias_and_live_label():
+    from mcp.openvpn_mcp_server import _infrastructure_port
+
+    port = {"name": "p5_uplink_IT_TP", "aliases": ["Port5"], "state": "up"}
+    switch = {"id": "sw", "ports": [port]}
+    graph = {"nodes": [switch, {"id": "core"}], "links": [
+        {"a": "core", "b": "sw", "confirmed": False, "portEvidence": [{"a": "Gi1/0/18", "b": "Port5"}]},
+        {"a": "core", "b": "sw", "confirmed": True, "portEvidence": [{"a": "Gi1/0/18", "b": port["name"], "confirmed": True}]},
+    ]}
+    for name in ("Port5", port["name"]):
+        result = _infrastructure_port(graph, switch, name)
+        assert result["ports"] == [port]
+        assert [link["confirmed"] for link in result["links"]] == [False, True]
+
+
 def test_mcp_network_diagnostic_tools_call_api(monkeypatch):
     import mcp.openvpn_mcp_server as server
 

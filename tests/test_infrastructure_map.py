@@ -843,6 +843,8 @@ def test_reciprocal_switch_management_macs_verify_path_without_proving_direct_li
         path.write_text(json.dumps(graph), encoding="utf-8")
         graph = load_infrastructure_map(path, when)
         assert not next(e for e in graph["links"] if e["kind"] == "Сетевое соединение")["confirmed"]
+        access = next(node for node in graph["nodes"] if node["id"] == "access")
+        assert access["ports"][0]["aliases"] == ["Port5"]
         return [e for e in graph["links"] if e["kind"] == "Путь по MAC-таблице"]
 
     path, = paths()
