@@ -15,7 +15,8 @@ _LLDP_FINGERPRINT_TYPES = {
     "telephone": "phone",
     "wlan_access_point": "network",
 }
-_FDB_PORT_MATCH = """
+# Both aliases are also used by the attachment reconciliation query.
+FDB_PORT_MATCH = """
     p.source_id = f.source_id AND p.collector_run_id = f.collector_run_id
     AND (
         p.port_key = f.port_key
@@ -49,7 +50,7 @@ def query_confirmed_attachment_ports(conn: sqlite3.Connection) -> list[dict[str,
             JOIN current_switch_fdb AS f
               ON f.source_id = candidates.switch_source_id AND f.port_key = candidates.port_key
              AND f.vlan_key = candidates.vlan_key AND f.mac = interfaces.mac COLLATE NOCASE
-            JOIN switch_ports AS p ON {_FDB_PORT_MATCH}
+            JOIN switch_ports AS p ON {FDB_PORT_MATCH}
             WHERE resolutions.status = 'confirmed' AND candidates.candidate_class = 'direct'
               AND interfaces.lifecycle = 'active' AND sources.enabled = 1 AND p.oper_status = 'up'
               AND lower(f.status) NOT IN ('self', 'mgmt')
@@ -69,7 +70,7 @@ def query_observed_mac_ports(
         SELECT f.source_id, p.port_key, f.mac, f.vlan_id, f.last_seen_at AS observed_at
         FROM current_switch_fdb AS f
         JOIN network_sources AS s ON s.id = f.source_id
-        JOIN switch_ports AS p ON {_FDB_PORT_MATCH}
+        JOIN switch_ports AS p ON {FDB_PORT_MATCH}
         WHERE lower(f.mac) IN (SELECT value FROM json_each(?))
           AND s.enabled = 1 AND p.oper_status = 'up' AND lower(f.status) NOT IN ('self', 'mgmt')
           AND (? = 0 OR lower(f.status) = 'learned')

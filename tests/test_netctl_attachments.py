@@ -139,6 +139,43 @@ def test_attachment_candidates_classify_and_score_direct_and_uplink(tmp_path: Pa
         conn.close()
 
 
+def test_attachment_candidates_use_port_state_from_fdb_collection(tmp_path: Path) -> None:
+    from contextlib import closing
+    from netctl.attachment_candidates import attachment_candidates
+    from netctl.attachment_reconcile import resolve_attachment
+
+    with closing(_attachment_db(tmp_path)) as conn:
+        stamp = "2026-07-22T08:05:00Z"
+        conn.execute("""
+            INSERT INTO switch_collection_runs (id, source_id, started_at, finished_at, status, outcomes_json)
+            VALUES (102, 10, ?, ?, 'partial', '{"fdb":"success_with_rows"}')
+        """, (stamp, stamp))
+        _insert_fdb(conn, collector_run_id=102)
+        conn.execute("UPDATE current_switch_fdb SET if_index=5048 WHERE source_id=10")
+
+        def read():
+            candidate, = attachment_candidates(conn, {})
+            assert candidate.port_key == "physical:48"
+            return candidate
+
+        assert read().candidate_class == "unknown"
+        assert resolve_attachment([read()]).status == "ambiguous"
+        conn.execute("""
+            INSERT INTO switch_ports (source_id, port_key, name, oper_status, last_seen_at, collector_run_id)
+            VALUES (10, 'ifindex:5048', 'ge48', 'up', ?, 102)
+        """, (stamp,))
+        assert read().candidate_class == "direct"
+        assert resolve_attachment([read()]).status == "confirmed"
+        conn.execute("UPDATE current_switch_links SET port_a_key='ifindex:5048' WHERE source_a_id=10")
+        assert read().candidate_class == "uplink"
+        conn.execute("UPDATE current_switch_links SET port_a_key='physical:23' WHERE source_a_id=10")
+        conn.execute("""
+            UPDATE switch_ports SET collector_run_id=102, oper_status='down'
+            WHERE source_id=10 AND port_key='physical:48'
+        """)
+        assert read().candidate_class == "unknown"
+
+
 def test_attachment_candidates_normalize_mac_preserve_vlans_and_ignore_self_or_invalid(tmp_path: Path) -> None:
     from netctl.attachment_candidates import attachment_candidates
 

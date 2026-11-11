@@ -6,6 +6,7 @@ from typing import Any, Mapping
 
 from .normalizer import normalize_mac
 from .switch_eligibility import authoritative_fdb_run
+from .switch_queries import FDB_PORT_MATCH
 
 
 @dataclass(frozen=True)
@@ -97,14 +98,13 @@ def attachment_candidates(
     }
     candidates: list[AttachmentCandidate] = []
     rows = conn.execute(
-        """
+        f"""
         SELECT f.source_id, f.vlan_key, f.vlan_id, f.mac, f.port_key, f.status,
-               f.last_seen_at, f.collector_run_id, p.oper_status,
+               f.last_seen_at, f.collector_run_id, p.port_key AS live_port_key, p.oper_status,
                runs.status AS collector_status, runs.outcomes_json,
                roles.role AS port_role, roles.confidence AS port_role_confidence
         FROM current_switch_fdb AS f
-        LEFT JOIN switch_ports AS p
-          ON p.source_id = f.source_id AND p.port_key = f.port_key
+        LEFT JOIN switch_ports AS p ON {FDB_PORT_MATCH}
         LEFT JOIN switch_collection_runs AS runs
           ON runs.id = f.collector_run_id AND runs.source_id = f.source_id
         LEFT JOIN current_switch_port_roles AS roles
@@ -122,12 +122,13 @@ def attachment_candidates(
         source_id = int(row["source_id"])
         runtime_asset_id = runtime_asset_by_source.get(source_id)
         port_key = str(row["port_key"])
-        verified_backbone_port = (source_id, port_key) in backbone_ports
+        live_port_key = row["live_port_key"]
+        verified_backbone_port = any((source_id, key) in backbone_ports for key in (port_key, live_port_key))
         port_role = str(row["port_role"] or "unknown")
         candidate_class = (
             "uplink"
             if verified_backbone_port or port_role in {"backbone", "downstream_bridge"}
-            else ("direct" if row["oper_status"] is not None else "unknown")
+            else ("direct" if row["oper_status"] == "up" else "unknown")
         )
         topology_depth = depths.get(source_id)
         vlan_id = int(row["vlan_id"]) if row["vlan_id"] is not None else None
@@ -144,6 +145,7 @@ def attachment_candidates(
                     "fdb_mac": mac,
                     "fdb_status": str(row["status"]),
                     "oper_status": str(row["oper_status"] or "unknown"),
+                    **({"port_state_key": live_port_key} if live_port_key else {}),
                     "verified_backbone_port": verified_backbone_port,
                     "port_role": port_role,
                     "port_role_confidence": int(row["port_role_confidence"] or 0),
