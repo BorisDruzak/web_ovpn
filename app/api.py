@@ -1038,8 +1038,8 @@ def api_network_dashboard(actor: str = Depends(require_api_actor)):
 
 
 @router.get("/network/infrastructure")
-def api_network_infrastructure(actor: str = Depends(require_api_actor)):
-    graph = load_infrastructure_map(get_settings().infrastructure_map_snapshot_path)
+def api_network_infrastructure(actor: str = Depends(require_api_actor), db: Session = Depends(get_db)):
+    graph = load_infrastructure_map(get_settings().infrastructure_map_snapshot_path, db=db)
     return JSONResponse(
         {"status": "ok", "infrastructure": graph}, headers={"Cache-Control": "no-store"},
     )

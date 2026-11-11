@@ -711,6 +711,12 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             declared_devices_by_mac.setdefault(mac, set()).add(key)
         if device.get("model"):
             item["properties"]["Модель"] = device["model"]
+    for device in context.get("devices", []):
+        key = device["id"]
+        if device["kind"] == "endpoint" and len(declared_macs[key]) == 1:
+            mac, = declared_macs[key]
+            if declared_devices_by_mac[mac] == {key}:
+                nodes[key]["endpointKey"] = "mac:" + mac.upper()
     intents = {item["id"]: item for item in context.get("routing_intent", []) if "id" in item}
     for service in context.get("services", []):
         host = service.get("device")

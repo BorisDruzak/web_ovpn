@@ -90,6 +90,74 @@ def test_disabled_and_deleted_are_not_false_agent_absence(tmp_path,monkeypatch):
         assert rows[0]['inventory']['state'] == 'unlinked'
 
 
+def test_infrastructure_uses_fresh_agent_presence_with_stale_baseline(tmp_path, monkeypatch):
+    import json
+    from app.config import get_settings
+    from app.db import get_sessionmaker
+    from app.infrastructure_map import load_infrastructure_map
+    from app.inventory.models import (
+        InventoryAsset, InventoryExternalBinding, InventoryEndpointState,
+        InventoryEndpointSyncControl, InventoryExternalBindingStatus as Status,
+    )
+    from app.inventory.netctl_bindings import confirm, end
+
+    card = fixture(tmp_path, monkeypatch)
+    now = datetime.now(timezone.utc)
+    monkeypatch.setenv('ENDPOINT_PLATFORM_ENABLED', 'true')
+    get_settings.cache_clear()
+    key = host()['device_key']
+    node = {'id': 'workstation', 'name': 'Workstation', 'kind': 'Рабочая станция', 'endpointKey': key}
+    path = tmp_path / 'map.json'
+    def write(*nodes):
+        path.write_text(json.dumps({'schema': 1, 'snapshotAt': now.isoformat(), 'nodes': nodes}), encoding='utf-8')
+
+    write(node)
+    with get_sessionmaker()() as db:
+        asset = db.get(InventoryAsset, card['id'])
+        network = confirm(db, key, asset.id, expected_revision=asset.manual_revision,
+                          actor='synthetic', reason='Compare', hosts=[host()])
+        binding = InventoryExternalBinding(asset_id=asset.id, source='endpoint_platform', external_id='private-id',
+            status=Status.CONFIRMED, binding_method='manual', confidence=100, created_by='synthetic', first_seen_at=now)
+        db.add(binding)
+        db.flush()
+        state = InventoryEndpointState(binding_id=binding.id, asset_id=asset.id, endpoint_device_id=binding.external_id,
+            online=True, last_seen_at=now, safe_context_json={'identity_status': 'available', 'identity_checked_at': now.isoformat(),
+                'profile_status': {'baseline_v1': 'available'},
+                'profile_collected_at': {'baseline_v1': (now-timedelta(days=1)).isoformat()}})
+        db.add(state)
+        db.commit()
+
+        def read(when=now):
+            result, = load_infrastructure_map(path, when, db=db)['nodes']
+            assert 'endpointKey' not in result and 'private-id' not in str(result)
+            return result
+
+        assert read()['mapStatus'] == 'ok'
+        assert read()['reachability']['source'] == 'Endpoint Platform'
+        assert read()['serviceChecks'][0]['checkedAt'] == now.isoformat()
+        assert read(now + timedelta(minutes=11))['mapStatus'] == 'unknown'
+        write(node, {**node, 'id': 'other'})
+        assert {row['mapStatus'] for row in load_infrastructure_map(path, now, db=db)['nodes']} == {'unknown'}
+        write({**node, 'reachability': {'state': 'unreachable', 'source': 'netctl', 'checkedAt': now.isoformat()}})
+        assert read()['mapStatus'] == 'critical'
+        assert read()['serviceChecks'][0]['source'] == 'Endpoint Platform'
+        write(node)
+        control = InventoryEndpointSyncControl(id=1, last_safe_error_code='upstream_unavailable')
+        db.add(control)
+        db.commit()
+        assert read()['mapStatus'] == 'unknown'
+        control.last_safe_error_code = None
+        state.online = False
+        db.commit()
+        assert read()['mapStatus'] == 'unknown'
+        state.online = True
+        db.commit()
+        db.refresh(asset)
+        end(db, network.id, expected_revision=asset.manual_revision, actor='synthetic', reason='Detach')
+        db.commit()
+        assert read()['mapStatus'] == 'unknown'
+
+
 def test_ssr_and_refresh_share_projection_and_meta_version(tmp_path,monkeypatch):
     from tests.test_inventory_api import _client
     client,headers = _client(tmp_path,monkeypatch)

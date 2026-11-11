@@ -10,7 +10,7 @@ from ..config import get_settings
 from .models import (InventoryAsset, InventoryLocation, InventoryNetctlBinding,
     InventoryExternalBinding, InventoryExternalBindingStatus as Status, InventoryEndpointState,
     InventoryEndpointSyncControl, InventoryNetworkProjectionVersion)
-from .endpoint import STATE_MAX_AGE, endpoint_profile_freshness
+from .endpoint import STATE_MAX_AGE, _parsed, endpoint_profile_freshness
 
 
 def relation_state(rows):
@@ -118,7 +118,7 @@ def migrate_network_projection(engine):
                     BEGIN UPDATE inventory_network_projection_version SET version=version+1 WHERE id=1; END'''))
 
 
-def attach_network_projection(db, hosts, *, now=None):
+def attach_network_projection(db, hosts, *, now=None, include_presence=False):
     """Batch local reads only; no collection, SDK call or per-row request."""
     now = _time(now or datetime.now(timezone.utc))
     keys = {str(host.get('device_key') or '') for host in hosts}
@@ -171,6 +171,15 @@ def attach_network_projection(db, hosts, *, now=None):
                         endpoint['freshness'] = baseline['status']
                     endpoint['online'] = state.online
                     endpoint['gateway_last_seen_at'] = state.last_seen_at.isoformat() if state.last_seen_at else None
+                    if include_presence and enabled and not source_error and state.online is True:
+                        context = state.safe_context_json
+                        identity_at = _parsed(context.get('identity_checked_at'))
+                        seen_at = _time(state.last_seen_at)
+                        if context.get('identity_status') == 'available' and all(
+                            stamp is not None and timedelta(0) <= now - stamp <= STATE_MAX_AGE
+                            for stamp in (identity_at, seen_at)
+                        ):
+                            endpoint['presence_at'] = min(identity_at, seen_at).isoformat()
             elif enabled:
                 endpoint['state'] = 'candidate' if any(binding.status == Status.CANDIDATE for binding,_ in endpoints[asset.id]) else 'unbound'
         elif enabled:

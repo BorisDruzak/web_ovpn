@@ -2,10 +2,18 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import logging
 import math
 import re
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
+
+LOGGER = logging.getLogger(__name__)
 
 MAX_SNAPSHOT_BYTES = 1_000_000
 MAX_AGE = timedelta(minutes=25)
@@ -210,7 +218,33 @@ def _map_statuses(nodes: dict, links: list[dict]) -> None:
             node["mapStatus"] = "unknown"
 
 
-def load_infrastructure_map(path: Path, now: datetime | None = None) -> dict:
+def _attach_endpoint_presence(db: Session, keys: dict[str, str], nodes: dict, now: datetime) -> None:
+    from sqlalchemy.exc import SQLAlchemyError
+    from .inventory.network_projection import attach_network_projection
+
+    counts = Counter(keys.values())
+    hosts = [{"device_key": key, "node_id": node_id} for node_id, key in keys.items() if counts[key] == 1]
+    if not hosts:
+        return
+    try:
+        with db.begin_nested():
+            attach_network_projection(db, hosts, now=now, include_presence=True)
+    except SQLAlchemyError:
+        LOGGER.warning("Inventory presence unavailable for the infrastructure map")
+        return
+    for host in hosts:
+        at = host["endpoint_agent"].get("presence_at")
+        if at is None:
+            continue
+        node = nodes[host["node_id"]]
+        observed = _public_reachability({"state": "reachable", "source": "Endpoint Platform",
+                                         "method": "Агент на связи", "checkedAt": at}, now)
+        node["serviceChecks"].append({**observed, "port": None, "target": "", "via": "", "path": ""})
+        if node["reachability"]["state"] == "unknown":
+            node["reachability"] = observed
+
+
+def load_infrastructure_map(path: Path, now: datetime | None = None, *, db: Session | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
     empty = {
         "availability": "missing", "snapshotAt": None, "nodes": [], "links": [],
@@ -234,12 +268,16 @@ def load_infrastructure_map(path: Path, now: datetime | None = None) -> dict:
 
     nodes = {}
     port_states = {}
+    endpoint_keys = {}
     for row in _rows(raw.get("nodes"), 600):
         node = _public_node(row, now)
         if node["id"] and node["name"] and node["id"] not in nodes:
             nodes[node["id"]] = node
             if node["kind"] == NETWORK_KINDS[0]:
                 port_states[node["id"]] = index_port_states(_rows(row.get("ports"), 500), now)
+            key = _text(row.get("endpointKey"))
+            if node["kind"] == "Рабочая станция" and re.fullmatch(r"mac:(?:[0-9A-F]{2}:){5}[0-9A-F]{2}", key):
+                endpoint_keys[node["id"]] = key
     links = []
     for row in _rows(raw.get("links"), 2400):
         edge = {key: _text(row.get(key)) for key in ("a", "b", "kind", "source", "details")}
@@ -297,6 +335,8 @@ def load_infrastructure_map(path: Path, now: datetime | None = None) -> dict:
                                   "MikroTik · ARP + FDB", RECIPROCAL_MAC_SOURCE} and row.get("observedAt"):
                 confirmed = confirmed and observation_is_fresh(row["observedAt"], now)
             links.append({**edge, "confirmed": confirmed, "portEvidence": evidence})
+    if db is not None and endpoint_keys and now - stamp <= MAX_AGE:
+        _attach_endpoint_presence(db, endpoint_keys, nodes, now)
     _map_statuses(nodes, links)
     revision = _text(raw.get("git"), 41)
 
