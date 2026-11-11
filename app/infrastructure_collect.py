@@ -376,6 +376,34 @@ def _transit_port(segment: dict, spec: dict, network: dict, arp_mappings: dict, 
     return None
 
 
+def _bridge_attachment_port(address: str | None, source: str, bridge: str, network: dict,
+                            arp_mappings: dict, now: datetime) -> tuple[str, str] | None:
+    if address not in arp_mappings or not INTERFACE_NAME.fullmatch(bridge):
+        return None
+    mac, _ = arp_mappings[address]
+    arp = [row["last_seen_at"] for row in network.get("arp", [])
+           if row.get("source") == source and row.get("ip") == address and row.get("interface") == bridge
+           and str(row.get("mac") or "").lower() == mac and observation_is_fresh(row.get("last_seen_at"), now)]
+    learned = [row for row in network.get("router_bridge_hosts", [])
+               if row.get("source") == source and row.get("bridge") == bridge
+               and str(row.get("mac") or "").lower() == mac and observation_is_fresh(row.get("last_seen_at"), now)]
+    ports = {row.get("interface") for row in learned}
+    if not arp or len(ports) != 1:
+        return None
+    port, = ports
+    if not isinstance(port, str) or not INTERFACE_NAME.fullmatch(port):
+        return None
+    active = [row["last_seen_at"] for row in network.get("router_interfaces", [])
+              if row.get("source") == source and row.get("name") == port and row.get("type") == "ether"
+              and row.get("running") == 1 and row.get("disabled") == 0 and observation_is_fresh(row.get("last_seen_at"), now)]
+    if active:
+        observed = min(datetime.fromisoformat(stamp) for stamp in (
+            max(arp), max(active), max(row["last_seen_at"] for row in learned),
+        ))
+        return port, observed.isoformat()
+    return None
+
+
 def _collect_ipsec_policies(sources: list[dict], configured: dict) -> dict:
     names = {spec[side] for spec in configured.values() for side in ("local_source", "remote_source")}
     targets = [source for source in sources if source["name"] in names and source.get("enabled")
@@ -723,6 +751,14 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             item["probeTargetIP"] = spec["peer"]
             edge(router, asset, "Транзитный сегмент", "MikroTik · ARP",
                  details=f"{segment['local_address']} ↔ {spec['peer']}", ports=(port, ""), at=observed)
+        bridge = spec.get("lan_bridge")
+        address = address_by_asset[asset]
+        if isinstance(bridge, str) and addresses.get(address) == [asset]:
+            attachment = _bridge_attachment_port(address, spec["source"], bridge, network, arp_mappings, now)
+            if attachment:
+                port, observed = attachment
+                edge(router, asset, "Путь по MAC-таблице", "MikroTik · ARP + FDB",
+                     details=f"{address} · {bridge}", ports=(port, ""), at=observed)
         for endpoint in (router, asset):
             edge(endpoint, item["id"], "Цель проверки", "Настройки карты")
     for row in network.get("links", []):
@@ -1227,6 +1263,16 @@ def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | N
                 FROM network_interfaces AS i
                 JOIN network_sources AS s ON s.id = i.source_id
                 WHERE s.enabled = 1 AND s.name IN (SELECT value FROM json_each(?))
+                """,
+                (json.dumps(sorted(transit_sources)),),
+            )]
+            data["router_bridge_hosts"] = [dict(row) for row in connection.execute(
+                """
+                SELECT s.name AS source, b.mac, b.bridge, b.interface, b.last_seen_at
+                FROM bridge_hosts AS b
+                JOIN network_sources AS s ON s.id = b.source_id
+                WHERE s.enabled = 1 AND b.dynamic = 1 AND b.local = 0
+                  AND s.name IN (SELECT value FROM json_each(?))
                 """,
                 (json.dumps(sorted(transit_sources)),),
             )]

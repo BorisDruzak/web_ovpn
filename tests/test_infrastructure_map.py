@@ -1127,6 +1127,47 @@ def test_transit_port_requires_direct_route_running_ethernet_and_neighbor_arp():
     assert build()[0]["probeTargetIP"] is None
 
 
+def test_transit_peer_management_port_requires_fresh_arp_fdb_and_active_ethernet(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    address, mac = "198.51.100.20", "02:00:00:00:00:07"
+    context = {"devices": [{"id": "rb", "name": "RB", "kind": "router"},
+                           {"id": "coordinator", "name": "Coordinator", "kind": "security_gateway",
+                            "management_ip": address}],
+               "segments": [{"id": "transit", "cidr": "192.0.2.0/30",
+                             "local_address": "192.0.2.1", "gateway_device": "rb"}]}
+    bindings = {"transit_links": {"transit": {"asset": "coordinator", "source": "main",
+                                            "peer": "192.0.2.2", "label": "Transit", "lan_bridge": "bridge-lan"}}}
+    learned = {"source": "main", "mac": mac, "bridge": "bridge-lan", "interface": "ether7", "last_seen_at": at}
+    network = {
+        "sources": [{"name": "main", "driver": "mikrotik_api", "driver_options": {"intent_stable_id": "rb"}}],
+        "arp": [{"source": "main", "ip": address, "mac": mac, "interface": "bridge-lan", "last_seen_at": at}],
+        "router_bridge_hosts": [learned],
+        "router_interfaces": [{"source": "main", "name": "ether7", "type": "ether",
+                               "running": 1, "disabled": 0, "last_seen_at": at}],
+    }
+    path = tmp_path / "graph.json"
+
+    def lan(at=now, public_at=now):
+        graph = build_graph(context, network, {}, {}, bindings, at)
+        path.write_text(json.dumps(graph), encoding="utf-8")
+        return [e for e in load_infrastructure_map(path, public_at)["links"] if e["a"] == "rb" and e["b"] == "coordinator"]
+
+    link, = lan()
+    assert link["kind"] == "Путь по MAC-таблице" and link["confirmed"]
+    assert link["portEvidence"] == [{"a": "ether7", "b": "", "source": "MikroTik · ARP + FDB", "at": at, "confirmed": True}]
+    assert not lan(public_at=now + timedelta(hours=1))[0]["confirmed"]
+    assert lan(at=now + timedelta(hours=1), public_at=now + timedelta(hours=1)) == []
+    network["router_bridge_hosts"].append({**learned, "interface": "ether6"})
+    assert lan() == []
+    network["router_bridge_hosts"].pop()
+    network["router_interfaces"][0]["running"] = 0
+    assert lan() == []
+
+
 def test_route_evidence_is_scoped_and_does_not_mark_service_available():
     from app.infrastructure_collect import build_graph
 
