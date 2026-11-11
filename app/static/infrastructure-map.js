@@ -8,6 +8,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   const related = root.querySelector('#map-related');
   const search = root.querySelector('#map-query');
   const feedback = root.querySelector('#map-search-result');
+  const pathKinds = new Set(['Путь по MAC-таблице', 'Путь через общий порт']);
   const availabilityStates = {
     ok: 'Доступен',
     warn: 'Доступен, есть недоступные сервисы',
@@ -300,7 +301,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         }
         const path = document.createElementNS('http://www.w3.org/2000/svg','path');
         path.setAttribute('d',d);
-        if (edge.kind === 'Путь по MAC-таблице') path.setAttribute('stroke-dasharray', '5 4');
+        if (pathKinds.has(edge.kind)) path.setAttribute('stroke-dasharray', '5 4');
         if (active.has(pair)) path.classList.add('active');
         svg.append(path);
       }
@@ -523,7 +524,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       const observations = make('ul',null,'map-detail-list');
       const portLabels = {up: 'линк поднят', down: 'линк опущен', disabled: 'порт отключён'};
       for (const edge of links.slice().sort((a,b) => Number(b.confirmed)-Number(a.confirmed))) {
-        const unconfirmedPath = !edge.confirmed && edge.kind === 'Путь по MAC-таблице';
+        const unconfirmedPath = !edge.confirmed && pathKinds.has(edge.kind);
         const peer = byId.get(edge.a === id ? edge.b : edge.a);
         const li = make('li');
         const go = make('button',peer.name);
@@ -574,7 +575,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       if (observations.children.length) {
         const panel = make('details', null, 'map-port-panel');
         panel.dataset.section = 'mac-paths';
-        panel.append(make('summary', `Неподтверждённые пути по MAC (${observations.children.length})`), observations);
+        panel.append(make('summary', `Неподтверждённые пути (${observations.children.length})`), observations);
         relationships.append(panel);
       }
       columns.append(relationships);

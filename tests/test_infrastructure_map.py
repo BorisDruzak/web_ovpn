@@ -772,6 +772,49 @@ def test_lldp_multiple_neighbors_on_one_port_do_not_confirm_direct_links():
     assert all(not link["confirmed"] and not link["portEvidence"][0]["confirmed"] for link in graph["links"])
 
 
+def test_shared_lldp_ports_publish_paths_and_require_live_port_and_unique_chassis(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    first, second, unexpected = (f"02:00:00:00:00:0{i}" for i in (1, 2, 3))
+    context = {"devices": [{"id": "switch", "name": "switch", "kind": "switch"},
+                           {"id": "one", "name": "one", "kind": "router", "mac_addresses": [first]},
+                           {"id": "two", "name": "two", "kind": "router", "mac_addresses": [second]}],
+               "links": [{"relation": "connected_to", "state": {"verified": False,
+                          "observed": "lldp_neighbor_on_shared_or_intermediate_l2_path"},
+                          "endpoint_a": {"device": "switch", "interface": "Gi1/0/48"},
+                          "endpoint_b": {"device": "one", "interface": "bridge/ether3"}}]}
+    port = {"source": "switch", "port_key": "ifindex:48", "name": "gigabitEthernet 1/0/48",
+            "oper_status": "up", "last_seen_at": at}
+    rows = [{"source": "switch", "system_name": name, "local_port_key": "ifindex:48",
+             "chassis_id": chassis, "port_id": "bridge/ether3", "port_id_subtype": "interface_name",
+             "observed_at": at} for name, chassis in (("one", first), ("two", unexpected))]
+    network = {"sources": [{"id": 1, "name": "switch", "driver": "snmp_switch",
+                            "driver_options": {"intent_stable_id": "switch"}}], "ports": [port], "lldp": rows}
+    path = tmp_path / "snapshot.json"
+
+    def read(when=now):
+        graph = build_graph(context, network, {}, {}, {}, now)
+        path.write_text(json.dumps(graph), encoding="utf-8")
+        return {e["b"]: e for e in load_infrastructure_map(path, when)["links"] if e["a"] == "switch"}
+
+    links = read()
+    assert all(e["kind"] == "Путь через общий порт" for e in links.values())
+    assert links["one"]["confirmed"] and not links["two"]["confirmed"]
+    proof = next(p for p in links["one"]["portEvidence"] if p["confirmed"])
+    assert (proof["a"], proof["b"], proof["portStates"]["a"]["state"]) == ("gigabitEthernet 1/0/48", "", "up")
+    assert not read(now + timedelta(hours=1))["one"]["confirmed"]
+    rows.append({**rows[0], "local_port_key": "ifindex:47"})
+    assert not read()["one"]["confirmed"]
+    rows.pop()
+    rows.pop()
+    assert read()["one"]["kind"] == "Путь через общий порт"
+    port["oper_status"] = "down"
+    assert not read()["one"]["confirmed"]
+
+
 def test_fdb_ports_require_fresh_unambiguous_device_identity(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map

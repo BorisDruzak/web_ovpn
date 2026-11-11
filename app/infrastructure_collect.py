@@ -34,6 +34,7 @@ from netctl.switch_queries import query_confirmed_attachment_ports, query_observ
 from .infrastructure_map import (
     CLUSTER_HEALTH_METHODS, CLUSTER_KIND, INTERFACE_NAME, MAX_SNAPSHOT_BYTES, NETWORK_KINDS,
     PVE_DISK_DEVICE, PVE_STORAGE_ID, RECIPROCAL_MAC_SOURCE,
+    SHARED_LLDP_KIND, SHARED_LLDP_SOURCE,
     index_port_states, observation_is_fresh, port_label_key,
 )
 from .infrastructure_service_probes import apply_service_probes, probe_icmp
@@ -786,6 +787,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             item["probeTargetIP"] = address_by_asset[asset]
             edge(asset, service_id, "Размещение", "Настройки карты")
     verified_host_ports = set()
+    shared_ports = set()
     for link in context.get("links", []):
         if link.get("state", {}).get("intent") == "absent":
             continue
@@ -793,6 +795,11 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         kind = "Размещение ВМ" if link.get("relation") == "virtualized_on" else "Сетевое соединение"
         ports = (a.get("interface") or "", b.get("interface") or "")
         verified = link.get("state", {}).get("verified") is True
+        if (link.get("relation") == "connected_to" and ports[0]
+                and link.get("state", {}).get("observed") == "lldp_neighbor_on_shared_or_intermediate_l2_path"):
+            shared_ports.add((a["device"], port_label_key(ports[0])))
+            edge(a["device"], b["device"], SHARED_LLDP_KIND, "GitHub", False, ports=ports)
+            continue
         edge(a["device"], b["device"], kind, "GitHub", verified, ports=ports)
         if verified and link.get("relation") == "connected_to":
             for switch, host in ((a, b), (b, a)):
@@ -920,17 +927,22 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             ports = (port_label(source_names.get(a_id), end_a.get("port_key") or ""),
                      port_label(source_names.get(b_id), end_b.get("port_key") or ""))
             if evidence_type == "lldp_chassis_mac":
+                if any((key, port_label_key(port)) in shared_ports for key, port in zip((a, b), ports)):
+                    continue
                 edge(a, b, "Сетевое соединение", "netctl", confirmed, ports=ports, at=observed)
             elif any(ports):
                 fdb_reports.append((a, b, confirmed, ports, observed))
     fresh_lldp = [row for row in network.get("lldp", []) if observation_is_fresh(row.get("observed_at"), now)]
     peers_by_port = {}
+    lldp_chassis_ports = {}
     lldp_address_owners = {}
     for row in fresh_lldp:
         local = (row.get("source"), row.get("local_port_key"))
         chassis = str(row.get("chassis_id") or row.get("system_name") or "").casefold()
         identity = (chassis, str(row.get("port_id") or "").casefold())
         peers_by_port.setdefault(local, set()).add(identity)
+        if MAC.fullmatch(chassis):
+            lldp_chassis_ports.setdefault((local[0], chassis), set()).add(local[1])
         for address in row.get("management_addresses", []):
             lldp_address_owners.setdefault(address, set()).add(chassis)
     router_neighbor_macs = {}
@@ -939,6 +951,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         if MAC.fullmatch(mac) and observation_is_fresh(row.get("last_seen_at"), now):
             name = str(row.get("identity") or "").casefold()
             router_neighbor_macs.setdefault((name, row.get("address")), set()).add(mac)
+    lldp_port_states = {key: index_port_states(item.get("ports", []), now) for key, item in nodes.items()
+                        if item["kind"] == NETWORK_KINDS[0]}
     for row in fresh_lldp:
         a = source_nodes.get(row.get("source"))
         name = str(row.get("system_name") or "").casefold()
@@ -946,20 +960,35 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         if a and len(candidates) == 1 and a != candidates[0]:
             neighbor, = candidates
             item = nodes[neighbor]
-            raw_port = row.get("local_port_key", "")
+            raw_port = row.get("local_port_key") or ""
             port = port_label(row.get("source"), raw_port)
             is_interface_name = str(row.get("port_id_subtype")) in {"1", "5", "interface_alias", "interface_name"}
             remote = row.get("port_id") if is_interface_name else ""
             chassis_mac = str(row.get("chassis_id") or "").lower()
             conflict = bool(declared_macs[neighbor] and MAC.fullmatch(chassis_mac)
                             and chassis_mac not in declared_macs[neighbor])
-            direct = bool(raw_port) and len(peers_by_port[(row.get("source"), raw_port)]) == 1
-            note = "" if direct else " · несколько соседей на порту"
+            peers = peers_by_port[(row.get("source"), raw_port)]
+            chassis_ports = lldp_chassis_ports.get((row.get("source"), chassis_mac), set())
+            shared = (a, port_label_key(port)) in shared_ports or len({chassis for chassis, _ in peers if chassis}) > 1
+            direct = bool(raw_port) and len(peers) == 1 and len(chassis_ports) <= 1 and not shared
+            note = " · общий порт" if shared else "" if direct else " · соседство неоднозначно"
             item["properties"]["Соседство LLDP"] = f"{nodes[a]['name']} · {port}{note}"
             if conflict:
                 item["properties"]["Сопоставление LLDP"] = "MAC шасси отличается от инвентаря"
-            edge(a, neighbor, "Сетевое соединение", "LLDP UI_VPN", direct and not conflict,
-                 details=note.removeprefix(" · "), ports=(port, remote or ""), at=row.get("observed_at"))
+            observed_at = row["observed_at"]
+            if shared and raw_port:
+                live_port = lldp_port_states.get(a, {}).get(port_label_key(port))
+                confirmed = (bool(live_port and live_port["state"] == "up")
+                             and declared_devices_by_mac.get(chassis_mac) == {neighbor}
+                             and chassis_ports == {raw_port})
+                if confirmed:
+                    observed_at = min(datetime.fromisoformat(observed_at), datetime.fromisoformat(live_port["checkedAt"])).isoformat()
+                detail = "MAC шасси отличается от инвентаря" if conflict else ""
+                edge(a, neighbor, SHARED_LLDP_KIND, SHARED_LLDP_SOURCE, confirmed, details=detail,
+                     ports=(port, ""), at=observed_at)
+            else:
+                edge(a, neighbor, "Сетевое соединение", "LLDP UI_VPN", direct and not conflict,
+                     details=note.removeprefix(" · "), ports=(port, remote or ""), at=observed_at)
             advertised = row.get("management_addresses", [])
             if len(advertised) == 1 and "Адрес управления по LLDP" not in item["properties"]:
                 item["properties"]["IP заявлен в LLDP"] = advertised[0]
@@ -982,8 +1011,9 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                     item["reachability"] = observation
 
     for a, b, port_a, port_b, at in _reciprocal_lldp(network, fresh_lldp, peers_by_port, arp_mappings, now):
-        edge(source_nodes.get(a), source_nodes.get(b), "Сетевое соединение", "LLDP · двустороннее",
-             ports=(port_a, port_b), at=at)
+        local, remote = source_nodes.get(a), source_nodes.get(b)
+        if (local, port_label_key(port_a)) not in shared_ports and (remote, port_label_key(port_b)) not in shared_ports:
+            edge(local, remote, "Сетевое соединение", "LLDP · двустороннее", ports=(port_a, port_b), at=at)
 
     for a, b, confirmed, ports, observed in fdb_reports:
         physical = edges.get((tuple(sorted((a, b))), "Сетевое соединение"))

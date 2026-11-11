@@ -27,6 +27,8 @@ SERVICE_LINKS = {"Размещение", "Цель проверки"}
 CLUSTER_KIND = "Кластер Proxmox"
 CLUSTER_HEALTH_METHODS = ("Кворум", "Участники кластера")
 RECIPROCAL_MAC_SOURCE = "SNMP · взаимные MAC"
+SHARED_LLDP_KIND = "Путь через общий порт"
+SHARED_LLDP_SOURCE = "LLDP · общий порт"
 OBSERVER_CHECK_LABELS = {
     "watchdog_fresh": "Свежесть отчёта watchdog",
     "backup_snapshot_fresh": "Свежесть резервной копии",
@@ -352,7 +354,7 @@ def load_infrastructure_map(path: Path, now: datetime | None = None, *, db: Sess
                         source == "GitHub" or observation_is_fresh(report.get("at"), now)),
                 })
                 paired = edge["kind"] == "Сетевое соединение" or source == RECIPROCAL_MAC_SOURCE
-                if paired and evidence[-1]["a"] and evidence[-1]["b"]:
+                if (paired and evidence[-1]["a"] and evidence[-1]["b"]) or source == SHARED_LLDP_SOURCE:
                     states = {}
                     for side in ("a", "b"):
                         port = port_states.get(edge[side], {}).get(port_label_key(evidence[-1][side]))
@@ -391,7 +393,7 @@ def load_infrastructure_map(path: Path, now: datetime | None = None, *, db: Sess
             confirmed = row.get("confirmed") is True
             if edge["source"] in {"netctl", "LLDP UI_VPN", "LLDP · двустороннее", "netctl FDB",
                                   "netctl FDB + Proxmox", "Proxmox", "SNMP LACP + ARP", "MikroTik · ARP",
-                                  "MikroTik · ARP + FDB", RECIPROCAL_MAC_SOURCE} and row.get("observedAt"):
+                                  "MikroTik · ARP + FDB", RECIPROCAL_MAC_SOURCE, SHARED_LLDP_SOURCE} and row.get("observedAt"):
                 confirmed = confirmed and observation_is_fresh(row["observedAt"], now)
             links.append({**edge, "confirmed": confirmed, "portEvidence": evidence})
     if db is not None and endpoint_keys and now - stamp <= MAX_AGE:
