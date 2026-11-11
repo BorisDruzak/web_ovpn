@@ -241,10 +241,43 @@ def _probe_on_link_guest(address: str, mac: str) -> bool:
                and {"REACHABLE", "DELAY", "PROBE"}.intersection(row.get("state", [])) for row in neighbors)
 
 
-def _collect_guest_arp_probes(pve: dict, network: dict, configured: dict, now: datetime) -> dict:
+def _router_layer2_observation(sources: list[dict], name: str, interface: str, mac: str,
+                               *, address: str | None = None) -> dict | None:
+    source = next((row for row in sources if row["name"] == name and row.get("enabled")
+                   and row.get("driver") == "mikrotik_api"), None)
+    if source is None:
+        return None
+    try:
+        if legacy_driver_for(source, load_secrets()).probe_layer2(interface, mac, address=address):
+            method = "MAC ping · L2" if address is None else "ARP · L2"
+            return _observation("reachable", name, method, datetime.now(timezone.utc).isoformat())
+    except (OSError, RuntimeError, ValueError):
+        pass
+    return None
+
+
+def _collect_asset_mac_probes(context: dict, sources: list[dict], configured: dict) -> dict:
+    ownership = {}
+    for device in context.get("devices", []):
+        for mac in device.get("mac_addresses", []):
+            ownership.setdefault(mac.lower(), set()).add(device["id"])
+    checks = {}
+    for asset, spec in configured.items():
+        mac = spec["mac"].lower()
+        if ownership.get(mac) != {asset}:
+            continue
+        observation = _router_layer2_observation(sources, spec["source"], spec["interface"], mac)
+        if observation:
+            checks[asset] = observation
+    return checks
+
+
+def _collect_guest_arp_probes(pve: dict, network: dict, configured: dict, now: datetime,
+                              router_sources: dict | None = None) -> dict:
     configs = pve.get("configs", {})
     counts = Counter(mac for config in configs.values() for mac in _guest_macs(config))
-    arp = _arp_mappings(network.get("arp", []), now)
+    arp_rows = network.get("arp", [])
+    arp = _arp_mappings(arp_rows, now)
     candidates = []
     for guest in pve.get("guests", []):
         vmid = str(guest["vmid"])
@@ -259,12 +292,22 @@ def _collect_guest_arp_probes(pve: dict, network: dict, configured: dict, now: d
         mac, _ = arp[address]
         interfaces = _guest_interfaces(configs.get(vmid, {}))
         if counts[mac] == 1 and any(nic_mac == mac and not disabled for _, _, disabled, nic_mac in interfaces.values()):
-            candidates.append((address, mac))
+            candidates.append((vmid, address, mac))
 
     def check(candidate):
-        address, mac = candidate
+        vmid, address, mac = candidate
         if _probe_on_link_guest(address, mac):
             return mac, address, _observation("reachable", "UI_VPN", "ICMP · ARP", datetime.now(timezone.utc).isoformat())
+        name = (router_sources or {}).get(vmid)
+        if not name:
+            return None
+        interfaces = {row["interface"] for row in arp_rows if row.get("ip") == address and row.get("source") == name
+                      and str(row.get("mac", "")).lower() == mac and row.get("interface")
+                      and observation_is_fresh(row.get("last_seen_at"), now)}
+        if len(interfaces) == 1:
+            observation = _router_layer2_observation(network.get("sources", []), name, interfaces.pop(), mac, address=address)
+            if observation:
+                return mac, address, observation
         return None
 
     checks = {}
@@ -521,6 +564,10 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         observation = _host_observation(host_ips.get(device.get("management_ip"), {}), now)
         if observation:
             item["reachability"] = observation
+        layer2 = network.get("asset_mac_checks", {}).get(key)
+        if layer2 and observation_is_fresh(layer2["checkedAt"], now):
+            item.setdefault("reachability", layer2)
+            item["serviceChecks"] = [layer2]
         names.setdefault(device["name"].casefold(), []).append(key)
         declared_macs[key] = {mac.lower() for mac in device.get("mac_addresses", []) if MAC.fullmatch(mac)}
         for mac in declared_macs[key]:
@@ -1216,6 +1263,10 @@ def main() -> int:
             network["ipsec_connectivity"] = _collect_ipsec_connectivity(context, network["sources"], bindings["ipsec_links"])
         network["guest_arp_probes"] = _collect_guest_arp_probes(
             pve, network, bindings.get("guest_probe_ips", {}), datetime.now(timezone.utc),
+            bindings.get("guest_router_arp_sources"),
+        )
+        network["asset_mac_checks"] = _collect_asset_mac_probes(
+            context, network["sources"], bindings.get("asset_mac_probes", {}),
         )
         now = datetime.now(timezone.utc)
         graph = build_graph(context, network, build_server_health_view(args.server_health, now), pve, bindings, now)

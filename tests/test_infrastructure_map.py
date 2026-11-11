@@ -1071,6 +1071,74 @@ def test_guest_arp_probe_requires_on_link_identity_and_current_proxmox_interface
     assert pings == [ip, ip]
 
 
+def test_router_layer2_probe_requires_a_reply_from_the_expected_mac(monkeypatch):
+    from contextlib import nullcontext
+
+    from netctl.drivers.mikrotik_api import MikroTikApiDriver
+
+    mac = "02:00:00:00:00:03"
+    calls = []
+    rows = [{"host": mac, "sent": "1", "received": "1"}]
+
+    class Api:
+        def call(self, words):
+            calls.append(words)
+            return rows
+
+    monkeypatch.setattr(MikroTikApiDriver, "_client", lambda self: nullcontext(Api()))
+    driver = MikroTikApiDriver({}, {})
+    assert driver.probe_layer2("bridge-lan", mac)
+    assert driver.probe_layer2("bridge-lan", mac, address="192.0.2.21")
+    assert calls == [
+        ["/ping", f"=address={mac}", "=interface=bridge-lan", "=count=1"],
+        ["/ping", "=address=192.0.2.21", "=interface=bridge-lan", "=count=1", "=arp-ping=yes"],
+    ]
+    rows[0]["host"] = "02:00:00:00:00:07"
+    assert not driver.probe_layer2("bridge-lan", mac, address="192.0.2.21")
+    rows[0].update(host=mac, received="0")
+    assert not driver.probe_layer2("bridge-lan", mac)
+
+
+def test_router_layer2_checks_follow_inventory_and_guest_arp_identity(monkeypatch):
+    from app import infrastructure_collect as collector
+
+    now = datetime.now(timezone.utc)
+    ip, mac = "192.0.2.21", "02:00:00:00:00:03"
+    ap_mac = "02:00:00:00:00:04"
+    pve = {"cluster": [], "nodes": [], "guests": [{"vmid": 108, "node": "pve1", "status": "running"}],
+           "configs": {"108": {"net0": f"virtio={mac},bridge=vmbr0"}}}
+    source = {"name": "router", "enabled": True, "driver": "mikrotik_api"}
+    arp = {"ip": ip, "mac": mac, "source": "router", "interface": "bridge-lan", "last_seen_at": now.isoformat()}
+    network = {"arp": [arp], "sources": [source]}
+    context = {"devices": [{"id": "ap", "name": "AP", "kind": "wireless_access_point", "mac_addresses": [ap_mac]}]}
+    bindings = {"asset_mac_probes": {"ap": {"source": "router", "interface": "bridge-lan", "mac": ap_mac}},
+                "guest_router_arp_sources": {"108": "router"}}
+    calls = []
+
+    class Driver:
+        def probe_layer2(self, interface, target, *, address=None):
+            calls.append((interface, target, address))
+            return True
+
+    monkeypatch.setattr(collector, "load_secrets", lambda: {})
+    monkeypatch.setattr(collector, "legacy_driver_for", lambda *_: Driver())
+    monkeypatch.setattr(collector, "_probe_on_link_guest", lambda *_: False)
+    network["asset_mac_checks"] = collector._collect_asset_mac_probes(context, [source], bindings["asset_mac_probes"])
+    network["guest_arp_probes"] = collector._collect_guest_arp_probes(
+        pve, network, {"108": ip}, now, bindings["guest_router_arp_sources"],
+    )
+    graph = collector.build_graph(context, network, {}, pve, bindings, datetime.now(timezone.utc))
+    nodes = {row["id"]: row for row in graph["nodes"]}
+    assert nodes["ap"]["reachability"]["method"] == "MAC ping · L2"
+    assert nodes["pve-guest:108"]["reachability"]["method"] == "ARP · L2"
+    assert calls == [("bridge-lan", ap_mac, None), ("bridge-lan", mac, ip)]
+    arp["source"] = "other-router"
+    assert collector._collect_guest_arp_probes(pve, network, {"108": ip}, now, bindings["guest_router_arp_sources"]) == {}
+    context["devices"][0]["mac_addresses"] = [mac]
+    assert collector._collect_asset_mac_probes(context, [source], bindings["asset_mac_probes"]) == {}
+    assert len(calls) == 2
+
+
 def test_inventory_binding_needs_matching_guest_mac():
     from app.infrastructure_collect import build_graph
 

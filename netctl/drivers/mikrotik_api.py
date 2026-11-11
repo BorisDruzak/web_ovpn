@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ipaddress
+import re
 import socket
 import ssl
 from typing import Any
@@ -534,6 +536,19 @@ class MikroTikApiDriver(NetworkDriver):
     def _query(self, api: RouterOSApiClient, path: str, props: list[str]) -> list[dict[str, str]]:
         self.ensure_read_only(path)
         return api.call([path, f"=.proplist={','.join(props)}"])
+
+    def probe_layer2(self, interface: str, mac: str, *, address: str | None = None) -> bool:
+        if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}", interface):
+            raise ValueError("invalid RouterOS interface")
+        if not re.fullmatch(r"(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}", mac):
+            raise ValueError("invalid target MAC")
+        target = mac if address is None else str(ipaddress.IPv4Address(address))
+        words = ["/ping", f"=address={target}", f"=interface={interface}", "=count=1"]
+        if address is not None:
+            words.append("=arp-ping=yes")
+        with self._client() as api:
+            rows = api.call(words)
+        return any(row.get("host", "").lower() == mac.lower() and row.get("received") == "1" for row in rows)
 
     def test(self) -> dict[str, Any]:
         with self._client() as api:
