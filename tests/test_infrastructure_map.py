@@ -280,6 +280,54 @@ def test_lldp_direct_neighbor_overrides_conflicting_fdb_ports():
     assert not links["other"]["portEvidence"][0]["confirmed"]
 
 
+def test_verified_switch_ports_require_fresh_bidirectional_fdb_and_live_ports(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    earlier = (now - timedelta(minutes=1)).isoformat()
+    devices = [{"id": key, "name": key, "kind": "switch"} for key in ("core", "access", "other")]
+    declared = {"relation": "connected_to", "state": {"verified": True},
+                "endpoint_a": {"device": "core", "interface": "ge22"},
+                "endpoint_b": {"device": "access", "interface": "Port24"}}
+    sources = [{"id": i, "name": key, "driver": "snmp_switch", "driver_options": {"intent_stable_id": key}}
+               for i, key in enumerate(("core", "access"), 1)]
+    ports = [{"source": source, "port_key": name, "name": name, "oper_status": "up", "last_seen_at": at}
+             for source, name in (("core", "ge22"), ("access", "Port24"))]
+    one_way = {"evidence_type": "fdb_management_mac", "endpoint_a": {"source_id": 1, "port_key": "ge22"},
+               "endpoint_b": {"source_id": 2}, "observed_at": at}
+    reverse = {"evidence_type": "fdb_management_mac", "endpoint_a": {"source_id": 1},
+               "endpoint_b": {"source_id": 2, "port_key": "Port24"}, "observed_at": earlier}
+    evidence = [one_way, reverse]
+    network = {"sources": sources, "ports": ports, "links": [
+        {"source_a_id": 1, "source_b_id": 2, "state": "confirmed", "evidence": evidence},
+    ]}
+    path = tmp_path / "graph.json"
+
+    def paired(when=now):
+        graph = build_graph({"devices": devices, "links": [declared]}, network, {}, {}, {}, when)
+        path.write_text(json.dumps(graph), encoding="utf-8")
+        link = next(edge for edge in load_infrastructure_map(path, when)["links"] if {edge["a"], edge["b"]} == {"core", "access"})
+        return [p for p in link["portEvidence"] if p["source"] == "SNMP · двусторонний FDB"]
+
+    assert paired() == [{"a": "ge22", "b": "Port24", "at": earlier, "confirmed": True,
+                         "source": "SNMP · двусторонний FDB"}]
+    assert not paired(now + timedelta(hours=1))
+    evidence.pop()
+    assert not paired()
+    evidence.append(reverse)
+    evidence.append({**one_way, "endpoint_a": {"source_id": 1, "port_key": "ge23"}})
+    assert not paired()
+    evidence.pop()
+    ports[1]["oper_status"] = "down"
+    assert not paired()
+    ports[1]["oper_status"] = "up"
+    network["lldp"] = [{"source": "core", "local_port_key": "ge22", "system_name": "other",
+                        "port_id": "ether1", "port_id_subtype": "interface_name", "observed_at": at}]
+    assert not paired()
+
+
 def test_reciprocal_lldp_confirms_numeric_alias_and_unnamed_peer():
     from app.infrastructure_collect import build_graph
 

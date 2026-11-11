@@ -498,6 +498,38 @@ def _reconcile_fdb_ports(links) -> None:
             link.update(source=best["source"], observedAt=best["at"])
 
 
+def _corroborate_fdb_ports(links, nodes: dict, now: datetime) -> None:
+    active = {
+        key: {port["name"].casefold(): datetime.fromisoformat(port["checkedAt"]) for port in node.get("ports", [])
+              if port.get("name") and port["state"] == "up" and observation_is_fresh(port["checkedAt"], now)}
+        for key, node in nodes.items() if node["kind"] == NETWORK_KINDS[0]
+    }
+    for link in links:
+        if (link["kind"] != "Сетевое соединение" or not link["confirmed"]
+                or link["a"] not in active or link["b"] not in active):
+            continue
+        reports = link.get("portEvidence", [])
+        declared = [row for row in reports if row["source"] == "GitHub" and row["confirmed"]]
+        if len(declared) != 1 or link["source"] in {"LLDP UI_VPN", "LLDP · двустороннее"}:
+            continue
+        pair = declared[0]
+        stamps = []
+        for local, remote in (("a", "b"), ("b", "a")):
+            port = pair[local].casefold()
+            up_at = active[link[local]].get(port)
+            sightings = [row for row in reports if row["source"] == "netctl FDB" and row[local]
+                         and observation_is_fresh(row["at"], now)]
+            if up_at is None or {row[local].casefold() for row in sightings} != {port}:
+                break
+            one_sided = [datetime.fromisoformat(row["at"]) for row in sightings if row["confirmed"] and not row[remote]]
+            if not one_sided:
+                break
+            stamps.extend((up_at, max(one_sided)))
+        else:
+            reports.append({"a": pair["a"], "b": pair["b"], "source": "SNMP · двусторонний FDB",
+                            "at": min(stamps).isoformat(), "confirmed": True})
+
+
 def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings: dict, now: datetime) -> dict:
     nodes = {}
     edges = {}
@@ -1041,6 +1073,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             nodes[key].setdefault("reachability", observation)
             nodes[key].setdefault("serviceChecks", []).append(observation)
     _reconcile_fdb_ports(edges.values())
+    _corroborate_fdb_ports(edges.values(), nodes, now)
     return {"schema": 1, "snapshotAt": now.isoformat(), "nodes": list(nodes.values()),
             "links": list(edges.values()), "clusterId": cluster_id, "nodeOrder": hypervisors,
             "overviewGuests": overview_guests}
