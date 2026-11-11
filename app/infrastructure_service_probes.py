@@ -39,13 +39,19 @@ def _http(ip: str, port: int, spec: dict) -> str:
     body_marker = spec.get("body_contains")
     content_type = spec.get("content_type")
     json_fields = spec.get("json_fields")
+    json_unavailable = spec.get("json_unavailable")
     if (not all(isinstance(value, (str, type(None))) for value in (body_expected, body_marker, content_type))
             or not (body_expected or body_marker or content_type or json_fields)):
         raise ValueError("HTTP probe requires a response contract")
-    if json_fields is not None:
-        if (not isinstance(json_fields, dict) or not json_fields or body_expected or body_marker
-                or any(not key or not isinstance(value, str) for key, value in json_fields.items())):
+    if json_fields is not None or json_unavailable is not None:
+        if json_fields is None or body_expected or body_marker:
             raise ValueError("invalid HTTP JSON response contract")
+        for fields in (json_fields, json_unavailable):
+            if fields is not None and (
+                not isinstance(fields, dict) or not fields
+                or any(not isinstance(key, str) or not key or not isinstance(value, str) for key, value in fields.items())
+            ):
+                raise ValueError("invalid HTTP JSON response fields")
         content_type = content_type or "application/json"
     tls = spec["type"] == "https"
     fingerprint = spec.get("tls_sha256")
@@ -97,7 +103,11 @@ def _http(ip: str, port: int, spec: dict) -> str:
                 document = json.loads(payload)
             except (ValueError, RecursionError):
                 return "unknown"
-            if isinstance(document, dict) and all(document.get(key) == value for key, value in json_fields.items()):
+            if not isinstance(document, dict):
+                return "unknown"
+            if json_unavailable and all(document.get(key) == value for key, value in json_unavailable.items()):
+                return "unreachable"
+            if all(document.get(key) == value for key, value in json_fields.items()):
                 return "reachable"
             return "unknown"
         if body_expected:

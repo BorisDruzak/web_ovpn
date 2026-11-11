@@ -95,6 +95,7 @@ def test_http_probe_matches_json_health_fields_without_fixing_the_version():
     responses = {
         "/ready": (200, b'{"version": "2", "database": "ok", "service": "example", "status": "ok"}'),
         "/wrong": (200, b'{"status":"ok","service":"example","database":"down"}'),
+        "/reported-down": (200, b'{"status":"DOWN","service":"example"}'),
         "/invalid": (200, b"not json"),
         "/large": (200, b'{"status":"ok","service":"example","database":"ok"}' + b" " * 32768),
         "/down": (503, b'{"status":"unavailable"}'),
@@ -113,12 +114,13 @@ def test_http_probe_matches_json_health_fields_without_fixing_the_version():
         worker.start()
         try:
             base = {"type": "http", "ip": "127.0.0.1", "port": server.server_port,
-                    "json_fields": {"status": "ok", "database": "ok", "service": "example"}}
+                    "json_fields": {"status": "ok", "database": "ok", "service": "example"},
+                    "json_unavailable": {"status": "DOWN", "service": "example"}}
             results = [_probe({**base, "path": path}) for path in responses]
         finally:
             server.shutdown()
             worker.join()
-    assert results == ["reachable", "unknown", "unknown", "unknown", "unreachable"]
+    assert results == ["reachable", "unknown", "unreachable", "unknown", "unknown", "unreachable"]
 
 
 def test_https_probe_checks_dns_name_against_ca_while_connecting_to_verified_ip(monkeypatch, tmp_path):
