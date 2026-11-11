@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import ipaddress
 import json
@@ -23,6 +24,8 @@ from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_ope
 from netctl.config import DEFAULT_DB_URL
 from netctl.context import load_context_bytes, load_schema, validate_context
 from netctl.db import connect_read_only, list_sources
+from netctl.snmp.lacp import read_lacp_members
+from netctl.snmp.transport import SnmpTransport
 from netctl.switch_queries import query_confirmed_attachment_ports, query_observed_mac_ports
 
 from .infrastructure_map import INTERFACE_NAME, MAX_SNAPSHOT_BYTES, NETWORK_KINDS, observation_is_fresh
@@ -119,6 +122,39 @@ def _verified_arp_checks(mappings: dict, hosts: dict, now: datetime) -> dict:
         if probe and probe["state"] == "reachable" and datetime.fromisoformat(probe["checkedAt"]) >= arp_at:
             checks.setdefault(mac, []).append((ip, {**probe, "method": probe["method"] + " · ARP"}))
     return checks
+
+
+async def _collect_lacp(network: dict, configured: list[dict], now: datetime) -> list[dict]:
+    sources = {row["name"]: row for row in network["sources"] if row["enabled"] and row["driver"] == "snmp_switch"}
+    indexes = {}
+    for port in network["ports"]:
+        index = port.get("if_index")
+        if (port.get("oper_status") == "up" and observation_is_fresh(port.get("last_seen_at"), now)
+                and type(index) is int and index > 0):
+            indexes.setdefault((port["source"], port["name"].casefold()), set()).add(index)
+
+    def port_index(source, port):
+        matches = indexes.get((source, port.casefold()), set())
+        return next(iter(matches)) if len(matches) == 1 else None
+
+    observations = []
+    for spec in configured:
+        source, aggregate = spec["source"], spec["aggregate"]
+        names = {port.casefold(): port for port in spec["members"]}
+        if source not in sources or not (aggregate_index := port_index(source, aggregate)):
+            continue
+        members = {port: index for port in names.values() if (index := port_index(source, port)) and index != aggregate_index}
+        if not members or len(set(members.values())) != len(members):
+            continue
+        try:
+            async with asyncio.timeout(5), SnmpTransport.from_source(sources[source]) as transport:
+                live = await read_lacp_members(transport, aggregate_index, members)
+        except (TimeoutError, OSError, ValueError):
+            continue
+        if live:
+            observations.append({"source": source, "asset": spec["asset"], "aggregate": aggregate,
+                                 "expected": len(names), "at": datetime.now(timezone.utc).isoformat(), "members": live})
+    return observations
 
 
 def _probe_on_link_guest(address: str, mac: str) -> bool:
@@ -479,7 +515,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
     online_hypervisors = set()
     overview_guests = []
     pve_at = pve.get("at", now.isoformat())
-    arp_mappings = _arp_mappings(network.get("arp", []), now) if pve else {}
+    arp_mappings = _arp_mappings(network.get("arp", []), now)
     if pve:
         arp_checks = _verified_arp_checks(arp_mappings, host_ips, now)
         for mac, checks in network.get("guest_arp_probes", {}).items():
@@ -627,6 +663,25 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         else:
             edge(switch, device, "Путь по MAC-таблице", "netctl FDB",
                  ports=(port, ""), at=observed, vlan=report["vlan_id"])
+    for report in network.get("lacp", []):
+        asset = report["asset"]
+        address = address_by_asset.get(asset)
+        switch = source_nodes.get(report["source"])
+        if (not switch or nodes[switch]["kind"] != NETWORK_KINDS[0] or not address
+                or addresses[address] != [asset] or address not in arp_mappings
+                or not observation_is_fresh(report["at"], now)):
+            continue
+        mac, arp_at = arp_mappings[address]
+        if declared_macs[asset] and mac not in declared_macs[asset]:
+            continue
+        matching = [member for member in report["members"] if member["mac"] == mac]
+        peer_counts = Counter(member["partner_port"] for member in matching)
+        confirmed = [member for member in matching if peer_counts[member["partner_port"]] == 1]
+        checked_at = min(arp_at, datetime.fromisoformat(report["at"])).isoformat()
+        for member in confirmed:
+            edge(switch, asset, "Сетевое соединение", "SNMP LACP + ARP", at=checked_at,
+                 details=f"LACP: подтверждено {len(confirmed)} из {report['expected']} портов",
+                 ports=(f"{report['aggregate']} / {member['port']}", f"LACP {member['partner_port']}"))
     return {"schema": 1, "snapshotAt": now.isoformat(), "nodes": list(nodes.values()),
             "links": list(edges.values()), "clusterId": cluster_id, "nodeOrder": hypervisors,
             "overviewGuests": overview_guests}
@@ -828,7 +883,10 @@ def main() -> int:
                 raise ValueError("Proxmox export requires observation time")
         guest_macs = {mac for config in pve.get("configs", {}).values() for mac in _guest_macs(config)}
         route_sources = {item["source"] for item in bindings.get("route_evidence", {}).values() if item.get("source")}
-        network = read_network(guest_macs, route_sources, include_arp=bool(pve.get("management")))
+        lacp_links = bindings.get("lacp_links", [])
+        network = read_network(guest_macs, route_sources, include_arp=bool(pve.get("management") or lacp_links))
+        if lacp_links:
+            network["lacp"] = asyncio.run(_collect_lacp(network, lacp_links, datetime.now(timezone.utc)))
         network["guest_arp_probes"] = _collect_guest_arp_probes(
             pve, network, bindings.get("guest_probe_ips", {}), datetime.now(timezone.utc),
         )

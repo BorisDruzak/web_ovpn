@@ -359,6 +359,28 @@ def test_interface_speed_uses_if_high_speed_when_if_speed_is_saturated(speed, hi
     assert port.speed_bps == expected
 
 
+def test_lacp_requires_active_aggregation_on_both_ends():
+    from netctl.snmp.lacp import read_lacp_members
+
+    class Transport:
+        async def get(self, oid):
+            column, index = oid[-2:]
+            values = {
+                9: (b"\x02\x00\x00\x00\x00\x14", "octet_string"),
+                13: (99 if index == 4 else 100, "integer"),
+                17: (index, "integer"),
+                21: (b"\xbc", "octet_string"),
+                23: (b"\xbe" if index == 3 else b"\xbc", "octet_string"),
+            }
+            value, value_type = values[column]
+            return CapabilityResult("get", SnmpOutcome.SUCCESS_WITH_ROWS, (_vb(oid, value, value_type),))
+
+    assert asyncio.run(read_lacp_members(Transport(), 100, {"ge6": 1, "ge7": 2, "ge8": 3, "ge9": 4})) == [
+        {"port": "ge6", "partner_port": 1, "mac": "02:00:00:00:00:14"},
+        {"port": "ge7", "partner_port": 2, "mac": "02:00:00:00:00:14"},
+    ]
+
+
 def test_interface_parser_rejects_conflicting_duplicate_and_ambiguous_bridge_map() -> None:
     from netctl.snmp.interfaces import parse_bridge_port_map, parse_interfaces
 

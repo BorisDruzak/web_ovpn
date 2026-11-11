@@ -304,6 +304,43 @@ def test_fdb_ports_require_fresh_unambiguous_device_identity(tmp_path):
     assert first not in path.read_text(encoding="utf-8")
 
 
+def test_lacp_confirms_only_ports_whose_partner_matches_fresh_arp(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    mac, address = "02:00:00:00:00:14", "192.0.2.14"
+    context = {"devices": [
+        {"id": "pbs", "name": "PBS", "kind": "backup_server", "management_ip": address},
+        {"id": "sw", "name": "SNR", "kind": "switch", "management_ip": "192.0.2.254"},
+    ], "links": [
+        {"endpoint_a": {"device": "sw", "interface": port}, "endpoint_b": {"device": "pbs", "interface": alias},
+         "relation": "connected_to"} for port, alias in (("po1", "data_lag"), ("xe1", "backup_10g"))
+    ]}
+    network = {
+        "sources": [{"id": 1, "name": "snr", "host": "192.0.2.254", "driver": "snmp_switch"}],
+        "arp": [{"ip": address, "mac": mac, "last_seen_at": at}],
+        "lacp": [{"source": "snr", "asset": "pbs", "aggregate": "po1", "expected": 2, "at": at,
+                  "members": [{"port": "ge6", "partner_port": 1, "mac": mac},
+                              {"port": "ge7", "partner_port": 2, "mac": "02:00:00:00:00:99"}]}],
+    }
+    path = tmp_path / "map.json"
+
+    def link(stamp=now):
+        graph = build_graph(context, network, {}, {}, {}, now)
+        path.write_text(json.dumps(graph), encoding="utf-8")
+        return next(e for e in load_infrastructure_map(path, stamp)["links"] if {e["a"], e["b"]} == {"sw", "pbs"})
+
+    result = link()
+    assert result["confirmed"] and result["source"] == "SNMP LACP + ARP"
+    assert [(p["a"], p["b"]) for p in result["portEvidence"] if p["confirmed"]] == [("po1 / ge6", "LACP 1")]
+    assert not link(now + timedelta(hours=1))["confirmed"]
+    network["arp"].append({**network["arp"][0], "mac": "02:00:00:00:00:98"})
+    assert not link()["confirmed"]
+    assert mac not in path.read_text(encoding="utf-8")
+
+
 def test_proxmox_management_port_joins_unique_fdb_and_active_bridge(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map
