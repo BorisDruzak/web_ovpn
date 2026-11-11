@@ -39,6 +39,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     return element;
   };
   const formatTime = value => new Intl.DateTimeFormat('ru-RU', { timeZone:'Asia/Yekaterinburg', dateStyle:'short', timeStyle:'short' }).format(new Date(value));
+  const formatPortSpeed = bps => bps ? (bps / 1e6).toLocaleString('ru-RU') + ' Мбит/с' : '';
   const source = root.querySelector('#map-sources');
   const availability = root.querySelector('#map-availability');
   const availabilityLabels = {
@@ -601,7 +602,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         if (selectedPort && portKey(port.name) !== portKey(selectedPort)) continue;
         const row = make('li');
         const time = port.checkedAt ? formatTime(port.checkedAt) : '';
-        const speed = port.speedBps ? (port.speedBps / 1e6).toLocaleString('ru-RU') + ' Мбит/с' : '';
+        const speed = formatPortSpeed(port.speedBps);
         const status = [states[port.state], speed, time, port.stale && time ? 'устарело' : ''].filter(Boolean).join(' · ');
         const name = make(selectedPort ? 'strong' : 'button', port.name);
         if (!selectedPort) {
@@ -762,7 +763,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
             if (!port || renderedPorts.has(key)) continue;
             renderedPorts.add(key);
             const device = byId.get(edge[side]).name;
-            li.append(make('small', `${device} ${port.name}: ${portLabels[port.state]} · SNMP · ${formatTime(port.checkedAt)}`));
+            const state = [portLabels[port.state], formatPortSpeed(port.speedBps), 'SNMP', formatTime(port.checkedAt)];
+            li.append(make('small', `${device} ${port.name}: ${state.filter(Boolean).join(' · ')}`));
           }
           if (evidence.confirmed && evidence.virtual) {
             const network = evidence.virtual;

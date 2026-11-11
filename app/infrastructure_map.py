@@ -154,8 +154,12 @@ def _public_port(row: dict, now: datetime) -> dict:
 
 
 def _physical_port_alias(row: dict) -> str:
-    physical = re.fullmatch(r"physical:([1-9]\d{0,3})", _text(row.get("key")))
-    return f"Port{physical[1]}" if physical else ""
+    key = _text(row.get("key"))
+    physical = re.fullmatch(r"physical:([1-9]\d{0,3})", key)
+    if physical:
+        return f"Port{physical[1]}"
+    slot = re.fullmatch(r"Slot0/([1-9]\d{0,3})", _text(row.get("name")), re.IGNORECASE)
+    return f"Port{slot[1]}" if slot and key == f"ifindex:{slot[1]}" else ""
 
 
 def _public_port_telemetry(sample: object, port: dict, now: datetime) -> dict:

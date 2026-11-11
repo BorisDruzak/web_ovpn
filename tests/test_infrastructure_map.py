@@ -909,6 +909,19 @@ def test_map_reports_port_state_for_declared_pair_without_confirming_cable(tmp_p
     assert set(load()) == {"b"}
 
 
+def test_slot_port_alias_requires_matching_snmp_ifindex():
+    from app.infrastructure_map import _public_node, index_port_states
+
+    now = datetime.now(timezone.utc)
+    port = {"name": "Slot0/52", "key": "ifindex:52", "state": "up",
+            "speedBps": 10**9, "checkedAt": now.isoformat()}
+    node = _public_node({"ports": [port]}, now)
+    assert node["ports"][0]["aliases"] == ["Port52"]
+    assert index_port_states([port], now)["port52"]["speedBps"] == 10**9
+    for changed in ({**port, "key": "ifindex:51"}, {**port, "name": "Slot1/52"}):
+        assert "port52" not in index_port_states([changed], now)
+
+
 def test_reciprocal_switch_management_macs_verify_path_without_proving_direct_link(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map
