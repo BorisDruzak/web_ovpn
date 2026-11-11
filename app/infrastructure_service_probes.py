@@ -12,6 +12,7 @@ import subprocess
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from time import monotonic
 
 import dns.exception
 import dns.message
@@ -108,13 +109,47 @@ def _smb(ip: str, port: int) -> str:
     return "reachable" if status == command == 0 and structure == 65 and dialect in dialects else "unknown"
 
 
+def _openvpn_management() -> str:
+    # A successful status response with a session confirms a live tunnel.
+    family = getattr(socket, "AF_UNIX", None)
+    if family is None:
+        return "unknown"
+    deadline = monotonic() + TIMEOUT
+    with socket.socket(family) as connection:
+        connection.settimeout(TIMEOUT)
+        try:
+            connection.connect("/run/openvpn/server.sock")
+            connection.sendall(b"state\nstatus 3\n")
+            connected = session_table = active_session = False
+            with connection.makefile("rb") as wire:
+                for _ in range(4096):
+                    remaining = deadline - monotonic()
+                    if remaining <= 0:
+                        break
+                    connection.settimeout(remaining)
+                    line = wire.readline(4097)
+                    if not line or len(line) > 4096:
+                        break
+                    if line.strip() == b"END" and session_table:
+                        return "reachable" if connected and active_session else "unknown"
+                    fields = line.split(b",", 3)
+                    connected |= len(fields) == 4 and fields[0].isdigit() and fields[1:3] == [b"CONNECTED", b"SUCCESS"]
+                    session_table |= line.startswith(b"HEADER\tCLIENT_LIST\t")
+                    active_session |= line.startswith(b"CLIENT_LIST\t")
+        except OSError:
+            pass
+    return "unknown"
+
+
 def _probe(spec: dict) -> str:
     try:
-        ip = str(ipaddress.ip_address(spec["ip"]))
         port = spec["port"]
         if type(port) is not int or not 1 <= port <= 65535:
             return "unknown"
         protocol = spec["type"]
+        if protocol == "openvpn_management":
+            return _openvpn_management()
+        ip = str(ipaddress.ip_address(spec["ip"]))
         if protocol in {"http", "https"}:
             return _http(ip, port, spec)
         if protocol == "dns":
@@ -142,7 +177,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
         node, specs = target
         if not isinstance(specs, list) or not specs or len(specs) > 4 or not all(isinstance(spec, dict) for spec in specs):
             return node, {}
-        methods = {"http": "HTTP", "https": "HTTPS", "dns": "DNS", "ldap": "LDAP", "smb": "SMB2"}
+        methods = {"http": "HTTP", "https": "HTTPS", "dns": "DNS", "ldap": "LDAP", "smb": "SMB2",
+                   "openvpn_management": "OpenVPN Management (UDP)"}
         checks = []
         for spec in specs:
             protocol = spec.get("type")

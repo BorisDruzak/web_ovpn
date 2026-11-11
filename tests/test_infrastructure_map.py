@@ -118,6 +118,43 @@ def test_port_evidence_keeps_direction_and_parallel_links(tmp_path):
     assert all(not row["confirmed"] for row in stale_link["portEvidence"])
 
 
+def test_openvpn_requires_connected_daemon_and_active_session(monkeypatch):
+    from io import BytesIO
+    from app import infrastructure_service_probes as probes
+
+    class Management:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def settimeout(self, timeout):
+            assert timeout > 0
+
+        def connect(self, path):
+            assert path == "/run/openvpn/server.sock"
+
+        def sendall(self, command):
+            assert command == b"state\nstatus 3\n"
+
+        def makefile(self, mode):
+            return BytesIO(self.response)
+
+    connection = Management()
+    monkeypatch.setattr(probes.socket, "AF_UNIX", 1, raising=False)
+    monkeypatch.setattr(probes.socket, "socket", lambda family: connection)
+    ready = b"123,CONNECTED,SUCCESS,,\nEND\r\n"
+    header = b"HEADER\tCLIENT_LIST\tCommon Name\n"
+    client = b"CLIENT_LIST\tsample\n"
+    spec = {"type": "openvpn_management", "port": 1194}
+    connection.response = ready + header + client + b"END\n"
+    assert probes._probe(spec) == "reachable"
+    for response in (ready + header + b"END\n", header + client + b"END\n", ready + header + client):
+        connection.response = response
+        assert probes._probe(spec) == "unknown"
+
+
 def test_collection_reads_source_registry_without_syncing_config(monkeypatch):
     from app import infrastructure_collect as collector
 
