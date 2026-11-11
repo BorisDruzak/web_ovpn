@@ -163,6 +163,9 @@ def _public_port(row: dict, now: datetime) -> dict:
     neighbor_count = row.get("lldpNeighborCount")
     if result["state"] == "up" and type(neighbor_count) is int and 1 <= neighbor_count <= 65535:
         result["lldpNeighborCount"] = neighbor_count
+        chassis_count = row.get("lldpChassisCount")
+        if type(chassis_count) is int and 1 <= chassis_count <= neighbor_count:
+            result["lldpChassisCount"] = chassis_count
     if source in ("RouterOS", "Proxmox"):
         result["source"] = source
     if fresh and source == "Proxmox" and type(row.get("proxmoxActive")) is bool:

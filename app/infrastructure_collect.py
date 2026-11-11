@@ -964,6 +964,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 neighbors = peers_by_sample.get((name, port["key"], latest_run, port["checkedAt"]))
                 if neighbors and port["state"] == "up":
                     port["lldpNeighborCount"] = len(neighbors)
+                    port["lldpChassisCount"] = len({chassis for chassis, _ in neighbors})
                 learned_vlans = fdb_vlans.get((*scope, port["key"]))
                 if learned_vlans and port["state"] == "up":
                     port["fdbVlans"] = {"checkedAt": port["checkedAt"], "vlans": learned_vlans}

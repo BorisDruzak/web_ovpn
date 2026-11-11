@@ -9,6 +9,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   const search = root.querySelector('#map-query');
   const feedback = root.querySelector('#map-search-result');
   const pathKinds = new Set(['Путь по MAC-таблице', 'Путь через общий порт']);
+  const reciprocalMacSource = 'SNMP · взаимные MAC';
   const availabilityStates = {
     ok: 'Доступен',
     warn: 'Доступен, есть сбои проверок',
@@ -323,6 +324,11 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
 
   const portKey = name => name.trim().toLowerCase().replace(/^(?:gi|gigabitethernet)\s*(\d+\/\d+\/\d+)$/, 'gi$1');
   const portKeys = port => [port.name, ...(port.aliases ?? [])].map(portKey);
+  const lldpCounts = port => [
+    port.lldpChassisCount && 'Шасси LLDP · ' + port.lldpChassisCount,
+    port.lldpNeighborCount && port.lldpNeighborCount !== port.lldpChassisCount &&
+      'Порты соседей LLDP · ' + port.lldpNeighborCount,
+  ].filter(Boolean);
   const proxmoxPortStatus = port => port.proxmoxActive === undefined ? 'Нет подтверждения' :
     port.proxmoxActive ? 'Интерфейс активен в ОС' : 'Интерфейс не отмечен активным';
 
@@ -631,9 +637,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           name.addEventListener('click', () => selectPort(id, port.name));
         }
         row.append(name, make('small', status));
-        if (selectedPort && port.lldpNeighborCount) {
-          row.append(make('small', 'Соседей по LLDP · ' + port.lldpNeighborCount));
-        }
+        if (selectedPort) for (const count of lldpCounts(port)) row.append(make('small', count));
         if (selectedPort && port.vlanMemberships) {
           const vlans = port.vlanMemberships.vlans;
           for (const [label, selected] of [
@@ -795,22 +799,34 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         both_up: 'Оба линка подняты', one_down: 'Один линк опущен или отключён',
         both_down: 'Оба линка опущены или отключены', speed_mismatch: 'Скорости линков различаются',
       };
+      const pairOf = edge => edgeKey(edge.a, edge.b);
+      const reciprocalPaths = new Set(links
+        .filter(edge => edge.confirmed && edge.source === reciprocalMacSource)
+        .map(pairOf));
+      const inventory = new Map(links
+        .filter(edge => !edge.confirmed && edge.kind === 'Сетевое соединение' &&
+          edge.source === 'GitHub' && reciprocalPaths.has(pairOf(edge)))
+        .map(edge => [pairOf(edge), edge]));
+      const portName = name => name && name.toLowerCase() !== 'unknown' ? name : 'порт неизвестен';
       for (const edge of links.slice().sort((a,b) => Number(b.confirmed)-Number(a.confirmed))) {
+        const declared = inventory.get(pairOf(edge));
+        if (edge === declared) continue;
         const unconfirmedPath = !selectedPort && !edge.confirmed && pathKinds.has(edge.kind);
         const peer = byId.get(edge.a === id ? edge.b : edge.a);
         const li = make('li');
         const go = make('button',peer.name);
         go.type = 'button';
         go.addEventListener('click',() => select(peer.id));
+        const reciprocal = edge.confirmed && edge.source === reciprocalMacSource;
         const status = edge.confirmed || unconfirmedPath ? edge.source : 'Связь не подтверждена · ' + edge.source;
         li.append(go,make('small',edge.kind+' · '+status+(edge.details ? ' · '+edge.details : '')));
+        if (reciprocal) li.append(make('small', 'Прямое соединение не подтверждено'));
         const renderedPorts = new Set();
         const aggregates = new Set((edge.portEvidence ?? []).flatMap(({lacp}) =>
           lacp?.aggregateState ? [lacp.side + ':' + lacp.aggregateState.name] : []));
         const comparedPorts = new Set();
         for (const evidence of edge.portEvidence ?? []) {
           const [local, remote] = edge.a === id ? [evidence.a, evidence.b] : [evidence.b, evidence.a];
-          const portName = name => name && name.toLowerCase() !== 'unknown' ? name : 'порт неизвестен';
           const ports = portName(local) + ' ↔ ' + portName(remote);
           const source = evidence.source === 'GitHub' ? 'GitHub (конфигурация)' : evidence.source;
           const vlan = evidence.vlan ? ' · VLAN ' + evidence.vlan : '';
@@ -826,7 +842,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
             const device = byId.get(edge[side]).name;
             const label = port.source === 'Proxmox' ? proxmoxPortStatus(port) : portLabels[port.state];
             const state = [label, formatPortSpeed(port.speedBps), port.source ?? 'SNMP', formatTime(port.checkedAt)];
-            if (port.lldpNeighborCount) state.push('соседей по LLDP ' + port.lldpNeighborCount);
+            state.push(...lldpCounts(port));
             li.append(make('small', `${device} ${port.name}: ${state.filter(Boolean).join(' · ')}`));
           }
           if (evidence.lacp?.aggregateState) {
@@ -866,6 +882,13 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
               const vlan = observed.vlan ? ' · VLAN ' + observed.vlan : '';
               li.append(make('small', 'MAC ВМ замечен на ' + name + ' ' + observed.port + vlan + ' · netctl FDB · ' + formatTime(observed.at)));
             }
+          }
+        }
+        if (reciprocal && declared) {
+          for (const evidence of declared.portEvidence ?? []) {
+            if (evidence.source !== 'GitHub') continue;
+            const [local, remote] = declared.a === id ? [evidence.a, evidence.b] : [evidence.b, evidence.a];
+            li.append(make('small', portName(local) + ' ↔ ' + portName(remote) + ' · GitHub (конфигурация)'));
           }
         }
         (unconfirmedPath ? observations : list).append(li);
