@@ -165,6 +165,33 @@ def test_fdb_ports_require_fresh_unambiguous_device_identity(tmp_path):
     assert first not in path.read_text(encoding="utf-8")
 
 
+def test_lldp_management_address_requires_matching_inventory_and_host_mac():
+    from app.infrastructure_collect import build_graph
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    mac = "02:00:00:00:00:03"
+    address = "192.0.2.13"
+    context = {"devices": [{"id": "remote", "name": "Remote", "kind": "switch", "mac_addresses": [mac]}]}
+    host = {"ip": address, "mac": mac, "last_seen_at": at, "availability": {
+        "checked_at": at, "run_status": "success", "state": "online", "reason": "active_probe", "active_method": "icmp",
+    }}
+    network = {"sources": [{"id": 1, "name": "local", "driver": "snmp_switch"}], "hosts": [host], "lldp": [
+        {"source": "local", "local_port_key": "51", "system_name": "Remote", "chassis_id": mac,
+         "port_id": "Ge1", "port_id_subtype": "interface_name", "management_addresses": [address], "observed_at": at},
+    ]}
+    graph = build_graph(context, network, {}, {}, {}, now)
+    remote = next(node for node in graph["nodes"] if node["id"] == "remote")
+    assert remote["reachability"]["state"] == "reachable"
+    assert remote["properties"]["Адрес управления по LLDP"] == address
+    link, = graph["links"]
+    assert link["portEvidence"][0]["b"] == "Ge1"
+    host["mac"] = "02:00:00:00:00:04"
+    graph = build_graph(context, network, {}, {}, {}, now)
+    remote = next(node for node in graph["nodes"] if node["id"] == "remote")
+    assert "reachability" not in remote
+
+
 def test_openvpn_requires_connected_daemon_and_active_session(monkeypatch):
     from io import BytesIO
     from app import infrastructure_service_probes as probes

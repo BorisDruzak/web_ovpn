@@ -131,6 +131,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 fresh_macs_by_ip.setdefault(host["ip"], set()).add(mac)
     addresses = {}
     names = {}
+    declared_devices_by_mac = {}
     for device in context.get("devices", []):
         key = device["id"]
         item = node(key, device["name"], KINDS.get(device["kind"], "Сервер"), device.get("site", ""))
@@ -139,6 +140,9 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         if observation:
             item["reachability"] = observation
         names.setdefault(device["name"].casefold(), []).append(key)
+        for mac in device.get("mac_addresses", []):
+            if MAC.fullmatch(mac):
+                declared_devices_by_mac.setdefault(mac.lower(), set()).add(key)
         if device.get("model"):
             item["properties"]["Модель"] = device["model"]
     for service in context.get("services", []):
@@ -222,12 +226,26 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         name = str(row.get("system_name") or "").casefold()
         candidates = [key for key in names.get(name, []) if nodes[key]["kind"] in NETWORK_KINDS]
         if a and len(candidates) == 1 and a != candidates[0]:
+            neighbor, = candidates
+            item = nodes[neighbor]
             raw_port = row.get("local_port_key", "")
             port = port_label(row.get("source"), raw_port)
-            remote = row.get("port_id") if str(row.get("port_id_subtype")) in {"1", "5"} else ""
-            nodes[candidates[0]]["properties"]["Соседство LLDP"] = f"{nodes[a]['name']} · {port}"
-            edge(a, candidates[0], "Сетевое соединение", "LLDP UI_VPN", True,
+            is_interface_name = str(row.get("port_id_subtype")) in {"1", "5", "interface_alias", "interface_name"}
+            remote = row.get("port_id") if is_interface_name else ""
+            item["properties"]["Соседство LLDP"] = f"{nodes[a]['name']} · {port}"
+            edge(a, neighbor, "Сетевое соединение", "LLDP UI_VPN", True,
                  ports=(port, remote or ""), at=row.get("observed_at"))
+            chassis_mac = str(row.get("chassis_id") or "").lower()
+            if declared_devices_by_mac.get(chassis_mac) == {neighbor} and "reachability" not in item:
+                verified = {ip for ip in row.get("management_addresses", [])
+                            if fresh_macs_by_ip.get(ip) == {chassis_mac}
+                            and str(host_ips[ip].get("mac") or "").lower() == chassis_mac}
+                if len(verified) == 1:
+                    address, = verified
+                    item["properties"]["Адрес управления по LLDP"] = address
+                    observation = _host_observation(host_ips[address], now)
+                    if observation:
+                        item["reachability"] = observation
 
     roles = bindings.get("roles", {})
     for target in server.get("targets", []):
