@@ -738,6 +738,42 @@ def test_collection_reads_source_registry_without_syncing_config(monkeypatch):
     assert calls == ["closed"]
 
 
+def test_ipsec_phase_two_requires_expected_peers_and_both_policy_directions():
+    from app.infrastructure_collect import build_graph
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    local, remote = "192.0.2.0/24", "198.51.100.0/24"
+    feature = {"id": "office-tunnel", "kind": "policy_based_ipsec", "local_device": "left", "remote_device": "right",
+               "central_peer": {"name": "office"}, "remote_peer": {"name": "main"}, "policy_destinations": [local]}
+    context = {"devices": [{"id": name, "name": name, "kind": "router"} for name in ("left", "right")],
+               "features": [feature], "segments": [{"id": "office-lan", "cidr": remote}]}
+    binding = {"ipsec_links": {"office-tunnel": {"label": "IPsec", "local_source": "local-router",
+               "remote_source": "remote-router", "remote_segment": "office-lan"}}}
+    policy = {"action": "encrypt", "tunnel": True, "established": True}
+    reply = {**policy, "peer": "main", "src_address": remote, "dst_address": local}
+    network = {"sources": [
+        {"name": "local-router", "driver": "mikrotik_api", "driver_options": {"intent_stable_id": "left"}},
+        {"name": "remote-router", "driver": "mikrotik_api", "driver_options": {"intent_stable_id": "right"}},
+    ], "ipsec": {
+        "local-router": {"at": at, "policies": [{**policy, "peer": "office", "src_address": local, "dst_address": remote}]},
+        "remote-router": {"at": at, "policies": [reply]},
+    }}
+
+    def build():
+        graph = build_graph(context, network, {}, {}, binding, now)
+        node = next(n for n in graph["nodes"] if n["id"] == "ipsec:office-tunnel")
+        return graph, node["reachability"]["state"]
+
+    graph, state = build()
+    assert state == "reachable"
+    assert {e["a"] for e in graph["links"] if e["b"] == "ipsec:office-tunnel" and e["confirmed"]} == {"left", "right"}
+    reply["peer"] = "another-peer"
+    assert build()[1] == "unreachable"
+    network["ipsec"].pop("remote-router")
+    assert build()[1] == "unknown"
+
+
 def test_route_evidence_is_scoped_and_does_not_mark_service_available():
     from app.infrastructure_collect import build_graph
 

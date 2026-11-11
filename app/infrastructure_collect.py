@@ -21,9 +21,10 @@ from urllib.error import URLError
 from urllib.parse import quote, urlsplit
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 
-from netctl.config import DEFAULT_DB_URL
+from netctl.config import DEFAULT_DB_URL, load_secrets
 from netctl.context import load_context_bytes, load_schema, validate_context
 from netctl.db import connect_read_only, list_sources
+from netctl.drivers import legacy_driver_for
 from netctl.snmp.lacp import read_lacp_members
 from netctl.snmp.transport import SnmpTransport
 from netctl.switch_queries import query_confirmed_attachment_ports, query_observed_mac_ports
@@ -295,6 +296,51 @@ def _route_checks(intent: dict, source: str, routes: list[dict], now: datetime) 
     return checks
 
 
+def _collect_ipsec_policies(sources: list[dict], configured: dict) -> dict:
+    names = {spec[side] for spec in configured.values() for side in ("local_source", "remote_source")}
+    targets = [source for source in sources if source["name"] in names and source.get("enabled")
+               and source["driver"] in {"mikrotik_api", "mikrotik_ssh"}]
+    if not targets:
+        return {}
+    secrets = load_secrets()
+
+    def collect(source):
+        try:
+            snapshot = legacy_driver_for(source, secrets).ipsec_status()
+        except Exception:
+            return source["name"], {}
+        if any(error.get("section") == "policies" for error in snapshot.get("errors", [])):
+            return source["name"], {}
+        return source["name"], {"at": datetime.now(timezone.utc).isoformat(), "policies": snapshot["policies"]}
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        return dict(pool.map(collect, targets))
+
+
+def _ipsec_policy_checks(feature: dict, remote: str, spec: dict, snapshots: dict, now: datetime) -> list[dict]:
+    def direction(source, peer, src, dst):
+        snapshot = snapshots.get(source, {})
+        at = snapshot.get("at")
+        if not observation_is_fresh(at, now):
+            return "unknown", None
+        established = any(policy.get("peer") == peer and policy.get("src_address") == src
+                          and policy.get("dst_address") == dst and policy.get("action") == "encrypt"
+                          and policy.get("tunnel") is True and policy.get("established") is True
+                          for policy in snapshot["policies"])
+        return ("reachable" if established else "unreachable"), datetime.fromisoformat(at)
+
+    checks = []
+    for local in feature["policy_destinations"]:
+        forward, left = direction(spec["local_source"], feature["central_peer"]["name"], local, remote)
+        reverse, right = direction(spec["remote_source"], feature["remote_peer"]["name"], remote, local)
+        states = (forward, reverse)
+        state = "unreachable" if "unreachable" in states else "unknown" if "unknown" in states else "reachable"
+        stamps = [stamp for status, stamp in ((forward, left), (reverse, right)) if status == state or state == "reachable"]
+        checked_at = min((stamp for stamp in stamps if stamp), default=now).isoformat()
+        checks.append({**_observation(state, "MikroTik IPsec", "IPsec фаза 2", checked_at), "target": local})
+    return checks
+
+
 def _reconcile_fdb_ports(links) -> None:
     direct = {}
     reciprocal = {}
@@ -484,6 +530,25 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             ]
         if "fdb_entries" in status:
             item["properties"]["Записи MAC-таблицы"] = str(status["fdb_entries"])
+    features = {item["id"]: item for item in context.get("features", []) if item.get("kind") == "policy_based_ipsec"}
+    segments = {item["id"]: item["cidr"] for item in context.get("segments", []) if item.get("cidr")}
+    for feature_id, spec in bindings.get("ipsec_links", {}).items():
+        feature = features.get(feature_id)
+        remote = segments.get(spec.get("remote_segment"))
+        if not feature or not remote or not feature.get("policy_destinations"):
+            continue
+        local_device, remote_device = feature["local_device"], feature["remote_device"]
+        if (source_nodes.get(spec["local_source"]), source_nodes.get(spec["remote_source"])) != (local_device, remote_device):
+            continue
+        item = node(f"ipsec:{feature_id}", spec["label"], "Сервис", origin="UI_VPN")
+        checks = _ipsec_policy_checks(feature, remote, spec, network.get("ipsec", {}), now)
+        item["serviceChecks"] = checks
+        states = {check["state"] for check in checks}
+        state = "unreachable" if "unreachable" in states else "unknown" if "unknown" in states else "reachable"
+        checked_at = min(check["checkedAt"] for check in checks if check["state"] == state)
+        item["reachability"] = _observation(state, "MikroTik IPsec", "IPsec фаза 2", checked_at)
+        for device in (local_device, remote_device):
+            edge(device, item["id"], "Цель проверки", "Настройки карты")
     for row in network.get("links", []):
         a_id, b_id = row.get("source_a_id"), row.get("source_b_id")
         a, b = source_ids.get(a_id), source_ids.get(b_id)
@@ -1033,6 +1098,8 @@ def main() -> int:
         network = read_network(guest_macs, route_sources)
         if lacp_links:
             network["lacp"] = asyncio.run(_collect_lacp(network, lacp_links, datetime.now(timezone.utc)))
+        if bindings.get("ipsec_links"):
+            network["ipsec"] = _collect_ipsec_policies(network["sources"], bindings["ipsec_links"])
         network["guest_arp_probes"] = _collect_guest_arp_probes(
             pve, network, bindings.get("guest_probe_ips", {}), datetime.now(timezone.utc),
         )
