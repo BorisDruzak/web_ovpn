@@ -648,8 +648,10 @@ def _reciprocal_management_paths(links, nodes: dict, sightings: dict, now: datet
 def _add_guest_switch_uplinks(links, nodes: dict, pve: dict, now: datetime) -> None:
     owners = {}
     candidates = {}
+    mac_paths = {}
+    mac_path_owners = {}
     for link in links:
-        if not link["confirmed"] or link["kind"] != "Сетевое соединение":
+        if not link["confirmed"] or link["kind"] not in {"Сетевое соединение", "Путь по MAC-таблице"}:
             continue
         for local, remote in (("a", "b"), ("b", "a")):
             switch, peer = link[local], link[remote]
@@ -662,11 +664,18 @@ def _add_guest_switch_uplinks(links, nodes: dict, pve: dict, now: datetime) -> N
                     continue
                 switch_port = (switch, report[local].casefold())
                 endpoint = (peer, report[remote].casefold())
+                hypervisor_port = (
+                    source == "netctl FDB + Proxmox" and endpoint[1] and nodes[peer]["kind"] == "Гипервизор"
+                )
+                evidence = {"id": switch, "port": report[local], "at": report["at"]}
+                if link["kind"] == "Путь по MAC-таблице":
+                    if hypervisor_port:
+                        mac_path_owners.setdefault(switch_port, set()).add(endpoint)
+                        mac_paths.setdefault(endpoint, {})[switch_port] = {**evidence, "viaMacTable": True}
+                    continue
                 owners.setdefault(switch_port, set()).add(endpoint)
-                if source == "netctl FDB + Proxmox" and endpoint[1] and nodes[peer]["kind"] == "Гипервизор":
-                    candidates.setdefault(endpoint, {})[switch_port] = {
-                        "id": switch, "port": report[local], "at": report["at"],
-                    }
+                if hypervisor_port:
+                    candidates.setdefault(endpoint, {})[switch_port] = evidence
 
     running = {(row["node"], row["vmid"]) for row in pve.get("guests", [])
                if row.get("status") == "running" and not row.get("template")}
@@ -685,12 +694,16 @@ def _add_guest_switch_uplinks(links, nodes: dict, pve: dict, now: datetime) -> N
             if not isinstance(uplink, str) or virtual["uplinks"] != [uplink] or uplink not in pve.get("activePorts", {}).get(host, []):
                 continue
             endpoint = (host, uplink.casefold())
-            paths = candidates.get(endpoint, {})
-            if len(paths) == 1:
-                (switch_port, evidence), = paths.items()
-                if owners[switch_port] == {endpoint}:
-                    checked_at = min(datetime.fromisoformat(stamp) for stamp in (evidence["at"], report["at"]))
-                    virtual["switchUplink"] = {**evidence, "at": checked_at.isoformat()}
+            paths = candidates.get(endpoint) or mac_paths.get(endpoint, {})
+            if len(paths) != 1:
+                continue
+            (switch_port, evidence), = paths.items()
+            if owners.get(switch_port, {endpoint}) != {endpoint}:
+                continue
+            if evidence.get("viaMacTable") and mac_path_owners[switch_port] != {endpoint}:
+                continue
+            checked_at = min(datetime.fromisoformat(stamp) for stamp in (evidence["at"], report["at"]))
+            virtual["switchUplink"] = {**evidence, "at": checked_at.isoformat()}
 
 
 def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings: dict, now: datetime) -> dict:

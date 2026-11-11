@@ -561,8 +561,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
             if (network.uplinks.length) notes.push('Интерфейсы моста: ' + network.uplinks.join(', '));
             if (notes.length) li.append(make('small', notes.join(' · ')));
             if (network.switchUplink) {
-              const {id, port, at} = network.switchUplink;
-              li.append(make('small', 'Аплинк моста: ' + byId.get(id).name + ' ' + port + ' · ' + formatTime(at)));
+              const {id, port, at, viaMacTable} = network.switchUplink;
+              const label = viaMacTable ? 'Путь аплинка по MAC-таблице' : 'Аплинк моста';
+              li.append(make('small', label + ': ' + byId.get(id).name + ' ' + port + ' · ' + formatTime(at)));
             }
             for (const observed of network.switchPorts ?? []) {
               const name = byId.get(observed.id).name;

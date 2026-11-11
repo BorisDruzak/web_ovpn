@@ -423,6 +423,7 @@ def load_infrastructure_map(path: Path, now: datetime | None = None, *, db: Sess
                                 and observation_is_fresh(switch_uplink.get("at"), now)):
                             evidence[-1]["virtual"]["switchUplink"] = {
                                 "id": switch_id, "port": port, "at": _time(switch_uplink["at"]).isoformat(),
+                                **({"viaMacTable": True} if switch_uplink.get("viaMacTable") is True else {}),
                             }
             confirmed = row.get("confirmed") is True
             if edge["source"] in {"netctl", "LLDP UI_VPN", "LLDP · двустороннее", "netctl FDB",

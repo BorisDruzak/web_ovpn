@@ -1599,8 +1599,9 @@ def test_configured_asset_fdb_path_is_scoped_and_requires_a_unique_live_port():
     assert links() == []
 
 
-def test_hypervisor_fdb_path_reports_management_interface_without_claiming_direct_cable():
+def test_hypervisor_fdb_path_reports_management_interface_without_claiming_direct_cable(tmp_path):
     from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
 
     now = datetime.now(timezone.utc)
     at = now.isoformat()
@@ -1613,7 +1614,11 @@ def test_hypervisor_fdb_path_reports_management_interface_without_claiming_direc
                "ports": [{"source": "core", "port_key": "physical:12", "name": "ge12",
                           "oper_status": "up", "last_seen_at": at}],
                "asset_fdb": [{"source_id": 1, "mac": mac, "port_key": "physical:12", "vlan_id": 1, "observed_at": at}]}
-    pve = {"at": earlier, "cluster": [], "guests": [], "nodes": [{"node": "pve1", "status": "online"}],
+    pve = {"at": earlier, "cluster": [], "nodes": [{"node": "pve1", "status": "online"}],
+           "guests": [{"vmid": 108, "node": "pve1", "type": "qemu", "status": "running"}],
+           "configs": {"108": {"net0": "virtio=02:00:00:00:00:08,bridge=vmbr0"}},
+           "bridges": {"pve1": {"vmbr0": {"active": 1, "bridge_ports": "enp134s0"}}},
+           "activePorts": {"pve1": ["enp134s0"]},
            "management": {"pve1": {"address": address, "port": "enp134s0"}}}
     bindings = {"asset_fdb_paths": {"pve1": "core"}}
 
@@ -1624,10 +1629,31 @@ def test_hypervisor_fdb_path_reports_management_interface_without_claiming_direc
         report, = path["portEvidence"]
         return report
 
+    def guest_uplink(rendered_at=now):
+        raw = build_graph(context, network, {}, pve, bindings, now)
+        path = tmp_path / "infrastructure.json"
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        graph = load_infrastructure_map(path, rendered_at)
+        placement = next(link for link in graph["links"] if link["b"] == "pve-guest:108")
+        virtual = placement["portEvidence"][0]["virtual"]
+        assert virtual["switchPorts"] == []
+        return virtual.get("switchUplink")
+
     assert proof() == {"a": "ge12", "b": "enp134s0", "source": "netctl FDB + Proxmox",
                        "at": earlier, "confirmed": True, "vlan": 1}
+    assert guest_uplink() == {"id": "observer:core", "port": "ge12", "at": earlier, "viaMacTable": True}
+    assert guest_uplink(now + timedelta(minutes=25)) is None
+    pve["activePorts"]["pve1"] = []
+    assert guest_uplink() is None
+    pve["activePorts"]["pve1"] = ["enp134s0"]
+    context["devices"].append({"id": "router", "name": "Other router", "kind": "router"})
+    network["lldp"] = [{"source": "core", "local_port_key": "physical:12",
+                        "system_name": "Other router", "observed_at": at}]
+    assert guest_uplink() is None
+    del network["lldp"]
     pve["management"]["pve1"]["address"] = "192.0.2.12"
     assert proof()["b"] == "" and proof()["source"] == "netctl FDB"
+    assert guest_uplink() is None
     pve["management"]["pve1"]["address"] = address
     pve["at"] = (now - timedelta(hours=1)).isoformat()
     assert proof()["b"] == ""
