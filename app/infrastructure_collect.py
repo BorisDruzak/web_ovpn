@@ -269,9 +269,14 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             ports = (port_label(source_names.get(a_id), end_a.get("port_key") or ""),
                      port_label(source_names.get(b_id), end_b.get("port_key") or ""))
             edge(a, b, "Сетевое соединение", "netctl", confirmed, ports=ports, at=observed)
-    for row in network.get("lldp", []):
-        if not observation_is_fresh(row.get("observed_at"), now):
-            continue
+    fresh_lldp = [row for row in network.get("lldp", []) if observation_is_fresh(row.get("observed_at"), now)]
+    peers_by_port = {}
+    for row in fresh_lldp:
+        local = (row.get("source"), row.get("local_port_key"))
+        chassis = str(row.get("chassis_id") or row.get("system_name") or "").casefold()
+        identity = (chassis, str(row.get("port_id") or "").casefold())
+        peers_by_port.setdefault(local, set()).add(identity)
+    for row in fresh_lldp:
         a = source_nodes.get(row.get("source"))
         name = str(row.get("system_name") or "").casefold()
         candidates = [key for key in names.get(name, []) if nodes[key]["kind"] in NETWORK_KINDS]
@@ -282,9 +287,11 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             port = port_label(row.get("source"), raw_port)
             is_interface_name = str(row.get("port_id_subtype")) in {"1", "5", "interface_alias", "interface_name"}
             remote = row.get("port_id") if is_interface_name else ""
-            item["properties"]["Соседство LLDP"] = f"{nodes[a]['name']} · {port}"
-            edge(a, neighbor, "Сетевое соединение", "LLDP UI_VPN", True,
-                 ports=(port, remote or ""), at=row.get("observed_at"))
+            direct = bool(raw_port) and len(peers_by_port[(row.get("source"), raw_port)]) == 1
+            note = "" if direct else " · несколько соседей на порту"
+            item["properties"]["Соседство LLDP"] = f"{nodes[a]['name']} · {port}{note}"
+            edge(a, neighbor, "Сетевое соединение", "LLDP UI_VPN", direct,
+                 details=note.removeprefix(" · "), ports=(port, remote or ""), at=row.get("observed_at"))
             chassis_mac = str(row.get("chassis_id") or "").lower()
             if declared_devices_by_mac.get(chassis_mac) == {neighbor} and "reachability" not in item:
                 verified = {ip for ip in row.get("management_addresses", [])

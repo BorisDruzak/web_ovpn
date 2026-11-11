@@ -176,7 +176,10 @@ def lldp_link_evidence(
         "SELECT source_id, local_port_key, chassis_id, port_id, observed_at, "
         "system_description, system_capabilities_json, "
         "enabled_capabilities_json, management_addresses_json "
-        "FROM current_switch_lldp_neighbors ORDER BY source_id, local_port_key"
+        "FROM current_switch_lldp_neighbors "
+        "JOIN (SELECT source_id, local_port_key FROM current_switch_lldp_neighbors "
+        "GROUP BY source_id, local_port_key HAVING COUNT(*) = 1) "
+        "USING (source_id, local_port_key) ORDER BY source_id, local_port_key"
     ):
         remote = by_mac.get(normalize_mac(row["chassis_id"]) or "")
         local = by_source.get(int(row["source_id"]))

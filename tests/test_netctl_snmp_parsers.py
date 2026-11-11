@@ -869,6 +869,38 @@ def test_lldp_rejects_unexpected_oid_suffix_or_value_type(
         )
 
 
+def test_compact_tplink_lldp_uses_advertised_local_interface_not_numeric_ifindex() -> None:
+    from netctl.snmp.lldp import parse_lldp_neighbors
+    from netctl.snmp.models import SwitchPort
+
+    local_id = (1, 0, 8802, 1, 1, 2, 1, 3, 7, 1, 3)
+    local_type = local_id[:-1] + (2,)
+    suffix = (15, 1)
+    columns = (
+        _result("chassis", _vb(LLDP_REM_CHASSIS_ID + suffix, b"\x00\x11\x22\x33\x44\x55", "octet_string")),
+        _result("port", _vb(LLDP_REM_PORT_ID + suffix, b"ether3", "octet_string")),
+        _result("name", _vb(LLDP_REM_SYS_NAME + suffix, b"router", "octet_string")),
+    )
+    ports = (
+        SwitchPort("ifindex:15", 15, None, None, "unrelated", "", None, "up", "up", None),
+        SwitchPort("ifindex:49167", 49167, 49167, None, "gigabitEthernet 1/0/15", "", None, "up", "up", None),
+    )
+    kwargs = {
+        "ports": ports, "compact_index": True,
+        "local_id_result": _result("local_port", _vb(local_id + (15,), b"gigabitEthernet 1/0/15", "octet_string")),
+        "local_subtype_result": _result("local_type", _vb(local_type + (15,), 5)),
+        "management_address_result": _result("management", _vb(LLDP_REM_MAN_ADDR_IF_SUBTYPE + (15, 1, 1, 4, 192, 0, 2, 15), 2)),
+    }
+    row, = parse_lldp_neighbors(*columns, **kwargs)
+    assert row["local_port_key"] == "ifindex:49167"
+    assert row["port_id"] == "ether3"
+    assert row["management_addresses"] == ["192.0.2.15"]
+    with pytest.raises(ValueError, match="LLDP"):
+        parse_lldp_neighbors(*columns, **{**kwargs, "local_id_result": None})
+    with pytest.raises(ValueError, match="LLDP"):
+        parse_lldp_neighbors(*columns, ports=ports)
+
+
 def test_malformed_lldp_is_sanitized_and_never_fails_fdb() -> None:
     from netctl.snmp.collector import collect_switch_snapshot
 

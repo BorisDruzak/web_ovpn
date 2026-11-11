@@ -49,6 +49,8 @@ from .oids import (
     IF_OUT_OCTETS,
     IF_PHYS_ADDRESS,
     IF_SPEED,
+    LLDP_LOC_PORT_ID,
+    LLDP_LOC_PORT_ID_SUBTYPE,
     LLDP_REM_CHASSIS_ID,
     LLDP_REM_CHASSIS_ID_SUBTYPE,
     LLDP_REM_MAN_ADDR_IF_SUBTYPE,
@@ -562,7 +564,17 @@ async def collect_switch_snapshot(
             capability="lldp_remote_management_address",
         ),
     )
+    first_core_result = len(capabilities)
     capabilities.extend((*lldp_core_results, *lldp_enrichment_results))
+    # Some TP-Link firmware omits the LLDP time mark and uses local port numbers.
+    compact_lldp = profile.profile_id == "tplink" and any(
+        len(row.oid) == len(LLDP_REM_CHASSIS_ID) + 2 for row in lldp_core_results[0].rows
+    )
+    local_lldp_id = local_lldp_subtype = None
+    if compact_lldp:
+        local_lldp_id = await transport.walk(LLDP_LOC_PORT_ID, capability="lldp_local_port_id")
+        local_lldp_subtype = await transport.walk(LLDP_LOC_PORT_ID_SUBTYPE, capability="lldp_local_port_id_subtype")
+        capabilities.extend((local_lldp_id, local_lldp_subtype))
     lldp_neighbors: tuple[dict[str, object], ...] = ()
     lldp_failure = next(
         (
@@ -592,6 +604,9 @@ async def collect_switch_snapshot(
                 system_capabilities_result=lldp_enrichment_results[4],
                 enabled_capabilities_result=lldp_enrichment_results[5],
                 management_address_result=lldp_enrichment_results[6],
+                compact_index=compact_lldp,
+                local_id_result=local_lldp_id,
+                local_subtype_result=local_lldp_subtype,
             )
         except ValueError:
             lldp_neighbors = ()
@@ -599,9 +614,6 @@ async def collect_switch_snapshot(
                 lldp_core_results,
                 error_code="malformed_lldp",
                 error_message="SNMP LLDP rows are malformed",
-            )
-            first_core_result = len(capabilities) - len(lldp_enrichment_results) - len(
-                lldp_core_results
             )
             capabilities[
                 first_core_result : first_core_result + len(lldp_core_results)

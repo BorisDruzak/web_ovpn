@@ -239,6 +239,8 @@ def test_lldp_topology_enriches_only_chassis_mac_matched_evidence() -> None:
             "system_description": "Fixture SwitchOS",
             "capabilities": ["bridge"],
         }
+        conn.execute("UPDATE current_switch_lldp_neighbors SET local_port_key='ifindex:1' WHERE local_port_key='ifindex:2'")
+        assert lldp_link_evidence(conn, _identities()) == ()
     finally:
         conn.close()
 

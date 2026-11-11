@@ -130,6 +130,21 @@ def test_port_evidence_keeps_direction_and_parallel_links(tmp_path):
     assert not graph["links"][0]["confirmed"]
 
 
+def test_lldp_multiple_neighbors_on_one_port_do_not_confirm_direct_links():
+    from app.infrastructure_collect import build_graph
+
+    now = datetime.now(timezone.utc)
+    devices = [{"id": name, "name": name, "kind": "router"} for name in ("one", "two")]
+    network = {"sources": [{"id": 1, "name": "switch", "driver": "snmp_switch"}], "lldp": [
+        {"source": "switch", "system_name": name, "local_port_key": "48",
+         "chassis_id": f"02:00:00:00:00:0{index}", "observed_at": now.isoformat()}
+        for index, name in enumerate(("one", "two"), 1)
+    ]}
+    graph = build_graph({"devices": devices}, network, {}, {}, {}, now)
+    assert len(graph["links"]) == 2
+    assert all(not link["confirmed"] and not link["portEvidence"][0]["confirmed"] for link in graph["links"])
+
+
 def test_fdb_ports_require_fresh_unambiguous_device_identity(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map
