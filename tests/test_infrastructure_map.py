@@ -253,6 +253,42 @@ def test_port_evidence_keeps_direction_and_parallel_links(tmp_path):
     assert not graph["links"][0]["confirmed"]
 
 
+def test_reciprocal_lldp_confirms_numeric_alias_and_unnamed_peer():
+    from app.infrastructure_collect import build_graph
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    a_mac, b_mac = "02:00:00:00:00:01", "02:00:00:00:00:02"
+    sources = [{"id": i, "name": name, "host": ip, "enabled": 1, "driver": "snmp_switch"}
+               for i, name, ip in ((1, "dgs", "192.0.2.16"), (2, "snr", "192.0.2.254"))]
+    ports = [{"source": source, "port_key": f"ifindex:{index}", "if_index": index, "name": label,
+              "mac": mac, "oper_status": "up", "last_seen_at": at}
+             for source, index, label, mac in (("dgs", 52, "Slot0/52", None), ("snr", 5021, "ge21", b_mac))]
+    lldp = [
+        {"source": "dgs", "local_port_key": "ifindex:52", "chassis_id": b_mac, "chassis_id_subtype": "mac_address", "port_id": "ge21",
+         "port_id_subtype": "interface_name", "observed_at": at},
+        {"source": "snr", "local_port_key": "ifindex:5021", "chassis_id": a_mac, "chassis_id_subtype": "mac_address", "port_id": "52",
+         "port_id_subtype": "interface_alias", "observed_at": at},
+    ]
+    network = {"sources": sources, "ports": ports, "lldp": lldp,
+               "arp": [{"ip": "192.0.2.16", "mac": a_mac, "last_seen_at": at}]}
+
+    def pairs():
+        graph = build_graph({}, network, {}, {}, {}, now)
+        return [(p["a"], p["b"]) for e in graph["links"] for p in e.get("portEvidence", [])
+                if p["confirmed"] and p["source"] == "LLDP · двустороннее"]
+
+    assert pairs() == [("Slot0/52", "ge21")]
+    lldp[1]["port_id"] = "53"
+    assert pairs() == []
+    lldp[1]["port_id"] = "52"
+    lldp.append({**lldp[0], "chassis_id": "02:00:00:00:00:99"})
+    assert pairs() == []
+    lldp.pop()
+    lldp[1]["observed_at"] = (now - timedelta(hours=1)).isoformat()
+    assert pairs() == []
+
+
 def test_lldp_multiple_neighbors_on_one_port_do_not_confirm_direct_links():
     from app.infrastructure_collect import build_graph
 

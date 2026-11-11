@@ -124,6 +124,71 @@ def _verified_arp_checks(mappings: dict, hosts: dict, now: datetime) -> dict:
     return checks
 
 
+def _reciprocal_lldp(network: dict, rows: list[dict], peers_by_port: dict, arp: dict, now: datetime):
+    sources = {row["name"]: row for row in network.get("sources", [])
+               if row.get("enabled") and row.get("driver") == "snmp_switch"}
+    chassis_owners = {}
+    ports = {}
+
+    def remember(mac, source, observed):
+        owners = chassis_owners.setdefault(mac, {})
+        owners[source] = max(owners.get(source, observed), observed)
+
+    for source, row in sources.items():
+        if row.get("host") in arp:
+            mac, observed = arp[row["host"]]
+            remember(mac, source, observed)
+    for port in network.get("ports", []):
+        source, stamp = port["source"], port.get("last_seen_at")
+        if (source not in sources or port.get("oper_status") != "up"
+                or not observation_is_fresh(stamp, now) or type(port.get("if_index")) is not int):
+            continue
+        ports.setdefault(source, {})[port["port_key"]] = port
+        mac = str(port.get("mac") or "").lower()
+        if MAC.fullmatch(mac):
+            remember(mac, source, datetime.fromisoformat(stamp))
+
+    def peer(row):
+        mac = str(row.get("chassis_id") or "").lower()
+        if row.get("chassis_id_subtype") not in {"4", "mac_address"}:
+            return None, None
+        owners = chassis_owners.get(mac, {})
+        if len(owners) == 1:
+            return next(iter(owners.items()))
+        return None, None
+
+    def matches_port(advertisement, source, port):
+        identifier = str(advertisement.get("port_id") or "").strip().casefold()
+        subtype = str(advertisement.get("port_id_subtype"))
+        field = {"1": "alias", "5": "name", "interface_alias": "alias", "interface_name": "name"}.get(subtype)
+        if not identifier or not field:
+            return False
+        indexes = {p["if_index"] for p in ports[source].values()
+                   if str(p.get(field) or "").strip().casefold() == identifier
+                   or (field == "alias" and str(p["if_index"]) == identifier)}
+        return indexes == {port["if_index"]}
+
+    observations = {}
+    for row in rows:
+        source, key = row.get("source"), row.get("local_port_key")
+        port = ports.get(source, {}).get(key)
+        if port and len(peers_by_port[(source, key)]) == 1:
+            observations.setdefault(source, []).append((row, port))
+    for source, local in observations.items():
+        for row, port in local:
+            remote, peer_at = peer(row)
+            if not remote or source >= remote:
+                continue
+            for reverse, other_port in observations.get(remote, []):
+                local_peer, reverse_at = peer(reverse)
+                if (local_peer == source and matches_port(row, remote, other_port)
+                        and matches_port(reverse, source, port)):
+                    at = min(peer_at, reverse_at, *(datetime.fromisoformat(value) for value in (
+                        row["observed_at"], reverse["observed_at"], port["last_seen_at"], other_port["last_seen_at"],
+                    )))
+                    yield source, remote, port["name"], other_port["name"], at.isoformat()
+
+
 async def _collect_lacp(network: dict, configured: list[dict], now: datetime) -> list[dict]:
     sources = {row["name"]: row for row in network["sources"] if row["enabled"] and row["driver"] == "snmp_switch"}
     indexes = {}
@@ -401,6 +466,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         peers_by_port.setdefault(local, set()).add(identity)
         for address in row.get("management_addresses", []):
             lldp_address_owners.setdefault(address, set()).add(chassis)
+    arp_mappings = _arp_mappings(network.get("arp", []), now)
     router_neighbor_macs = {}
     for row in network.get("router_neighbors", []):
         mac = str(row.get("mac") or "").lower()
@@ -448,6 +514,10 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 observation = _host_observation(host_ips[address], now)
                 if observation:
                     item["reachability"] = observation
+
+    for a, b, port_a, port_b, at in _reciprocal_lldp(network, fresh_lldp, peers_by_port, arp_mappings, now):
+        edge(source_nodes.get(a), source_nodes.get(b), "Сетевое соединение", "LLDP · двустороннее",
+             ports=(port_a, port_b), at=at)
 
     for device in context.get("devices", []):
         key = device["id"]
@@ -515,7 +585,6 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
     online_hypervisors = set()
     overview_guests = []
     pve_at = pve.get("at", now.isoformat())
-    arp_mappings = _arp_mappings(network.get("arp", []), now)
     if pve:
         arp_checks = _verified_arp_checks(arp_mappings, host_ips, now)
         for mac, checks in network.get("guest_arp_probes", {}).items():
@@ -793,8 +862,7 @@ def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: set[s
     return result
 
 
-def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | None = None,
-                 *, include_arp: bool = False) -> dict:
+def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | None = None) -> dict:
     commands = {
         "switches": (["switches", "status"], "switches"),
         "links": (["topology", "links"], "links"),
@@ -811,16 +879,15 @@ def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | N
         )]
         if guest_macs:
             data["guest_fdb"] = query_observed_mac_ports(connection, guest_macs)
-        if guest_macs or include_arp:
-            data["arp"] = [dict(row) for row in connection.execute(
-                """
-                SELECT a.ip, a.mac, a.last_seen_at
-                FROM arp_entries AS a
-                JOIN network_sources AS s ON s.id = a.source_id
-                WHERE s.enabled = 1 AND s.driver IN ('mikrotik_api', 'mikrotik_ssh')
-                  AND a.complete = 1 AND a.dynamic = 1
-                """
-            )]
+        data["arp"] = [dict(row) for row in connection.execute(
+            """
+            SELECT a.ip, a.mac, a.last_seen_at
+            FROM arp_entries AS a
+            JOIN network_sources AS s ON s.id = a.source_id
+            WHERE s.enabled = 1 AND s.driver IN ('mikrotik_api', 'mikrotik_ssh')
+              AND a.complete = 1 AND a.dynamic = 1
+            """
+        )]
         if route_sources:
             data["routes"] = [dict(row) for row in connection.execute(
                 """
@@ -906,7 +973,7 @@ def main() -> int:
         guest_macs = {mac for config in pve.get("configs", {}).values() for mac in _guest_macs(config)}
         route_sources = {item["source"] for item in bindings.get("route_evidence", {}).values() if item.get("source")}
         lacp_links = bindings.get("lacp_links", [])
-        network = read_network(guest_macs, route_sources, include_arp=bool(pve.get("management") or lacp_links))
+        network = read_network(guest_macs, route_sources)
         if lacp_links:
             network["lacp"] = asyncio.run(_collect_lacp(network, lacp_links, datetime.now(timezone.utc)))
         network["guest_arp_probes"] = _collect_guest_arp_probes(
