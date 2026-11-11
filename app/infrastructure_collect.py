@@ -341,6 +341,43 @@ def _ipsec_policy_checks(feature: dict, remote: str, spec: dict, snapshots: dict
     return checks
 
 
+def _collect_ipsec_connectivity(context: dict, sources: list[dict], configured: dict) -> dict:
+    features = {item["id"]: item for item in context.get("features", []) if item.get("kind") == "policy_based_ipsec"}
+    segments = {item["id"]: item["cidr"] for item in context.get("segments", []) if item.get("cidr")}
+    devices = {item["id"]: item.get("management_ip") for item in context.get("devices", [])}
+    routers = {source["name"]: source for source in sources if source.get("enabled") and source["driver"] == "mikrotik_ssh"}
+    observations = {}
+    for feature_id, spec in configured.items():
+        feature, probe = features.get(feature_id), spec.get("connectivity")
+        router = routers.get(spec.get("remote_source"))
+        if not feature or not probe or not router:
+            continue
+        try:
+            local = ipaddress.IPv4Address(devices.get(probe["asset"]))
+            remote = ipaddress.IPv4Address(devices.get(feature["remote_device"]))
+            if (router.get("host") != str(remote)
+                    or remote not in ipaddress.IPv4Network(segments.get(spec["remote_segment"]))
+                    or not any(local in ipaddress.IPv4Network(cidr) for cidr in feature["policy_destinations"])):
+                continue
+        except (KeyError, ValueError):
+            continue
+
+        checks = []
+        for source, address, probe_once in (
+            ("UI_VPN", remote, lambda: probe_icmp(str(remote), source_ip=str(local))),
+            (router["name"], local, lambda: legacy_driver_for(router, load_secrets()).ping_ipv4(str(local), str(remote))),
+        ):
+            try:
+                replied = probe_once()
+            except (OSError, ValueError, subprocess.SubprocessError):
+                replied = False
+            stamp = datetime.now(timezone.utc).isoformat()
+            checks.append({**_observation("reachable" if replied else "unknown", source, "ICMP", stamp),
+                           "target": str(address)})
+        observations[feature_id] = checks
+    return observations
+
+
 def _reconcile_fdb_ports(links) -> None:
     direct = {}
     reciprocal = {}
@@ -549,6 +586,16 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         item["reachability"] = _observation(state, "MikroTik IPsec", "IPsec фаза 2", checked_at)
         for device in (local_device, remote_device):
             edge(device, item["id"], "Цель проверки", "Настройки карты")
+        if probe := spec.get("connectivity"):
+            path = node(f"ipsec:{feature_id}:connectivity", probe["label"], "Сервис", origin="UI_VPN")
+            readings = network.get("ipsec_connectivity", {}).get(feature_id, [])
+            path["serviceChecks"] = readings
+            if len(readings) == 2 and all(r["state"] == "reachable" and observation_is_fresh(r["checkedAt"], now)
+                                         for r in readings):
+                path["reachability"] = _observation("reachable", "UI_VPN · MikroTik", "ICMP",
+                                                    min(r["checkedAt"] for r in readings))
+            for device in (local_device, remote_device):
+                edge(device, path["id"], "Цель проверки", "Настройки карты")
     for row in network.get("links", []):
         a_id, b_id = row.get("source_a_id"), row.get("source_b_id")
         a, b = source_ids.get(a_id), source_ids.get(b_id)
@@ -1100,6 +1147,7 @@ def main() -> int:
             network["lacp"] = asyncio.run(_collect_lacp(network, lacp_links, datetime.now(timezone.utc)))
         if bindings.get("ipsec_links"):
             network["ipsec"] = _collect_ipsec_policies(network["sources"], bindings["ipsec_links"])
+            network["ipsec_connectivity"] = _collect_ipsec_connectivity(context, network["sources"], bindings["ipsec_links"])
         network["guest_arp_probes"] = _collect_guest_arp_probes(
             pve, network, bindings.get("guest_probe_ips", {}), datetime.now(timezone.utc),
         )

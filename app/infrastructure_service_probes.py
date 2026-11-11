@@ -227,9 +227,10 @@ def _sip_options(ip: str, port: int) -> str:
     return "unreachable" if code in {500, 502, 503, 504} else "unknown"
 
 
-def probe_icmp(ip: str) -> bool:
+def probe_icmp(ip: str, *, source_ip: str | None = None) -> bool:
     ip = str(ipaddress.ip_address(ip))
-    result = subprocess.run(["/usr/bin/ping", "-n", "-c", "1", "-W", "2", ip],
+    bind = ["-I", str(ipaddress.ip_address(source_ip))] if source_ip is not None else []
+    result = subprocess.run(["/usr/bin/ping", "-n", "-c", "1", "-W", "2", *bind, ip],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             timeout=TIMEOUT, check=False)
     return result.returncode == 0

@@ -774,6 +774,66 @@ def test_ipsec_phase_two_requires_expected_peers_and_both_policy_directions():
     assert build()[1] == "unknown"
 
 
+def test_ipsec_path_checks_explicit_sources_in_both_directions(monkeypatch):
+    from app import infrastructure_collect as collector
+
+    now = datetime.now(timezone.utc)
+    context = {"devices": [
+        {"id": "ui", "name": "UI", "kind": "server", "management_ip": "192.0.2.30"},
+        {"id": "left", "name": "Central", "kind": "router"},
+        {"id": "right", "name": "Branch", "kind": "router", "management_ip": "198.51.100.1"},
+    ], "features": [
+        {"id": "office", "kind": "policy_based_ipsec", "local_device": "left", "remote_device": "right",
+         "policy_destinations": ["192.0.2.0/24"], "central_peer": {"name": "branch"}, "remote_peer": {"name": "central"}},
+    ], "segments": [{"id": "branch-lan", "cidr": "198.51.100.0/24"}]}
+    configured = {"office": {"label": "IPsec phase 2", "local_source": "center", "remote_source": "branch",
+                              "remote_segment": "branch-lan", "connectivity": {"asset": "ui", "label": "ICMP link"}}}
+    sources = [
+        {"name": "center", "driver": "mikrotik_api", "enabled": True, "driver_options": {"intent_stable_id": "left"}},
+        {"name": "branch", "driver": "mikrotik_ssh", "enabled": True, "host": "198.51.100.1",
+         "driver_options": {"intent_stable_id": "right"}},
+    ]
+    calls = []
+    class Remote:
+        def ping_ipv4(self, address, source):
+            calls.append(("branch", address, source))
+            return True
+
+    monkeypatch.setattr(collector, "legacy_driver_for", lambda *_: Remote())
+    monkeypatch.setattr(collector, "load_secrets", lambda: {})
+    monkeypatch.setattr(collector, "probe_icmp", lambda address, *, source_ip: calls.append(("ui", address, source_ip)) or True)
+    observations = collector._collect_ipsec_connectivity(context, sources, configured)
+    assert calls == [("ui", "198.51.100.1", "192.0.2.30"), ("branch", "192.0.2.30", "198.51.100.1")]
+    graph = collector.build_graph(context, {"sources": sources, "ipsec_connectivity": observations},
+                                  {}, {}, {"ipsec_links": configured}, datetime.now(timezone.utc))
+    path = next(n for n in graph["nodes"] if n["id"] == "ipsec:office:connectivity")
+    assert path["reachability"]["state"] == "reachable"
+    assert [c["target"] for c in path["serviceChecks"]] == ["198.51.100.1", "192.0.2.30"]
+    phase = next(n for n in graph["nodes"] if n["id"] == "ipsec:office")
+    assert phase["reachability"]["state"] == "unknown"
+    context["devices"][0]["management_ip"] = "203.0.113.30"
+    assert collector._collect_ipsec_connectivity(context, sources, configured) == {}
+    assert len(calls) == 2
+
+
+def test_routeros_ping_uses_one_packet_and_rejects_injected_addresses(monkeypatch):
+    from types import SimpleNamespace
+    import pytest
+    from netctl.drivers import mikrotik_ssh
+
+    calls = []
+    def run(args, **kwargs):
+        calls.append(args[-1])
+        return SimpleNamespace(returncode=0, stdout="sent=1 received=1 packet-loss=0%")
+
+    monkeypatch.setattr(mikrotik_ssh.subprocess, "run", run)
+    driver = mikrotik_ssh.MikroTikSshDriver({"host": "198.51.100.1", "username": "observer"}, {})
+    assert driver.ping_ipv4("192.0.2.30", "198.51.100.1")
+    with pytest.raises(ValueError):
+        driver.ping_ipv4("192.0.2.30 count=100", "198.51.100.1")
+    assert calls == ["/ping address=192.0.2.30 src-address=198.51.100.1 count=1"]
+
+
 def test_route_evidence_is_scoped_and_does_not_mark_service_available():
     from app.infrastructure_collect import build_graph
 

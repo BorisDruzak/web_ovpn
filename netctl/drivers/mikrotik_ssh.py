@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ipaddress
+import re
 import shlex
 import subprocess
 from typing import Any
@@ -112,6 +114,16 @@ class MikroTikSshDriver(NetworkDriver):
         identity = self._run_print("/system identity", terse=False)
         resource = self._run_print("/system resource", terse=False)
         return {"status": "ok", "identity": identity[0].get("name") if identity else "", "resource": resource[0] if resource else {}}
+
+    def ping_ipv4(self, address: str, source_address: str) -> bool:
+        destination = ipaddress.IPv4Address(address)
+        origin = ipaddress.IPv4Address(source_address)
+        target = f"{self.source['username']}@{self.source['host']}"
+        result = subprocess.run(
+            [*self._ssh_base(), target, f"/ping address={destination} src-address={origin} count=1"],
+            capture_output=True, text=True, timeout=int(self.source.get("ssh_connect_timeout") or 8) + 3, check=False,
+        )
+        return result.returncode == 0 and re.search(r"\bsent=1\s+received=1\b", result.stdout) is not None
 
     def collect(self, include_connections: bool = False) -> dict[str, Any]:
         raw: dict[str, Any] = {}
