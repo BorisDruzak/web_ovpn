@@ -253,6 +253,33 @@ def test_port_evidence_keeps_direction_and_parallel_links(tmp_path):
     assert not graph["links"][0]["confirmed"]
 
 
+def test_lldp_direct_neighbor_overrides_conflicting_fdb_ports():
+    from app.infrastructure_collect import build_graph
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    context = {"devices": [{"id": key, "name": name, "kind": kind}
+                            for key, name, kind in (("core", "SNR", "switch"), ("ito", "ITO", "switch"),
+                                                    ("router", "RB3011", "router"), ("other", "Other", "router"))]}
+    sources = [{"id": i, "name": key, "driver": "snmp_switch", "driver_options": {"intent_stable_id": key}}
+               for i, key in enumerate(("core", "ito", "router", "other"), 1)]
+    inferred = [{"source_a_id": 1, "source_b_id": peer, "state": "confirmed", "evidence": [
+        {"evidence_type": "fdb_management_mac", "endpoint_a": {"source_id": 1, "port_key": "ge23"},
+         "endpoint_b": {"source_id": peer}, "observed_at": at},
+    ]} for peer in (3, 4)]
+    lldp = [{"source": "core", "local_port_key": port, "system_name": name, "chassis_id": mac,
+             "port_id": "ether1", "port_id_subtype": "interface_name", "observed_at": at}
+            for port, name, mac in (("ge23", "ITO", "02:00:00:00:00:02"),
+                                    ("ge24", "RB3011", "02:00:00:00:00:03"))]
+    graph = build_graph(context, {"sources": sources, "links": inferred, "lldp": lldp}, {}, {}, {}, now)
+    links = {e["b"]: e for e in graph["links"] if e["a"] == "core"}
+    assert links["ito"]["confirmed"]
+    assert links["router"]["confirmed"]
+    assert [(p["a"], p["confirmed"]) for p in links["router"]["portEvidence"]] == [("ge23", False), ("ge24", True)]
+    assert not links["other"]["confirmed"]
+    assert not links["other"]["portEvidence"][0]["confirmed"]
+
+
 def test_reciprocal_lldp_confirms_numeric_alias_and_unnamed_peer():
     from app.infrastructure_collect import build_graph
 

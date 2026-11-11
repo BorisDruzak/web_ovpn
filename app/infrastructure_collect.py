@@ -295,6 +295,46 @@ def _route_checks(intent: dict, source: str, routes: list[dict], now: datetime) 
     return checks
 
 
+def _reconcile_fdb_ports(links) -> None:
+    direct = {}
+    reciprocal = {}
+    physical = [link for link in links if link["kind"] == "Сетевое соединение"]
+
+    def endpoints(link, report):
+        for side, peer in (("a", "b"), ("b", "a")):
+            if report[side]:
+                yield (link[side], report[side].casefold()), link[peer]
+
+    for link in physical:
+        for report in link.get("portEvidence", []):
+            if report["confirmed"] and report["source"] in {"LLDP UI_VPN", "LLDP · двустороннее"}:
+                neighbors = reciprocal if report["source"] == "LLDP · двустороннее" else direct
+                for endpoint, peer in endpoints(link, report):
+                    neighbors.setdefault(endpoint, set()).add(peer)
+    owners = {**direct, **reciprocal}
+
+    for link in physical:
+        evidence = link.get("portEvidence", [])
+        changed = False
+        for report in evidence:
+            if report["confirmed"] and report["source"] == "netctl FDB" and any(
+                len(owners.get(endpoint, ())) == 1 and peer not in owners[endpoint]
+                for endpoint, peer in endpoints(link, report)
+            ):
+                report["confirmed"] = False
+                changed = True
+        if not changed:
+            continue
+        surviving = [report for report in evidence if report["confirmed"]]
+        if not surviving:
+            link["confirmed"] = False
+            link["details"] = "MAC виден через порт другого соседа LLDP"
+        elif not any(report["source"] == link["source"] and report["at"] == link["observedAt"] for report in surviving):
+            best = max(surviving, key=lambda report: datetime.fromisoformat(report["at"]).timestamp()
+                       if report["at"] else 0)
+            link.update(source=best["source"], observedAt=best["at"])
+
+
 def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings: dict, now: datetime) -> dict:
     nodes = {}
     edges = {}
@@ -446,7 +486,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         a, b = source_ids.get(a_id), source_ids.get(b_id)
         edge(a, b, "Сетевое соединение", "netctl", False)
         for report in row.get("evidence", []):
-            if report.get("evidence_type") not in {"lldp_chassis_mac", "fdb_management_mac", "fdb_subtree"}:
+            evidence_type = report.get("evidence_type")
+            if evidence_type not in {"lldp_chassis_mac", "fdb_management_mac", "fdb_subtree"}:
                 continue
             end_a, end_b = report.get("endpoint_a", {}), report.get("endpoint_b", {})
             if (end_a.get("source_id"), end_b.get("source_id")) != (a_id, b_id):
@@ -455,7 +496,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             confirmed = row.get("state") == "confirmed" and observation_is_fresh(observed, now)
             ports = (port_label(source_names.get(a_id), end_a.get("port_key") or ""),
                      port_label(source_names.get(b_id), end_b.get("port_key") or ""))
-            edge(a, b, "Сетевое соединение", "netctl", confirmed, ports=ports, at=observed)
+            source_name = "netctl" if evidence_type == "lldp_chassis_mac" else "netctl FDB"
+            edge(a, b, "Сетевое соединение", source_name, confirmed, ports=ports, at=observed)
     fresh_lldp = [row for row in network.get("lldp", []) if observation_is_fresh(row.get("observed_at"), now)]
     peers_by_port = {}
     lldp_address_owners = {}
@@ -766,6 +808,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             edge(switch, asset, "Сетевое соединение", "SNMP LACP + ARP", at=checked_at,
                  details=f"LACP: подтверждено {len(confirmed)} из {report['expected']} портов",
                  ports=(f"{report['aggregate']} / {member['port']}", f"LACP {member['partner_port']}"))
+    _reconcile_fdb_ports(edges.values())
     return {"schema": 1, "snapshotAt": now.isoformat(), "nodes": list(nodes.values()),
             "links": list(edges.values()), "clusterId": cluster_id, "nodeOrder": hypervisors,
             "overviewGuests": overview_guests}
