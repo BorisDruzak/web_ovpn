@@ -970,14 +970,18 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                     nodes.get(host, {}).get("site", ""), "UI_VPN")
         source(item, "Server Observer", target["status"], target.get("observed_at"))
         item["sources"][-1]["stale"] = server.get("freshness") != "current"
-        item["checks"] = [{"name": check["name"], "status": HEALTH.get(check["status"], "unknown"),
+        target_checks = target.get("checks", [])
+        valid_report = role != "acti_backup" or [check["status"] for check in target_checks
+                                                  if check["name"] == "watchdog_fresh"] == ["ok"]
+        item["checks"] = [{"name": check["name"], "status": HEALTH.get(check["status"], "unknown")
+                           if valid_report or check["name"] == "watchdog_fresh" else "unknown",
                            "observed": check.get("observed"), "latency": check.get("latency_ms")}
-                          for check in target.get("checks", [])]
+                          for check in target_checks]
         checked_at = target.get("observed_at")
         functional = FUNCTIONAL_CHECKS.get(role)
-        if functional and server.get("freshness") == "current" and observation_is_fresh(checked_at, now):
+        if functional and valid_report and server.get("freshness") == "current" and observation_is_fresh(checked_at, now):
             check_name, method = functional
-            result = next((check["status"] for check in target.get("checks", []) if check["name"] == check_name), None)
+            result = next((check["status"] for check in target_checks if check["name"] == check_name), None)
             if result in {"ok", "critical", "warn"}:
                 state = "reachable" if result == "ok" else "unreachable"
                 item["reachability"] = _observation(state, "Server Observer", method, checked_at)

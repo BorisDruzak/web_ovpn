@@ -23,6 +23,11 @@ INTERFACE_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}")
 REACHABILITY_STATES = ("reachable", "unreachable", "stopped", "unknown")
 SERVICE_LINKS = {"Размещение", "Цель проверки"}
 RECIPROCAL_MAC_SOURCE = "SNMP · взаимные MAC"
+OBSERVER_CHECK_LABELS = {
+    "watchdog_fresh": "Свежесть отчёта watchdog",
+    "backup_snapshot_fresh": "Свежесть резервной копии",
+    "repository_capacity": "Ёмкость хранилища копий",
+}
 PUBLIC_PROPERTIES = {
     "Модель", "VMID", "Размещение по GitHub", "Источник сбора",
     "Порты (линк поднят / всего)", "Записи MAC-таблицы", "Соседство LLDP", "Адрес управления по LLDP", "IP по MAC",
@@ -187,11 +192,13 @@ def _public_node(row: dict, now: datetime) -> dict:
         "ports": [port for port in ports if port["name"]],
         "serviceChecks": [_public_service_check(check, now) for check in _rows(row.get("serviceChecks"), 16)],
         "checks": [
-            {"name": _text(check.get("name"), 64),
+            {"name": name,
+             **({"label": OBSERVER_CHECK_LABELS[name]} if name in OBSERVER_CHECK_LABELS else {}),
              "status": _state(check.get("status")) if observer and not observer["stale"] else "unknown",
              "checkedAt": observer["at"] if observer else None, "stale": not observer or observer["stale"],
              "observed": _number(check.get("observed")), "latency": _number(check.get("latency"))}
             for check in _rows(row.get("checks"), 80)
+            for name in [_text(check.get("name"), 64)]
         ],
     }
 

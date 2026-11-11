@@ -49,6 +49,35 @@ def test_map_colors_use_node_and_confirmed_service_availability(tmp_path):
     assert states["yellow"]["mapStatus"] == "unknown"
 
 
+def test_backup_state_requires_a_valid_watchdog_report(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    target = {"role": "acti_backup", "status": "critical", "observed_at": now.isoformat(), "checks": []}
+    path = tmp_path / "infrastructure.json"
+
+    def read(watchdog, snapshot, capacity="ok", freshness="current"):
+        target["checks"] = [{"name": name, "status": status} for name, status in (
+            ("watchdog_fresh", watchdog), ("backup_snapshot_fresh", snapshot), ("repository_capacity", capacity),
+        ) if status is not None]
+        graph = build_graph({}, {}, {"freshness": freshness, "targets": [target]}, {}, {}, now)
+        path.write_text(json.dumps(graph), encoding="utf-8")
+        node, = load_infrastructure_map(path, now)["nodes"]
+        return node
+
+    node = read("critical", "critical", "critical")
+    assert node["mapStatus"] == "unknown"
+    assert [(check["label"], check["status"]) for check in node["checks"]] == [
+        ("Свежесть отчёта watchdog", "critical"), ("Свежесть резервной копии", "unknown"),
+        ("Ёмкость хранилища копий", "unknown"),
+    ]
+    assert read(None, "critical")["mapStatus"] == "unknown"
+    assert read("ok", "critical")["mapStatus"] == "critical"
+    assert read("ok", "ok", capacity="critical")["mapStatus"] == "ok"
+    assert read("ok", "critical", freshness="stale")["mapStatus"] == "unknown"
+
+
 def test_service_requires_all_http_checks_and_rejects_unexpected_response():
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from threading import Thread
