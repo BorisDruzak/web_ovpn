@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session, with_loader_criteria
 
 from ..models import utcnow
 from .models import (InventoryAsset, InventoryAssetIdentifier, InventoryAssetRelation, InventoryExternalBinding,
-    InventoryExternalBindingStatus, InventoryLocation, InventoryNetctlBinding)
+    InventoryExternalBindingStatus, InventoryLocation, InventoryNetctlBinding, InventoryPersonAssignment)
 from .revision import InventoryRevisionConflict, InventoryRevisionRequired
 
 
@@ -72,6 +72,10 @@ def soft_delete(db, asset_id, *, expected_revision, actor, reason):
         binding.ended_at = now
         binding.updated_at = now
         binding.evidence_json = {**binding.evidence_json, "ended_by":str(actor), "end_reason":"inventory_deleted"}
+    db.execute(update(InventoryPersonAssignment).where(
+        InventoryPersonAssignment.asset_id == asset_id,
+        InventoryPersonAssignment.ended_at.is_(None),
+    ).values(ended_at=now, ended_by=str(actor), end_reason="inventory_deleted"))
     # End relationships while the parent still exists in the active domain.
     for binding in db.scalars(select(InventoryNetctlBinding).where(
         InventoryNetctlBinding.asset_id == asset_id, InventoryNetctlBinding.ended_at.is_(None))):

@@ -85,6 +85,7 @@ class Settings:
     session_cookie_name: str
     session_cookie_secure: bool
     api_permissions: str
+    helpdesk_inventory_token_hash: str = ''
     workstations_enabled: bool = False
     workstations_host: str = ''
     workstations_ssh_user: str = 'altserver'
@@ -170,6 +171,7 @@ def get_settings() -> Settings:
         session_cookie_name=os.environ.get("SESSION_COOKIE_NAME", "openvpn_web_session"),
         session_cookie_secure=environment == "production",
         api_permissions=os.environ.get("OPENVPN_WEB_API_PERMISSIONS", LEGACY_SERVICE_PERMISSIONS),
+        helpdesk_inventory_token_hash=os.environ.get("HELPDESK_INVENTORY_TOKEN_HASH", "").strip().lower(),
         workstations_enabled=_bool_env('WORKSTATIONS_ENABLED', False),
         workstations_host=os.environ.get('WORKSTATIONS_HOST', ''),
         workstations_ssh_user=os.environ.get('WORKSTATIONS_SSH_USER', 'altserver'),

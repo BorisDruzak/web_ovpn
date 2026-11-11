@@ -285,8 +285,8 @@ def sync_confirmed_bindings(
             last_seen = _parsed(identity.get("last_seen_at"))
             if last_seen is not None and last_seen <= now:
                 state.last_seen_at = last_seen
-            if type(identity.get("online")) is bool:
-                state.online = identity["online"]
+        observed_online = identity.get("online") if identity is not None else None
+        state.online = observed_online if type(observed_online) is bool else None
         # UUID is already stable: a changed/missing MAC never reassigns a binding.
         if full:
             profiles = adapter.read_profiles(UUID(binding.external_id))

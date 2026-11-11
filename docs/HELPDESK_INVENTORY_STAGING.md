@@ -1,0 +1,52 @@
+# Helpdesk inventory integration (staging)
+
+web_ovpn owns the employee UUID and the explicit assignment of inventory PCs. It
+does not infer assignments from legacy free text, AD, hostname or IP. Existing
+inventory cards, Endpoint mappings, and workstation directory links remain
+available independently. Two employees can have the same name.
+
+Operator endpoints under `/api/v1/inventory/people` require an authenticated web
+session with `workstations:link` (or an administrator). Writes also require the
+session's `X-CSRF-Token`. The collection supports bounded name/department search
+and pagination. Create an employee with `full_name` and `department`, then
+`PUT /{person_id}/assignments/{asset_id}` with `{"role":"primary"}` or
+`{"role":"shared"}`. Repeating an unchanged assignment returns the same ID.
+At most one active primary per PC is allowed; a conflict returns 409 without
+changing the previous assignment. To transfer a primary or change a role,
+`POST /{person_id}/assignments/{assignment_id}/end` with a reason, then create
+the new assignment. A deleted PC's assignments end permanently; restoring the
+card does not reassign it.
+
+Helpdesk reads `GET /api/internal/helpdesk/v1/inventory/people/{person_id}`
+using a dedicated bearer token. Configure only its SHA-256 digest on web_ovpn
+via `HELPDESK_INVENTORY_TOKEN_HASH`. An unset digest disables the read API.
+Configure trusted HTTPS for remote traffic. The service credential cannot
+search the directory, create people, assign devices or authorize diagnostics.
+There is no anonymous employee search.
+
+The response contains employee UUID, name and department, profile timestamp,
+observation timestamp, and active assignments. Each assignment includes its
+UUID and creation time, the inventory asset UUID, role, display name, OS,
+inventory number, and a confirmed Endpoint UUID and binding UUID/version if
+available. A proposed Endpoint association is marked for review and never
+supplied as a confirmed UUID. Presence is `online`, `offline`,
+`not_detected` (no confirmed UUID), or `unknown` (no trustworthy current
+status). An offline response requires a recent successful presence observation.
+A UUID remains valid as an inventory association even when presence is unknown.
+The response is display data; diagnostics still require Helpdesk's own policy.
+
+The current change adds two tables on the application's normal schema
+initialization. There is no automatic employee import or migration from legacy
+text. Verify with synthetic people and a separate SQLite database; the
+production web installer is not the staging procedure.
+
+Next integration steps:
+1. Confirm a stable ID against a signed-in Helpdesk account with an explicit
+   administrator action or an expiring, one-time invitation. Reuse the
+   existing requester registration and its normal fallback.
+2. Project assignments and freshness into the requester profile. Retain the
+   last confirmed display data during provider outages and check conflicts
+   before creating any effective device permissions.
+3. Add the operator inventory page and use existing Endpoint assignment and
+   installation workflows for operator actions. Verify a genuine Endpoint
+   registration and heartbeat before reporting an installation complete.

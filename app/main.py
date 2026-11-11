@@ -23,6 +23,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from .audit import write_audit
 from .api import host_snapshot_args, router as api_router
 from .inventory.api import router as inventory_api_router
+from .inventory.people_api import helpdesk_router as inventory_helpdesk_router, operator_router as inventory_people_router
 from .inventory.web import router as inventory_web_router
 from .user_admin import router as user_admin_router
 from .auth import authenticate_user, csrf_token, current_user, require_user, verify_csrf
@@ -70,6 +71,8 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 app.include_router(api_router)
 app.include_router(inventory_api_router)
+app.include_router(inventory_people_router)
+app.include_router(inventory_helpdesk_router)
 app.include_router(inventory_web_router)
 from .inventory.network_links import router as inventory_network_links_router
 app.include_router(inventory_network_links_router)

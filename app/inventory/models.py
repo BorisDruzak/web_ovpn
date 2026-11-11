@@ -481,3 +481,50 @@ class InventoryLocationPhoto(Base):
     comment: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     created_by: Mapped[str] = mapped_column(String(120), nullable=False)
+
+
+class InventoryPerson(Base):
+    """An explicitly entered employee. Names and AD identities are not keys."""
+
+    __tablename__ = "inventory_people"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_inventory_id)
+    full_name: Mapped[str] = mapped_column(String(240), nullable=False)
+    department: Mapped[str] = mapped_column(String(240), nullable=False)
+    search_key: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class InventoryPersonAssignment(Base):
+    __tablename__ = "inventory_person_assignments"
+    __table_args__ = (
+        CheckConstraint("role IN ('primary', 'shared')", name="ck_inventory_person_assignment_role"),
+        CheckConstraint(
+            "(ended_at IS NULL AND ended_by IS NULL AND end_reason IS NULL) OR "
+            "(ended_at IS NOT NULL AND ended_by IS NOT NULL AND end_reason IS NOT NULL)",
+            name="ck_inventory_person_assignment_end",
+        ),
+        Index(
+            "uq_inventory_person_assignment_active",
+            "asset_id", "person_id", unique=True,
+            sqlite_where=text("ended_at IS NULL"),
+            postgresql_where=text("ended_at IS NULL"),
+        ),
+        Index(
+            "uq_inventory_person_assignment_primary",
+            "asset_id", unique=True,
+            sqlite_where=text("ended_at IS NULL AND role = 'primary'"),
+            postgresql_where=text("ended_at IS NULL AND role = 'primary'"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_inventory_id)
+    person_id: Mapped[str] = mapped_column(ForeignKey("inventory_people.id"), nullable=False, index=True)
+    asset_id: Mapped[str] = mapped_column(ForeignKey("inventory_assets.id"), nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String(7), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    created_by: Mapped[str] = mapped_column(String(120), nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    ended_by: Mapped[str | None] = mapped_column(String(120))
+    end_reason: Mapped[str | None] = mapped_column(Text)
