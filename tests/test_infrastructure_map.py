@@ -1061,8 +1061,9 @@ def test_fdb_ports_require_fresh_unambiguous_device_identity(tmp_path):
     assert first not in path.read_text(encoding="utf-8")
 
 
-def test_matching_fdb_attachment_adds_evidence_and_supplemental_ip_check(monkeypatch):
+def test_matching_fdb_attachment_adds_evidence_and_supplemental_ip_check(monkeypatch, tmp_path):
     from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
     from app import infrastructure_service_probes as probes
 
     now = datetime.now(timezone.utc)
@@ -1076,6 +1077,8 @@ def test_matching_fdb_attachment_adds_evidence_and_supplemental_ip_check(monkeyp
                   "endpoint_b": {"device": "sw", "interface": "Port7"},
                   "relation": "connected_to", "state": {"verified": True}}]}
     network = {"sources": [{"id": 1, "name": "css", "host": "192.0.2.254", "driver": "snmp_switch"}],
+               "ports": [{"source": "css", "port_key": "Port7", "name": "Port7",
+                          "oper_status": "up", "last_seen_at": at}],
                "attachments": [{"source_id": 1, "port_key": "Port7", "mac": mac, "observed_at": at, "vlan_id": 20}]}
     bindings = {"asset_ip_checks": {"pc": address}}
     configured = {"pc": [{"type": "icmp", "ip": address}]}
@@ -1092,6 +1095,13 @@ def test_matching_fdb_attachment_adds_evidence_and_supplemental_ip_check(monkeyp
     assert [(p["a"], p["b"]) for p in link["portEvidence"]] == [("Ethernet", "Port7"), ("", "Port7")]
     assert node["serviceChecks"][0]["state"] == "reachable"
     assert "reachability" not in node
+    snapshot = tmp_path / "map.json"
+    snapshot.write_text(json.dumps(graph), encoding="utf-8")
+    public = load_infrastructure_map(snapshot, datetime.now(timezone.utc))
+    assert public["links"][0]["portEvidence"][-1]["portStates"]["b"]["state"] == "up"
+    endpoint = next(node for node in public["nodes"] if node["id"] == "pc")
+    assert endpoint["mapStatus"] == "unknown"
+    assert endpoint["serviceChecks"][0]["reason"] == "icmp_identity_unconfirmed"
     network["attachments"][0]["port_key"] = "Port8"
     graph, node = build()
     assert len(graph["links"]) == 2

@@ -210,6 +210,9 @@ def _public_service_check(check: dict, now: datetime) -> dict:
     if reason in ("connection_refused", "timeout", "transport_error", "unexpected_response", "sip_response",
                   "icmp_port_unreachable", "icmp_rejected"):
         result["reason"] = reason
+    if (reason == "icmp_identity_unconfirmed" and result["method"] == "ICMP адреса из инвентаря"
+            and result["state"] == "reachable"):
+        result["reason"] = reason
     error_source = _network_address(check.get("errorSource"))
     if reason in ("icmp_port_unreachable", "icmp_rejected") and error_source and "/" not in error_source:
         result["errorSource"] = error_source
@@ -455,7 +458,9 @@ def load_infrastructure_map(path: Path, now: datetime | None = None, *, db: Sess
                         source == "GitHub" or observation_is_fresh(report.get("at"), now)),
                 })
                 paired = edge["kind"] == "Сетевое соединение" or source in {RECIPROCAL_MAC_SOURCE, "netctl FDB + Proxmox"}
-                if (paired and evidence[-1]["a"] and evidence[-1]["b"]) or source == SHARED_LLDP_SOURCE:
+                observed_attachment = source == "netctl FDB" and evidence[-1]["confirmed"]
+                both_ports = paired and evidence[-1]["a"] and evidence[-1]["b"]
+                if both_ports or source == SHARED_LLDP_SOURCE or observed_attachment:
                     states = {}
                     for side in ("a", "b"):
                         port = port_states.get(edge[side], {}).get(port_label_key(evidence[-1][side]))

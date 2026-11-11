@@ -553,6 +553,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         connection_refused: 'Отказ на UDP-запрос, источник не определён', timeout: 'Ответ не получен вовремя',
         icmp_port_unreachable: 'ICMP: UDP-порт недоступен', icmp_rejected: 'Получен отказ ICMP',
         transport_error: 'Ошибка сетевого запроса', unexpected_response: 'Ответ не соответствует запросу',
+        icmp_identity_unconfirmed: 'Принадлежность адреса этому узлу не подтверждена',
         route_other_gateway: 'Активен другой шлюз', route_inactive: 'Маршрут через ожидаемый шлюз неактивен',
         route_rejecting: 'Активный маршрут отбрасывает трафик',
       };

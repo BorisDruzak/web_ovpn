@@ -425,6 +425,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 details = _sip_options(spec)
             else:
                 details = {"state": _probe(spec)}
+            if node["kind"] != "Сервис" and protocol == "icmp" and details["state"] == "reachable":
+                details["reason"] = "icmp_identity_unconfirmed"
             observation = {
                 **details,
                 "source": "UI_VPN", "method": method,
