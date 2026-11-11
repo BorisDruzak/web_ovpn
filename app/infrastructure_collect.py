@@ -768,6 +768,14 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         item["sources"].append({"name": name, "raw": raw, "status": HEALTH.get(raw, "unknown"),
                                 "at": at, "label": label})
 
+    def service_dependencies(service_id, configured):
+        consumers = configured.get("used_by", [])
+        if not isinstance(consumers, list):
+            return
+        for consumer in consumers:
+            if isinstance(consumer, str) and nodes.get(consumer, {}).get("kind") == "Сервис":
+                edge(consumer, service_id, "Зависимость сервиса", "Настройки карты")
+
     host_ips = {}
     host_macs = {}
     fresh_macs_by_ip = {}
@@ -1154,6 +1162,10 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             item["probeTargetIP"] = None
             guest_services.setdefault(str(spec["vmid"]), []).append((item, spec))
 
+    for role, spec in roles.items():
+        if spec.get("asset") in nodes:
+            service_dependencies("role:" + role, spec)
+
     cluster_id = ""
     hypervisors = []
     online_hypervisors = set()
@@ -1235,9 +1247,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                     if mac_counts[mac] != 1 or mac not in guest_macs.get(str(vmid), set()):
                         continue
                     edge(key, service["id"], "Размещение", "Proxmox", at=pve_at)
-                    for consumer in spec.get("used_by", []):
-                        if nodes.get(consumer, {}).get("kind") == "Сервис":
-                            edge(consumer, service["id"], "Зависимость сервиса", "Настройки карты")
+                    service_dependencies(service["id"], spec)
                     address = bindings.get("guest_probe_ips", {}).get(str(vmid))
                     if (status == "ok" and arp_mappings.get(address, (None,))[0] == mac
                             and any(nic_mac == mac and not disabled for _, _, disabled, nic_mac in interfaces.values())):

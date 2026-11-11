@@ -258,6 +258,50 @@ def test_backup_state_requires_a_valid_watchdog_report(tmp_path):
     assert read("ok", "critical", freshness="stale")["mapStatus"] == "unknown"
 
 
+def test_acti_service_reflects_backup_dependency_on_inventory_host(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    stamp = now.isoformat()
+    report = {"freshness": "current", "targets": [
+        {"role": "acti_backup", "status": "critical", "observed_at": stamp,
+         "checks": [{"name": "watchdog_fresh", "status": "ok"},
+                    {"name": "backup_snapshot_fresh", "status": "critical"}]},
+        {"role": "acti", "status": "ok", "observed_at": stamp,
+         "checks": [{"name": "https_ready", "status": "ok"}]},
+    ]}
+    context = {"devices": [{"id": "fileserver", "name": "File server", "kind": "server"},
+                           {"id": "acti-vm", "name": "ACTI VM", "kind": "server",
+                            "management_ip": "192.0.2.45"}]}
+    network = {"hosts": [{"ip": "192.0.2.45", "availability": {
+        "checked_at": stamp, "run_status": "success", "state": "online",
+        "reason": "active_probe", "active_method": "icmp",
+    }}]}
+    bindings = {"roles": {"acti": {"asset": "acti-vm"},
+                          "acti_backup": {"asset": "fileserver", "used_by": ["role:acti"]}}}
+    path = tmp_path / "infrastructure.json"
+
+    def read():
+        graph = build_graph(context, network, report, {}, bindings, now)
+        path.write_text(json.dumps(graph), encoding="utf-8")
+        public = load_infrastructure_map(path, now)
+        return {n["id"]: n for n in public["nodes"]}, public["links"]
+
+    nodes, links = read()
+    assert any(l["a"] == "role:acti" and l["b"] == "role:acti_backup"
+               and l["kind"] == "Зависимость сервиса" and l["confirmed"] for l in links)
+    assert nodes["role:acti"]["reachability"]["state"] == "reachable"
+    assert nodes["role:acti"]["mapStatus"] == nodes["acti-vm"]["mapStatus"] == "warn"
+    assert nodes["role:acti"]["serviceAvailability"]["unavailable"] == ["role:acti_backup"]
+    report["targets"][0]["checks"][1]["status"] = "ok"
+    assert read()[0]["acti-vm"]["mapStatus"] == "ok"
+    report["targets"][0]["checks"][0]["status"] = "critical"
+    assert read()[0]["acti-vm"]["mapStatus"] == "unknown"
+    context["devices"].pop(0)
+    assert read()[0]["acti-vm"]["mapStatus"] == "ok"
+
+
 def test_service_requires_all_http_checks_and_rejects_unexpected_response():
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from threading import Thread
