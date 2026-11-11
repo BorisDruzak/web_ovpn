@@ -732,7 +732,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           check.postgresqlTls === 'declined' ? ' · Сервер отклонил TLS' : '';
         const smb = check.smbDialect ? ' · SMB ' + check.smbDialect +
           (check.smbSigningRequired ? ' · сервер требует подпись' : ' · сервер не требует подпись') : '';
-        const scope = check.supplemental ? ' · дополнительная проверка' : '';
+        const scope = check.supplemental ? ' · дополнительная проверка' :
+          check.component ? ' · компонент сервиса' : check.required ? ' · проверка доступности' : '';
         row.append(make('strong', endpoint || 'Проверка'), make('small', result + http + postgresql + smb + (reason ? ' · ' + reason + errorSource : '') + dns + rtt + attempts + gateway + management + scope + source + time + (check.stale ? ' · устарело' : '')));
         list.append(row);
       }

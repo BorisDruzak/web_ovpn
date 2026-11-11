@@ -440,11 +440,21 @@ def test_acti_service_reflects_backup_dependency_on_inventory_host(tmp_path):
     assert read()[0]["acti-vm"]["mapStatus"] == "ok"
 
 
-def test_service_requires_all_http_checks_and_rejects_unexpected_response():
+def test_service_distinguishes_partial_failure_and_unconfirmed_http_responses(monkeypatch):
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from threading import Thread
-    from app.infrastructure_map import _public_service_check
+    from app.infrastructure_map import _map_statuses, _public_node, _public_service_check
     from app.infrastructure_service_probes import apply_service_probes
+    from app import infrastructure_service_probes as probes
+
+    original_request = probes.http.client.HTTPConnection.request
+
+    def request(connection, method, path, **kwargs):
+        if path == "/timeout":
+            raise TimeoutError
+        return original_request(connection, method, path, **kwargs)
+
+    monkeypatch.setattr(probes.http.client.HTTPConnection, "request", request)
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -468,20 +478,40 @@ def test_service_requires_all_http_checks_and_rejects_unexpected_response():
         try:
             base = {"ip": "127.0.0.1", "port": server.server_port, "type": "http"}
             client = {**base, "path": "/client", "body_contains": "client.js"}
-            nodes = [{"id": path, "kind": "Сервис"} for path in ("/healthy", "/unexpected", "/unavailable", "/redirect")]
-            apply_service_probes(nodes, {
-                node["id"]: [client, {**base, "path": node["id"], "body": "Healthy"}] for node in nodes
-            })
+            paths = ("/healthy", "/unexpected", "/unavailable", "/redirect", "/primary-down",
+                     "/partial", "/all-down", "/incomplete", "/timeout")
+            nodes = [{"id": path, "kind": "Сервис"} for path in paths]
+            specs = {
+                node["id"]: [client, {**base, "path": node["id"], "body": "Healthy"}] for node in nodes[:4]
+            }
+            failed = {**base, "path": "/unavailable", "body": "Healthy"}
+            specs["/primary-down"] = [{**client, "component": True}, failed]
+            specs["/partial"] = [client, {**failed, "component": True}]
+            specs["/all-down"] = [failed, failed]
+            timeout = {**base, "path": "/timeout", "body": "Healthy"}
+            specs["/incomplete"] = [failed, timeout]
+            specs["/timeout"] = [timeout]
+            apply_service_probes(nodes, specs)
         finally:
             server.shutdown()
             worker.join()
-    assert [node["reachability"]["state"] for node in nodes] == ["reachable", "unknown", "unreachable", "unknown"]
-    assert [[check["state"] for check in node["serviceChecks"]] for node in nodes] == [
+    assert [node["reachability"]["state"] for node in nodes] == [
+        "reachable", "reachable", "reachable", "reachable", "unreachable", "reachable", "unreachable", "unknown", "unknown",
+    ]
+    assert [[check["state"] for check in node["serviceChecks"]] for node in nodes[:4]] == [
         ["reachable", "reachable"], ["reachable", "unknown"], ["reachable", "unreachable"], ["reachable", "unknown"],
     ]
     assert nodes[1]["serviceChecks"][1]["path"] == "/unexpected"
     now = datetime.now(timezone.utc)
-    checks = [_public_service_check(node["serviceChecks"][1], now) for node in nodes]
+    public = {node["id"]: _public_node(node, now) for node in nodes}
+    _map_statuses(public, [])
+    assert [node["mapStatus"] for node in public.values()] == [
+        "ok", "unknown", "warn", "unknown", "critical", "warn", "critical", "unknown", "unknown",
+    ]
+    assert public["/timeout"]["serviceChecks"][0]["reason"] == "timeout"
+    assert public["/primary-down"]["serviceChecks"][0]["component"] is True
+    assert public["/partial"]["serviceChecks"][1]["required"] is True
+    checks = [_public_service_check(node["serviceChecks"][1], now) for node in nodes[:4]]
     assert [(check["httpStatus"], check.get("reason")) for check in checks] == [
         (200, None), (200, "http_payload_mismatch"), (503, "http_status"), (302, "http_status"),
     ]

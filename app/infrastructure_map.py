@@ -280,8 +280,14 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         "path": path if re.fullmatch(r"/[A-Za-z0-9._/-]{0,159}", path) and not path.startswith("//") else "",
     }
     reason = check.get("reason")
+    if reason == "timeout" and result["method"] in ("HTTP", "HTTPS", "DNS", "SMB2", "PostgreSQL SSLRequest"):
+        result["reason"] = reason
     if check.get("supplemental") is True:
         result["supplemental"] = True
+    elif check.get("required") is True:
+        result["required"] = True
+        if check.get("component") is True:
+            result["component"] = True
     if (check.get("skipped") is True and result["checkedAt"] and result["state"] == "unknown"
             and reason in ("probe_target_unconfirmed", "probe_target_mismatch")):
         return {**result, "target": "", "skipped": True, "reason": reason}
@@ -561,8 +567,11 @@ def _map_statuses(nodes: dict, links: list[dict]) -> None:
             consumers[edge["b"]].add(edge["a"])
 
     local_issues = {}
+    check_state = {"reachable": "ok", "unreachable": "critical"}
     for key, node in nodes.items():
         checks = [check["status"] for check in node["checks"] if check.get("required")]
+        checks.extend(check_state.get(check["state"], "unknown")
+                      for check in node["serviceChecks"] if check.get("required"))
         if any(disk["smartState"] == "critical" for disk in node.get("hardwareDisks", {}).get("disks", [])):
             checks.append("critical")
         if any(pool["health"] in ZFS_PROBLEM_STATES for pool in node.get("zfsPools", {}).get("pools", [])):
@@ -571,7 +580,6 @@ def _map_statuses(nodes: dict, links: list[dict]) -> None:
             checks.append("warn")
         if node["kind"] == CLUSTER_KIND:
             cluster = {check["method"]: check["state"] for check in node["serviceChecks"]}
-            check_state = {"reachable": "ok", "unreachable": "critical"}
             checks.extend(check_state.get(cluster.get(method), "unknown") for method in CLUSTER_HEALTH_METHODS)
         local_issues[key] = (
             bool({"critical", "warn"}.intersection(checks)), "unknown" in checks,

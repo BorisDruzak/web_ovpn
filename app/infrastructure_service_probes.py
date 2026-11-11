@@ -127,7 +127,7 @@ def _http(ip: str, port: int, spec: dict) -> dict:
     except http.client.HTTPException:
         return {**observed, "state": "unknown", "reason": "http_bad_response"}
     except TimeoutError:
-        return {**observed, "state": "unreachable", "reason": "timeout"}
+        return {**observed, "state": "unknown", "reason": "timeout"}
     except ConnectionRefusedError:
         return {**observed, "state": "unreachable", "reason": "http_connection_refused"}
     except ConnectionResetError:
@@ -220,7 +220,7 @@ def _dns(spec: dict) -> dict:
                 return {**result, "state": "unreachable", "reason": "dns_address_mismatch"}
         return {**result, "state": "reachable"}
     except (TimeoutError, dns.exception.Timeout):
-        return {**result, "state": "unreachable", "reason": "timeout"}
+        return {**result, "reason": "timeout"}
     except (ConnectionRefusedError, ConnectionResetError):
         return {**result, "state": "unreachable", "reason": "transport_error"}
     except OSError:
@@ -239,7 +239,7 @@ def _ldap(ip: str, port: int, spec: dict) -> str:
         "--connect-timeout", str(TIMEOUT), "--max-time", str(TIMEOUT),
         f"ldap://{authority}:{port}/?defaultNamingContext?base",
     ], capture_output=True, timeout=TIMEOUT + 1, check=False)
-    if result.returncode in {7, 28}:
+    if result.returncode == 7:
         return "unreachable"
     expected = ("defaultNamingContext: " + naming_context).lower().encode()
     answers = {line.strip().lower() for line in result.stdout.splitlines()}
@@ -285,7 +285,7 @@ def _smb(spec: dict) -> dict:
                 return unexpected
             response = read_exact(length)
     except TimeoutError:
-        return {"state": "unreachable", "reason": "timeout"}
+        return {"state": "unknown", "reason": "timeout"}
     except (ConnectionRefusedError, ConnectionResetError):
         return {"state": "unreachable", "reason": "transport_error"}
     except OSError:
@@ -525,7 +525,7 @@ def _postgresql(spec: dict) -> dict:
             except OSError:
                 return {"state": "unknown", "postgresqlTls": "failed", "reason": "postgresql_tls_handshake"}
     except TimeoutError:
-        return {"state": "unreachable", "reason": "timeout"}
+        return {"state": "unknown", "reason": "timeout"}
     except (ConnectionRefusedError, ConnectionResetError):
         return {"state": "unreachable", "reason": "transport_error"}
     except OSError:
@@ -559,7 +559,7 @@ def _probe(spec: dict) -> str:
             return _ldap(ip, port, spec)
     except (ssl.SSLError, http.client.HTTPException, KeyError, TypeError, ValueError):
         return "unknown"
-    except (TimeoutError, ConnectionRefusedError, ConnectionResetError, dns.exception.Timeout):
+    except (ConnectionRefusedError, ConnectionResetError):
         return "unreachable"
     except (OSError, dns.exception.DNSException, subprocess.TimeoutExpired):
         return "unknown"
@@ -586,11 +586,12 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                    "zabbix_api": "Zabbix API", "postgresql": "PostgreSQL SSLRequest",
                    "openvpn_management": "OpenVPN Management", "sip_options": "SIP OPTIONS (UDP)", "icmp": "ICMP"}
         checks = []
-        required = []
+        primary = []
         for spec in specs:
             protocol = spec.get("type") if isinstance(spec.get("type"), str) else ""
             method = methods.get(protocol, "")
             supplemental = node["kind"] != "Сервис" or spec.get("supplemental") is True
+            component = not supplemental and spec.get("component") is True
             if node["kind"] != "Сервис":
                 method = "ICMP адреса из инвентаря"
             port = spec.get("port")
@@ -618,7 +619,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 details["reason"] = "icmp_identity_unconfirmed"
             observation = {
                 **details,
-                **({"supplemental": True} if supplemental else {}),
+                **({"supplemental": True} if supplemental else {"required": True}),
+                **({"component": True} if component else {}),
                 "source": "UI_VPN", "method": method,
                 "port": valid_port,
                 "path": spec.get("path") if protocol in {"http", "https", "zabbix_api"} else None,
@@ -628,16 +630,16 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 "checkedAt": datetime.now(timezone.utc).isoformat(),
             }
             checks.append(observation)
-            if not supplemental and not skip_reason:
-                required.append(observation)
+            if not supplemental and not component and not skip_reason:
+                primary.append(observation)
         node.setdefault("serviceChecks", []).extend(checks)
-        if not required:
+        if not primary:
             return node, None
-        results = [check["state"] for check in required]
-        state = "unreachable" if "unreachable" in results else "reachable" if all(s == "reachable" for s in results) else "unknown"
-        method = " + ".join(dict.fromkeys(check["method"] for check in required if check["method"]))
+        results = {check["state"] for check in primary}
+        state = "reachable" if "reachable" in results else "unreachable" if results == {"unreachable"} else "unknown"
+        method = " + ".join(dict.fromkeys(check["method"] for check in primary if check["method"]))
         return node, {"state": state, "source": "Проверка сервиса", "method": method,
-                      "checkedAt": checks[-1]["checkedAt"]}
+                      "checkedAt": primary[-1]["checkedAt"]}
 
     with ThreadPoolExecutor(max_workers=6) as pool:
         for node, observation in pool.map(check, targets):
