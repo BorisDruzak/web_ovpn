@@ -23,6 +23,7 @@ from netctl.context import load_context_bytes, load_schema, validate_context
 from netctl.db import connect_read_only, list_sources
 
 from .infrastructure_map import MAX_SNAPSHOT_BYTES, NETWORK_KINDS, observation_is_fresh
+from .infrastructure_service_probes import apply_service_probes
 from .netctl_client import NetctlError, run_netctl
 from .server_health_view import build_server_health_view
 
@@ -34,7 +35,12 @@ KINDS = {
 }
 HEALTH = {"success": "ok", "ok": "ok", "partial": "warn", "warn": "warn", "critical": "critical"}
 MAC = re.compile(r"(?i)(?:[0-9a-f]{2}:){5}[0-9a-f]{2}")
-HTTP_CHECKS = {"https_live", "https_healthcheck"}
+FUNCTIONAL_CHECKS = {
+    "nextcloud": ("nextcloud_status", "Nextcloud status"),
+    "onlyoffice": ("https_healthcheck", "HTTPS"),
+    "acti": ("https_ready", "HTTPS readiness"),
+    "acti_backup": ("backup_snapshot_fresh", "Свежесть резервной копии"),
+}
 
 
 def _observation(state: str, source: str, method: str, checked_at: str) -> dict:
@@ -193,12 +199,13 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                            "observed": check.get("observed"), "latency": check.get("latency_ms")}
                           for check in target.get("checks", [])]
         checked_at = target.get("observed_at")
-        http = [check["status"] for check in target.get("checks", []) if check["name"] in HTTP_CHECKS]
-        if server.get("freshness") == "current" and observation_is_fresh(checked_at, now) and http:
-            if "ok" in http or all(status == "critical" for status in http):
-                item["reachability"] = _observation(
-                    "reachable" if "ok" in http else "unreachable", "Server Observer", "HTTPS", checked_at,
-                )
+        functional = FUNCTIONAL_CHECKS.get(role)
+        if functional and server.get("freshness") == "current" and observation_is_fresh(checked_at, now):
+            check_name, method = functional
+            result = next((check["status"] for check in target.get("checks", []) if check["name"] == check_name), None)
+            if result in {"ok", "critical", "warn"}:
+                state = "reachable" if result == "ok" else "unreachable"
+                item["reachability"] = _observation(state, "Server Observer", method, checked_at)
         edge(host, item["id"], "Цель проверки", "Настройки карты")
 
     cluster_id = ""
@@ -397,6 +404,8 @@ def main() -> int:
         network = read_network()
         now = datetime.now(timezone.utc)
         graph = build_graph(context, network, build_server_health_view(args.server_health, now), pve, bindings, now)
+        apply_service_probes(graph["nodes"], bindings.get("service_probes", {}))
+        graph["snapshotAt"] = datetime.now(timezone.utc).isoformat()
         graph["git"] = args.git_revision
         graph["contextSha256"] = hashlib.sha256(context_raw).hexdigest()
         publish_snapshot(args.output, graph)

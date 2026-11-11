@@ -10,13 +10,8 @@ MAX_SNAPSHOT_BYTES = 1_000_000
 MAX_AGE = timedelta(minutes=25)
 STATES = ("critical", "warn", "ok", "unknown")
 NETWORK_KINDS = ("Коммутатор", "Маршрутизатор", "Точка доступа", "Сетевое устройство")
-REACHABILITY_STATES = ("reachable", "unreachable", "stopped")
+REACHABILITY_STATES = ("reachable", "unreachable", "stopped", "unknown")
 SERVICE_LINKS = {"Размещение", "Цель проверки"}
-REQUIRED_SERVICE_CHECKS = {
-    "role:directum": "directumrx_active",
-    "role:file_server": "smb_active",
-    "role:active_directory": "ntds_active",
-}
 PUBLIC_PROPERTIES = {
     "Модель", "VMID", "Размещение по GitHub", "Источник сбора",
     "Порты (линк поднят / всего)", "Записи MAC-таблицы", "Соседство LLDP",
@@ -121,18 +116,6 @@ def _map_statuses(nodes: dict, links: list[dict]) -> None:
     for edge in links:
         if edge["confirmed"] and edge["kind"] in SERVICE_LINKS and nodes[edge["b"]]["kind"] == "Сервис":
             services[edge["a"]].add(edge["b"])
-
-    for key, check_name in REQUIRED_SERVICE_CHECKS.items():
-        node = nodes.get(key)
-        if not node or node["reachability"]["state"] != "unknown":
-            continue
-        observer = next((source for source in node["sources"]
-                         if source["name"] == "Server Observer" and not source["stale"]), None)
-        if observer and any(check["name"] == check_name and check["status"] == "critical" for check in node["checks"]):
-            node["reachability"] = {
-                "state": "unreachable", "source": "Server Observer", "method": "Состояние обязательной службы",
-                "checkedAt": observer["at"], "stale": False,
-            }
 
     for key, node in nodes.items():
         states = {peer: nodes[peer]["reachability"]["state"] for peer in sorted(services[key])}

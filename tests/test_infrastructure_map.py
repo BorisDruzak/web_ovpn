@@ -14,7 +14,7 @@ def test_map_colors_use_node_and_confirmed_service_availability(tmp_path):
         return {"id": key, "name": key, "kind": kind,
                 "reachability": {"state": state, "checkedAt": stamp}, **extra}
 
-    directum = node("role:directum", "unknown", "Сервис",
+    directum = node("role:directum", "unreachable", "Сервис",
                     sources=[{"name": "Server Observer", "at": stamp}],
                     checks=[{"name": "directumrx_active", "status": "critical"}])
     graph = {
@@ -41,12 +41,45 @@ def test_map_colors_use_node_and_confirmed_service_availability(tmp_path):
     ]
     assert states["yellow"]["reachability"]["state"] == "reachable"
     assert states["yellow"]["serviceAvailability"] == {"unavailable": ["role:directum"], "unknown": ["dns"]}
-    assert states["role:directum"]["reachability"]["source"] == "Server Observer"
-
-    directum["sources"][0]["stale"] = True
+    directum["reachability"]["state"] = "unknown"
     path.write_text(json.dumps(graph), encoding="utf-8")
     states = {item["id"]: item for item in load_infrastructure_map(path, now)["nodes"]}
+    assert states["role:directum"]["reachability"]["state"] == "unknown"
     assert states["yellow"]["mapStatus"] == "unknown"
+
+
+def test_service_requires_all_http_checks_and_rejects_unexpected_response():
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+    from app.infrastructure_service_probes import apply_service_probes
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            code, payload = {
+                "/client": (200, b"<script src='client.js'></script>"),
+                "/healthy": (200, b"Healthy"),
+                "/unexpected": (200, b"Sign in"),
+                "/unavailable": (503, b"Unavailable"),
+            }[self.path]
+            self.send_response(code)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(payload)
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        worker = Thread(target=server.serve_forever)
+        worker.start()
+        try:
+            base = {"ip": "127.0.0.1", "port": server.server_port, "type": "http"}
+            client = {**base, "path": "/client", "body_contains": "client.js"}
+            nodes = [{"id": path, "kind": "Сервис"} for path in ("/healthy", "/unexpected", "/unavailable")]
+            apply_service_probes(nodes, {
+                node["id"]: [client, {**base, "path": node["id"], "body": "Healthy"}] for node in nodes
+            })
+        finally:
+            server.shutdown()
+            worker.join()
+    assert [node["reachability"]["state"] for node in nodes] == ["reachable", "unknown", "unreachable"]
 
 
 def test_collection_reads_source_registry_without_syncing_config(monkeypatch):
