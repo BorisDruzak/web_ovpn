@@ -484,6 +484,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const links = incident.get(id);
     if (links.length) {
       const list = make('ul',null,'map-detail-list');
+      const portLabels = {up: 'линк поднят', down: 'линк опущен', disabled: 'порт отключён'};
       for (const edge of links.slice().sort((a,b) => Number(b.confirmed)-Number(a.confirmed))) {
         const peer = byId.get(edge.a === id ? edge.b : edge.a);
         const li = make('li');
@@ -492,6 +493,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         go.addEventListener('click',() => select(peer.id));
         const status = edge.confirmed ? edge.source : 'Связь не подтверждена · ' + edge.source;
         li.append(go,make('small',edge.kind+' · '+status+(edge.details ? ' · '+edge.details : '')));
+        const renderedPorts = new Set();
         for (const evidence of edge.portEvidence ?? []) {
           const [local, remote] = edge.a === id ? [evidence.a, evidence.b] : [evidence.b, evidence.a];
           const ports = (local || 'порт неизвестен') + ' ↔ ' + (remote || 'порт неизвестен');
@@ -499,6 +501,14 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           const vlan = evidence.vlan ? ' · VLAN ' + evidence.vlan : '';
           const time = evidence.at ? ' · ' + formatTime(evidence.at) : '';
           li.append(make('small', ports + vlan + ' · ' + source + time + (evidence.confirmed ? '' : ' · без подтверждения')));
+          for (const side of ['a', 'b']) {
+            const port = evidence.portStates?.[side];
+            const key = side + ':' + port?.name;
+            if (!port || renderedPorts.has(key)) continue;
+            renderedPorts.add(key);
+            const device = byId.get(edge[side]).name;
+            li.append(make('small', `${device} ${port.name}: ${portLabels[port.state]} · SNMP · ${formatTime(port.checkedAt)}`));
+          }
           if (evidence.confirmed && evidence.virtual) {
             const network = evidence.virtual;
             const notes = [];

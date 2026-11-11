@@ -433,6 +433,43 @@ def test_lldp_direct_neighbor_overrides_conflicting_fdb_ports():
     assert not links["other"]["portEvidence"][0]["confirmed"]
 
 
+def test_map_reports_port_state_for_declared_pair_without_confirming_cable(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    context = {"devices": [{"id": key, "name": key, "kind": "switch"} for key in ("core", "access")],
+               "links": [{"relation": "connected_to", "state": {"verified": False},
+                          "endpoint_a": {"device": "core", "interface": "Gi1/0/18"},
+                          "endpoint_b": {"device": "access", "interface": "Port5"}}]}
+    sources = [{"id": i, "name": key, "driver": "snmp_switch", "driver_options": {"intent_stable_id": key}}
+               for i, key in enumerate(("core", "access"), 1)]
+    ports = [
+        {"source": "core", "port_key": "ifindex:49170", "name": "gigabitEthernet 1/0/18",
+         "oper_status": "up", "last_seen_at": at},
+        {"source": "access", "port_key": "physical:5", "name": "p5_uplink_IT_TP",
+         "oper_status": "down", "last_seen_at": at},
+    ]
+    path = tmp_path / "graph.json"
+
+    def load(when=now):
+        graph = build_graph(context, {"sources": sources, "ports": ports}, {}, {}, {}, now)
+        path.write_text(json.dumps(graph), encoding="utf-8")
+        link, = load_infrastructure_map(path, when)["links"]
+        report, = link["portEvidence"]
+        assert not link["confirmed"] and not report["confirmed"]
+        return report.get("portStates", {})
+
+    assert load() == {
+        "a": {"name": "gigabitEthernet 1/0/18", "state": "up", "checkedAt": at, "speedBps": None, "stale": False},
+        "b": {"name": "p5_uplink_IT_TP", "state": "down", "checkedAt": at, "speedBps": None, "stale": False},
+    }
+    assert not load(now + timedelta(hours=1))
+    ports.append({**ports[0], "port_key": "ifindex:42", "name": "Gi1/0/18"})
+    assert set(load()) == {"b"}
+
+
 def test_verified_switch_ports_require_fresh_bidirectional_fdb_and_live_ports(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map
@@ -464,8 +501,11 @@ def test_verified_switch_ports_require_fresh_bidirectional_fdb_and_live_ports(tm
         link = next(edge for edge in load_infrastructure_map(path, when)["links"] if {edge["a"], edge["b"]} == {"core", "access"})
         return [p for p in link["portEvidence"] if p["source"] == "SNMP · двусторонний FDB"]
 
-    assert paired() == [{"a": "ge22", "b": "Port24", "at": earlier, "confirmed": True,
-                         "source": "SNMP · двусторонний FDB"}]
+    report, = paired()
+    assert {key: report[key] for key in ("a", "b", "at", "confirmed")} == {
+        "a": "ge22", "b": "Port24", "at": earlier, "confirmed": True,
+    }
+    assert {side: port["state"] for side, port in report["portStates"].items()} == {"a": "up", "b": "up"}
     assert not paired(now + timedelta(hours=1))
     evidence.pop()
     assert not paired()

@@ -98,6 +98,29 @@ def _public_port(row: dict, now: datetime) -> dict:
     }
 
 
+def _port_label_key(label: str) -> str:
+    label = label.strip().casefold()
+    gigabit = re.fullmatch(r"(?:gi|gigabitethernet)\s*(\d+/\d+/\d+)", label)
+    return f"gi{gigabit[1]}" if gigabit else label
+
+
+def _port_state_index(rows: list[dict], now: datetime) -> dict:
+    by_label = {}
+    for row in rows:
+        port = _public_port(row, now)
+        label = _port_label_key(port["name"])
+        if not label:
+            continue
+        aliases = {label}
+        physical = re.fullmatch(r"physical:([1-9]\d{0,3})", _text(row.get("key")))
+        if physical:
+            aliases.add(f"port{physical[1]}")
+        for alias in aliases:
+            by_label.setdefault(alias, []).append(port)
+    return {alias: candidates[0] for alias, candidates in by_label.items()
+            if len(candidates) == 1 and not candidates[0]["stale"]}
+
+
 def _public_service_check(check: dict, now: datetime) -> dict:
     path = _text(check.get("path"))
     port = check.get("port")
@@ -209,10 +232,13 @@ def load_infrastructure_map(path: Path, now: datetime | None = None) -> dict:
         return {**empty, "availability": "invalid"}
 
     nodes = {}
+    port_states = {}
     for row in _rows(raw.get("nodes"), 600):
         node = _public_node(row, now)
-        if node["id"] and node["name"]:
-            nodes.setdefault(node["id"], node)
+        if node["id"] and node["name"] and node["id"] not in nodes:
+            nodes[node["id"]] = node
+            if node["kind"] == NETWORK_KINDS[0]:
+                port_states[node["id"]] = _port_state_index(_rows(row.get("ports"), 500), now)
     links = []
     for row in _rows(raw.get("links"), 2400):
         edge = {key: _text(row.get(key)) for key in ("a", "b", "kind", "source", "details")}
@@ -227,6 +253,14 @@ def load_infrastructure_map(path: Path, now: datetime | None = None) -> dict:
                     "confirmed": report.get("confirmed") is True and (
                         source == "GitHub" or observation_is_fresh(report.get("at"), now)),
                 })
+                if edge["kind"] == "Сетевое соединение" and evidence[-1]["a"] and evidence[-1]["b"]:
+                    states = {}
+                    for side in ("a", "b"):
+                        port = port_states.get(edge[side], {}).get(_port_label_key(evidence[-1][side]))
+                        if port and port["state"] != "unknown":
+                            states[side] = port
+                    if states:
+                        evidence[-1]["portStates"] = states
                 vlan = report.get("vlan")
                 if type(vlan) is int and 1 <= vlan <= 4094:
                     evidence[-1]["vlan"] = vlan
