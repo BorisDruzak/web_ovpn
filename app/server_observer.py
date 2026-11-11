@@ -135,6 +135,41 @@ $s=T $p.newest_snapshot_utc;$r.backup_snapshot_fresh=$p.snapshot_count-gt 0-and(
 '''.splitlines())
 
 
+_DIRECTUM_LISTENER_PROCESSES = {"mongo": "mongod", "rabbitmq": "erl", "redis": "redis-server"}
+_DIRECTUM_BODY = (
+    "$running={param([string]$n)"
+    "$s=Get-Service -Name $n -ErrorAction SilentlyContinue;[bool]($s -and $s.Status -eq 'Running')};"
+    "$directum=Get-Service -Name 'DirectumRXServiceRunner' -ErrorAction SilentlyContinue;"
+    "if(-not $directum){$directum=Get-Service -Name 'DirectumRX' -ErrorAction SilentlyContinue};"
+    "$c=Get-CimInstance Win32_LogicalDisk -Filter 'DeviceID=\"C:\"' -ErrorAction Stop;"
+    "$logs=Get-ChildItem -LiteralPath 'C:\\rxdata\\logs' -File -Recurse -ErrorAction SilentlyContinue|"
+    "Measure-Object -Property Length -Sum;"
+    "$report=[pscustomobject]@{free_percent=[math]::Round(100*$c.FreeSpace/$c.Size,2);"
+    "log_bytes=[int64]$logs.Sum;"
+    "services=@{directumrx=[bool]($directum -and $directum.Status -eq 'Running');"
+    "mongo=[bool](& $running 'MongoDB');rabbitmq=[bool](& $running 'RabbitMQ');"
+    "redis=[bool](& $running 'Redis');iis=[bool](& $running 'W3SVC');dns=[bool](& $running 'DNS')}};"
+)
+
+
+def _directum_probe(ports: dict[str, int]) -> str:
+    listeners = ""
+    if ports:
+        spec = ";".join(f"{name}=@{{port={ports[name]};process='{process}'}}"
+                        for name, process in _DIRECTUM_LISTENER_PROCESSES.items() if name in ports)
+        listeners = (
+            f"$spec=@{{{spec}}};$listeners=@{{}};"
+            "try{$tcp=@(Get-NetTCPConnection -State Listen -ErrorAction Stop);"
+            "foreach($name in $spec.Keys){"
+            "$listener=$spec[$name];"
+            "$matching=@($tcp|Where-Object{$_.LocalPort -eq $listener.port -and "
+            "(Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).ProcessName -eq $listener.process});"
+            "$listeners[$name]=[bool]$matching.Count};"
+            "$report|Add-Member -NotePropertyName listeners -NotePropertyValue $listeners}catch{};"
+        )
+    return _powershell_probe(_DIRECTUM_BODY + listeners + "$report|ConvertTo-Json -Compress", "directum")
+
+
 _ROLE_PROBES = {
     "acti": "/usr/bin/sudo -n /usr/local/sbin/acti-v3-observe",
     "acti_backup": _powershell_probe(_ACTI_BACKUP_BODY, "acti_backup"),
@@ -147,22 +182,7 @@ _ROLE_PROBES = {
         "-Compress",
         "file_server",
     ),
-    "directum": _powershell_probe(
-        "$running={param([string]$n)"
-        "$s=Get-Service -Name $n -ErrorAction SilentlyContinue;[bool]($s -and $s.Status -eq 'Running')};"
-        "$directum=Get-Service -Name 'DirectumRXServiceRunner' -ErrorAction SilentlyContinue;"
-        "if(-not $directum){$directum=Get-Service -Name 'DirectumRX' -ErrorAction SilentlyContinue};"
-        "$c=Get-CimInstance Win32_LogicalDisk -Filter 'DeviceID=\"C:\"' -ErrorAction Stop;"
-        "$logs=Get-ChildItem -LiteralPath 'C:\\rxdata\\logs' -File -Recurse -ErrorAction SilentlyContinue|"
-        "Measure-Object -Property Length -Sum;"
-        "[pscustomobject]@{free_percent=[math]::Round(100*$c.FreeSpace/$c.Size,2);"
-        "log_bytes=[int64]$logs.Sum;"
-        "services=@{directumrx=[bool]($directum -and $directum.Status -eq 'Running');"
-        "mongo=[bool](& $running 'MongoDB');rabbitmq=[bool](& $running 'RabbitMQ');"
-        "redis=[bool](& $running 'Redis');iis=[bool](& $running 'W3SVC');dns=[bool](& $running 'DNS')}}|ConvertTo-Json "
-        "-Compress",
-        "directum",
-    ),
+    "directum": _directum_probe({}),
     "active_directory": _powershell_probe(
         "$running={param([string]$n)"
         "$s=Get-Service -Name $n -ErrorAction SilentlyContinue;[bool]($s -and $s.Status -eq 'Running')};"
@@ -273,10 +293,15 @@ def _validate_runtime_config(config: dict[str, Any]) -> None:
 
 def _validate_runtime_target(value: Any) -> None:
     target = _require_mapping(value, "target")
-    if set(target) != {"role", "host", "user", "checks"}:
-        raise ValueError("target fields must be role, host, user, and checks only")
+    if set(target) - {"listener_ports"} != {"role", "host", "user", "checks"}:
+        raise ValueError("target fields must be role, host, user, checks, and optional listener_ports")
     if target["role"] not in ALLOWED_ROLES:
         raise ValueError("target role is not allowed")
+    if "listener_ports" in target:
+        ports = _require_mapping(target["listener_ports"], "listener_ports")
+        if (target["role"] != "directum" or not ports.keys() <= _DIRECTUM_LISTENER_PROCESSES.keys()
+                or any(type(port) is not int or not 1 <= port <= 65535 for port in ports.values())):
+            raise ValueError("listener_ports must specify supported Directum components and valid TCP ports")
     if not isinstance(target["user"], str) or not _SAFE_SSH_USER.fullmatch(target["user"]):
         raise ValueError("target user must be a safe SSH destination component")
     if not isinstance(target["host"], str) or not _SAFE_SSH_HOST.fullmatch(target["host"]):
@@ -352,6 +377,18 @@ def collect(
                 raise _ProbeFailure("transport")
             payload = _parse_probe_payload(completed.stdout, strict=role in {"acti", "acti_backup"})
             checks = _checks_from_payload(role, source, payload, latency_ms)
+            ports = configured_target.get("listener_ports", {})
+            listeners = payload.get("listeners")
+            for service, port in ports.items():
+                name = f"{service}_tcp_{port}"
+                running = listeners.get(service) if isinstance(listeners, dict) else None
+                if type(running) is bool:
+                    checks.append({"name": name, "source": source, "status": "ok" if running else "critical",
+                                   "observed": port if running else "unavailable", "expected": port,
+                                   "latency_ms": latency_ms})
+                else:
+                    checks.append({"name": name, "source": source, "status": "error",
+                                   "error": "unexpected_response"})
         except subprocess.TimeoutExpired:
             checks = _failure_checks(role, source, "timeout")
         except _ProbeFailure as exc:
@@ -408,7 +445,7 @@ def _ssh_command(
             "StrictHostKeyChecking=yes",
             "--",
             f"{target['user']}@{target['host']}",
-            _ROLE_PROBES[target["role"]],
+            _directum_probe(target["listener_ports"]) if target.get("listener_ports") else _ROLE_PROBES[target["role"]],
         ]
     )
     return command

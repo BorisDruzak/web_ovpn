@@ -374,6 +374,37 @@ def test_windows_service_probes_require_running_status():
     )
 
 
+def test_directum_listener_checks_report_the_configured_port_and_preserve_other_checks():
+    config = runtime_config()
+    configured = next(t for t in config["targets"] if t["role"] == "directum")
+    config["targets"] = [configured]
+    configured["listener_ports"] = {"mongo": 27017, "rabbitmq": 5672, "redis": 6379}
+    listeners = {"mongo": True, "rabbitmq": False}
+
+    def runner(command, **kwargs):
+        script = decode_windows_probe(command[-1])
+        assert "Get-NetTCPConnection -State Listen" in script
+        assert "Get-Process -Id" in script
+        assert "mongo=@{port=27017;process='mongod'}" in script
+        completed = healthy_runner(command, **kwargs)
+        payload = json.loads(completed.stdout)
+        payload["listeners"] = listeners
+        completed.stdout = json.dumps(payload)
+        return completed
+
+    snapshot = collect(config, runner=runner, now=parse_utc("2026-07-18T20:00:00Z"))
+    checks = {check["name"]: check for check in target(snapshot, "directum")["checks"]}
+    assert checks["mongo_tcp_27017"]["status"] == "ok"
+    assert checks["mongo_tcp_27017"]["observed"] == 27017
+    assert checks["rabbitmq_tcp_5672"]["status"] == "critical"
+    assert checks["redis_tcp_6379"]["status"] == "error"
+    assert checks["directumrx_active"]["status"] == "ok"
+
+    configured["listener_ports"]["mongo"] = True
+    with pytest.raises(ValueError, match="listener_ports"):
+        collect(config, runner=runner, now=parse_utc("2026-07-18T20:00:00Z"))
+
+
 def test_file_server_probe_checks_windows_e_volume_smb_and_ssh():
     calls = []
 
