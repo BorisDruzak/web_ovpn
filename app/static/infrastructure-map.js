@@ -423,10 +423,13 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       const list = make('ul', null, 'map-detail-list');
       for (const check of node.serviceChecks) {
         const row = make('li');
-        const endpoint = [check.method, check.port, check.path].filter(Boolean).join(' ');
-        const result = {reachable:'Отвечает', unreachable:'Сбой проверки'}[check.state] ?? 'Нет подтверждения';
+        const endpoint = [check.method, check.target, check.port, check.path].filter(Boolean).join(' ');
+        const confirmed = check.method === 'Маршрут' ? 'Подтверждён' : 'Отвечает';
+        const result = {reachable:confirmed, unreachable:'Сбой проверки'}[check.state] ?? 'Нет подтверждения';
+        const gateway = check.via ? ' · через ' + check.via : '';
+        const source = check.source ? ' · ' + check.source : '';
         const time = check.checkedAt ? ' · ' + formatTime(check.checkedAt) : '';
-        row.append(make('strong', endpoint || 'Проверка'), make('small', result + time + (check.stale ? ' · устарело' : '')));
+        row.append(make('strong', endpoint || 'Проверка'), make('small', result + gateway + source + time + (check.stale ? ' · устарело' : '')));
         list.append(row);
       }
       propertiesSection.append(make('h3', 'Проверки службы'), list);

@@ -97,6 +97,26 @@ def _guest_observation(macs: set[str], host_macs: dict, counts: Counter, now: da
     return None
 
 
+def _route_checks(intent: dict, source: str, routes: list[dict], now: datetime) -> list[dict]:
+    gateway = intent.get("next_hop")
+    table = intent.get("routing_table", "main")
+    checks = []
+    for destination in intent.get("destinations", [])[:12]:
+        matches = [
+            row["last_seen_at"] for row in routes
+            if row.get("source") == source and row.get("routing_table") == table
+            and row.get("dst_address") == destination and row.get("gateway") == gateway
+            and row.get("active") == 1 and row.get("disabled") == 0
+            and observation_is_fresh(row.get("last_seen_at"), now)
+        ]
+        checks.append({
+            "state": "reachable" if matches else "unknown", "source": "Network Observer",
+            "method": "Маршрут", "target": destination, "via": gateway,
+            "checkedAt": max(matches) if matches else now.isoformat(),
+        })
+    return checks
+
+
 def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings: dict, now: datetime) -> dict:
     nodes = {}
     edges = {}
@@ -163,9 +183,14 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 declared_devices_by_mac.setdefault(mac.lower(), set()).add(key)
         if device.get("model"):
             item["properties"]["Модель"] = device["model"]
+    intents = {item["id"]: item for item in context.get("routing_intent", []) if "id" in item}
     for service in context.get("services", []):
         host = service.get("device")
-        node(service["id"], service["name"], "Сервис", nodes.get(host, {}).get("site", ""))
+        item = node(service["id"], service["name"], "Сервис", nodes.get(host, {}).get("site", ""))
+        route = bindings.get("route_evidence", {}).get(service["id"], {})
+        intent = intents.get(route.get("intent"))
+        if intent and route.get("source"):
+            item["serviceChecks"] = _route_checks(intent, route["source"], network.get("routes", []), now)
         edge(host, service["id"], "Размещение", "GitHub")
     verified_host_ports = set()
     for link in context.get("links", []):
@@ -479,7 +504,7 @@ def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: dict)
     return result
 
 
-def read_network(guest_macs: set[str] | None = None) -> dict:
+def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | None = None) -> dict:
     commands = {
         "switches": (["switches", "status"], "switches"),
         "links": (["topology", "links"], "links"),
@@ -488,6 +513,17 @@ def read_network(guest_macs: set[str] | None = None) -> dict:
         data = {"sources": list_sources(connection), "attachments": query_confirmed_attachment_ports(connection)}
         if guest_macs:
             data["guest_fdb"] = query_observed_mac_ports(connection, guest_macs)
+        if route_sources:
+            data["routes"] = [dict(row) for row in connection.execute(
+                """
+                SELECT s.name AS source, r.dst_address, r.gateway, r.routing_table,
+                       r.active, r.disabled, r.last_seen_at
+                FROM network_routes AS r
+                JOIN network_sources AS s ON s.id = r.source_id
+                WHERE s.enabled = 1 AND s.name IN (SELECT value FROM json_each(?))
+                """,
+                (json.dumps(sorted(route_sources)),),
+            )]
     data.update({name: run_netctl(args, timeout=15)[key] for name, (args, key) in commands.items()})
     try:
         data["hosts"] = run_netctl(["hosts", "export", "--status", "all"], timeout=25)["hosts"]
@@ -557,7 +593,8 @@ def main() -> int:
             if not pve.get("at"):
                 raise ValueError("Proxmox export requires observation time")
         guest_macs = {mac for config in pve.get("configs", {}).values() for mac in _guest_macs(config)}
-        network = read_network(guest_macs)
+        route_sources = {item["source"] for item in bindings.get("route_evidence", {}).values() if item.get("source")}
+        network = read_network(guest_macs, route_sources)
         now = datetime.now(timezone.utc)
         graph = build_graph(context, network, build_server_health_view(args.server_health, now), pve, bindings, now)
         apply_service_probes(graph["nodes"], bindings.get("service_probes", {}))

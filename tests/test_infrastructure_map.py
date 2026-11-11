@@ -356,6 +356,69 @@ def test_collection_reads_source_registry_without_syncing_config(monkeypatch):
     assert calls == ["closed"]
 
 
+def test_route_evidence_is_scoped_and_does_not_mark_service_available():
+    from app.infrastructure_collect import build_graph
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    context = {
+        "services": [{"id": "vpn", "name": "VPN"}],
+        "routing_intent": [{"id": "vpn-routes", "next_hop": "192.0.2.1", "routing_table": "main",
+                            "destinations": ["198.51.100.0/24", "203.0.113.0/24"]}],
+    }
+    network = {"routes": [
+        {"source": source, "gateway": "192.0.2.1", "routing_table": table,
+         "dst_address": dest, "active": 1, "disabled": 0, "last_seen_at": at}
+        for source, table, dest in [("router", "main", "198.51.100.0/24"),
+                                    ("router", "other", "203.0.113.0/24"),
+                                    ("other", "main", "203.0.113.0/24")]
+    ]}
+    bindings = {"route_evidence": {"vpn": {"source": "router", "intent": "vpn-routes"}}}
+    node, = build_graph(context, network, {}, {}, bindings, now)["nodes"]
+    assert "reachability" not in node
+    assert [(check["target"], check["state"]) for check in node["serviceChecks"]] == [
+        ("198.51.100.0/24", "reachable"), ("203.0.113.0/24", "unknown"),
+    ]
+
+
+def test_sip_options_validates_transaction_and_treats_silence_as_unknown(monkeypatch):
+    from app import infrastructure_service_probes as probes
+
+    class Datagram:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def settimeout(self, timeout):
+            pass
+
+        def connect(self, address):
+            assert address == ("192.0.2.13", 5060)
+
+        def getsockname(self):
+            return ("192.0.2.14", 12345)
+
+        def sendall(self, request):
+            assert request.startswith(b"OPTIONS sip:192.0.2.13:5060 SIP/2.0")
+            self.headers = [line for line in request.split(b"\r\n") if line.startswith((b"Call-ID:", b"CSeq:"))]
+
+        def recv(self, size):
+            if self.code is None:
+                raise TimeoutError
+            headers = self.headers if self.match else [b"Call-ID: unrelated", b"CSeq: 1 OPTIONS"]
+            return b"\r\n".join([b"SIP/2.0 " + self.code, *headers, b"", b""])
+
+    wire = Datagram()
+    monkeypatch.setattr(probes.socket, "socket", lambda *args: wire)
+    spec = {"type": "sip_options", "ip": "192.0.2.13", "port": 5060}
+    for code, match, state in [(b"200 OK", True, "reachable"), (b"503 Busy", True, "unreachable"),
+                               (b"200 OK", False, "unknown"), (None, True, "unknown")]:
+        wire.code, wire.match = code, match
+        assert probes._probe(spec) == state
+
+
 def test_infrastructure_map_serves_only_public_snapshot(tmp_path, monkeypatch):
     path = tmp_path / "infrastructure.json"
     monkeypatch.setenv("INFRASTRUCTURE_MAP_SNAPSHOT_PATH", str(path))

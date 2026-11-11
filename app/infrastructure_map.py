@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import math
 import re
@@ -56,6 +57,15 @@ def _number(value: object) -> int | float | None:
     if type(value) is int and abs(value) <= 10**20:
         return value
     return value if type(value) is float and math.isfinite(value) else None
+
+
+def _network_address(value: object) -> str:
+    if not isinstance(value, str) or len(value) > 64:
+        return ""
+    try:
+        return str(ipaddress.ip_network(value)) if "/" in value else str(ipaddress.ip_address(value))
+    except ValueError:
+        return ""
 
 
 def _public_reachability(value: object, now: datetime) -> dict:
@@ -127,8 +137,9 @@ def _public_node(row: dict, now: datetime) -> dict:
         "serviceChecks": [
             {**_public_reachability(check, now),
              "port": check["port"] if type(check.get("port")) is int and 1 <= check["port"] <= 65535 else None,
+             "target": _network_address(check.get("target")), "via": _network_address(check.get("via")),
              "path": path if re.fullmatch(r"/[A-Za-z0-9._/-]{0,159}", path) and not path.startswith("//") else ""}
-            for check in _rows(row.get("serviceChecks"), 4)
+            for check in _rows(row.get("serviceChecks"), 16)
             for path in [_text(check.get("path"))]
         ],
         "checks": [

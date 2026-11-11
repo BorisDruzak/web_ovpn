@@ -141,12 +141,57 @@ def _openvpn_management() -> str:
     return "unknown"
 
 
+def _sip_options(ip: str, port: int) -> str:
+    family = socket.AF_INET6 if ":" in ip else socket.AF_INET
+    destination = f"[{ip}]" if family == socket.AF_INET6 else ip
+    transaction = uuid.uuid4().hex
+    try:
+        with socket.socket(family, socket.SOCK_DGRAM) as connection:
+            connection.settimeout(TIMEOUT)
+            connection.connect((ip, port))
+            local, local_port, *_ = connection.getsockname()
+            if family == socket.AF_INET6:
+                local = f"[{local}]"
+            uri = f"sip:{destination}:{port}"
+            request = [
+                f"OPTIONS {uri} SIP/2.0",
+                f"Via: SIP/2.0/UDP {local}:{local_port};branch=z9hG4bK{transaction};rport",
+                "Max-Forwards: 0", f"To: <{uri}>",
+                f"From: <sip:monitor@{local}>;tag={transaction}", f"Call-ID: {transaction}",
+                "CSeq: 1 OPTIONS", "Content-Length: 0", "", "",
+            ]
+            connection.sendall("\r\n".join(request).encode("ascii"))
+            response = connection.recv(8192)
+    except OSError:
+        return "unknown"
+    head = response.partition(b"\r\n\r\n")[0].split(b"\r\n")
+    status = re.fullmatch(rb"SIP/2\.0 ([1-6][0-9]{2})(?: .*)?", head[0])
+    headers = {}
+    for line in head[1:]:
+        name, separator, value = line.partition(b":")
+        if separator:
+            headers[name.strip().lower()] = value.strip()
+    if (not status or headers.get(b"call-id", headers.get(b"i")) != transaction.encode()
+            or headers.get(b"cseq", b"").split() != [b"1", b"OPTIONS"]):
+        return "unknown"
+    code = int(status[1])
+    if 200 <= code < 300:
+        return "reachable"
+    return "unreachable" if code in {500, 502, 503, 504} else "unknown"
+
+
 def _probe(spec: dict) -> str:
     try:
+        protocol = spec["type"]
+        if protocol == "icmp":
+            ip = str(ipaddress.ip_address(spec["ip"]))
+            result = subprocess.run(["/usr/bin/ping", "-n", "-c", "1", "-W", "2", ip],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                    timeout=TIMEOUT, check=False)
+            return "reachable" if result.returncode == 0 else "unknown"
         port = spec["port"]
         if type(port) is not int or not 1 <= port <= 65535:
             return "unknown"
-        protocol = spec["type"]
         if protocol == "openvpn_management":
             return _openvpn_management()
         ip = str(ipaddress.ip_address(spec["ip"]))
@@ -158,6 +203,8 @@ def _probe(spec: dict) -> str:
             return _ldap(ip, port, spec)
         if protocol == "smb":
             return _smb(ip, port)
+        if protocol == "sip_options":
+            return _sip_options(ip, port)
     except (ssl.SSLError, http.client.HTTPException, KeyError, TypeError, ValueError):
         return "unknown"
     except (TimeoutError, ConnectionRefusedError, ConnectionResetError, dns.exception.Timeout):
@@ -176,27 +223,35 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
     def check(target):
         node, specs = target
         if not isinstance(specs, list) or not specs or len(specs) > 4 or not all(isinstance(spec, dict) for spec in specs):
-            return node, {}
+            return node, None
         methods = {"http": "HTTP", "https": "HTTPS", "dns": "DNS", "ldap": "LDAP", "smb": "SMB2",
-                   "openvpn_management": "OpenVPN Management (UDP)"}
+                   "openvpn_management": "OpenVPN Management (UDP)", "sip_options": "SIP OPTIONS (UDP)", "icmp": "ICMP"}
         checks = []
+        required = []
         for spec in specs:
             protocol = spec.get("type")
             method = methods.get(protocol, "") if isinstance(protocol, str) else ""
             port = spec.get("port")
-            checks.append({
+            observation = {
                 "state": _probe(spec), "method": method,
                 "port": port if type(port) is int and 1 <= port <= 65535 else None,
                 "path": spec.get("path") if method in {"HTTP", "HTTPS"} else None,
+                "target": spec.get("ip") if protocol in {"icmp", "sip_options"} else None,
                 "checkedAt": datetime.now(timezone.utc).isoformat(),
-            })
-        results = [check["state"] for check in checks]
+            }
+            checks.append(observation)
+            if spec.get("supplemental") is not True:
+                required.append(observation)
+        node.setdefault("serviceChecks", []).extend(checks)
+        if not required:
+            return node, None
+        results = [check["state"] for check in required]
         state = "unreachable" if "unreachable" in results else "reachable" if all(s == "reachable" for s in results) else "unknown"
-        method = " + ".join(dict.fromkeys(check["method"] for check in checks if check["method"]))
-        node["serviceChecks"] = checks
+        method = " + ".join(dict.fromkeys(check["method"] for check in required if check["method"]))
         return node, {"state": state, "source": "Проверка сервиса", "method": method,
                       "checkedAt": checks[-1]["checkedAt"]}
 
     with ThreadPoolExecutor(max_workers=6) as pool:
         for node, observation in pool.map(check, targets):
-            node["reachability"] = observation
+            if observation is not None:
+                node["reachability"] = observation
