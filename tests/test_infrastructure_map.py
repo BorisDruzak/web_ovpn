@@ -101,7 +101,12 @@ def test_port_evidence_keeps_direction_and_parallel_links(tmp_path):
                     for index, d in enumerate(devices, 1)],
         "ports": [{"source": "east", "port_key": "index:2", "name": "east-2"}],
         "links": [{"source_a_id": 2, "source_b_id": 1, "port_a_key": "index:2",
-                   "port_b_key": "west-2", "last_seen_at": observed, "state": "confirmed"}],
+                   "port_b_key": "west-2", "last_seen_at": now.isoformat(), "state": "confirmed",
+                   "evidence": [
+                       {"endpoint_a": {"source_id": 2, "port_key": "index:2"},
+                        "endpoint_b": {"source_id": 1, "port_key": "west-2"},
+                        "evidence_type": "lldp_chassis_mac", "observed_at": observed},
+                   ]}],
         "lldp": [{"source": "west", "system_name": "east", "local_port_key": "west-3",
                   "port_id_subtype": 3, "port_id": "00:01:02:03:04:05", "observed_at": observed}],
     }
@@ -116,6 +121,48 @@ def test_port_evidence_keeps_direction_and_parallel_links(tmp_path):
     stale_link, = load_infrastructure_map(path, now + timedelta(hours=1))["links"]
     assert not stale_link["confirmed"]
     assert all(not row["confirmed"] for row in stale_link["portEvidence"])
+    assert link["portEvidence"][1]["at"] == observed
+
+    network.pop("lldp")
+    network["links"][0]["evidence"][0]["observed_at"] = (now - timedelta(hours=1)).isoformat()
+    graph = build_graph({"devices": devices, "links": [declared]}, network, {}, {}, {}, now)
+    assert not graph["links"][0]["confirmed"]
+
+
+def test_fdb_ports_require_fresh_unambiguous_device_identity(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    fresh = (now - timedelta(minutes=1)).isoformat()
+    old = (now - timedelta(hours=1)).isoformat()
+    first, duplicate, stale, virtual = [f"02:00:00:00:00:0{n}" for n in range(1, 5)]
+    devices = [{"id": name, "name": name, "kind": "server", **identity} for name, identity in [
+        ("server", {"management_ip": "192.0.2.4"}),
+        ("duplicate-a", {"mac_addresses": [duplicate]}),
+        ("duplicate-b", {"mac_addresses": [duplicate]}),
+        ("stale", {"mac_addresses": [stale]}),
+        ("guest", {"mac_addresses": [virtual]}),
+        ("hypervisor", {}),
+    ]]
+    network = {
+        "sources": [{"id": 5, "name": "switch", "driver": "snmp_switch"}],
+        "ports": [{"source": "switch", "port_key": "1/1", "name": "Gi1/1"}],
+        "hosts": [{"ip": "192.0.2.4", "mac": first, "last_seen_at": fresh}],
+        "attachments": [{"source_id": 5, "port_key": "1/1", "mac": mac,
+                         "observed_at": observed, "vlan_id": 100}
+                        for mac, observed in [(first, fresh), (duplicate, fresh), (stale, old), (virtual, fresh)]],
+    }
+    placement = {"endpoint_a": {"device": "guest"}, "endpoint_b": {"device": "hypervisor"},
+                 "relation": "virtualized_on"}
+    graph = build_graph({"devices": devices, "links": [placement]}, network, {}, {}, {}, now)
+    path = tmp_path / "infrastructure.json"
+    path.write_text(json.dumps(graph), encoding="utf-8")
+    link, = (link for link in load_infrastructure_map(path, now)["links"] if link["source"] == "netctl FDB")
+    assert (link["a"], link["b"], link["confirmed"]) == ("observer:switch", "server", True)
+    assert link["portEvidence"] == [{"a": "Gi1/1", "b": "", "source": "netctl FDB",
+                                     "at": fresh, "confirmed": True, "vlan": 100}]
+    assert first not in path.read_text(encoding="utf-8")
 
 
 def test_openvpn_requires_connected_daemon_and_active_session(monkeypatch):
@@ -176,6 +223,7 @@ def test_collection_reads_source_registry_without_syncing_config(monkeypatch):
 
     monkeypatch.setattr(collector, "connect_read_only", lambda url: ReadConnection())
     monkeypatch.setattr(collector, "list_sources", lambda conn: [{"id": 1, "name": "test"}])
+    monkeypatch.setattr(collector, "query_confirmed_attachment_ports", lambda conn: [])
     monkeypatch.setattr(collector, "run_netctl", netctl)
     assert collector.read_network()["sources"] == [{"id": 1, "name": "test"}]
     assert calls == ["closed"]

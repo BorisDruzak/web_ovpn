@@ -17,6 +17,37 @@ _LLDP_FINGERPRINT_TYPES = {
 }
 
 
+def query_confirmed_attachment_ports(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Return confirmed direct FDB attachments with the original observation time."""
+    return [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT DISTINCT candidates.switch_source_id AS source_id, candidates.port_key,
+                   candidates.vlan_id, interfaces.mac, candidates.observed_at
+            FROM asset_attachment_resolutions AS resolutions
+            JOIN asset_attachment_candidates AS candidates
+              ON candidates.asset_interface_id = resolutions.asset_interface_id
+             AND candidates.switch_source_id = resolutions.selected_source_id
+             AND candidates.port_key = resolutions.selected_port_key
+             AND candidates.vlan_key = resolutions.selected_vlan_key
+             AND candidates.correlation_run_id = resolutions.correlation_run_id
+            JOIN asset_interfaces AS interfaces ON interfaces.id = candidates.asset_interface_id
+            JOIN network_sources AS sources ON sources.id = candidates.switch_source_id
+            JOIN switch_ports AS ports
+              ON ports.source_id = candidates.switch_source_id AND ports.port_key = candidates.port_key
+            JOIN current_switch_fdb AS fdb
+              ON fdb.source_id = candidates.switch_source_id AND fdb.port_key = candidates.port_key
+             AND fdb.vlan_key = candidates.vlan_key AND fdb.mac = interfaces.mac COLLATE NOCASE
+            WHERE resolutions.status = 'confirmed' AND candidates.candidate_class = 'direct'
+              AND interfaces.lifecycle = 'active' AND sources.enabled = 1 AND ports.oper_status = 'up'
+              AND lower(fdb.status) NOT IN ('self', 'mgmt')
+            ORDER BY candidates.switch_source_id, candidates.port_key, candidates.vlan_id, interfaces.mac
+            """
+        )
+    ]
+
+
 def validate_pagination(
     limit: int, offset: int, *, maximum: int = MAX_PAGE_SIZE
 ) -> None:

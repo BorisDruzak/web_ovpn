@@ -21,6 +21,7 @@ from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_ope
 from netctl.config import DEFAULT_DB_URL
 from netctl.context import load_context_bytes, load_schema, validate_context
 from netctl.db import connect_read_only, list_sources
+from netctl.switch_queries import query_confirmed_attachment_ports
 
 from .infrastructure_map import MAX_SNAPSHOT_BYTES, NETWORK_KINDS, observation_is_fresh
 from .infrastructure_service_probes import apply_service_probes
@@ -90,7 +91,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             "properties": {}, "sources": [], "checks": [],
         })
 
-    def edge(a, b, kind, source, confirmed=True, details="", ports=None, at=None):
+    def edge(a, b, kind, source, confirmed=True, details="", ports=None, at=None, vlan=None):
         if a not in nodes or b not in nodes or a == b:
             return
         key = (tuple(sorted((a, b))), kind)
@@ -106,6 +107,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 ports = ports[::-1]
             report = {"a": ports[0], "b": ports[1], "source": source, "at": at,
                       "confirmed": confirmed}
+            if vlan is not None:
+                report["vlan"] = vlan
             if report not in evidence:
                 evidence.append(report)
         if evidence:
@@ -117,12 +120,15 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
 
     host_ips = {}
     host_macs = {}
+    fresh_macs_by_ip = {}
     for host in network.get("hosts", []):
         if host.get("ip"):
             host_ips[host["ip"]] = host
         mac = str(host.get("mac") or "").lower()
         if MAC.fullmatch(mac):
             host_macs.setdefault(mac, []).append(host)
+            if host.get("ip") and observation_is_fresh(host.get("last_seen_at"), now):
+                fresh_macs_by_ip.setdefault(host["ip"], set()).add(mac)
     addresses = {}
     names = {}
     for device in context.get("devices", []):
@@ -153,6 +159,10 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
     for port in network.get("ports", []):
         port_groups.setdefault(port["source"], []).append(port)
         port_names[(port["source"], port.get("port_key"))] = port.get("name") or port.get("port_key")
+
+    def port_label(source_name, key):
+        return port_names.get((source_name, key), key)
+
     source_nodes = {}
     source_ids = {}
     source_names = {}
@@ -185,17 +195,20 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         if "fdb_entries" in status:
             item["properties"]["Записи MAC-таблицы"] = str(status["fdb_entries"])
     for row in network.get("links", []):
-        a = source_ids.get(row.get("source_a_id"))
-        b = source_ids.get(row.get("source_b_id"))
-        ports = []
-        for side in ("a", "b"):
-            raw = row.get(f"port_{side}_key") or ""
-            name = source_names.get(row.get(f"source_{side}_id"))
-            ports.append(port_names.get((name, raw), raw))
-        observed = row.get("last_seen_at")
-        fresh = observation_is_fresh(observed, now)
-        edge(a, b, "Сетевое соединение", "netctl", row.get("state") == "confirmed" and fresh,
-             ports=ports, at=observed)
+        a_id, b_id = row.get("source_a_id"), row.get("source_b_id")
+        a, b = source_ids.get(a_id), source_ids.get(b_id)
+        edge(a, b, "Сетевое соединение", "netctl", False)
+        for report in row.get("evidence", []):
+            if report.get("evidence_type") not in {"lldp_chassis_mac", "fdb_management_mac", "fdb_subtree"}:
+                continue
+            end_a, end_b = report.get("endpoint_a", {}), report.get("endpoint_b", {})
+            if (end_a.get("source_id"), end_b.get("source_id")) != (a_id, b_id):
+                continue
+            observed = report.get("observed_at")
+            confirmed = row.get("state") == "confirmed" and observation_is_fresh(observed, now)
+            ports = (port_label(source_names.get(a_id), end_a.get("port_key") or ""),
+                     port_label(source_names.get(b_id), end_b.get("port_key") or ""))
+            edge(a, b, "Сетевое соединение", "netctl", confirmed, ports=ports, at=observed)
     for row in network.get("lldp", []):
         if not observation_is_fresh(row.get("observed_at"), now):
             continue
@@ -204,7 +217,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         candidates = [key for key in names.get(name, []) if nodes[key]["kind"] in NETWORK_KINDS]
         if a and len(candidates) == 1 and a != candidates[0]:
             raw_port = row.get("local_port_key", "")
-            port = port_names.get((row.get("source"), raw_port), raw_port)
+            port = port_label(row.get("source"), raw_port)
             remote = row.get("port_id") if str(row.get("port_id_subtype")) in {"1", "5"} else ""
             nodes[candidates[0]]["properties"]["Соседство LLDP"] = f"{nodes[a]['name']} · {port}"
             edge(a, candidates[0], "Сетевое соединение", "LLDP UI_VPN", True,
@@ -296,6 +309,31 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         for key, value in list(edges.items()):
             if value["kind"] == "Размещение ВМ" and value["source"] == "GitHub":
                 value["confirmed"] = False
+
+    virtual_assets = {link["endpoint_a"]["device"] for link in context.get("links", [])
+                      if link.get("relation") == "virtualized_on" and link.get("state", {}).get("intent") != "absent"}
+    devices_by_mac = {}
+    for device in context.get("devices", []):
+        key = device["id"]
+        address = device.get("management_ip")
+        declared = {mac.lower() for mac in device.get("mac_addresses", []) if MAC.fullmatch(mac)}
+        observed = fresh_macs_by_ip.get(address, set())
+        macs = declared or (observed if len(observed) == 1 and len(addresses.get(address, [])) == 1 else set())
+        for mac in macs:
+            devices_by_mac.setdefault(mac, set()).add(key)
+    for report in network.get("attachments", []):
+        observed = report["observed_at"]
+        switch = source_ids.get(report["source_id"])
+        candidates = devices_by_mac.get(str(report["mac"]).lower(), set())
+        if not switch or len(candidates) != 1 or not observation_is_fresh(observed, now):
+            continue
+        device, = candidates
+        if device in virtual_assets or nodes[device].get("guest"):
+            continue
+        port_key = report["port_key"]
+        port = port_label(source_names[report["source_id"]], port_key)
+        edge(switch, device, "Путь по MAC-таблице", "netctl FDB",
+             ports=(port, ""), at=observed, vlan=report["vlan_id"])
     return {"schema": 1, "snapshotAt": now.isoformat(), "nodes": list(nodes.values()),
             "links": list(edges.values()), "clusterId": cluster_id, "nodeOrder": hypervisors,
             "overviewGuests": overview_guests}
@@ -356,7 +394,7 @@ def read_network() -> dict:
         "links": (["topology", "links"], "links"),
     }
     with closing(connect_read_only(DEFAULT_DB_URL)) as connection:
-        data = {"sources": list_sources(connection)}
+        data = {"sources": list_sources(connection), "attachments": query_confirmed_attachment_ports(connection)}
     data.update({name: run_netctl(args, timeout=15)[key] for name, (args, key) in commands.items()})
     try:
         data["hosts"] = run_netctl(["hosts", "export", "--status", "all"], timeout=25)["hosts"]

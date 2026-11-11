@@ -181,8 +181,11 @@ def load_infrastructure_map(path: Path, now: datetime | None = None) -> dict:
                     "confirmed": report.get("confirmed") is True and (
                         source == "GitHub" or observation_is_fresh(report.get("at"), now)),
                 })
+                vlan = report.get("vlan")
+                if type(vlan) is int and 1 <= vlan <= 4094:
+                    evidence[-1]["vlan"] = vlan
             confirmed = row.get("confirmed") is True
-            if edge["source"] in {"netctl", "LLDP UI_VPN"} and "observedAt" in row:
+            if edge["source"] in {"netctl", "LLDP UI_VPN", "netctl FDB"} and "observedAt" in row:
                 confirmed = confirmed and observation_is_fresh(row["observedAt"], now)
             links.append({**edge, "confirmed": confirmed, "portEvidence": evidence})
     _map_statuses(nodes, links)

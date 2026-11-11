@@ -435,8 +435,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           const [local, remote] = edge.a === id ? [evidence.a, evidence.b] : [evidence.b, evidence.a];
           const ports = (local || 'порт неизвестен') + ' ↔ ' + (remote || 'порт неизвестен');
           const source = evidence.source === 'GitHub' ? 'GitHub (конфигурация)' : evidence.source;
+          const vlan = evidence.vlan ? ' · VLAN ' + evidence.vlan : '';
           const time = evidence.at ? ' · ' + formatTime(evidence.at) : '';
-          li.append(make('small', ports + ' · ' + source + time + (evidence.confirmed ? '' : ' · без подтверждения')));
+          li.append(make('small', ports + vlan + ' · ' + source + time + (evidence.confirmed ? '' : ' · без подтверждения')));
         }
         list.append(li);
       }
