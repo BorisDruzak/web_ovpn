@@ -32,6 +32,7 @@ SHARED_LLDP_SOURCE = "LLDP · общий порт"
 OBSERVER_CHECK_LABELS = {
     "watchdog_fresh": "Свежесть отчёта watchdog",
     "backup_snapshot_fresh": "Свежесть резервной копии",
+    "backup_snapshot_count": "Снимков в хранилище",
     "repository_capacity": "Ёмкость хранилища копий",
     "c_disk_free": "Свободно на диске C:",
     "root_disk_free": "Свободно на корневом разделе",
@@ -39,6 +40,8 @@ OBSERVER_CHECK_LABELS = {
     "rxdata_log_bytes": "Размер журналов Directum",
 }
 OBSERVER_METRIC_UNITS = {
+    "backup_snapshot_fresh": "hours",
+    "backup_snapshot_count": "count",
     "c_disk_free": "percent",
     "root_disk_free": "percent",
     "data_disk_free": "percent",
@@ -99,6 +102,8 @@ def _observer_measurement(check: dict, name: str) -> dict:
     def valid(value):
         if unit == "percent":
             return value is not None and 0 <= value <= 100
+        if unit == "hours":
+            return value is not None and 0 <= value < 2**53
         return type(value) is int and 0 <= value < 2**53
 
     result = {"unit": unit, "observed": observed if valid(observed) else None}

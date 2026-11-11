@@ -308,7 +308,7 @@ def test_backup_probe_is_fixed_read_only_bounded_windows_command():
 
 
 @pytest.mark.parametrize(
-    "mutation", ["missing", "extra", "number", "service", "format"]
+    "mutation", ["missing", "extra", "number", "service", "format", "age_without_snapshots", "untrusted_measurements"]
 )
 def test_backup_return_contract_rejects_partial_or_ambiguous_fields(mutation):
     data = {
@@ -326,6 +326,10 @@ def test_backup_return_contract_rejects_partial_or_ambiguous_fields(mutation):
         data["repository_capacity"] = 1
     elif mutation == "service":
         data["services"]["smb"] = True
+    elif mutation == "age_without_snapshots":
+        data.update(snapshot_count=0, snapshot_age_hours=1)
+    elif mutation == "untrusted_measurements":
+        data.update(watchdog_fresh=False, snapshot_count=2, snapshot_age_hours=1)
     else:
         data["format"] = "other"
     with pytest.raises(observer._ProbeFailure):
@@ -353,6 +357,7 @@ def test_backup_return_contract_rejects_partial_or_ambiguous_fields(mutation):
         "fractional_bytes",
         "bad_timestamp",
         "snapshot_old_now",
+        "no_snapshots",
         "duplicate",
     ],
 )
@@ -411,6 +416,9 @@ def test_backup_eventlog_program_validates_owned_report_without_writes(mutation)
         event_time = now - timedelta(hours=29)
         payload["newest_snapshot_utc"] = stamp(now - timedelta(hours=31))
         payload["snapshot_age_hours"] = 2
+    elif mutation == "no_snapshots":
+        payload.update(status="unhealthy", event_id=1002, issues=["snapshot_missing"],
+                       snapshot_count=0, snapshot_age_hours=None, newest_snapshot_utc=None)
     body = base64.b64decode(
         observer._ROLE_PROBES["acti_backup"].split("-EncodedCommand ")[1]
     ).decode("utf-16le")
@@ -446,18 +454,26 @@ def test_backup_eventlog_program_validates_owned_report_without_writes(mutation)
         return
     assert result.returncode == 0
     data = json.loads(result.stdout.decode("utf-8-sig"))
-    assert set(data) == {
+    expected_fields = {
         "format",
         "services",
         "watchdog_fresh",
         "backup_snapshot_fresh",
         "repository_capacity",
     }
+    if data["watchdog_fresh"]:
+        expected_fields |= {"snapshot_count", "snapshot_age_hours"}
+    assert set(data) == expected_fields
     if mutation == "healthy":
         assert all(
             data[k] is True
             for k in ("watchdog_fresh", "backup_snapshot_fresh", "repository_capacity")
         )
+        assert data["snapshot_count"] == 2 and 0.99 <= data["snapshot_age_hours"] <= 1.02
+        checks = {c["name"]: c for c in observer._checks_from_payload("acti_backup", "gateway", data, 1)}
+        assert checks["backup_snapshot_fresh"]["expected"] == 30
+        assert checks["backup_snapshot_fresh"]["observed"] == data["snapshot_age_hours"]
+        assert checks["backup_snapshot_count"]["observed"] == 2
     elif mutation == "capacity":
         assert (
             data["watchdog_fresh"] is True
@@ -466,6 +482,10 @@ def test_backup_eventlog_program_validates_owned_report_without_writes(mutation)
         )
     elif mutation == "snapshot_old_now":
         assert data["backup_snapshot_fresh"] is False
+        assert data["snapshot_age_hours"] >= 31
+    elif mutation == "no_snapshots":
+        assert data["watchdog_fresh"] is True and data["backup_snapshot_fresh"] is False
+        assert data["snapshot_count"] == 0 and data["snapshot_age_hours"] is None
     else:
         assert data["watchdog_fresh"] is False or data["repository_capacity"] is False
     assert "PRIVATE" not in json.dumps(data)

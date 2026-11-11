@@ -591,13 +591,16 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         if (!Number.isFinite(value)) return '';
         if (unit === 'percent') return number.format(value) + '%';
         if (unit === 'bytes') return number.format(value / 2**30) + ' ГиБ';
+        if (unit === 'hours') return number.format(value) + ' ч';
+        if (unit === 'count') return number.format(value);
         return '';
       };
       for (const check of node.checks) {
         const row = make('li');
         const value = measurement(check.unit, check.observed);
         const threshold = measurement(check.unit, check.warningThreshold);
-        const notes = [states[check.status], value, threshold && 'порог предупреждения ' + threshold,
+        const limit = check.unit === 'hours' ? 'предел ' : 'порог предупреждения ';
+        const notes = [states[check.status], value, threshold && limit + threshold,
           check.required && 'обязательная проверка', check.checkedAt && formatTime(check.checkedAt),
           check.stale && 'устарело'];
         row.append(make('strong', check.label || check.name), make('small', notes.filter(Boolean).join(' · ')));

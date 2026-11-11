@@ -129,11 +129,15 @@ foreach($n in 'event_id','snapshot_count','repository_bytes','repository_entries
 $ok=$ok-and$p.format-eq'acti-backup-watchdog-v1'-and$p.check_only-is[bool]-and!$p.check_only-and$p.issues-is[array]-and$e.EventID-eq$p.event_id;
 $ok=$ok-and(($p.event_id-eq 1000-and$p.status-eq'healthy'-and$p.issues.Count-eq 0)-or($p.event_id-in 1002,1003,1004-and$p.status-eq'unhealthy'-and$p.issues.Count-gt 0));
 $ok=$ok-and@($p.issues|Where-Object{$_-notin'free_space_limit','repository_size_limit','snapshot_missing','snapshot_timestamp_invalid','snapshot_stale'}).Count-eq 0;
-$ok=$ok-and$p.snapshot_count-eq[math]::Floor($p.snapshot_count)-and$p.repository_entries-eq[math]::Floor($p.repository_entries)-and$p.repository_bytes-eq[math]::Floor($p.repository_bytes);
+$n=$p.snapshot_count;$b=$p.repository_bytes;$x=$p.snapshot_age_hours;
+$ok=$ok-and$n-eq[math]::Floor($n)-and$p.repository_entries-eq[math]::Floor($p.repository_entries)-and$b-eq[math]::Floor($b);
 $a=T $p.checked_utc;$z=[datetimeoffset]::UtcNow;$t=[datetimeoffset]$e.TimeGenerated.ToUniversalTime();
 $fresh=$ok-and$null-ne$a-and($z-$a).TotalHours-le 30-and($z-$a).TotalMinutes-ge -5-and($z-$t).TotalHours-le 30-and($z-$t).TotalMinutes-ge -5-and[math]::Abs(($a-$t).TotalMinutes)-le 5;
-if($fresh){$r.watchdog_fresh=$true;$r.repository_capacity=$p.free_gib-ge 100-and$p.repository_bytes-le 322122547200;
-$s=T $p.newest_snapshot_utc;$r.backup_snapshot_fresh=$p.snapshot_count-gt 0-and(N $p.snapshot_age_hours)-and$p.snapshot_age_hours-le 30-and$null-ne$s-and($z-$s).TotalHours-ge 0-and($z-$s).TotalHours-le 30-and[math]::Abs(($a-$s).TotalHours-$p.snapshot_age_hours)-le(1.0/12)}
+if($fresh){$r.watchdog_fresh=$true;$r.repository_capacity=$p.free_gib-ge 100-and$b-le 322122547200;
+$s=T $p.newest_snapshot_utc;$h=$null;if($s){$h=($z-$s).TotalHours};
+$v=$n-gt 0-and(N $x)-and(N $h)-and[math]::Abs(($a-$s).TotalHours-$x)-le(1.0/12);
+$r.backup_snapshot_fresh=$v-and$x-le 30-and$h-le 30;
+if($n-le 9007199254740991){$r.snapshot_count=[long]$n;$r.snapshot_age_hours=$null;if($v){$r.snapshot_age_hours=$h}}}
 }catch{};$r|ConvertTo-Json -Compress
 '''.splitlines())
 
@@ -633,6 +637,15 @@ def _checks_from_payload(
     if role == "acti_backup":
         for name in ACTI_BACKUP_FLAGS:
             _append_boolean_check(checks, source, payload, name, name, latency_ms)
+        if "snapshot_count" in payload:
+            count = payload["snapshot_count"]
+            age = payload["snapshot_age_hours"]
+            if age is not None:
+                freshness = next(check for check in checks if check["name"] == "backup_snapshot_fresh")
+                freshness.update(observed=age, expected=30)
+            checks.append({"name": "backup_snapshot_count", "source": source,
+                           "status": "ok" if count else "critical", "observed": count,
+                           "latency_ms": latency_ms})
     elif role == "acti":
         for service in ACTI_SERVICES:
             _append_service_check(checks, source, payload, service, service + "_active", latency_ms)
@@ -684,11 +697,19 @@ def _checks_from_payload(
 
 def _require_role_payload(role: str, payload: dict[str, Any]) -> None:
     if role == "acti_backup":
-        if (set(payload) != {"format", "services", *ACTI_BACKUP_FLAGS}
+        required = {"format", "services", *ACTI_BACKUP_FLAGS}
+        measurements = {"snapshot_count", "snapshot_age_hours"}
+        if (set(payload) not in (required, required | measurements)
             or payload.get("format") != "acti-backup-observer-v1"
             or payload.get("services") != {}
             or any(type(payload.get(field)) is not bool for field in ACTI_BACKUP_FLAGS)):
             raise _ProbeFailure("unexpected_response")
+        if measurements <= payload.keys():
+            count = payload["snapshot_count"]
+            age = payload["snapshot_age_hours"]
+            if (not payload["watchdog_fresh"] or type(count) is not int or not 0 <= count < 2**53
+                    or age is not None and (count == 0 or type(age) not in (int, float) or not 0 <= age < 2**53)):
+                raise _ProbeFailure("unexpected_response")
         return
     if role == "acti":
         services = payload.get("services")

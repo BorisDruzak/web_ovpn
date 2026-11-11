@@ -1087,8 +1087,13 @@ nonnegative finite metrics, fresh UTC report/event timestamps (30 hours, up to
 five minutes clock skew), and no unknown/duplicate fields. Snapshot freshness
 uses the snapshot timestamp at collection time, rather than trusting an old
 reported age. Capacity requires at least 100 GiB free and at most 300 GiB in the
-repository. Only `acti-backup-observer-v1`, empty `services`, and booleans
-`watchdog_fresh`, `backup_snapshot_fresh`, `repository_capacity` leave the probe.
+repository. The `acti-backup-observer-v1` response has empty `services` and
+three booleans, `watchdog_fresh`, `backup_snapshot_fresh` and
+`repository_capacity`. A valid watchdog report also provides the snapshot
+count and, when the snapshot timestamp is consistent, its age at collection.
+If SSH uses a forced command, deploy the same fixed probe body on the target
+and verify the installed reader through the ordinary collector. Preserve the
+forced command and its existing file permissions.
 Unavailable providers or malformed evidence remain visible as failure/unknown.
 
 Acceptance must verify healthy and controlled failure fixtures, strict TLS,
