@@ -529,6 +529,46 @@ def test_mcp_infrastructure_returns_one_node_and_its_linked_peers(monkeypatch):
     assert absent["node"] is None and absent["links"] == absent["neighbors"] == []
 
 
+def test_mcp_infrastructure_search_returns_bounded_matches_and_stable_ids(monkeypatch):
+    import mcp.openvpn_mcp_server as server
+
+    nodes = [
+        {"id": f"node:{index}", "name": f"Directum test {index}", "mapStatus": "unknown"}
+        for index in range(15)
+    ]
+    nodes.append({"id": "directumrx", "name": "Directum", "aliases": ["Документооборот"],
+                  "kind": "Виртуальная машина", "vmid": 103, "mapStatus": "ok", "checks": ["details"]})
+    graph = {"snapshotAt": "2026-11-11T12:00:00Z", "availability": "ready", "git": "abcdef",
+             "nodes": nodes, "links": []}
+    requests = []
+
+    def api(method, path):
+        requests.append((method, path))
+        return {"status": "ok", "infrastructure": graph}
+
+    def search(query):
+        return server.call_tool("openvpn_network_infrastructure", {"query": query})["infrastructure"]
+
+    monkeypatch.setattr(server, "api_request", api)
+    expected = {"id": "directumrx", "name": "Directum", "kind": "Виртуальная машина", "vmid": 103,
+                "mapStatus": "ok"}
+    found = search("  DIRECTUM  ")
+    assert found["matches"][0] == expected
+    assert len(found["matches"]) == 12 and found["total"] == 16
+    assert found["snapshotAt"] == graph["snapshotAt"]
+    assert "nodes" not in found and "links" not in found
+    for query in ("ВМ 103", "VM  103", "103", "ДОКУМЕНТООБОРОТ", "directumrx"):
+        assert search(query)["matches"] == [expected]
+    assert search("not present")["total"] == 0
+    assert set(requests) == {("GET", "/api/v1/network/infrastructure")}
+    requests.clear()
+    for arguments in ({"query": "  "}, {"query": "x" * 161}, {"query": 103},
+                      {"query": "Directum", "node_id": "directumrx"}):
+        with pytest.raises(ValueError):
+            server.call_tool("openvpn_network_infrastructure", arguments)
+    assert requests == []
+
+
 def test_mcp_network_diagnostic_tools_call_api(monkeypatch):
     import mcp.openvpn_mcp_server as server
 
