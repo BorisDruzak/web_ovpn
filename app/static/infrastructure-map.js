@@ -5,6 +5,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   const root = document.getElementById('infra-map-review');
   const groups = root.querySelector('#map-groups');
   const details = root.querySelector('#map-details');
+  const related = root.querySelector('#map-related');
   const search = root.querySelector('#map-query');
   const feedback = root.querySelector('#map-search-result');
   const labels = {ok:'Норма', warn:'Предупреждение', critical:'Проблема', unknown:'Нет подтверждённого состояния'};
@@ -32,6 +33,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   const networkKinds = new Set(data.switchKinds);
   let view = 'overview';
   let selected = null;
+  let focusedRanks = null;
   const make = (tag, text, className) => {
     const element = document.createElement(tag);
     if (text) element.textContent = text;
@@ -99,6 +101,30 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   const networkRoots = data.nodes.filter(node => networkKinds.has(node.kind)).map(node => node.id);
   const primary = networkRoots.sort((a, b) => connected.get(b).length - connected.get(a).length || nameOrder(a, b))[0];
   const anchors = [primary, ...data.overviewGuests].filter(Boolean);
+  const onOverview = node => node.id !== data.clusterId && (!node.guest || data.overviewGuests.includes(node.id));
+  const overviewIds = new Set(data.nodes.filter(onOverview).map(node => node.id));
+  const networkDistance = primary ? traversal(primary, new Set(), overviewIds) : new Map();
+
+  function focusedTopology(id) {
+    const path = [id];
+    let current = id;
+    while (networkDistance.get(current) > 0) {
+      const parent = connected.get(current).find(peer => networkDistance.get(peer) === networkDistance.get(current) - 1);
+      if (!parent) break;
+      path.unshift(parent);
+      current = parent;
+    }
+    if (path.length === 1) {
+      const incoming = incident.get(id).find(edge => edge.confirmed && edge.b === id &&
+        ['Размещение', 'Размещение ВМ', 'Цель проверки'].includes(edge.kind));
+      if (incoming) path.unshift(incoming.a);
+    }
+    const ranks = new Map(path.map((nodeId, rank) => [nodeId, rank]));
+    for (const peer of connected.get(id)) {
+      if (overviewIds.has(peer) && !ranks.has(peer)) ranks.set(peer, path.length);
+    }
+    return ranks;
+  }
   function addGraph(title, components) {
     const section = group(title);
     const graph = make('div', null, 'map-graph');
@@ -135,15 +161,21 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     grid.append(...ids.map(nodeButton));
     section.append(grid);
   }
-  function renderView(mode) {
-    if (selected) select(null, false);
+  function renderView(mode, focus=null) {
+    if (selected) clearSelection();
     resize.disconnect();
     graphs.length = 0;
     groups.replaceChildren();
     buttons.clear();
     view = mode;
+    focusedRanks = focus ? focusedTopology(focus) : null;
     viewButtons.forEach(button => button.setAttribute('aria-pressed', String(button.dataset.view === mode)));
-    if (mode === 'cluster') {
+    if (focusedRanks) {
+      addGraph('Схема связей', [focusedRanks]);
+      const graph = graphs.at(-1).graph;
+      graph.classList.add('map-focused-graph');
+      if (focusedRanks.get(focus) === Math.max(...focusedRanks.values())) graph.classList.add('map-focus-leaf');
+    } else if (mode === 'cluster') {
       if (byId.has(data.clusterId) && data.nodeOrder.length) {
         addGraph('Кластер и узлы', [new Map([[data.clusterId, 0], ...data.nodeOrder.map(id => [id, 1])])]);
       } else {
@@ -157,7 +189,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     } else {
       const isOverview = mode === 'overview';
       const visible = new Set(data.nodes.filter(node => isOverview
-        ? node.id !== data.clusterId && (!node.guest || data.overviewGuests.includes(node.id))
+        ? onOverview(node)
         : networkKinds.has(node.kind)).map(node => node.id));
       const order = [...new Set([...anchors.filter(id => visible.has(id)), ...visible])];
       const components = new Map();
@@ -240,25 +272,72 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     }
   }
   const edgeKey = (a, b) => JSON.stringify([a, b].sort());
-  function select(id, reveal=true) {
-    if (id && !buttons.has(id)) {
-      const target = byId.get(id);
-      const clusterItem = target.guest || data.nodeOrder.includes(id) || id === data.clusterId;
-      renderView(clusterItem ? 'cluster' : 'overview');
-      if (!buttons.has(id)) return;
-    }
-    if (selected) buttons.get(selected).setAttribute('aria-pressed','false');
-    selected = id;
+
+  function updateNodeUrl(id) {
     const url = new URL(window.location.href);
     if (id) url.searchParams.set('node', id);
     else url.searchParams.delete('node');
     window.history.replaceState(null, '', url);
-    details.replaceChildren();
-    if (!id) {
-      details.hidden = true;
-      requestAnimationFrame(draw);
-      return;
+  }
+
+  function clearSelection() {
+    buttons.get(selected)?.setAttribute('aria-pressed','false');
+    selected = null;
+    updateNodeUrl(null);
+    for (const panel of [related, details]) {
+      panel.replaceChildren();
+      panel.hidden = true;
     }
+  }
+
+  function closeSelection() {
+    const previous = selected;
+    if (focusedRanks) renderView(view);
+    else clearSelection();
+    buttons.get(previous)?.focus({preventScroll: true});
+    requestAnimationFrame(draw);
+  }
+
+  function renderRelated(id) {
+    const ids = new Set([id]);
+    if (focusedRanks) for (const peer of focusedRanks.keys()) ids.add(peer);
+    for (const peer of connected.get(id)) ids.add(peer);
+    const list = make('ul', null, 'map-related-list');
+    for (const peerId of ids) {
+      const peer = byId.get(peerId);
+      const entry = make('li');
+      const open = make('button', null, 'map-related-node');
+      open.type = 'button';
+      open.setAttribute('aria-pressed', String(peerId === id));
+      const dot = make('i');
+      dot.dataset.state = peer.status;
+      const title = make('span', peer.guest ? 'ВМ ' + peer.vmid : peer.name);
+      title.append(make('small', peer.guest ? peer.name : peer.kind));
+      const state = make('span', peer.properties['Состояние ВМ'] ?? (peer.status === 'unknown' ? 'Нет данных' : labels[peer.status]), 'map-related-state');
+      state.dataset.state = peer.status;
+      open.append(dot, title, state);
+      open.addEventListener('click', () => select(peerId));
+      entry.append(open);
+      list.append(entry);
+    }
+    related.replaceChildren(make('h2', 'Связанные объекты'), list);
+    related.hidden = false;
+  }
+
+  function select(id, reveal=true) {
+    const target = byId.get(id);
+    if (!target) return;
+    if (view === 'overview' && onOverview(target)) {
+      renderView('overview', id);
+    } else if (!buttons.has(id)) {
+      const clusterItem = target.guest || data.nodeOrder.includes(id) || id === data.clusterId;
+      renderView(clusterItem ? 'cluster' : 'overview', clusterItem ? null : id);
+    }
+    if (!buttons.has(id)) return;
+    buttons.get(selected)?.setAttribute('aria-pressed','false');
+    selected = id;
+    updateNodeUrl(id);
+    details.replaceChildren();
     const node = byId.get(id);
     const button = buttons.get(id);
     button.setAttribute('aria-pressed','true');
@@ -266,10 +345,12 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const heading = make('div', null, 'map-detail-heading');
     const close = make('button','Закрыть','map-close');
     close.type = 'button';
-    close.addEventListener('click', () => {select(null); button.focus();});
-    heading.append(make('h2', node.name), close);
+    close.addEventListener('click', closeSelection);
     const state = make('p', node.properties['Состояние ВМ'] ?? labels[node.status], 'map-state');
     state.dataset.state = node.status;
+    const identity = make('div', null, 'map-detail-identity');
+    identity.append(make('h2', node.name), state);
+    heading.append(identity, close);
     const properties = make('dl');
     const items = {'Тип':node.kind, 'Площадка':node.site, 'Объект из':node.origin, ...node.properties};
     for (const [name,value] of Object.entries(items)) {
@@ -279,7 +360,11 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       const message = input.label || (input.raw === 'error' ? 'Ошибка сбора' : labels[input.status]);
       properties.append(make('dt',input.name), make('dd',message + (input.at ? ' · '+formatTime(input.at) : '') + (input.stale ? ' · устарело' : '')));
     }
-    details.append(heading,state,properties);
+    const columns = make('div', null, 'map-detail-columns');
+    const propertiesSection = make('section');
+    propertiesSection.append(make('h3', 'Свойства'), properties);
+    columns.append(propertiesSection);
+    details.append(heading, columns);
     if (node.checks.length) {
       const list = make('ul',null,'map-detail-list');
       const checkStatusOrder = {critical:0,warn:1,unknown:2,ok:3};
@@ -292,7 +377,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         li.append(dot, make('span',(checks[check.name] ?? check.name)+' · '+labels[check.status]+value));
         list.append(li);
       }
-      details.append(make('h3','Проверки UI_VPN'), list);
+      const observations = make('section');
+      observations.append(make('h3','Проверки UI_VPN'), list);
+      columns.append(observations);
     }
     const links = incident.get(id);
     if (links.length) {
@@ -307,11 +394,14 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         li.append(go,make('small',edge.kind+' · '+status+(edge.details ? ' · '+edge.details : '')));
         list.append(li);
       }
-      details.append(make('h3','Связи'),list);
+      const relationships = make('section');
+      relationships.append(make('h3','Наблюдения о связях'), list);
+      columns.append(relationships);
     }
+    renderRelated(id);
     requestAnimationFrame(() => {
       draw();
-      if (reveal) details.scrollIntoView({block:'nearest'});
+      if (reveal) button.focus();
     });
   }
   function findNode() {
@@ -332,14 +422,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     if (event.key === 'Enter') findNode();
   });
   root.addEventListener('keydown', event => {
-    if (event.key === 'Escape' && selected) {
-      const button = buttons.get(selected);
-      select(null);
-      button.focus();
-    }
+    if (event.key === 'Escape' && selected) closeSelection();
   });
   viewButtons.forEach(button => button.addEventListener('click', () => {
-    if (button.dataset.view !== view) renderView(button.dataset.view);
+    if (button.dataset.view !== view || focusedRanks) renderView(button.dataset.view);
   }));
   renderView('overview');
   const linkedNode = new URLSearchParams(window.location.search).get('node');
