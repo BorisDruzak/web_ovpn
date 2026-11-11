@@ -173,7 +173,10 @@ TOOLS: dict[str, dict[str, Any]] = {
     "openvpn_connections": tool_schema("List current OpenVPN connections."),
     "openvpn_nat_status": tool_schema("Show ViPNet NAT counters."),
     "openvpn_network_dashboard": tool_schema("Show network observer dashboard summary and source health."),
-    "openvpn_network_infrastructure": tool_schema("Read the infrastructure map snapshot with node states, sources and links."),
+    "openvpn_network_infrastructure": tool_schema(
+        "Read the infrastructure map, or inspect one node with its checks, neighbors and port evidence.",
+        {"node_id": {"type": "string", "minLength": 1, "maxLength": 160}},
+    ),
     "openvpn_network_hosts": tool_schema(
         "List observed network hosts with optional filters.",
         {
@@ -444,6 +447,24 @@ def _snapshot_section(tool_name: str, arguments: dict[str, Any] | None = None) -
         return {"status": "error", "message": str(exc)}
 
 
+def _infrastructure_snapshot(node_id: str | None) -> dict[str, Any]:
+    if node_id is not None and (not isinstance(node_id, str) or not 1 <= len(node_id) <= 160):
+        raise ValueError("node_id must be a non-empty string of at most 160 characters")
+    response = api_request("GET", "/api/v1/network/infrastructure")
+    graph = response.get("infrastructure")
+    if node_id is None or not isinstance(graph, dict):
+        return response
+    node = next((item for item in graph["nodes"] if item["id"] == node_id), None)
+    links = [edge for edge in graph["links"] if node_id in (edge["a"], edge["b"])] if node else []
+    peers = {edge["b"] if edge["a"] == node_id else edge["a"] for edge in links}
+    neighbors = [
+        {key: item[key] for key in ("id", "name", "kind", "mapStatus") if key in item}
+        for item in graph["nodes"] if item["id"] in peers
+    ]
+    metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git") if key in graph}
+    return {**response, "infrastructure": {**metadata, "node": node, "neighbors": neighbors, "links": links}}
+
+
 def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     if name.startswith(WORKSTATIONS_PREFIX):
         return _workstations_call(name, arguments)
@@ -568,7 +589,7 @@ def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     if name == "openvpn_network_dashboard":
         return api_request("GET", "/api/v1/network/dashboard")
     if name == "openvpn_network_infrastructure":
-        return api_request("GET", "/api/v1/network/infrastructure")
+        return _infrastructure_snapshot(arguments.get("node_id"))
     if name == "openvpn_network_hosts":
         return api_request(
             "GET",

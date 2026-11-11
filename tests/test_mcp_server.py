@@ -185,6 +185,7 @@ def test_mcp_tools_list_has_no_delete_tool():
     assert "openvpn_site_routes" in names
     assert "openvpn_router_instructions" in names
     assert "openvpn_network_dashboard" in names
+    assert "openvpn_network_infrastructure" in names
     assert "openvpn_network_hosts" in names
     assert "openvpn_network_host_detail" in names
     assert "openvpn_network_sources" in names
@@ -500,6 +501,32 @@ def test_mcp_apply_networks_call_uses_safe_network_list(monkeypatch):
     ]
     payload = json.loads(response["result"]["content"][0]["text"])
     assert payload["data"]["networks"] == ["192.168.100.10/32"]
+
+
+def test_mcp_infrastructure_returns_one_node_and_its_linked_peers(monkeypatch):
+    import mcp.openvpn_mcp_server as server
+
+    graph = {
+        "snapshotAt": "2026-11-11T12:00:00Z", "availability": "ready",
+        "nodes": [{"id": "vm:103", "name": "Directum", "mapStatus": "ok", "checks": []},
+                  {"id": "sw", "name": "Switch", "mapStatus": "ok"}, {"id": "other"}],
+        "links": [{"a": "sw", "b": "vm:103", "portEvidence": [{"a": "xe3"}]},
+                  {"a": "other", "b": "sw"}],
+    }
+
+    def api(method, path):
+        assert (method, path) == ("GET", "/api/v1/network/infrastructure")
+        return {"status": "ok", "infrastructure": graph}
+
+    monkeypatch.setattr(server, "api_request", api)
+    assert server.call_tool("openvpn_network_infrastructure", {})["infrastructure"] == graph
+    scoped = server.call_tool("openvpn_network_infrastructure", {"node_id": "vm:103"})["infrastructure"]
+    assert scoped["node"] == graph["nodes"][0]
+    assert scoped["neighbors"] == [graph["nodes"][1]]
+    assert scoped["links"] == graph["links"][:1]
+    assert scoped["snapshotAt"] == graph["snapshotAt"]
+    absent = server.call_tool("openvpn_network_infrastructure", {"node_id": "unknown"})["infrastructure"]
+    assert absent["node"] is None and absent["links"] == absent["neighbors"] == []
 
 
 def test_mcp_network_diagnostic_tools_call_api(monkeypatch):
