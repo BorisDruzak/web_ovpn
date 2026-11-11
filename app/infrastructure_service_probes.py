@@ -200,18 +200,18 @@ def _smb(ip: str, port: int) -> str:
     return "reachable" if status == command == 0 and structure == 65 and dialect in dialects else "unknown"
 
 
-def _openvpn_management() -> str:
-    # A successful status response with a session confirms a live tunnel.
+def _openvpn_management() -> dict:
     family = getattr(socket, "AF_UNIX", None)
     if family is None:
-        return "unknown"
+        return {"state": "unknown"}
     deadline = monotonic() + TIMEOUT
-    with socket.socket(family) as connection:
-        connection.settimeout(TIMEOUT)
-        try:
+    try:
+        with socket.socket(family) as connection:
+            connection.settimeout(TIMEOUT)
             connection.connect("/run/openvpn/server.sock")
             connection.sendall(b"state\nstatus 3\n")
-            connected = session_table = active_session = False
+            connected = session_table = False
+            sessions = 0
             with connection.makefile("rb") as wire:
                 for _ in range(4096):
                     remaining = deadline - monotonic()
@@ -222,14 +222,16 @@ def _openvpn_management() -> str:
                     if not line or len(line) > 4096:
                         break
                     if line.strip() == b"END" and session_table:
-                        return "reachable" if connected and active_session else "unknown"
+                        return {"state": "reachable" if connected and sessions else "unknown",
+                                "daemonReady": connected, "sessionCount": sessions}
                     fields = line.split(b",", 3)
                     connected |= len(fields) == 4 and fields[0].isdigit() and fields[1:3] == [b"CONNECTED", b"SUCCESS"]
                     session_table |= line.startswith(b"HEADER\tCLIENT_LIST\t")
-                    active_session |= line.startswith(b"CLIENT_LIST\t")
-        except OSError:
-            pass
-    return "unknown"
+                    if session_table and line.startswith(b"CLIENT_LIST\t"):
+                        sessions += 1
+    except OSError:
+        pass
+    return {"state": "unknown"}
 
 
 def _enable_udp_error_queue(connection: socket.socket, family: int) -> tuple[int, int] | None:
@@ -348,7 +350,7 @@ def _probe(spec: dict) -> str:
         if type(port) is not int or not 1 <= port <= 65535:
             return "unknown"
         if protocol == "openvpn_management":
-            return _openvpn_management()
+            return _openvpn_management()["state"]
         ip = str(ipaddress.ip_address(spec["ip"]))
         if protocol in {"http", "https"}:
             return _http(ip, port, spec)
@@ -389,7 +391,7 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 return node, None
         methods = {"http": "HTTP", "https": "HTTPS", "dns": "DNS", "ldap": "LDAP", "smb": "SMB2",
                    "zabbix_api": "Zabbix API", "postgresql": "PostgreSQL SSLRequest",
-                   "openvpn_management": "OpenVPN Management (UDP)", "sip_options": "SIP OPTIONS (UDP)", "icmp": "ICMP"}
+                   "openvpn_management": "OpenVPN Management", "sip_options": "SIP OPTIONS (UDP)", "icmp": "ICMP"}
         checks = []
         required = []
         for spec in specs:
@@ -398,10 +400,18 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
             if node["kind"] != "Сервис":
                 method = "ICMP адреса из инвентаря"
             port = spec.get("port")
+            valid_port = port if type(port) is int and 1 <= port <= 65535 else None
+            if protocol == "openvpn_management" and valid_port is not None:
+                details = {**_openvpn_management(), "configuredPort": valid_port}
+                valid_port = None
+            elif protocol == "sip_options":
+                details = _sip_options(spec)
+            else:
+                details = {"state": _probe(spec)}
             observation = {
-                **(_sip_options(spec) if protocol == "sip_options" else {"state": _probe(spec)}),
+                **details,
                 "source": "UI_VPN", "method": method,
-                "port": port if type(port) is int and 1 <= port <= 65535 else None,
+                "port": valid_port,
                 "path": spec.get("path") if protocol in {"http", "https", "zabbix_api"} else None,
                 "target": spec.get("ip") if protocol in {"icmp", "sip_options", "zabbix_api", "postgresql"}
                 or "probeTargetIP" in node else None,

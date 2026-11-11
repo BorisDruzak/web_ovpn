@@ -487,9 +487,14 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const gatewayLabel = check.method === 'Маршрут' && check.state !== 'reachable' ? 'ожидаемый шлюз' : 'через';
         let gateway = check.via ? ' · ' + gatewayLabel + ' ' + check.via : '';
         if (check.observedVia) gateway = ' ' + check.observedVia + gateway;
+        const management = [
+          check.configuredPort && 'настроен UDP/' + check.configuredPort,
+          check.daemonReady === true && 'демон CONNECTED',
+          check.sessionCount !== undefined && 'клиентских сессий: ' + check.sessionCount,
+        ].filter(Boolean).map(value => ' · ' + value).join('');
         const source = check.source ? ' · ' + check.source : '';
         const time = check.checkedAt ? ' · ' + formatTime(check.checkedAt) : '';
-        row.append(make('strong', endpoint || 'Проверка'), make('small', result + (reason ? ' · ' + reason + errorSource : '') + gateway + source + time + (check.stale ? ' · устарело' : '')));
+        row.append(make('strong', endpoint || 'Проверка'), make('small', result + (reason ? ' · ' + reason + errorSource : '') + gateway + management + source + time + (check.stale ? ' · устарело' : '')));
         list.append(row);
       }
       propertiesSection.append(make('h3', 'Проверки'), list);

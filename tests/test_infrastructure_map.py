@@ -1209,6 +1209,7 @@ def test_lldp_management_address_requires_matching_inventory_and_host_mac():
 def test_openvpn_requires_connected_daemon_and_active_session(monkeypatch):
     from io import BytesIO
     from app import infrastructure_service_probes as probes
+    from app.infrastructure_map import _public_service_check
 
     class Management:
         def __enter__(self):
@@ -1241,6 +1242,22 @@ def test_openvpn_requires_connected_daemon_and_active_session(monkeypatch):
     for response in (ready + header + b"END\n", header + client + b"END\n", ready + header + client):
         connection.response = response
         assert probes._probe(spec) == "unknown"
+
+    def check(response):
+        connection.response = response
+        node = {"id": "vpn", "kind": "Сервис"}
+        probes.apply_service_probes([node], {"vpn": [spec]})
+        raw, = node["serviceChecks"]
+        return _public_service_check(raw, datetime.now(timezone.utc))
+
+    observed = check(ready + header + client + b"CLIENT_LIST\tprivate-second\nEND\n")
+    assert observed["method"] == "OpenVPN Management"
+    assert observed["port"] is None and observed["configuredPort"] == 1194
+    assert observed["sessionCount"] == 2 and observed["daemonReady"] is True
+    assert "sample" not in json.dumps(observed) and "private-second" not in json.dumps(observed)
+    empty = check(ready + header + b"END\n")
+    assert empty["state"] == "unknown" and empty["sessionCount"] == 0 and empty["daemonReady"] is True
+    assert "sessionCount" not in check(ready + header + client)
 
 
 def test_network_device_without_management_ip_uses_unique_current_mac_binding():

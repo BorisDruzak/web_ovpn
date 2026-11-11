@@ -179,6 +179,14 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         "path": path if re.fullmatch(r"/[A-Za-z0-9._/-]{0,159}", path) and not path.startswith("//") else "",
     }
     reason = check.get("reason")
+    if check.get("method") == "OpenVPN Management":
+        configured_port = check.get("configuredPort")
+        sessions = check.get("sessionCount")
+        if type(configured_port) is int and 1 <= configured_port <= 65535:
+            result["configuredPort"] = configured_port
+        if (result["checkedAt"] and type(sessions) is int and 0 <= sessions <= 4096
+                and type(check.get("daemonReady")) is bool):
+            result.update(sessionCount=sessions, daemonReady=check["daemonReady"])
     if check.get("method") == "Маршрут":
         if result["checkedAt"] is None and check.get("state") == "unknown":
             result.update(method="Маршрут", source=_text(check.get("source"), 48))
