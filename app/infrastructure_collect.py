@@ -9,6 +9,7 @@ import ipaddress
 import json
 import os
 import re
+import sqlite3
 import ssl
 import subprocess
 import sys
@@ -1909,7 +1910,7 @@ def main() -> int:
             raise ValueError("network context did not validate")
         bindings = json.loads(args.bindings.read_text(encoding="utf-8")) if args.bindings else {}
         pve = {}
-        proxmox_failed = False
+        collection_issues = []
         if args.proxmox_url:
             guest_ids = set(bindings.get("guests", {}))
             guest_ids.update(str(service["vmid"]) for service in bindings.get("guest_services", {}).values())
@@ -1919,7 +1920,7 @@ def main() -> int:
                 pve = read_proxmox(args.proxmox_url, args.proxmox_token_file, args.proxmox_ca, guest_ids,
                                    bindings.get("hypervisor_management_bridges"))
             except (OSError, KeyError, ValueError) as exc:
-                proxmox_failed = True
+                collection_issues.append("proxmox")
                 print(f"Proxmox inventory unavailable ({type(exc).__name__})", file=sys.stderr)
         elif args.proxmox_export:
             pve = json.loads(args.proxmox_export.read_text(encoding="utf-8"))
@@ -1933,19 +1934,25 @@ def main() -> int:
         asset_fdb_paths = bindings.get("asset_fdb_paths", {})
         asset_fdb_ips = {device["management_ip"] for device in context.get("devices", [])
                          if device["id"] in asset_fdb_paths and device.get("management_ip")}
-        network = read_network(guest_macs, route_sources | transit_sources, transit_sources, asset_fdb_ips=asset_fdb_ips)
-        if lacp_links:
-            network["lacp"] = asyncio.run(_collect_lacp(network, lacp_links, datetime.now(timezone.utc)))
-        if bindings.get("ipsec_links"):
-            network["ipsec"] = _collect_ipsec_policies(network["sources"], bindings["ipsec_links"])
-            network["ipsec_connectivity"] = _collect_ipsec_connectivity(context, network["sources"], bindings["ipsec_links"])
-        network["guest_arp_probes"] = _collect_guest_arp_probes(
-            pve, network, bindings.get("guest_probe_ips", {}), datetime.now(timezone.utc),
-            bindings.get("guest_router_arp_sources"),
-        )
-        network["asset_mac_checks"] = _collect_asset_mac_probes(
-            context, network["sources"], bindings.get("asset_mac_probes", {}),
-        )
+        try:
+            network = read_network(guest_macs, route_sources | transit_sources, transit_sources, asset_fdb_ips=asset_fdb_ips)
+        except (NetctlError, sqlite3.Error, OSError, ValueError) as exc:
+            collection_issues.append("network_observer")
+            print(f"Network Observer inventory unavailable ({type(exc).__name__})", file=sys.stderr)
+            network = {}
+        else:
+            if lacp_links:
+                network["lacp"] = asyncio.run(_collect_lacp(network, lacp_links, datetime.now(timezone.utc)))
+            if bindings.get("ipsec_links"):
+                network["ipsec"] = _collect_ipsec_policies(network["sources"], bindings["ipsec_links"])
+                network["ipsec_connectivity"] = _collect_ipsec_connectivity(context, network["sources"], bindings["ipsec_links"])
+            network["guest_arp_probes"] = _collect_guest_arp_probes(
+                pve, network, bindings.get("guest_probe_ips", {}), datetime.now(timezone.utc),
+                bindings.get("guest_router_arp_sources"),
+            )
+            network["asset_mac_checks"] = _collect_asset_mac_probes(
+                context, network["sources"], bindings.get("asset_mac_probes", {}),
+            )
         now = datetime.now(timezone.utc)
         graph = build_graph(context, network, build_server_health_view(args.server_health, now), pve, bindings, now)
         probes = {**bindings.get("service_probes", {}),
@@ -1957,8 +1964,9 @@ def main() -> int:
         graph["snapshotAt"] = datetime.now(timezone.utc).isoformat()
         graph["git"] = args.git_revision
         graph["contextSha256"] = hashlib.sha256(context_raw).hexdigest()
-        if proxmox_failed:
-            graph["collectionIssues"] = ["proxmox"]
+        if collection_issues:
+            graph["collectionIssues"] = collection_issues
+        if "proxmox" in collection_issues:
             _retain_proxmox_inventory(graph, args.output)
         publish_snapshot(args.output, graph)
     except Exception as exc:

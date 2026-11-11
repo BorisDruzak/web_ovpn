@@ -48,8 +48,12 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     stale: 'Снимок устарел. Связи показаны по последним доступным данным.',
   };
   const proxmoxUnavailable = () => data.collectionIssues?.includes('proxmox');
-  function showAvailability(message = [availabilityLabels[data.availability], proxmoxUnavailable() &&
-    'Опрос Proxmox завершился ошибкой. Текущее состояние и размещение ВМ не подтверждены.'].filter(Boolean).join(' ')) {
+  const collectionMessages = {
+    proxmox: 'Опрос Proxmox завершился ошибкой. Текущее состояние и размещение ВМ не подтверждены.',
+    network_observer: 'Опрос Network Observer завершился ошибкой. Свежие данные SNMP, LLDP и MAC-таблиц недоступны.',
+  };
+  function showAvailability(message = [availabilityLabels[data.availability],
+    ...(data.collectionIssues ?? []).map(issue => collectionMessages[issue])].filter(Boolean).join(' ')) {
     availability.textContent = message;
     availability.hidden = !message;
   }

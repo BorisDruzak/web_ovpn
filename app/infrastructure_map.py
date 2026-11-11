@@ -780,12 +780,13 @@ def load_infrastructure_map(path: Path, now: datetime | None = None, *, db: Sess
             return []
         return list(dict.fromkeys(value for value in values[:600] if isinstance(value, str) and value in nodes))
 
-    issues = raw.get("collectionIssues")
+    raw_issues = raw.get("collectionIssues")
+    issues = [name for name in ("proxmox", "network_observer") if isinstance(raw_issues, list) and name in raw_issues]
     return {
         **empty, "availability": "stale" if now - stamp > MAX_AGE else "ready",
         "snapshotAt": stamp.isoformat(), "nodes": list(nodes.values()), "links": links,
         "clusterId": cluster_id, "nodeOrder": node_ids("nodeOrder"),
         "overviewGuests": node_ids("overviewGuests"),
         "git": revision if re.fullmatch(r"[0-9a-f]{40}", revision) else "",
-        **({"collectionIssues": ["proxmox"]} if isinstance(issues, list) and "proxmox" in issues else {}),
+        **({"collectionIssues": issues} if issues else {}),
     }

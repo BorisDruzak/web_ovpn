@@ -1492,6 +1492,51 @@ def test_collection_keeps_network_fresh_during_proxmox_api_failure(tmp_path, mon
     assert all(n["id"] != "vm" for n in recovered["nodes"])
 
 
+def test_network_observer_failure_keeps_proxmox_and_independent_checks(tmp_path, monkeypatch):
+    import sys
+    from app import infrastructure_collect as collector
+    from app import infrastructure_service_probes as probes
+    from app.infrastructure_map import load_infrastructure_map
+
+    context = tmp_path / "context.yaml"
+    context.write_text(
+        "devices:\n- id: switch\n  kind: switch\n  name: Switch\nservices:\n- id: web\n  name: Web\n",
+        encoding="utf-8",
+    )
+    bindings = tmp_path / "bindings.json"
+    bindings.write_text(json.dumps({"service_probes": {"web": [{"type": "http", "ip": "192.0.2.20",
+                         "port": 80, "path": "/ready", "body": "ready"}]}}), encoding="utf-8")
+    path = tmp_path / "graph.json"
+    monkeypatch.setattr(collector, "load_schema", lambda _: {})
+    monkeypatch.setattr(collector, "validate_context", lambda *_: [])
+    monkeypatch.setattr(collector, "read_proxmox", lambda *args: {
+        "cluster": [], "nodes": [{"node": "pve1", "status": "online"}],
+        "guests": [{"vmid": 103, "name": "Guest", "node": "pve1", "type": "qemu", "status": "stopped"}],
+    })
+
+    def unavailable(*args, **kwargs):
+        raise collector.NetctlError("internal netctl details")
+
+    monkeypatch.setattr(collector, "read_network", unavailable)
+    monkeypatch.setattr(collector, "build_server_health_view", lambda *_: {})
+    monkeypatch.setattr(probes, "_http_probe", lambda _: {"state": "reachable", "httpStatus": 200})
+    monkeypatch.setattr(sys, "argv", ["infrastructure_collect", "--context", str(context), "--schema", str(context),
+                                     "--server-health", str(context), "--bindings", str(bindings), "--output", str(path),
+                                     "--proxmox-url", "https://pve.example", "--proxmox-token-file", str(context)])
+    assert collector.main() == 0
+    graph = load_infrastructure_map(path)
+    assert graph["availability"] == "ready" and graph["collectionIssues"] == ["network_observer"]
+    nodes = {n["id"]: n for n in graph["nodes"]}
+    assert nodes["switch"]["mapStatus"] == "unknown" and nodes["switch"]["ports"] == []
+    assert nodes["pve1"]["mapStatus"] == "ok"
+    assert nodes["pve-guest:103"]["reachability"]["state"] == "stopped"
+    assert nodes["web"]["serviceChecks"][0]["httpStatus"] == 200
+    assert "internal netctl details" not in path.read_text(encoding="utf-8")
+    monkeypatch.setattr(collector, "read_network", lambda *args, **kwargs: {"sources": []})
+    assert collector.main() == 0
+    assert "collectionIssues" not in load_infrastructure_map(path)
+
+
 def test_proxmox_physical_port_inventory_preserves_admin_state_without_carrier(tmp_path, monkeypatch):
     from io import BytesIO
     from urllib.error import HTTPError
