@@ -787,6 +787,8 @@ def test_sip_options_validates_transaction_and_treats_silence_as_unknown(monkeyp
             self.headers = [line for line in request.split(b"\r\n") if line.startswith((b"Call-ID:", b"CSeq:"))]
 
         def recv(self, size):
+            if self.code == b"refused":
+                raise ConnectionRefusedError
             if self.code is None:
                 raise TimeoutError
             headers = self.headers if self.match else [b"Call-ID: unrelated", b"CSeq: 1 OPTIONS"]
@@ -796,7 +798,8 @@ def test_sip_options_validates_transaction_and_treats_silence_as_unknown(monkeyp
     monkeypatch.setattr(probes.socket, "socket", lambda *args: wire)
     spec = {"type": "sip_options", "ip": "192.0.2.13", "port": 5060}
     for code, match, state in [(b"200 OK", True, "reachable"), (b"503 Busy", True, "unreachable"),
-                               (b"200 OK", False, "unknown"), (None, True, "unknown")]:
+                               (b"200 OK", False, "unknown"), (None, True, "unknown"),
+                               (b"refused", True, "unreachable")]:
         wire.code, wire.match = code, match
         assert probes._probe(spec) == state
 

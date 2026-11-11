@@ -207,6 +207,8 @@ def _sip_options(ip: str, port: int) -> str:
             ]
             connection.sendall("\r\n".join(request).encode("ascii"))
             response = connection.recv(8192)
+    except ConnectionRefusedError:
+        return "unreachable"
     except OSError:
         return "unknown"
     head = response.partition(b"\r\n\r\n")[0].split(b"\r\n")
