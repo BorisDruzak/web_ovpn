@@ -230,6 +230,29 @@ def test_openvpn_requires_connected_daemon_and_active_session(monkeypatch):
         assert probes._probe(spec) == "unknown"
 
 
+def test_network_device_without_management_ip_uses_unique_current_mac_binding():
+    from app.infrastructure_collect import build_graph
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    mac = "02:00:00:00:00:03"
+    address = "192.0.2.15"
+    device = {"id": "router", "name": "Router", "kind": "router", "mac_addresses": [mac]}
+    host = {"ip": address, "mac": mac, "last_seen_at": at, "availability": {
+        "checked_at": at, "run_status": "success", "state": "online", "reason": "active_probe", "active_method": "icmp",
+    }}
+
+    def build(devices, hosts):
+        return build_graph({"devices": devices}, {"hosts": hosts}, {}, {}, {}, now)["nodes"][0]
+
+    node = build([device], [host])
+    assert node["reachability"]["state"] == "reachable"
+    assert node["properties"]["IP по MAC"] == address
+    assert "reachability" not in build([device, {**device, "id": "other"}], [host])
+    assert "reachability" not in build([device], [host, {**host, "ip": "192.0.2.17"}])
+    assert "reachability" not in build([device], [{**host, "last_seen_at": (now - timedelta(hours=1)).isoformat()}])
+
+
 def test_switch_ports_expose_fresh_link_state_and_age(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map

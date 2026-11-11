@@ -297,6 +297,28 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                     if observation:
                         item["reachability"] = observation
 
+    for device in context.get("devices", []):
+        key = device["id"]
+        item = nodes[key]
+        if device.get("management_ip") or "reachability" in item or item["kind"] not in NETWORK_KINDS:
+            continue
+        matches = {}
+        for declared_mac in device.get("mac_addresses", []):
+            mac = declared_mac.lower()
+            if declared_devices_by_mac.get(mac) != {key}:
+                continue
+            for host in host_macs.get(mac, []):
+                address = host.get("ip")
+                if (not addresses.get(address) and fresh_macs_by_ip.get(address) == {mac}
+                        and observation_is_fresh(host.get("last_seen_at"), now)):
+                    matches[address] = host
+        if len(matches) == 1:
+            address, = matches
+            item["properties"]["IP по MAC"] = address
+            observation = _host_observation(matches[address], now)
+            if observation and observation["state"] == "reachable":
+                item["reachability"] = observation
+
     guest_switch_ports = {}
     for report in network.get("guest_fdb", []):
         switch = source_ids.get(report["source_id"])
