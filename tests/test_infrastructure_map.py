@@ -87,6 +87,40 @@ def test_service_requires_all_http_checks_and_rejects_unexpected_response():
     assert nodes[1]["serviceChecks"][1]["path"] == "/unexpected"
 
 
+def test_http_probe_matches_json_health_fields_without_fixing_the_version():
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+    from app.infrastructure_service_probes import _probe
+
+    responses = {
+        "/ready": (200, b'{"version": "2", "database": "ok", "service": "example", "status": "ok"}'),
+        "/wrong": (200, b'{"status":"ok","service":"example","database":"down"}'),
+        "/invalid": (200, b"not json"),
+        "/large": (200, b'{"status":"ok","service":"example","database":"ok"}' + b" " * 32768),
+        "/down": (503, b'{"status":"unavailable"}'),
+    }
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            status, body = responses[self.path]
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        worker = Thread(target=server.serve_forever)
+        worker.start()
+        try:
+            base = {"type": "http", "ip": "127.0.0.1", "port": server.server_port,
+                    "json_fields": {"status": "ok", "database": "ok", "service": "example"}}
+            results = [_probe({**base, "path": path}) for path in responses]
+        finally:
+            server.shutdown()
+            worker.join()
+    assert results == ["reachable", "unknown", "unknown", "unknown", "unreachable"]
+
+
 def test_asset_https_probe_validates_certificate_before_sending_request(monkeypatch):
     from hashlib import sha256
     from types import SimpleNamespace
