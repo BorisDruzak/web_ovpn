@@ -22,6 +22,8 @@ NETWORK_KINDS = ("Коммутатор", "Маршрутизатор", "Точк
 INTERFACE_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}")
 REACHABILITY_STATES = ("reachable", "unreachable", "stopped", "unknown")
 SERVICE_LINKS = {"Размещение", "Цель проверки"}
+CLUSTER_KIND = "Кластер Proxmox"
+CLUSTER_HEALTH_METHODS = ("Кворум", "Участники кластера")
 RECIPROCAL_MAC_SOURCE = "SNMP · взаимные MAC"
 OBSERVER_CHECK_LABELS = {
     "watchdog_fresh": "Свежесть отчёта watchdog",
@@ -213,13 +215,17 @@ def _map_statuses(nodes: dict, links: list[dict]) -> None:
         states = {peer: nodes[peer]["reachability"]["state"] for peer in sorted(services[key])}
         unavailable = [peer for peer, state in states.items() if state in {"unreachable", "stopped"}]
         unknown = [peer for peer, state in states.items() if state == "unknown"]
+        cluster_states = []
+        if node["kind"] == CLUSTER_KIND:
+            checks = {check["method"]: check["state"] for check in node["serviceChecks"]}
+            cluster_states = [checks.get(method, "unknown") for method in CLUSTER_HEALTH_METHODS]
         state = node["reachability"]["state"]
         node["serviceAvailability"] = {"unavailable": unavailable, "unknown": unknown}
         if state in {"unreachable", "stopped"}:
             node["mapStatus"] = "critical"
-        elif state == "reachable" and unavailable:
+        elif state == "reachable" and (unavailable or "unreachable" in cluster_states):
             node["mapStatus"] = "warn"
-        elif state == "reachable" and not unknown:
+        elif state == "reachable" and not unknown and "unknown" not in cluster_states:
             node["mapStatus"] = "ok"
         else:
             node["mapStatus"] = "unknown"

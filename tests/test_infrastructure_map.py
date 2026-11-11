@@ -49,6 +49,43 @@ def test_map_colors_use_node_and_confirmed_service_availability(tmp_path):
     assert states["yellow"]["mapStatus"] == "unknown"
 
 
+def test_cluster_health_distinguishes_quorum_members_and_api(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    path = tmp_path / "infrastructure.json"
+    cluster = {"type": "cluster", "name": "example", "quorate": 1, "nodes": 2}
+    members = [{"type": "node", "name": "pve1", "online": 1}, {"type": "node", "name": "pve2", "online": 1}]
+
+    def read(when=now):
+        pve = {"at": now.isoformat(), "cluster": [cluster, *members], "guests": [],
+               "nodes": [{"node": "pve1", "status": "online"}, {"node": "pve2", "status": "online"}]}
+        graph = build_graph({}, {}, {}, pve, {}, now)
+        path.write_text(json.dumps(graph), encoding="utf-8")
+        return next(node for node in load_infrastructure_map(path, when)["nodes"] if node["id"] == "proxmox:cluster")
+
+    healthy = read()
+    assert healthy["mapStatus"] == "ok"
+    assert [(c["method"], c["state"]) for c in healthy["serviceChecks"]] == [
+        ("Кворум", "reachable"), ("Участники кластера", "reachable"),
+    ]
+    assert healthy["properties"]["Узлы"] == "2 из 2 в сети"
+    cluster["quorate"] = 0
+    no_quorum = read()
+    assert no_quorum["reachability"]["state"] == "reachable"
+    assert no_quorum["mapStatus"] == "warn"
+    cluster["quorate"] = 1
+    members[1]["online"] = 0
+    assert read()["mapStatus"] == "warn"
+    assert read()["properties"]["Узлы"] == "1 из 2 в сети"
+    members.pop()
+    assert read()["mapStatus"] == "unknown"
+    cluster["quorate"] = "1"
+    assert read()["serviceChecks"][0]["state"] == "unknown"
+    assert read(now + timedelta(hours=1))["reachability"]["state"] == "unknown"
+
+
 def test_backup_state_requires_a_valid_watchdog_report(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map

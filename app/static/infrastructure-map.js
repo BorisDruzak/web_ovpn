@@ -16,7 +16,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   };
   const availabilityOf = node => {
     const color = node.mapStatus ?? 'unknown';
-    const label = node.reachability?.state === 'stopped' ? 'Выключен' : availabilityStates[color];
+    let label = availabilityStates[color];
+    if (node.reachability?.state === 'stopped') label = 'Выключен';
+    if (node.id === data.clusterId && color === 'warn') label = 'Кластер доступен, есть сбои';
     return {label, color};
   };
   let byId, incident, connected, networkKinds, primary, anchors, networkDistance;
@@ -441,7 +443,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       for (const check of node.serviceChecks) {
         const row = make('li');
         const endpoint = [check.method, check.target, check.port, check.path].filter(Boolean).join(' ');
-        const confirmed = check.method === 'Маршрут' ? 'Подтверждён' : 'Отвечает';
+        const confirmed = check.method === 'Маршрут' ? 'Подтверждён' : node.id === data.clusterId ? 'В норме' : 'Отвечает';
         const result = {reachable:confirmed, unreachable:'Сбой проверки'}[check.state] ?? 'Нет подтверждения';
         const reason = check.responseCode ? 'SIP ' + check.responseCode : reasons[check.reason];
         const gateway = check.via ? ' · через ' + check.via : '';

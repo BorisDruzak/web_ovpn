@@ -31,7 +31,7 @@ from netctl.source_identity import list_source_identities
 from netctl.switch_queries import query_confirmed_attachment_ports, query_observed_mac_ports
 
 from .infrastructure_map import (
-    INTERFACE_NAME, MAX_SNAPSHOT_BYTES, NETWORK_KINDS, RECIPROCAL_MAC_SOURCE,
+    CLUSTER_HEALTH_METHODS, CLUSTER_KIND, INTERFACE_NAME, MAX_SNAPSHOT_BYTES, NETWORK_KINDS, RECIPROCAL_MAC_SOURCE,
     index_port_states, observation_is_fresh, port_label_key,
 )
 from .infrastructure_service_probes import apply_service_probes, probe_icmp
@@ -56,6 +56,29 @@ FUNCTIONAL_CHECKS = {
 
 def _observation(state: str, source: str, method: str, checked_at: str) -> dict:
     return {"state": state, "source": source, "method": method, "checkedAt": checked_at}
+
+
+def _proxmox_cluster_health(hub: dict, cluster: dict, rows: list[dict], checked_at: str) -> None:
+    quorum = cluster.get("quorate")
+    quorum_state = {0: "unreachable", 1: "reachable"}.get(quorum, "unknown") if type(quorum) is int else "unknown"
+    if quorum_state != "unknown":
+        hub["properties"]["Кворум"] = "Есть" if quorum else "Отсутствует"
+
+    count = cluster.get("nodes")
+    members = [row for row in rows if row.get("type") == "node"]
+    names = {row["name"] for row in members if isinstance(row.get("name"), str) and row["name"]}
+    flags = [row.get("online") for row in members]
+    members_state = "unknown"
+    if type(count) is int and 0 < count == len(members) == len(names) and all(
+        type(flag) is int and flag in (0, 1) for flag in flags
+    ):
+        online = sum(flags)
+        hub["properties"]["Узлы"] = f"{online} из {count} в сети"
+        members_state = "reachable" if online == count else "unreachable"
+    hub["serviceChecks"] = [
+        _observation(state, "Proxmox", method, checked_at)
+        for method, state in zip(CLUSTER_HEALTH_METHODS, (quorum_state, members_state))
+    ]
 
 
 def _host_observation(host: dict, now: datetime) -> dict | None:
@@ -1020,9 +1043,10 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             arp_checks.setdefault(mac, []).extend(checks)
         cluster = next((row for row in pve["cluster"] if row.get("type") == "cluster"), {})
         cluster_id = "proxmox:cluster"
-        hub = node(cluster_id, cluster.get("name", "Proxmox"), "Кластер Proxmox", origin="Proxmox")
-        quorum = cluster.get("quorate")
-        source(hub, "Proxmox", {1: "ok", 0: "critical"}.get(quorum, "unknown"), pve_at)
+        hub = node(cluster_id, cluster.get("name", "Proxmox"), CLUSTER_KIND, origin="Proxmox")
+        _proxmox_cluster_health(hub, cluster, pve["cluster"], pve_at)
+        states = {check["state"] for check in hub["serviceChecks"]}
+        source(hub, "Proxmox", "critical" if "unreachable" in states else "unknown" if "unknown" in states else "ok", pve_at)
         hub["reachability"] = _observation("reachable", "Proxmox", "API кластера", pve_at)
         for host in sorted(pve["nodes"], key=lambda row: row["node"]):
             key = host["node"]
@@ -1032,6 +1056,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             if online:
                 online_hypervisors.add(key)
             label = {"online": "В сети", "offline": "Не в сети"}.get(host.get("status"), "Неизвестно")
+            item["properties"]["Состояние узла"] = label
             source(item, "Proxmox", "ok" if online else "critical" if label == "Не в сети" else "unknown", pve_at, label)
             if host.get("status") in {"online", "offline"} and observation_is_fresh(pve_at, now):
                 state = "reachable" if online else "unreachable"
