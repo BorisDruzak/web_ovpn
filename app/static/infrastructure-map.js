@@ -558,6 +558,26 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         make('small', 'Порог ' + warningThresholdPercent + '% · Proxmox · ' + formatTime(checkedAt)), list);
       propertiesSection.append(panel);
     }
+    if (node.storageAssignments) {
+      const {checkedAt, hosts} = node.storageAssignments;
+      const panel = make('details', null, 'map-port-panel');
+      panel.dataset.section = 'storage-assignments';
+      const list = make('ul', null, 'map-detail-list');
+      for (const host of hosts) {
+        const row = make('li');
+        const open = make('button', byId.get(host.id).name);
+        open.type = 'button';
+        open.addEventListener('click', () => select(host.id));
+        row.append(open);
+        for (const storage of host.storages) {
+          row.append(make('small', `${storage.id} · ВМ и контейнеров: ${storage.guestCount} · дисков: ${storage.diskCount}`));
+        }
+        list.append(row);
+      }
+      panel.append(make('summary', 'Хранилища из конфигураций ВМ'),
+        make('small', 'Proxmox · ' + formatTime(checkedAt)), list);
+      propertiesSection.append(panel);
+    }
     if (node.guestStorage) {
       const list = make('dl');
       const number = new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 2});

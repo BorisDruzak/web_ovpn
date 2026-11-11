@@ -488,6 +488,37 @@ def _attach_endpoint_presence(db: Session, keys: dict[str, str], nodes: dict, no
             node["reachability"] = observed
 
 
+def _attach_storage_assignments(nodes: dict, links: list[dict], cluster_id: str) -> None:
+    cluster = nodes.get(cluster_id)
+    if not cluster or cluster["kind"] != CLUSTER_KIND:
+        return
+    by_host = {}
+    checked_at = []
+    seen = set()
+    for link in links:
+        if not link["confirmed"] or link["kind"] != "Размещение ВМ" or link["source"] != "Proxmox":
+            continue
+        host, guest = nodes[link["a"]], nodes[link["b"]]
+        storage = guest.get("guestStorage")
+        if (not storage or guest["id"] in seen or host["id"] != guest["pveHost"]
+                or host["kind"] != "Гипервизор"):
+            continue
+        seen.add(guest["id"])
+        checked_at.append(storage["checkedAt"])
+        counts = Counter(disk["storage"] for disk in storage["disks"])
+        stores = by_host.setdefault(host["id"], {})
+        for name, count in counts.items():
+            entry = stores.setdefault(name, {"id": name, "guestCount": 0, "diskCount": 0})
+            entry["guestCount"] += 1
+            entry["diskCount"] += count
+    if by_host:
+        cluster["storageAssignments"] = {
+            "checkedAt": min(checked_at, key=_time),
+            "hosts": [{"id": host, "storages": [stores[name] for name in sorted(stores)]}
+                      for host, stores in sorted(by_host.items())],
+        }
+
+
 def load_infrastructure_map(path: Path, now: datetime | None = None, *, db: Session | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
     empty = {
@@ -586,6 +617,8 @@ def load_infrastructure_map(path: Path, now: datetime | None = None, *, db: Sess
     if db is not None and endpoint_keys and now - stamp <= MAX_AGE:
         _attach_endpoint_presence(db, endpoint_keys, nodes, now)
     _map_statuses(nodes, links)
+    cluster_id = _text(raw.get("clusterId"))
+    _attach_storage_assignments(nodes, links, cluster_id)
     revision = _text(raw.get("git"), 41)
 
     def node_ids(key: str) -> list[str]:
@@ -597,7 +630,7 @@ def load_infrastructure_map(path: Path, now: datetime | None = None, *, db: Sess
     return {
         **empty, "availability": "stale" if now - stamp > MAX_AGE else "ready",
         "snapshotAt": stamp.isoformat(), "nodes": list(nodes.values()), "links": links,
-        "clusterId": _text(raw.get("clusterId")), "nodeOrder": node_ids("nodeOrder"),
+        "clusterId": cluster_id, "nodeOrder": node_ids("nodeOrder"),
         "overviewGuests": node_ids("overviewGuests"),
         "git": revision if re.fullmatch(r"[0-9a-f]{40}", revision) else "",
     }

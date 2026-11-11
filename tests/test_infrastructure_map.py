@@ -209,9 +209,11 @@ def test_guest_disks_publish_storage_assignments_without_volume_paths(tmp_path):
     from app.infrastructure_map import load_infrastructure_map
 
     now = datetime.now(timezone.utc)
-    pve = {"at": now.isoformat(), "cluster": [], "nodes": [{"node": "pve1", "status": "online"}],
+    pve = {"at": now.isoformat(), "cluster": [],
+           "nodes": [{"node": node, "status": "online"} for node in ("pve1", "pve2")],
            "guests": [{"vmid": 103, "node": "pve1", "type": "qemu", "status": "stopped"},
-                      {"vmid": 105, "node": "pve1", "type": "lxc", "status": "running"}],
+                      {"vmid": 105, "node": "pve1", "type": "lxc", "status": "running"},
+                      {"vmid": 106, "node": "pve2", "type": "qemu", "status": "running"}],
            "configs": {"103": {"sata0": "zfs-vm-storage:private-volume-name,size=450G",
                                 "scsi1": "file=main-zfs:private-volume-name,size=1.5T",
                                 "ide2": "local:iso/private-image.iso,media=cdrom,size=9G",
@@ -220,7 +222,8 @@ def test_guest_disks_publish_storage_assignments_without_volume_paths(tmp_path):
                                 "virtio0": "/dev/disk/by-id/private-device,size=2G"},
                        "105": {"rootfs": "volume=local-lvm:private-volume-name,size=8G",
                                "mp0": "/srv/private-path,mp=/private-directory",
-                               "mp1": "local-lvm:private-volume-name,mp=/private-directory,size=bad"}}}
+                               "mp1": "local-lvm:private-volume-name,mp=/private-directory,size=bad"},
+                       "106": {"scsi0": "zfs-vm-storage:private-volume-name,size=8G"}}}
     path = tmp_path / "infrastructure.json"
     graph = build_graph({}, {}, {}, pve, {}, now)
     raw = json.dumps(graph)
@@ -238,6 +241,18 @@ def test_guest_disks_publish_storage_assignments_without_volume_paths(tmp_path):
         {"device": "rootfs", "storage": "local-lvm", "sizeBytes": 8 * 2**30},
         {"device": "mp1", "storage": "local-lvm"},
     ]
+    public = load_infrastructure_map(path, now)
+    cluster = next(node for node in public["nodes"] if node["id"] == public["clusterId"])
+    assert cluster["storageAssignments"] == {"checkedAt": now.isoformat(), "hosts": [
+        {"id": "pve1", "storages": [
+            {"id": "local-lvm", "guestCount": 1, "diskCount": 2},
+            {"id": "main-zfs", "guestCount": 1, "diskCount": 1},
+            {"id": "zfs-vm-storage", "guestCount": 1, "diskCount": 1},
+        ]},
+        {"id": "pve2", "storages": [{"id": "zfs-vm-storage", "guestCount": 1, "diskCount": 1}]},
+    ]}
+    expired = load_infrastructure_map(path, now + timedelta(hours=1))
+    assert "storageAssignments" not in next(node for node in expired["nodes"] if node["id"] == expired["clusterId"])
     assert "guestStorage" not in read(103, now + timedelta(hours=1))
 
 
