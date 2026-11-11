@@ -569,6 +569,50 @@ def test_mcp_infrastructure_search_returns_bounded_matches_and_stable_ids(monkey
     assert requests == []
 
 
+def test_mcp_infrastructure_port_scope_preserves_evidence_and_guest_observations(monkeypatch):
+    import mcp.openvpn_mcp_server as server
+
+    live = {"name": "gigabitEthernet 1/0/22", "state": "up", "stale": False}
+    port = {"a": "Gi1/0/22", "b": "port13", "confirmed": True}
+    guest_mac = {"id": "sw", "port": live["name"], "vlan": 1, "at": "2026-11-11T12:00:00Z"}
+    uplink = {"id": "sw", "port": "Gi1/0/22", "viaMacTable": True, "at": guest_mac["at"]}
+    graph = {"nodes": [
+        {"id": "sw", "name": "Switch", "ports": [live, {"name": "Gi1/0/2", "state": "down"}]},
+        {"id": "other", "name": "Peer"}, {"id": "unrelated"}, {"id": "host"},
+        {"id": "vm", "name": "Guest", "vmid": 103},
+    ], "links": [
+        {"a": "sw", "b": "other", "confirmed": True, "portEvidence": [
+            port, {"a": "Gi1/0/2"}, {"a": "po1 / ge6", "confirmed": True},
+        ]},
+        {"a": "unrelated", "b": "sw", "portEvidence": [{"a": "Gi1/0/22", "b": "Gi1/0/2"}]},
+        {"a": "host", "b": "vm", "confirmed": True, "portEvidence": [
+            {"a": "vmbr0", "b": "net0", "confirmed": True, "virtual": {"switchPorts": [guest_mac]}},
+            {"a": "vmbr1", "b": "net1", "confirmed": True, "virtual": {"switchUplink": uplink}},
+            {"a": "vmbr2", "b": "net2", "confirmed": False, "virtual": {"switchUplink": uplink}},
+        ]},
+    ]}
+    monkeypatch.setattr(server, "api_request", lambda *_: {"status": "ok", "infrastructure": graph})
+    tool = "openvpn_network_infrastructure"
+    assert "port_name" in server.TOOLS[tool]["inputSchema"]["properties"]
+    result = server.call_tool(tool, {"node_id": "sw", "port_name": " gi 1/0/22 "})["infrastructure"]
+    assert result["ports"] == [live]
+    assert result["links"] == [{**graph["links"][0], "portEvidence": [port]}]
+    assert result["neighbors"] == [{"id": "other", "name": "Peer"}]
+    assert "ports" not in result["node"]
+    assert [(r["guest"]["id"], r["guestPort"], r["basis"]) for r in result["guestObservations"]] == [
+        ("vm", "net0", "guest_mac"), ("vm", "net1", "bridge_uplink"),
+    ]
+    assert result["guestObservations"][1]["observation"]["viaMacTable"] is True
+    assert len(graph["links"][0]["portEvidence"]) == 3
+    assert server.call_tool(tool, {"node_id": "sw", "port_name": "ge6"})["infrastructure"]["links"][0]["confirmed"]
+    other_port = server.call_tool(tool, {"node_id": "sw", "port_name": "Gi1/0/2"})["infrastructure"]
+    assert not any(edge["confirmed"] for edge in other_port["links"])
+    for args in ({"port_name": "ge17"}, {"node_id": "sw", "port_name": " "},
+                 {"query": "switch", "port_name": "ge17"}):
+        with pytest.raises(ValueError):
+            server.call_tool(tool, args)
+
+
 def test_mcp_network_diagnostic_tools_call_api(monkeypatch):
     import mcp.openvpn_mcp_server as server
 

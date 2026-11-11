@@ -73,7 +73,7 @@ Do not paste employee search results, credentials or full logs into unrelated di
 - `openvpn_connections`: current connections.
 - `openvpn_nat_status`: NAT counters.
 - `openvpn_network_dashboard`: Network Observer dashboard summary and source health.
-- `openvpn_network_infrastructure`: Use `query` to find up to 12 nodes by name, alias, ID or VMID. Pass a returned `id` as `node_id` in a separate call to read checks, neighbors and port evidence. Without arguments, returns the full map.
+- `openvpn_network_infrastructure`: Use `query` to find up to 12 nodes by name, alias, ID or VMID. Pass a returned `id` as `node_id` in a separate call to read checks, neighbors and port evidence. Add `port_name` to inspect one interface and distinguish guest MAC observations from bridge uplinks. Without arguments, returns the full map.
 - `openvpn_network_hosts`: observed network hosts with optional filters.
 - `openvpn_network_host_detail`: one observed host by IP address.
 - `openvpn_network_sources`: configured Network Observer sources.
