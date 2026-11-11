@@ -631,7 +631,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   }));
   function displaySnapshot(graph) {
     const wanted = selected ?? new URLSearchParams(window.location.search).get('node');
-    const opened = new Set(Array.from(details.querySelectorAll('details[open]'), panel => panel.dataset.section));
+    const panelStates = new Map(Array.from(details.querySelectorAll('details'),
+      panel => [panel.dataset.section, panel.open]));
     const active = document.activeElement;
     const activeNode = [...buttons].find(([, button]) => button === active)?.[0];
     const activePanel = active?.closest('summary')?.parentElement.dataset.section;
@@ -644,7 +645,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     if (buttons.has(wanted)) {
       renderSelection(wanted, false);
       for (const panel of details.querySelectorAll('details')) {
-        panel.open = opened.has(panel.dataset.section);
+        if (panelStates.has(panel.dataset.section)) panel.open = panelStates.get(panel.dataset.section);
       }
     }
     const summary = activePanel && details.querySelector(`[data-section="${activePanel}"] summary`);
