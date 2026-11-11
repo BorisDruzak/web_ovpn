@@ -1933,6 +1933,8 @@ def test_route_checks_report_mismatch_inactive_and_missing_observation():
     assert read({**route, "active": 0})["reason"] == "route_inactive"
     assert read({**route, "disabled": 1})["state"] == "unreachable"
     assert read({**route, "route_type": "blackhole"})["reason"] == "route_rejecting"
+    mixed = read(route, {**route, "gateway": "192.0.2.2"})
+    assert mixed["state"] == "unknown" and mixed["reason"] == "route_multiple_gateways"
     assert read({**route, "gateway": "192.0.2.2"}, {**route, "gateway": "192.0.2.3"})["state"] == "unknown"
     old = read({**route, "active": 0, "last_seen_at": stale})
     assert old["state"] == "unknown" and old["stale"] and old["checkedAt"] == stale
@@ -1940,6 +1942,13 @@ def test_route_checks_report_mismatch_inactive_and_missing_observation():
     missing = read({**route, "routing_table": "other"})
     assert missing["state"] == "unknown" and missing["method"] == "Маршрут"
     assert missing["checkedAt"] is None
+
+    host = "198.51.100.12/32"
+    checks = _route_checks(intent, "router", [route, {**route, "dst_address": host}], now,
+                           host_routes=[host, host, "203.0.113.10/32", "198.51.100.0/28", "invalid"])
+    assert [(check["target"], check["state"]) for check in checks] == [
+        (destination, "reachable"), (host, "reachable"),
+    ]
 
 
 def test_sip_options_validates_transaction_and_treats_silence_as_unknown(monkeypatch):

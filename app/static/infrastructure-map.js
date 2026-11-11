@@ -556,6 +556,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         icmp_identity_unconfirmed: 'Принадлежность адреса этому узлу не подтверждена',
         route_other_gateway: 'Активен другой шлюз', route_inactive: 'Маршрут через ожидаемый шлюз неактивен',
         route_rejecting: 'Активный маршрут отбрасывает трафик',
+        route_multiple_gateways: 'Обнаружено несколько активных шлюзов',
       };
       for (const check of node.serviceChecks) {
         const row = make('li');

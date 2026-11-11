@@ -207,6 +207,8 @@ def _public_service_check(check: dict, now: datetime) -> dict:
             observed_via = _network_address(check.get("observedVia"))
             if reason == "route_other_gateway" and observed_via and "/" not in observed_via:
                 result["observedVia"] = observed_via
+        if result["state"] == "unknown" and not result["stale"] and reason == "route_multiple_gateways":
+            result["reason"] = reason
     if reason in ("connection_refused", "timeout", "transport_error", "unexpected_response", "sip_response",
                   "icmp_port_unreachable", "icmp_rejected"):
         result["reason"] = reason

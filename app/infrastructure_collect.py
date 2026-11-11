@@ -377,12 +377,25 @@ def _collect_guest_arp_probes(pve: dict, network: dict, configured: dict, now: d
     return checks
 
 
-def _route_checks(intent: dict, source: str, routes: list[dict], now: datetime) -> list[dict]:
+def _route_checks(intent: dict, source: str, routes: list[dict], now: datetime, *, host_routes: object = None) -> list[dict]:
     gateway = intent.get("next_hop")
     table = intent.get("routing_table", "main")
     rejecting_types = {"blackhole", "unreachable", "prohibit"}
+    destinations = list(dict.fromkeys(intent.get("destinations", [])[:12]))
+    if isinstance(host_routes, list):
+        scopes = [ipaddress.ip_network(destination) for destination in destinations]
+        for raw in host_routes[:4]:
+            if not isinstance(raw, str):
+                continue
+            try:
+                host = ipaddress.ip_network(raw)
+            except ValueError:
+                continue
+            if (host.prefixlen == host.max_prefixlen and str(host) not in destinations
+                    and any(host.version == scope.version and host.subnet_of(scope) for scope in scopes)):
+                destinations.append(str(host))
     checks = []
-    for destination in intent.get("destinations", [])[:12]:
+    for destination in destinations[:12]:
         scoped = [
             row for row in routes
             if row.get("source") == source and row.get("routing_table") == table
@@ -402,7 +415,9 @@ def _route_checks(intent: dict, source: str, routes: list[dict], now: datetime) 
         active_types = {row.get("route_type", "unicast") for row in active}
         if active_types == {"unicast"}:
             active_gateways = {row.get("gateway") for row in active}
-            if gateway in active_gateways:
+            if len(active_gateways) > 1:
+                check["reason"] = "route_multiple_gateways"
+            elif active_gateways == {gateway}:
                 check["state"] = "reachable"
             elif len(active_gateways) == 1:
                 observed, = active_gateways
@@ -824,7 +839,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         route = bindings.get("route_evidence", {}).get(service["id"], {})
         intent = intents.get(route.get("intent"))
         if intent and route.get("source"):
-            item["serviceChecks"] = _route_checks(intent, route["source"], network.get("routes", []), now)
+            item["serviceChecks"] = _route_checks(intent, route["source"], network.get("routes", []), now,
+                                                 host_routes=route.get("host_routes"))
         edge(host, service["id"], "Размещение", "GitHub")
     for service_id, spec in bindings.get("asset_services", {}).items():
         asset = spec["asset"]
