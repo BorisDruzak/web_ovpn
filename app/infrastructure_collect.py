@@ -878,6 +878,13 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         port_names[(port["source"], port.get("port_key"))] = port.get("name") or port.get("port_key")
     port_telemetry = {(row["source"], row["port_key"], row["collector_run_id"], row["observed_at"]): row
                       for row in network.get("port_telemetry", [])}
+    vlans_by_key, vlans_by_index = {}, {}
+    for row in network.get("port_vlans", []):
+        scope = (row["source"], row["collector_run_id"], row["observed_at"])
+        vlans_by_key.setdefault((*scope, row["port_key"]), []).append(row)
+        index = row.get("if_index")
+        if type(index) is int and index > 0:
+            vlans_by_index.setdefault((*scope, index), []).append(row)
 
     def port_label(source_name, key):
         return port_names.get((source_name, key), key)
@@ -911,14 +918,29 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             ports = port_groups[name]
             latest_run = max((port["collector_run_id"] for port in ports
                               if type(port.get("collector_run_id")) is int), default=None)
+            current = [port for port in ports if port.get("collector_run_id") == latest_run]
+            index_counts = Counter(port.get("if_index") for port in current)
             item["ports"] = [
                 {"name": port.get("name") or port.get("port_key"),
                  "key": port.get("port_key"),
                  "state": "disabled" if port.get("admin_status") == "down" else port.get("oper_status"),
                  "speedBps": port.get("speed_bps"), "checkedAt": port.get("last_seen_at")}
-                for port in ports if port.get("collector_run_id") == latest_run
+                for port in current
             ]
-            for port in item["ports"]:
+            for port, raw_port in zip(item["ports"], current):
+                scope = (name, latest_run, port["checkedAt"])
+                index = raw_port.get("if_index")
+                memberships = [row for row in vlans_by_key.get((*scope, port["key"]), [])
+                               if index is None or row.get("if_index") in (None, index)]
+                if not memberships and type(index) is int and index > 0 and index_counts[index] == 1:
+                    memberships = vlans_by_index.get((*scope, index), [])
+                if memberships:
+                    port["vlanMemberships"] = {
+                        "checkedAt": port["checkedAt"],
+                        "vlans": [{"id": row["vlan_id"], "pvid": row["pvid"] == 1,
+                                   "egress": ("untagged" if row["untagged"] == 1 else "tagged")
+                                   if row["egress"] == 1 else ""} for row in memberships[:4094]],
+                    }
                 sample = port_telemetry.get((name, port["key"], latest_run, port["checkedAt"]))
                 if not sample or port["state"] != "up":
                     continue
@@ -1648,6 +1670,15 @@ def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | N
             FROM current_switch_port_telemetry AS t
             JOIN network_sources AS s ON s.id = t.source_id
             WHERE s.enabled = 1 AND s.driver = 'snmp_switch' AND t.telemetry_state = 'ok'
+            """
+        )]
+        data["port_vlans"] = [dict(row) for row in connection.execute(
+            """
+            SELECT s.name AS source, v.port_key, v.if_index, v.collector_run_id, v.observed_at,
+                   v.vlan_id, v.egress, v.untagged, v.pvid
+            FROM current_switch_vlan_memberships AS v
+            JOIN network_sources AS s ON s.id = v.source_id
+            WHERE s.enabled = 1 AND s.driver = 'snmp_switch'
             """
         )]
         data["switch_management_fdb"] = _switch_management_fdb(connection, data["sources"])

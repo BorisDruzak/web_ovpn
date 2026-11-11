@@ -610,6 +610,16 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           name.addEventListener('click', () => selectPort(id, port.name));
         }
         row.append(name, make('small', status));
+        if (selectedPort && port.vlanMemberships) {
+          const vlans = port.vlanMemberships.vlans;
+          for (const [label, selected] of [
+            ['PVID', vlans.filter(vlan => vlan.pvid)],
+            ['VLAN без тега', vlans.filter(vlan => vlan.egress === 'untagged')],
+            ['VLAN с тегом', vlans.filter(vlan => vlan.egress === 'tagged')],
+          ]) {
+            if (selected.length) row.append(make('small', label + ' · ' + selected.map(vlan => vlan.id).join(', ')));
+          }
+        }
         if (selectedPort && port.telemetry) {
           const number = new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 2});
           const rate = (label, value) => value === undefined ? '' : label + ' ' + number.format(value / 1e6) + ' Мбит/с';

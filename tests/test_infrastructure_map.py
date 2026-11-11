@@ -1604,6 +1604,36 @@ def test_vm_switch_observation_requires_current_mac_and_declared_host_port(tmp_p
     assert physical_ports() == []
 
 
+def test_switch_vlans_join_current_port_by_unique_ifindex(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    context = {"devices": [{"id": "sw", "name": "Switch", "kind": "switch"}]}
+    base = {"source": "core", "collector_run_id": 11, "if_index": 5012}
+    membership = {**base, "port_key": "physical:12", "observed_at": at, "vlan_id": 20,
+                  "egress": 1, "untagged": 0, "pvid": 0}
+    network = {"sources": [{"id": 1, "name": "core", "driver": "snmp_switch",
+                            "driver_options": {"intent_stable_id": "sw"}}],
+               "ports": [{**base, "port_key": "ifindex:5012", "name": "ge12",
+                          "oper_status": "up", "last_seen_at": at}],
+               "port_vlans": [membership, {**membership, "vlan_id": 1, "untagged": 1, "pvid": 1},
+                              {**membership, "vlan_id": 99, "collector_run_id": 10}]}
+    path = tmp_path / "map.json"
+
+    def read(when=now):
+        path.write_text(json.dumps(build_graph(context, network, {}, {}, {}, now)), encoding="utf-8")
+        return load_infrastructure_map(path, when)["nodes"][0]["ports"]
+
+    assert read()[0]["vlanMemberships"] == {"checkedAt": at, "vlans": [
+        {"id": 1, "egress": "untagged", "pvid": True}, {"id": 20, "egress": "tagged", "pvid": False},
+    ]}
+    assert "vlanMemberships" not in read(now + timedelta(hours=1))[0]
+    network["ports"].append({**network["ports"][0], "port_key": "alternate", "name": "ge13"})
+    assert all("vlanMemberships" not in port for port in read())
+
+
 def test_switch_port_telemetry_requires_matching_current_collection(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map

@@ -178,6 +178,22 @@ def _public_port_telemetry(sample: object, port: dict, now: datetime) -> dict:
     return {"checkedAt": port["checkedAt"], "intervalSeconds": interval, **metrics} if metrics else {}
 
 
+def _public_port_vlans(sample: object, port: dict, now: datetime) -> dict:
+    if port["stale"] or not isinstance(sample, dict):
+        return {}
+    stamp = _time(sample.get("checkedAt"))
+    if stamp is None or stamp.isoformat() != port["checkedAt"] or not observation_is_fresh(sample["checkedAt"], now):
+        return {}
+    vlans = {}
+    for row in _rows(sample.get("vlans"), 4094):
+        vlan_id, egress, pvid = row.get("id"), row.get("egress"), row.get("pvid")
+        if (type(vlan_id) is int and 1 <= vlan_id <= 4094 and egress in ("", "tagged", "untagged")
+                and type(pvid) is bool and (egress or pvid)):
+            vlans.setdefault(vlan_id, []).append({"id": vlan_id, "egress": egress, "pvid": pvid})
+    unique = [rows[0] for _, rows in sorted(vlans.items()) if len(rows) == 1]
+    return {"checkedAt": port["checkedAt"], "vlans": unique} if unique else {}
+
+
 def port_label_key(label: str) -> str:
     label = label.strip().casefold()
     gigabit = re.fullmatch(r"(?:gi|gigabitethernet)\s*(\d+/\d+/\d+)", label)
@@ -383,6 +399,9 @@ def _public_node(row: dict, now: datetime) -> dict:
         telemetry = _public_port_telemetry(raw_port.get("telemetry"), port, now)
         if telemetry:
             port["telemetry"] = telemetry
+        memberships = _public_port_vlans(raw_port.get("vlanMemberships"), port, now)
+        if memberships:
+            port["vlanMemberships"] = memberships
     observer = next((source for source in sources if source["name"] == "Server Observer"), None)
     aliases = row.get("aliases")
     resources = {}
