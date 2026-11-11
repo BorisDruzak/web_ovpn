@@ -807,11 +807,14 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const comparedPorts = new Set();
         for (const evidence of edge.portEvidence ?? []) {
           const [local, remote] = edge.a === id ? [evidence.a, evidence.b] : [evidence.b, evidence.a];
-          const ports = (local || 'порт неизвестен') + ' ↔ ' + (remote || 'порт неизвестен');
+          const portName = name => name && name.toLowerCase() !== 'unknown' ? name : 'порт неизвестен';
+          const ports = portName(local) + ' ↔ ' + portName(remote);
           const source = evidence.source === 'GitHub' ? 'GitHub (конфигурация)' : evidence.source;
           const vlan = evidence.vlan ? ' · VLAN ' + evidence.vlan : '';
           const time = evidence.at ? ' · ' + formatTime(evidence.at) : '';
-          li.append(make('small', ports + vlan + ' · ' + source + time + (evidence.confirmed ? '' : ' · без подтверждения')));
+          const proof = {current: ' · пара по свежему наблюдению',
+                         verified_inventory: ' · пара по подтверждённой записи инвентаря'}[evidence.pairEvidence] ?? '';
+          li.append(make('small', ports + vlan + ' · ' + source + time + proof + (evidence.confirmed ? '' : ' · без подтверждения')));
           for (const side of ['a', 'b']) {
             const port = evidence.portStates?.[side];
             const key = side + ':' + port?.name;

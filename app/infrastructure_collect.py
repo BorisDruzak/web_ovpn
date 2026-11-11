@@ -626,8 +626,7 @@ def _reconcile_fdb_ports(links) -> None:
 
 def _corroborate_fdb_ports(links, nodes: dict, now: datetime) -> None:
     active = {
-        key: {port["name"].casefold(): datetime.fromisoformat(port["checkedAt"]) for port in node.get("ports", [])
-              if port.get("name") and port["state"] == "up" and observation_is_fresh(port["checkedAt"], now)}
+        key: index_port_states(node.get("ports", []), now)
         for key, node in nodes.items() if node["kind"] == NETWORK_KINDS[0]
     }
     for link in links:
@@ -639,20 +638,23 @@ def _corroborate_fdb_ports(links, nodes: dict, now: datetime) -> None:
         if len(declared) != 1 or link["source"] in {"LLDP UI_VPN", "LLDP · двустороннее"}:
             continue
         pair = declared[0]
+        names = []
         stamps = []
         for local, remote in (("a", "b"), ("b", "a")):
-            port = pair[local].casefold()
-            up_at = active[link[local]].get(port)
+            index = active[link[local]]
+            port = index.get(port_label_key(pair[local]))
             sightings = [row for row in reports if row["source"] == "netctl FDB" and row[local]
                          and observation_is_fresh(row["at"], now)]
-            if up_at is None or {row[local].casefold() for row in sightings} != {port}:
+            observed_names = {index.get(port_label_key(row[local]), {}).get("name") for row in sightings}
+            if not port or port["state"] != "up" or observed_names != {port["name"]}:
                 break
             one_sided = [datetime.fromisoformat(row["at"]) for row in sightings if row["confirmed"] and not row[remote]]
             if not one_sided:
                 break
-            stamps.extend((up_at, max(one_sided)))
+            names.append(port["name"])
+            stamps.extend((datetime.fromisoformat(port["checkedAt"]), max(one_sided)))
         else:
-            reports.append({"a": pair["a"], "b": pair["b"], "source": "SNMP · двусторонний FDB",
+            reports.append({"a": names[0], "b": names[1], "source": "SNMP · двусторонний FDB",
                             "at": min(stamps).isoformat(), "confirmed": True})
 
 

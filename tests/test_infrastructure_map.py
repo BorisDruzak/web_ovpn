@@ -1185,10 +1185,11 @@ def test_verified_switch_ports_require_fresh_bidirectional_fdb_and_live_ports(tm
                for i, key in enumerate(("core", "access"), 1)]
     ports = [{"source": source, "port_key": name, "name": name, "oper_status": "up", "last_seen_at": at}
              for source, name in (("core", "ge22"), ("access", "Port24"))]
+    ports[1].update(port_key="physical:24", name="uplink-to-core")
     one_way = {"evidence_type": "fdb_management_mac", "endpoint_a": {"source_id": 1, "port_key": "ge22"},
                "endpoint_b": {"source_id": 2}, "observed_at": at}
     reverse = {"evidence_type": "fdb_management_mac", "endpoint_a": {"source_id": 1},
-               "endpoint_b": {"source_id": 2, "port_key": "Port24"}, "observed_at": earlier}
+               "endpoint_b": {"source_id": 2, "port_key": "physical:24"}, "observed_at": earlier}
     evidence = [one_way, reverse]
     network = {"sources": sources, "ports": ports, "links": [
         {"source_a_id": 1, "source_b_id": 2, "state": "confirmed", "evidence": evidence},
@@ -1199,12 +1200,15 @@ def test_verified_switch_ports_require_fresh_bidirectional_fdb_and_live_ports(tm
         graph = build_graph({"devices": devices, "links": [declared]}, network, {}, {}, {}, when)
         path.write_text(json.dumps(graph), encoding="utf-8")
         link = next(edge for edge in load_infrastructure_map(path, when)["links"] if {edge["a"], edge["b"]} == {"core", "access"})
+        configured = next(p for p in link["portEvidence"] if p["source"] == "GitHub")
+        assert configured["pairEvidence"] == "verified_inventory"
         return [p for p in link["portEvidence"] if p["source"] == "SNMP · двусторонний FDB"]
 
     report, = paired()
     assert {key: report[key] for key in ("a", "b", "at", "confirmed")} == {
-        "a": "ge22", "b": "Port24", "at": earlier, "confirmed": True,
+        "a": "ge22", "b": "uplink-to-core", "at": earlier, "confirmed": True,
     }
+    assert report["pairEvidence"] == "current"
     assert {side: port["state"] for side, port in report["portStates"].items()} == {"a": "up", "b": "up"}
     assert not paired(now + timedelta(hours=1))
     evidence.pop()

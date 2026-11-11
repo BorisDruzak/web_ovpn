@@ -31,6 +31,10 @@ SERVICE_LINKS = {"Размещение", "Цель проверки", "Зави�
 CLUSTER_KIND = "Кластер Proxmox"
 CLUSTER_HEALTH_METHODS = ("Кворум", "Участники кластера")
 RECIPROCAL_MAC_SOURCE = "SNMP · взаимные MAC"
+CURRENT_PORT_PAIR_SOURCES = {
+    "netctl", "LLDP UI_VPN", "LLDP · двустороннее", "netctl FDB + Proxmox",
+    "SNMP LACP + ARP", "SNMP · двусторонний FDB",
+}
 SHARED_LLDP_KIND = "Путь через общий порт"
 SHARED_LLDP_SOURCE = "LLDP · общий порт"
 OBSERVER_CHECK_LABELS = {
@@ -726,6 +730,13 @@ def load_infrastructure_map(path: Path, now: datetime | None = None, *, db: Sess
                 observed_attachment = (source in {"netctl FDB", "MikroTik · ARP", "MikroTik · ARP + FDB"}
                                        and evidence[-1]["confirmed"])
                 both_ports = paired and evidence[-1]["a"] and evidence[-1]["b"]
+                if (edge["kind"] == "Сетевое соединение" and both_ports and evidence[-1]["confirmed"]
+                        and all(evidence[-1][side].strip().casefold() not in {"", "unknown", "неизвестно", "-"}
+                                for side in ("a", "b"))):
+                    if source == "GitHub":
+                        evidence[-1]["pairEvidence"] = "verified_inventory"
+                    elif source in CURRENT_PORT_PAIR_SOURCES:
+                        evidence[-1]["pairEvidence"] = "current"
                 if both_ports or source == SHARED_LLDP_SOURCE or observed_attachment:
                     states = {}
                     for side in ("a", "b"):
