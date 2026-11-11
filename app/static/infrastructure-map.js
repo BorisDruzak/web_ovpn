@@ -342,12 +342,19 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       if (!edge.confirmed) continue;
       for (const report of edge.portEvidence ?? []) {
         if (!report.confirmed || !report.virtual) continue;
-        const {switchPorts, switchUplink} = report.virtual;
+        const {switchPorts, switchUplink, uplinks, bridgeActive, linkDisabled} = report.virtual;
         const guest = byId.get(edge.b);
         const macLabel = guest.kind === 'Контейнер' ? 'MAC контейнера замечен' : 'MAC ВМ замечен';
         const observations = (switchPorts ?? []).map(match => ({match, label: macLabel + ' · netctl FDB'}));
         if (switchUplink) {
           observations.push({match: switchUplink, label: bridgePathLabel(switchUplink)});
+        }
+        if (port.source === 'Proxmox' && !port.stale && edge.a === id && report.at &&
+            (uplinks ?? []).some(name => keys.includes(portKey(name)))) {
+          const labels = ['Интерфейс в конфигурации моста'];
+          if (bridgeActive === false) labels.push('мост неактивен');
+          if (linkDisabled) labels.push('адаптер гостя отключён');
+          observations.push({match: {id, port: port.name, at: report.at}, label: labels.join(' · ')});
         }
         for (const {match, label} of observations) {
           if (match.id !== id || !keys.includes(portKey(match.port))) continue;

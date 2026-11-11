@@ -486,6 +486,8 @@ def _infrastructure_port(graph: dict, node: dict | None, port_name: str) -> dict
         if port_key in keys:
             result["ports"].append(port)
             port_keys.update(keys)
+    physical_host_port = next((port for port in result["ports"]
+                               if port.get("source") == "Proxmox" and port.get("stale") is False), None)
     by_id = {item["id"]: item for item in graph["nodes"]}
 
     for edge in graph["links"]:
@@ -514,6 +516,12 @@ def _infrastructure_port(graph: dict, node: dict | None, port_name: str) -> dict
             observations = [("guest_mac", match) for match in virtual.get("switchPorts", [])]
             if uplink:
                 observations.append(("bridge_uplink", uplink))
+            if (physical_host_port and edge["a"] == node_id and report.get("at")
+                    and any(_port_key(name) in port_keys for name in virtual.get("uplinks", []))):
+                observations.append(("host_bridge_member", {
+                    "id": node_id, "port": physical_host_port["name"], "at": report["at"],
+                    "bridgeActive": virtual.get("bridgeActive"), "linkDisabled": virtual.get("linkDisabled") is True,
+                }))
             for basis, match in observations:
                 if match["id"] == node_id and _port_key(match["port"]) in port_keys:
                     result["guestObservations"].append({

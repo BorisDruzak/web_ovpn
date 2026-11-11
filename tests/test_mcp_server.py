@@ -578,7 +578,9 @@ def test_mcp_infrastructure_port_scope_preserves_evidence_and_guest_observations
     uplink = {"id": "sw", "port": "Gi1/0/22", "viaMacTable": True, "at": guest_mac["at"]}
     graph = {"nodes": [
         {"id": "sw", "name": "Switch", "ports": [live, {"name": "Gi1/0/2", "state": "down"}]},
-        {"id": "other", "name": "Peer"}, {"id": "unrelated"}, {"id": "host"},
+        {"id": "other", "name": "Peer"}, {"id": "unrelated"},
+        {"id": "host", "ports": [{"name": "eno1", "source": "Proxmox", "stale": False},
+                                 {"name": "eno2", "source": "Proxmox", "stale": True}]},
         {"id": "vm", "name": "Guest", "vmid": 103},
     ], "links": [
         {"a": "sw", "b": "other", "confirmed": True, "portEvidence": [
@@ -587,7 +589,9 @@ def test_mcp_infrastructure_port_scope_preserves_evidence_and_guest_observations
         {"a": "unrelated", "b": "sw", "portEvidence": [{"a": "Gi1/0/22", "b": "Gi1/0/2"}]},
         {"a": "host", "b": "vm", "confirmed": True, "portEvidence": [
             {"a": "vmbr0", "b": "net0", "confirmed": True, "virtual": {"switchPorts": [guest_mac]}},
-            {"a": "vmbr1", "b": "net1", "confirmed": True, "virtual": {"switchUplink": uplink}},
+            {"a": "vmbr1", "b": "net1", "confirmed": True, "at": guest_mac["at"],
+             "virtual": {"switchUplink": uplink, "uplinks": ["eno1", "eno2"],
+                         "bridgeActive": True, "linkDisabled": True}},
             {"a": "vmbr2", "b": "net2", "confirmed": False, "virtual": {"switchUplink": uplink}},
         ]},
     ]}
@@ -603,6 +607,16 @@ def test_mcp_infrastructure_port_scope_preserves_evidence_and_guest_observations
         ("vm", "net0", "guest_mac"), ("vm", "net1", "bridge_uplink"),
     ]
     assert result["guestObservations"][1]["observation"]["viaMacTable"] is True
+    host_port = server.call_tool(tool, {"node_id": "host", "port_name": "eno1"})["infrastructure"]
+    guest_observation, = host_port["guestObservations"]
+    assert (guest_observation["basis"], guest_observation["bridge"], guest_observation["guestPort"]) == (
+        "host_bridge_member", "vmbr1", "net1",
+    )
+    assert guest_observation["observation"] == {
+        "id": "host", "port": "eno1", "at": guest_mac["at"], "bridgeActive": True, "linkDisabled": True,
+    }
+    stale = server.call_tool(tool, {"node_id": "host", "port_name": "eno2"})["infrastructure"]
+    assert stale["guestObservations"] == []
     assert len(graph["links"][0]["portEvidence"]) == 3
     assert server.call_tool(tool, {"node_id": "sw", "port_name": "ge6"})["infrastructure"]["links"][0]["confirmed"]
     other_port = server.call_tool(tool, {"node_id": "sw", "port_name": "Gi1/0/2"})["infrastructure"]
