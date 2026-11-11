@@ -415,6 +415,27 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       }
       propertiesSection.append(make('h3', 'Параметры узла'), list);
     }
+    if (node.resources) {
+      const {cpuRatio, logicalCpus, memoryUsedBytes, memoryTotalBytes, rootUsedBytes, rootTotalBytes,
+        uptimeSeconds, checkedAt} = node.resources;
+      const number = new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 1});
+      const percent = ratio => number.format(ratio * 100) + '%';
+      const usage = (used, total) => `${number.format(used / 2**30)} из ${number.format(total / 2**30)} ГиБ (${percent(used / total)})`;
+      const list = make('dl');
+      if (cpuRatio !== undefined) list.append(make('dt', 'CPU'), make('dd', percent(cpuRatio)));
+      if (logicalCpus !== undefined) list.append(make('dt', 'Логические CPU'), make('dd', number.format(logicalCpus)));
+      if (memoryTotalBytes !== undefined) list.append(make('dt', 'Память'), make('dd', usage(memoryUsedBytes, memoryTotalBytes)));
+      if (rootTotalBytes !== undefined) list.append(make('dt', 'Корневой раздел /'), make('dd', usage(rootUsedBytes, rootTotalBytes)));
+      if (uptimeSeconds !== undefined) {
+        const days = Math.floor(uptimeSeconds / 86400);
+        const hours = Math.floor(uptimeSeconds / 3600) % 24;
+        const minutes = Math.floor(uptimeSeconds / 60) % 60;
+        const uptime = [days ? `${days} д.` : '', hours ? `${hours} ч.` : '', `${minutes} мин.`].filter(Boolean).join(' ');
+        list.append(make('dt', 'Время работы'), make('dd', uptime));
+      }
+      list.append(make('dt', 'Опрос ресурсов'), make('dd', formatTime(checkedAt)));
+      propertiesSection.append(make('h3', 'Ресурсы Proxmox'), list);
+    }
     if (node.ports?.length) {
       const panel = make('details', null, 'map-port-panel');
       panel.dataset.section = 'ports';

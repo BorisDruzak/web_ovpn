@@ -155,6 +155,27 @@ def _public_service_check(check: dict, now: datetime) -> dict:
     return result
 
 
+def _public_hypervisor_resources(row: object, now: datetime) -> dict:
+    if not isinstance(row, dict) or not observation_is_fresh(row.get("checkedAt"), now):
+        return {}
+    values = {}
+    cpu = row.get("cpuRatio")
+    if type(cpu) in (int, float) and 0 <= cpu <= 1:
+        values["cpuRatio"] = cpu
+    max_safe_int = 2**53 - 1
+    for key, minimum in (("logicalCpus", 1), ("uptimeSeconds", 0)):
+        value = row.get(key)
+        if type(value) is int and minimum <= value <= max_safe_int:
+            values[key] = value
+    for used_key, total_key in (("memoryUsedBytes", "memoryTotalBytes"), ("rootUsedBytes", "rootTotalBytes")):
+        used, total = row.get(used_key), row.get(total_key)
+        if type(used) is int and type(total) is int and 0 <= used <= total <= max_safe_int and total > 0:
+            values.update({used_key: used, total_key: total})
+    if values:
+        values["checkedAt"] = _time(row["checkedAt"]).isoformat()
+    return values
+
+
 def _public_node(row: dict, now: datetime) -> dict:
     sources = []
     for item in _rows(row.get("sources"), 12):
@@ -182,6 +203,9 @@ def _public_node(row: dict, now: datetime) -> dict:
     ports = [_public_port(port, now) for port in _rows(row.get("ports"), 500)]
     observer = next((source for source in sources if source["name"] == "Server Observer"), None)
     aliases = row.get("aliases")
+    resources = {}
+    if row.get("kind") == "Гипервизор" and any(s["name"] == "Proxmox" and s["status"] == "ok" for s in fresh):
+        resources = _public_hypervisor_resources(row.get("resources"), now)
     return {
         **{key: _text(row.get(key)) for key in ("id", "name", "kind", "site", "origin", "pveHost")},
         "guest": row.get("guest") is True,
@@ -191,6 +215,7 @@ def _public_node(row: dict, now: datetime) -> dict:
         "reachability": _public_reachability(row.get("reachability"), now),
         "sources": sources,
         "properties": properties,
+        **({"resources": resources} if resources else {}),
         "ports": [port for port in ports if port["name"]],
         "serviceChecks": [_public_service_check(check, now) for check in _rows(row.get("serviceChecks"), 16)],
         "checks": [

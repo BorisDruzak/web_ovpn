@@ -1055,6 +1055,12 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             online = host.get("status") == "online"
             if online:
                 online_hypervisors.add(key)
+                item["resources"] = {
+                    "checkedAt": pve_at, "cpuRatio": host.get("cpu"), "logicalCpus": host.get("maxcpu"),
+                    "memoryUsedBytes": host.get("mem"), "memoryTotalBytes": host.get("maxmem"),
+                    "rootUsedBytes": host.get("disk"), "rootTotalBytes": host.get("maxdisk"),
+                    "uptimeSeconds": host.get("uptime"),
+                }
             label = {"online": "В сети", "offline": "Не в сети"}.get(host.get("status"), "Неизвестно")
             item["properties"]["Состояние узла"] = label
             source(item, "Proxmox", "ok" if online else "critical" if label == "Не в сети" else "unknown", pve_at, label)

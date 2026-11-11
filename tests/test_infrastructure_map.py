@@ -86,6 +86,32 @@ def test_cluster_health_distinguishes_quorum_members_and_api(tmp_path):
     assert read(now + timedelta(hours=1))["reachability"]["state"] == "unknown"
 
 
+def test_hypervisor_resources_require_current_online_node_data(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    path = tmp_path / "infrastructure.json"
+    node = {"node": "pve1", "status": "online", "cpu": 0.0, "maxcpu": 72, "mem": 512,
+            "maxmem": 1024, "disk": 0, "maxdisk": 4096, "uptime": 30}
+
+    def read(when=now):
+        graph = build_graph({}, {}, {}, {"at": now.isoformat(), "cluster": [], "nodes": [node], "guests": []}, {}, now)
+        path.write_text(json.dumps(graph), encoding="utf-8")
+        return next(n for n in load_infrastructure_map(path, when)["nodes"] if n["id"] == "pve1")
+
+    assert read()["resources"] == {"checkedAt": now.isoformat(), "cpuRatio": 0.0, "logicalCpus": 72,
+                                    "memoryUsedBytes": 512, "memoryTotalBytes": 1024,
+                                    "rootUsedBytes": 0, "rootTotalBytes": 4096, "uptimeSeconds": 30}
+    assert "resources" not in read(now + timedelta(hours=1))
+    node.update(status="offline")
+    assert "resources" not in read()
+    node.update(status="online", cpu=True, mem=1025, disk=-1, maxcpu="72", uptime=None)
+    assert "resources" not in read()
+    node["cpu"] = 0.42
+    assert read()["resources"] == {"checkedAt": now.isoformat(), "cpuRatio": 0.42}
+
+
 def test_backup_state_requires_a_valid_watchdog_report(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map
