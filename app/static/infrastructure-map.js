@@ -805,6 +805,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const status = edge.confirmed || unconfirmedPath ? edge.source : 'Связь не подтверждена · ' + edge.source;
         li.append(go,make('small',edge.kind+' · '+status+(edge.details ? ' · '+edge.details : '')));
         const renderedPorts = new Set();
+        const aggregates = new Set((edge.portEvidence ?? []).flatMap(({lacp}) =>
+          lacp?.aggregateState ? [lacp.side + ':' + lacp.aggregateState.name] : []));
         const comparedPorts = new Set();
         for (const evidence of edge.portEvidence ?? []) {
           const [local, remote] = edge.a === id ? [evidence.a, evidence.b] : [evidence.b, evidence.a];
@@ -819,13 +821,23 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           for (const side of ['a', 'b']) {
             const port = evidence.portStates?.[side];
             const key = side + ':' + port?.name;
-            if (!port || renderedPorts.has(key)) continue;
+            if (!port || renderedPorts.has(key) || aggregates.has(key)) continue;
             renderedPorts.add(key);
             const device = byId.get(edge[side]).name;
             const label = port.source === 'Proxmox' ? proxmoxPortStatus(port) : portLabels[port.state];
             const state = [label, formatPortSpeed(port.speedBps), port.source ?? 'SNMP', formatTime(port.checkedAt)];
             if (port.lldpNeighborCount) state.push('соседей по LLDP ' + port.lldpNeighborCount);
             li.append(make('small', `${device} ${port.name}: ${state.filter(Boolean).join(' · ')}`));
+          }
+          if (evidence.lacp?.aggregateState) {
+            const {side, aggregateState} = evidence.lacp;
+            const key = side + ':' + aggregateState.name;
+            if (!renderedPorts.has(key)) {
+              renderedPorts.add(key);
+              const {name, state, speedBps, checkedAt} = aggregateState;
+              const details = [portLabels[state], formatPortSpeed(speedBps), 'SNMP', formatTime(checkedAt)];
+              li.append(make('small', `Агрегат ${name}: ${details.filter(Boolean).join(' · ')}`));
+            }
           }
           if (evidence.portComparison) {
             const pair = JSON.stringify(['a', 'b'].map(side => evidence.portStates[side].name));

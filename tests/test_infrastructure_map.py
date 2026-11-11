@@ -1466,6 +1466,8 @@ def test_lacp_confirms_only_ports_whose_partner_matches_fresh_arp(tmp_path):
     network = {
         "sources": [{"id": 1, "name": "snr", "host": "192.0.2.254", "driver": "snmp_switch"}],
         "arp": [{"ip": address, "mac": mac, "last_seen_at": at}],
+        "ports": [{"source": "snr", "port_key": name, "name": name, "oper_status": "up",
+                   "speed_bps": speed, "last_seen_at": at} for name, speed in (("po1", 2*10**9), ("ge6", 10**9))],
         "lacp": [{"source": "snr", "asset": "pbs", "aggregate": "po1", "expected": 2, "at": at,
                   "members": [{"port": "ge6", "partner_port": 1, "mac": mac},
                               {"port": "ge7", "partner_port": 2, "mac": "02:00:00:00:00:99"}]}],
@@ -1480,7 +1482,16 @@ def test_lacp_confirms_only_ports_whose_partner_matches_fresh_arp(tmp_path):
     result = link()
     assert result["confirmed"] and result["source"] == "SNMP LACP + ARP"
     assert [(p["a"], p["b"]) for p in result["portEvidence"] if p["confirmed"]] == [("po1 / ge6", "LACP 1")]
-    assert not link(now + timedelta(hours=1))["confirmed"]
+    member = next(p for p in result["portEvidence"] if p["confirmed"])
+    assert member["portStates"]["a"]["name"] == "ge6"
+    assert member["portStates"]["a"]["speedBps"] == 10**9
+    assert "b" not in member["portStates"] and "portComparison" not in member
+    assert {key: member["lacp"][key] for key in ("side", "aggregate", "member", "partnerPort")} == {
+        "side": "a", "aggregate": "po1", "member": "ge6", "partnerPort": 1,
+    }
+    assert member["lacp"]["aggregateState"]["speedBps"] == 2*10**9
+    expired = link(now + timedelta(hours=1))
+    assert not expired["confirmed"] and all("lacp" not in p for p in expired["portEvidence"])
     network["arp"].append({**network["arp"][0], "mac": "02:00:00:00:00:98"})
     assert not link()["confirmed"]
     assert mac not in path.read_text(encoding="utf-8")

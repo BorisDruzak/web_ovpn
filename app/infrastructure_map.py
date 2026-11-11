@@ -671,6 +671,27 @@ def _attach_storage_assignments(nodes: dict, links: list[dict], cluster_id: str)
         }
 
 
+def _attach_lacp_port_states(report: dict, edge: dict, nodes: dict, port_states: dict) -> None:
+    for side, peer in (("a", "b"), ("b", "a")):
+        if nodes[edge[side]]["kind"] != NETWORK_KINDS[0]:
+            continue
+        aggregate, separator, member = report[side].partition(" / ")
+        partner = re.fullmatch(r"LACP ([1-9][0-9]{0,4})", report[peer])
+        if (not separator or not INTERFACE_NAME.fullmatch(aggregate) or not INTERFACE_NAME.fullmatch(member)
+                or partner is None or int(partner[1]) > 65535):
+            continue
+        lacp = {"side": side, "aggregate": aggregate, "member": member, "partnerPort": int(partner[1])}
+        ports = port_states.get(edge[side], {})
+        aggregate_state = ports.get(port_label_key(aggregate))
+        if aggregate_state and aggregate_state["state"] != "unknown":
+            lacp["aggregateState"] = aggregate_state
+        member_state = ports.get(port_label_key(member))
+        if member_state and member_state["state"] != "unknown":
+            report["portStates"] = {side: member_state}
+        report["lacp"] = lacp
+        return
+
+
 def _compare_link_ports(ports: dict) -> dict:
     if set(ports) != {"a", "b"} or any(port["state"] == "unknown" for port in ports.values()):
         return {}
@@ -745,7 +766,10 @@ def load_infrastructure_map(path: Path, now: datetime | None = None, *, db: Sess
                         evidence[-1]["pairEvidence"] = "verified_inventory"
                     elif source in CURRENT_PORT_PAIR_SOURCES:
                         evidence[-1]["pairEvidence"] = "current"
-                if both_ports or source == SHARED_LLDP_SOURCE or observed_attachment:
+                if source == "SNMP LACP + ARP":
+                    if evidence[-1].get("pairEvidence") == "current":
+                        _attach_lacp_port_states(evidence[-1], edge, nodes, port_states)
+                elif both_ports or source == SHARED_LLDP_SOURCE or observed_attachment:
                     states = {}
                     for side in ("a", "b"):
                         port = port_states.get(edge[side], {}).get(port_label_key(evidence[-1][side]))
