@@ -345,13 +345,14 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             "properties": {}, "sources": [], "checks": [],
         })
 
-    def edge(a, b, kind, source, confirmed=True, details="", ports=None, at=None, vlan=None, virtual=None):
+    def edge(a, b, kind, source, confirmed=True, details="", ports=None, at=None, vlan=None, virtual=None,
+             evidence_only=False):
         if a not in nodes or b not in nodes or a == b:
             return
         key = (tuple(sorted((a, b))), kind)
         current = edges.get(key)
         evidence = current.get("portEvidence", []) if current else []
-        if not current or confirmed and (not current["confirmed"] or source != "GitHub"):
+        if not current or confirmed and not evidence_only and (not current["confirmed"] or source != "GitHub"):
             edges[key] = {"a": a, "b": b, "kind": kind, "source": source,
                           "confirmed": confirmed, "details": details, "observedAt": at}
         if current and edges[key]["a"] != current["a"]:
@@ -387,6 +388,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 fresh_macs_by_ip.setdefault(host["ip"], set()).add(mac)
     addresses = {}
     address_by_asset = {}
+    observed_addresses = {}
     names = {}
     declared_macs = {}
     declared_devices_by_mac = {}
@@ -395,6 +397,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         item = node(key, device["name"], KINDS.get(device["kind"], "Сервер"), device.get("site", ""))
         addresses.setdefault(str(device.get("management_ip") or ""), []).append(key)
         address_by_asset[key] = device.get("management_ip")
+        observed_addresses[key] = device.get("observed_ipv4_addresses", [])
         observation = _host_observation(host_ips.get(device.get("management_ip"), {}), now)
         if observation:
             item["reachability"] = observation
@@ -767,6 +770,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
     attachments = [report for report in network.get("attachments", [])
                    if observation_is_fresh(report.get("observed_at"), now)]
     locations = {}
+    asset_ip_checks = bindings.get("asset_ip_checks", {})
     for report in attachments:
         locations.setdefault(report["mac"].lower(), set()).add((report["source_id"], report["port_key"]))
     for report in attachments:
@@ -787,8 +791,18 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             edge(switch, device, "Сетевое соединение", "netctl FDB + Proxmox",
                  ports=(port, management[0]), at=checked_at.isoformat(), vlan=report["vlan_id"])
         else:
-            edge(switch, device, "Путь по MAC-таблице", "netctl FDB",
-                 ports=(port, ""), at=observed, vlan=report["vlan_id"])
+            physical = edges.get((tuple(sorted((switch, device))), "Сетевое соединение"), {})
+            switch_side = "a" if physical.get("a") == switch else "b"
+            matches = len(locations[mac]) == 1 and any(
+                p["confirmed"] and p["source"] == "GitHub" and p[switch_side].casefold() == port.casefold()
+                for p in physical.get("portEvidence", [])
+            )
+            kind = "Сетевое соединение" if matches else "Путь по MAC-таблице"
+            edge(switch, device, kind, "netctl FDB", ports=(port, ""), at=observed,
+                 vlan=report["vlan_id"], evidence_only=matches)
+            target = asset_ip_checks.get(device)
+            if matches and mac in declared_macs[device] and target in observed_addresses[device]:
+                nodes[device]["probeTargetIP"] = target
     for report in network.get("lacp", []):
         asset = report["asset"]
         address = address_by_asset.get(asset)
@@ -1024,7 +1038,10 @@ def main() -> int:
         )
         now = datetime.now(timezone.utc)
         graph = build_graph(context, network, build_server_health_view(args.server_health, now), pve, bindings, now)
-        apply_service_probes(graph["nodes"], bindings.get("service_probes", {}))
+        probes = {**bindings.get("service_probes", {}),
+                  **{asset: [{"type": "icmp", "ip": address}]
+                     for asset, address in bindings.get("asset_ip_checks", {}).items()}}
+        apply_service_probes(graph["nodes"], probes)
         graph["snapshotAt"] = datetime.now(timezone.utc).isoformat()
         graph["git"] = args.git_revision
         graph["contextSha256"] = hashlib.sha256(context_raw).hexdigest()

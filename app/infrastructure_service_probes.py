@@ -267,7 +267,7 @@ def _probe(spec: dict) -> str:
 
 def apply_service_probes(nodes: list[dict], configured: dict) -> None:
     targets = [(node, configured[node["id"]]) for node in nodes
-               if node["kind"] == "Сервис" and node["id"] in configured]
+               if (node["kind"] == "Сервис" or "probeTargetIP" in node) and node["id"] in configured]
     if not targets:
         return
 
@@ -287,6 +287,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
         for spec in specs:
             protocol = spec.get("type")
             method = methods.get(protocol, "") if isinstance(protocol, str) else ""
+            if node["kind"] != "Сервис":
+                method = "ICMP адреса из инвентаря"
             port = spec.get("port")
             observation = {
                 "state": _probe(spec), "method": method,
@@ -296,7 +298,7 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 "checkedAt": datetime.now(timezone.utc).isoformat(),
             }
             checks.append(observation)
-            if spec.get("supplemental") is not True:
+            if node["kind"] == "Сервис" and spec.get("supplemental") is not True:
                 required.append(observation)
         node.setdefault("serviceChecks", []).extend(checks)
         if not required:

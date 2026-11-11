@@ -367,6 +367,43 @@ def test_fdb_ports_require_fresh_unambiguous_device_identity(tmp_path):
     assert first not in path.read_text(encoding="utf-8")
 
 
+def test_matching_fdb_attachment_adds_evidence_and_supplemental_ip_check(monkeypatch):
+    from app.infrastructure_collect import build_graph
+    from app import infrastructure_service_probes as probes
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    mac, address = "02:00:00:00:00:14", "192.0.2.14"
+    context = {"devices": [
+        {"id": "pc", "name": "PC", "kind": "endpoint", "mac_addresses": [mac],
+         "observed_ipv4_addresses": [address]},
+        {"id": "sw", "name": "CSS", "kind": "switch", "management_ip": "192.0.2.254"},
+    ], "links": [{"endpoint_a": {"device": "pc", "interface": "Ethernet"},
+                  "endpoint_b": {"device": "sw", "interface": "Port7"},
+                  "relation": "connected_to", "state": {"verified": True}}]}
+    network = {"sources": [{"id": 1, "name": "css", "host": "192.0.2.254", "driver": "snmp_switch"}],
+               "attachments": [{"source_id": 1, "port_key": "Port7", "mac": mac, "observed_at": at, "vlan_id": 20}]}
+    bindings = {"asset_ip_checks": {"pc": address}}
+    configured = {"pc": [{"type": "icmp", "ip": address}]}
+    monkeypatch.setattr(probes, "_probe", lambda spec: "reachable")
+
+    def build():
+        graph = build_graph(context, network, {}, {}, bindings, now)
+        probes.apply_service_probes(graph["nodes"], configured)
+        return graph, next(n for n in graph["nodes"] if n["id"] == "pc")
+
+    graph, node = build()
+    link, = graph["links"]
+    assert link["confirmed"] and link["source"] == "GitHub"
+    assert [(p["a"], p["b"]) for p in link["portEvidence"]] == [("Ethernet", "Port7"), ("", "Port7")]
+    assert node["serviceChecks"][0]["state"] == "reachable"
+    assert "reachability" not in node
+    network["attachments"][0]["port_key"] = "Port8"
+    graph, node = build()
+    assert len(graph["links"]) == 2
+    assert "serviceChecks" not in node
+
+
 def test_lacp_confirms_only_ports_whose_partner_matches_fresh_arp(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map

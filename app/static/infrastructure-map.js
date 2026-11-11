@@ -444,7 +444,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         row.append(make('strong', endpoint || 'Проверка'), make('small', result + gateway + source + time + (check.stale ? ' · устарело' : '')));
         list.append(row);
       }
-      propertiesSection.append(make('h3', 'Проверки службы'), list);
+      propertiesSection.append(make('h3', 'Проверки'), list);
     }
     if (node.checks?.length) {
       const panel = make('details', null, 'map-port-panel');
