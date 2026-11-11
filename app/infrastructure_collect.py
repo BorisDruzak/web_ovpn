@@ -1082,13 +1082,14 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
 
     guest_services = {}
     roles = bindings.get("roles", {})
-    for target in server.get("targets", []):
-        role = target["role"]
+    targets = {target["role"]: target for target in server.get("targets", [])}
+    for role in dict.fromkeys([*targets, *roles]):
+        target = targets.get(role, {})
         configured = roles.get(role, {})
         host = configured.get("asset")
         item = node("role:" + role, configured.get("label") or role, "Сервис",
                     nodes.get(host, {}).get("site", ""), "UI_VPN")
-        source(item, "Server Observer", target["status"], target.get("observed_at"))
+        source(item, "Server Observer", target.get("status", "unknown"), target.get("observed_at"))
         item["sources"][-1]["stale"] = server.get("freshness") != "current"
         target_checks = target.get("checks", [])
         valid_report = role != "acti_backup" or [check["status"] for check in target_checks
@@ -1097,6 +1098,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                            if valid_report or check["name"] == "watchdog_fresh" else "unknown",
                            "observed": check.get("observed"), "latency": check.get("latency_ms")}
                           for check in target_checks]
+        item["requiredObserverChecks"] = configured.get("required_observer_checks", [])
         checked_at = target.get("observed_at")
         functional = FUNCTIONAL_CHECKS.get(role)
         if functional and valid_report and server.get("freshness") == "current" and observation_is_fresh(checked_at, now):

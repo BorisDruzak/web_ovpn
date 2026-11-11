@@ -49,6 +49,49 @@ def test_map_colors_use_node_and_confirmed_service_availability(tmp_path):
     assert states["yellow"]["mapStatus"] == "unknown"
 
 
+def test_service_color_includes_required_observer_checks_and_confirmed_dependencies(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    stamp = now.isoformat()
+    path = tmp_path / "infrastructure.json"
+
+    def read(component="ok", database="reachable", observer_at=stamp, confirmed=True, cycle=False, missing=False):
+        checks = [] if component is None else [{"name": "redis_tcp_6379", "status": component}]
+        checks.append({"name": "c_disk_free", "status": "critical"})
+        target = {"role": "directum", "status": "critical", "observed_at": observer_at, "checks": checks}
+        report = {"freshness": "missing" if missing else "current", "targets": [] if missing else [target]}
+        context = {"devices": [{"id": "vm", "name": "VM", "kind": "server"}]}
+        graph = build_graph(context, {}, report, {}, {
+            "roles": {"directum": {"asset": "vm", "required_observer_checks": ["redis_tcp_6379"]}},
+        }, now)
+        graph["nodes"].append({"id": "db", "name": "PostgreSQL", "kind": "Сервис"})
+        for node in graph["nodes"]:
+            state = database if node["id"] == "db" else "reachable"
+            node["reachability"] = {"state": state, "checkedAt": stamp}
+        graph["links"].append({"a": "role:directum", "b": "db", "kind": "Зависимость сервиса",
+                               "confirmed": confirmed})
+        if cycle:
+            graph["links"].append({"a": "db", "b": "role:directum", "kind": "Зависимость сервиса",
+                                   "confirmed": True})
+        path.write_text(json.dumps(graph), encoding="utf-8")
+        return {node["id"]: node for node in load_infrastructure_map(path, now)["nodes"]}
+
+    assert read()["vm"]["mapStatus"] == "ok"
+    for observed in (read(component="critical"), read(database="unreachable", cycle=True)):
+        assert observed["role:directum"]["reachability"]["state"] == "reachable"
+        assert observed["role:directum"]["mapStatus"] == "warn"
+        assert observed["vm"]["mapStatus"] == "warn"
+        assert observed["vm"]["serviceAvailability"]["unavailable"] == ["role:directum"]
+    assert read(database="unreachable", confirmed=False)["vm"]["mapStatus"] == "ok"
+    assert read(component=None)["vm"]["mapStatus"] == "unknown"
+    assert read(missing=True)["vm"]["mapStatus"] == "unknown"
+    assert read(database="unknown")["vm"]["mapStatus"] == "unknown"
+    assert read(observer_at=(now - timedelta(minutes=30)).isoformat())["vm"]["mapStatus"] == "unknown"
+    assert read(cycle=True)["vm"]["mapStatus"] == "ok"
+
+
 def test_cluster_health_distinguishes_quorum_members_and_api(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map

@@ -493,12 +493,14 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     if (node.checks?.length) {
       const panel = make('details', null, 'map-port-panel');
       panel.dataset.section = 'checks';
+      panel.open = node.checks.some(check => check.required && check.status !== 'ok');
       const list = make('ul', null, 'map-detail-list');
       const states = {ok: 'В норме', warn: 'Отклонение', critical: 'Ошибка', unknown: 'Нет подтверждения'};
       for (const check of node.checks) {
         const row = make('li');
         const time = check.checkedAt ? ' · ' + formatTime(check.checkedAt) : '';
-        row.append(make('strong', check.label || check.name), make('small', states[check.status] + time + (check.stale ? ' · устарело' : '')));
+        const required = check.required ? ' · обязательная проверка' : '';
+        row.append(make('strong', check.label || check.name), make('small', states[check.status] + required + time + (check.stale ? ' · устарело' : '')));
         list.append(row);
       }
       panel.append(make('summary', 'Проверки Server Observer'), list);

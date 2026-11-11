@@ -5,7 +5,7 @@ import json
 import logging
 import math
 import re
-from collections import Counter
+from collections import Counter, deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -23,7 +23,7 @@ INTERFACE_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}")
 PVE_DISK_DEVICE = re.compile(r"(?:scsi|sata|virtio|ide|mp)[0-9]{1,3}|rootfs")
 PVE_STORAGE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 REACHABILITY_STATES = ("reachable", "unreachable", "stopped", "unknown")
-SERVICE_LINKS = {"Размещение", "Цель проверки"}
+SERVICE_LINKS = {"Размещение", "Цель проверки", "Зависимость сервиса"}
 CLUSTER_KIND = "Кластер Proxmox"
 CLUSTER_HEALTH_METHODS = ("Кворум", "Участники кластера")
 RECIPROCAL_MAC_SOURCE = "SNMP · взаимные MAC"
@@ -232,6 +232,13 @@ def _public_node(row: dict, now: datetime) -> dict:
     if row.get("kind") == "Гипервизор" and any(s["name"] == "Proxmox" and s["status"] == "ok" for s in fresh):
         resources = _public_hypervisor_resources(row.get("resources"), now)
     guest_storage = _public_guest_storage(row.get("guestStorage"), now) if row.get("guest") is True else {}
+    required = row.get("requiredObserverChecks")
+    required_names = dict.fromkeys(
+        name for name in required[:80] if isinstance(name, str) and re.fullmatch(r"[a-z0-9_]{1,64}", name)
+    ) if row.get("kind") == "Сервис" and isinstance(required, list) else {}
+    checks = _rows(row.get("checks"), 80)
+    check_counts = Counter(_text(check.get("name"), 64) for check in checks)
+    checks.extend({"name": name} for name in required_names if not check_counts[name])
     return {
         **{key: _text(row.get(key)) for key in ("id", "name", "kind", "site", "origin", "pveHost")},
         "guest": row.get("guest") is True,
@@ -248,10 +255,12 @@ def _public_node(row: dict, now: datetime) -> dict:
         "checks": [
             {"name": name,
              **({"label": OBSERVER_CHECK_LABELS[name]} if name in OBSERVER_CHECK_LABELS else {}),
-             "status": _state(check.get("status")) if observer and not observer["stale"] else "unknown",
+             **({"required": True} if name in required_names else {}),
+             "status": _state(check.get("status")) if observer and not observer["stale"]
+             and (name not in required_names or check_counts[name] == 1) else "unknown",
              "checkedAt": observer["at"] if observer else None, "stale": not observer or observer["stale"],
              "observed": _number(check.get("observed")), "latency": _number(check.get("latency"))}
-            for check in _rows(row.get("checks"), 80)
+            for check in checks
             for name in [_text(check.get("name"), 64)]
         ],
     }
@@ -259,25 +268,46 @@ def _public_node(row: dict, now: datetime) -> dict:
 
 def _map_statuses(nodes: dict, links: list[dict]) -> None:
     services = {key: set() for key in nodes}
+    consumers = {key: set() for key in nodes}
     for edge in links:
         if edge["confirmed"] and edge["kind"] in SERVICE_LINKS and nodes[edge["b"]]["kind"] == "Сервис":
             services[edge["a"]].add(edge["b"])
+            consumers[edge["b"]].add(edge["a"])
+
+    local_issues = {}
+    for key, node in nodes.items():
+        checks = [check["status"] for check in node["checks"] if check.get("required")]
+        if node["kind"] == CLUSTER_KIND:
+            cluster = {check["method"]: check["state"] for check in node["serviceChecks"]}
+            check_state = {"reachable": "ok", "unreachable": "critical"}
+            checks.extend(check_state.get(cluster.get(method), "unknown") for method in CLUSTER_HEALTH_METHODS)
+        local_issues[key] = (
+            bool({"critical", "warn"}.intersection(checks)), "unknown" in checks,
+        )
+
+    failed = {key for key, node in nodes.items()
+              if local_issues[key][0] or node["reachability"]["state"] in {"unreachable", "stopped"}}
+    unconfirmed = {key for key, node in nodes.items()
+                   if local_issues[key][1] or node["reachability"]["state"] == "unknown"}
+    # A dependency can affect every consumer, including services in a cycle.
+    for affected in (failed, unconfirmed):
+        pending = deque(affected)
+        while pending:
+            for consumer in consumers[pending.popleft()] - affected:
+                affected.add(consumer)
+                pending.append(consumer)
 
     for key, node in nodes.items():
-        states = {peer: nodes[peer]["reachability"]["state"] for peer in sorted(services[key])}
-        unavailable = [peer for peer, state in states.items() if state in {"unreachable", "stopped"}]
-        unknown = [peer for peer, state in states.items() if state == "unknown"]
-        cluster_states = []
-        if node["kind"] == CLUSTER_KIND:
-            checks = {check["method"]: check["state"] for check in node["serviceChecks"]}
-            cluster_states = [checks.get(method, "unknown") for method in CLUSTER_HEALTH_METHODS]
+        unavailable = sorted(services[key] & failed)
+        unknown = sorted((services[key] & unconfirmed) - failed)
+        local_failed, local_unknown = local_issues[key]
         state = node["reachability"]["state"]
         node["serviceAvailability"] = {"unavailable": unavailable, "unknown": unknown}
         if state in {"unreachable", "stopped"}:
             node["mapStatus"] = "critical"
-        elif state == "reachable" and (unavailable or "unreachable" in cluster_states):
+        elif state == "reachable" and (unavailable or local_failed):
             node["mapStatus"] = "warn"
-        elif state == "reachable" and not unknown and "unknown" not in cluster_states:
+        elif state == "reachable" and not unknown and not local_unknown:
             node["mapStatus"] = "ok"
         else:
             node["mapStatus"] = "unknown"
