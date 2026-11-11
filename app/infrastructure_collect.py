@@ -836,6 +836,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 {"id": switch, "port": port, "at": at, "vlan": report["vlan_id"]},
             )
 
+    guest_services = {}
     roles = bindings.get("roles", {})
     for target in server.get("targets", []):
         role = target["role"]
@@ -856,9 +857,12 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             if result in {"ok", "critical", "warn"}:
                 state = "reachable" if result == "ok" else "unreachable"
                 item["reachability"] = _observation(state, "Server Observer", method, checked_at)
-        edge(host, item["id"], "Цель проверки", "Настройки карты")
+        if host:
+            edge(host, item["id"], "Цель проверки", "Настройки карты")
+        elif type(configured.get("vmid")) is int:
+            item["probeTargetIP"] = None
+            guest_services.setdefault(str(configured["vmid"]), []).append((item, configured))
 
-    guest_services = {}
     for service_id, spec in bindings.get("guest_services", {}).items():
         if service_id not in nodes:
             item = node(service_id, spec["label"], "Сервис", origin="UI_VPN")
@@ -1291,6 +1295,8 @@ def main() -> int:
         if args.proxmox_url:
             guest_ids = set(bindings.get("guests", {}))
             guest_ids.update(str(service["vmid"]) for service in bindings.get("guest_services", {}).values())
+            guest_ids.update(str(role["vmid"]) for role in bindings.get("roles", {}).values()
+                             if type(role.get("vmid")) is int and not role.get("asset"))
             pve = read_proxmox(args.proxmox_url, args.proxmox_token_file, args.proxmox_ca, guest_ids,
                                bindings.get("hypervisor_management_bridges"))
         elif args.proxmox_export:

@@ -201,6 +201,32 @@ def test_postgresql_probe_requires_protocol_response(monkeypatch):
     assert probes._probe(spec) == "unreachable"
 
 
+def test_observer_service_attaches_to_the_vm_with_the_expected_mac():
+    from app.infrastructure_collect import build_graph
+
+    now = datetime.now(timezone.utc)
+    mac = "02:00:00:00:00:03"
+    pve = {"at": now.isoformat(), "cluster": [], "nodes": [],
+           "guests": [{"vmid": 211, "node": "pve2", "type": "qemu", "status": "running"}],
+           "configs": {"211": {"net0": f"virtio={mac},bridge=vmbr1"}}}
+    bindings = {"roles": {"nextcloud": {"label": "Nextcloud", "vmid": 211, "mac": mac}}}
+    server = {"freshness": "current", "targets": [{"role": "nextcloud", "status": "ok",
+              "observed_at": now.isoformat(), "checks": [{"name": "nextcloud_status", "status": "ok"}]}]}
+
+    def load(at=now):
+        graph = build_graph({}, {}, server, pve, bindings, at)
+        item, = [n for n in graph["nodes"] if n["id"] == "role:nextcloud"]
+        links = [e for e in graph["links"] if e["b"] == item["id"]]
+        return item, links
+
+    item, links = load()
+    assert item["reachability"]["source"] == "Server Observer"
+    assert [(e["a"], e["source"], e["confirmed"]) for e in links] == [("pve-guest:211", "Proxmox", True)]
+    assert load(now + timedelta(hours=1))[1] == []
+    pve["configs"]["211"]["net0"] = "virtio=02:00:00:00:00:04,bridge=vmbr1"
+    assert load()[1] == []
+
+
 def test_guest_service_requires_matching_mac_and_arp_to_enable_probe(monkeypatch):
     from app.infrastructure_collect import build_graph
     from app import infrastructure_service_probes as probes
