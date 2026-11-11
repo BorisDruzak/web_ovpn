@@ -242,6 +242,7 @@ def render(
         {
             "request": request,
             "user": user,
+            "can_link_inventory_people": user_has_permission(user, "workstations:link"),
             "can_delete_inventory": user_has_permission(user, "inventory:delete"),
             "can_export_network": user_has_permission(user,"network:export"),
             "export_operation_key": uuid.uuid4().hex,

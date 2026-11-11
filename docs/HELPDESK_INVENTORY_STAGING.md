@@ -5,6 +5,13 @@ does not infer assignments from legacy free text, AD, hostname or IP. Existing
 inventory cards, Endpoint mappings, and workstation directory links remain
 available independently. Two employees can have the same name.
 
+The inventory menu opens **Employees and devices** at `/inventory/people`.
+An operator can find employees by name or department, add or edit a profile,
+search for a PC, and assign it as primary or shared. The same flow opens from
+an existing PC card with that PC selected. The employee card displays the
+current Endpoint presence and the reason recorded for completed assignments.
+Page access uses `workstations:link`, and writes require the session CSRF token.
+
 Operator endpoints under `/api/v1/inventory/people` require an authenticated web
 session with `workstations:link` (or an administrator). Writes also require the
 session's `X-CSRF-Token`. The collection supports bounded name/department search
@@ -47,6 +54,6 @@ Next integration steps:
 2. Project assignments and freshness into the requester profile. Retain the
    last confirmed display data during provider outages and check conflicts
    before creating any effective device permissions.
-3. Add the operator inventory page and use existing Endpoint assignment and
-   installation workflows for operator actions. Verify a genuine Endpoint
+3. Add directory-level device status filters and expose existing Endpoint
+   assignment and installation workflows from the employee card. Verify a genuine Endpoint
    registration and heartbeat before reporting an installation complete.

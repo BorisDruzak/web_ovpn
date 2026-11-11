@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from datetime import date, datetime, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import ValidationError
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
@@ -37,13 +38,14 @@ from .models import (
     InventoryObservation,
     InventoryCheck,
     InventoryExternalBinding,
+    InventoryPersonAssignment,
     InventoryPhotoType,
     InventorySession,
 )
 from .service import InventoryService, InventoryValidationError
 from .search import search_inventory
 from .revision import InventoryRevisionConflict, InventoryRevisionRequired
-from . import form_drafts, lifecycle, network_creation
+from . import form_drafts, lifecycle, network_creation, people_api
 from .netctl_bindings import NetctlBindingConflict
 from .storage import InventoryPhotoError, InventoryPhotoStorage
 
@@ -135,6 +137,7 @@ def _render(request: Request, template: str, context: dict[str, Any], db: Sessio
             "settings": get_settings(),
             "flashes": list(request.session.get("flashes", [])),
             "form_draft": getattr(request.state, "form_draft", None),
+            "can_link_inventory_people": user_has_permission(user, "workstations:link"),
             "can_delete_inventory": user_has_permission(user, "inventory:delete"),
             "can_export_inventory": user_has_permission(user,"inventory:export"),
             "export_operation_key": uuid4().hex,
@@ -1071,3 +1074,95 @@ def inventory_photo_read(photo_id: str, request: Request, db: Session = Depends(
     if not path.is_file():
         raise HTTPException(status_code=404, detail="inventory photo is unavailable")
     return FileResponse(path, media_type=photo.mime_type, filename=photo.original_filename or "image")
+
+
+
+def _people_page(request: Request, db: Session, context: dict) -> HTMLResponse:
+    response = _render(request, "inventory_people.html", context, db)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def _chosen_pc(db: Session, asset_id: UUID | None) -> InventoryAsset | None:
+    asset = db.get(InventoryAsset, str(asset_id)) if asset_id else None
+    return asset if asset and asset.asset_type == InventoryAssetType.PC else None
+
+
+@router.get("/inventory/people", response_class=HTMLResponse)
+def inventory_people(request: Request, q: str = Query("", max_length=120), page: int = Query(1, ge=1, le=10000),
+                     asset_id: UUID | None = None, db: Session = Depends(get_db)):
+    people_api._operator_read(request, db)
+    directory = people_api.list_people(Response(), db, q, page)
+    return _people_page(request, db, {**directory, "q": q, "chosen_pc": _chosen_pc(db, asset_id)})
+
+
+@router.get("/inventory/people/{person_id}", response_class=HTMLResponse)
+def inventory_person(person_id: UUID, request: Request, asset_id: UUID | None = None,
+                     pc_q: str = Query("", max_length=120), pc_page: int = Query(1, ge=1), db: Session = Depends(get_db)):
+    people_api._operator_read(request, db)
+    person = people_api.read_person(person_id, Response(), db)
+    assignment = InventoryPersonAssignment
+    history = db.scalars(select(assignment).where(
+        assignment.person_id == str(person_id), assignment.ended_at.is_not(None),
+    ).order_by(assignment.ended_at.desc(), assignment.id).limit(100)).all()
+    pc_search = search_inventory(db, pc_q, pc_page, asset_type=InventoryAssetType.PC) if pc_q.strip() else None
+    return _people_page(request, db, {"person": person, "history": history, "pc_q": pc_q,
+                                      "pc_search": pc_search, "chosen_pc": _chosen_pc(db, asset_id)})
+
+
+async def _person_form(request: Request, db: Session) -> str:
+    actor = people_api._operator_read(request, db)
+    await verify_csrf(request)
+    return actor
+
+
+@router.post("/inventory/people")
+async def inventory_person_create(request: Request, full_name: str = Form(min_length=1, max_length=240),
+                                  department: str = Form(min_length=1, max_length=240),
+                                  asset_id: UUID | None = Form(None), db: Session = Depends(get_db)):
+    actor = await _person_form(request, db)
+    payload = _people_payload(people_api.PersonInput, full_name=full_name, department=department)
+    person = people_api.create_person(payload, request, db, actor)
+    query = f"?asset_id={asset_id}" if asset_id else ""
+    return _redirect(f"/inventory/people/{person['inventory_person_id']}{query}")
+
+
+@router.post("/inventory/people/{person_id}/edit")
+async def inventory_person_edit(person_id: UUID, request: Request, full_name: str = Form(min_length=1, max_length=240),
+                                department: str = Form(min_length=1, max_length=240), db: Session = Depends(get_db)):
+    actor = await _person_form(request, db)
+    payload = _people_payload(people_api.PersonInput, full_name=full_name, department=department)
+    people_api.update_person(person_id, payload, request, db, actor)
+    return _redirect(f"/inventory/people/{person_id}")
+
+
+def _people_payload(model, **fields):
+    try:
+        return model(**fields)
+    except ValidationError as exc:
+        raise HTTPException(422, "Заполните обязательные поля.") from exc
+
+
+@router.post("/inventory/people/{person_id}/assign")
+async def inventory_person_assign(person_id: UUID, request: Request, asset_id: UUID = Form(),
+                                  role: Literal["primary", "shared"] = Form(), db: Session = Depends(get_db)):
+    actor = await _person_form(request, db)
+    try:
+        people_api.assign(person_id, asset_id, people_api.AssignmentInput(role=role), request, db, actor)
+    except HTTPException as exc:
+        if exc.status_code != 409:
+            raise
+        _flash(request, "bad", "Назначение не сохранено. Проверьте, доступен ли компьютер и есть ли у него действующее назначение.")
+        return _redirect(f"/inventory/people/{person_id}?asset_id={asset_id}")
+    _flash(request, "ok", "Назначение сохранено.")
+    return _redirect(f"/inventory/people/{person_id}")
+
+
+@router.post("/inventory/people/{person_id}/assignments/{assignment_id}/end")
+async def inventory_person_end_assignment(person_id: UUID, assignment_id: UUID, request: Request,
+                                          reason: str = Form(min_length=1, max_length=500),
+                                          db: Session = Depends(get_db)):
+    actor = await _person_form(request, db)
+    people_api.end_assignment(person_id, assignment_id, _people_payload(people_api.EndInput, reason=reason),
+                              request, db, actor)
+    return _redirect(f"/inventory/people/{person_id}")

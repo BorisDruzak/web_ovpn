@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}Сотрудники и устройства{% endblock %}
+{% block page_title %}{{ person.full_name if person else 'Сотрудники и устройства' }}{% endblock %}
+{% block content %}
+<section class="inventory-mobile">
+{% if person %}
+  <p><a href="/inventory/people">Все сотрудники</a></p>
+  <p>{{ person.department }} · ID сотрудника <code>{{ person.inventory_person_id }}</code></p>
+  <details class="inventory-card">
+    <summary>Изменить данные сотрудника</summary>
+    <form method="post" action="/inventory/people/{{ person.inventory_person_id }}/edit" class="inventory-search">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <label>ФИО <input name="full_name" required maxlength="240" value="{{ person.full_name }}"></label>
+      <label>Подразделение <input name="department" required maxlength="240" value="{{ person.department }}"></label>
+      <button class="button" type="submit">Сохранить</button>
+    </form>
+  </details>
+
+  <h2>Назначенные компьютеры · {{ person.assignments|length }}</h2>
+  {% set presence = {'online': 'Агент в сети', 'offline': 'Агент не в сети', 'unknown': 'Состояние неизвестно', 'not_detected': 'Агент не обнаружен'} %}
+  {% for row in person.assignments %}
+  <article class="inventory-card">
+    <strong><a href="/inventory/assets/{{ row.inventory_asset_id }}">{{ row.name or row.inventory_number or 'Компьютер' }}</a></strong>
+    <p>{{ 'Основной пользователь' if row.role == 'primary' else 'Дополнительный пользователь' }} · {{ presence[row.endpoint_status] }}</p>
+    {% if row.inventory_number %}<p>Инв. № {{ row.inventory_number }}</p>{% endif %}
+    {% if row.os_name or row.agent_version %}<p>{{ row.os_name or '' }}{% if row.agent_version %} · Версия агента {{ row.agent_version }}{% endif %}</p>{% endif %}
+    {% if row.last_seen_at %}<p>Последняя связь (UTC) <time datetime="{{ row.last_seen_at.isoformat() }}">{{ row.last_seen_at.strftime('%d.%m.%Y %H:%M') }}</time></p>{% endif %}
+    {% if row.endpoint_binding_state == 'review' %}<p>Привязка Endpoint требует проверки.</p>{% endif %}
+    <details>
+      <summary>Завершить назначение</summary>
+      <form method="post" action="/inventory/people/{{ person.inventory_person_id }}/assignments/{{ row.assignment_id }}/end">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        <label>Причина <input name="reason" required maxlength="500"></label>
+        <button class="button secondary" type="submit">Завершить</button>
+      </form>
+    </details>
+  </article>
+  {% else %}<p>Компьютеры пока не назначены.</p>{% endfor %}
+
+  <h2>Назначить компьютер</h2>
+  {% if chosen_pc %}
+    <form method="post" action="/inventory/people/{{ person.inventory_person_id }}/assign" class="inventory-card">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <input type="hidden" name="asset_id" value="{{ chosen_pc.id }}">
+      <p><a href="/inventory/assets/{{ chosen_pc.id }}">{{ chosen_pc.custom_name or chosen_pc.inventory_number or 'Компьютер' }}</a></p>
+      <label>Назначение
+        <select name="role"><option value="primary">Основной пользователь</option><option value="shared">Дополнительный пользователь</option></select>
+      </label>
+      <button class="button" type="submit">Назначить</button>
+    </form>
+  {% endif %}
+  <form method="get" action="/inventory/people/{{ person.inventory_person_id }}" class="inventory-search" role="search">
+    <label for="pc-search">Имя или инвентарный номер компьютера</label>
+    <div class="inventory-search-controls">
+      <input id="pc-search" type="search" name="pc_q" maxlength="120" value="{{ pc_q }}" required>
+      <button class="button secondary" type="submit">Найти компьютер</button>
+    </div>
+  </form>
+  {% if pc_search %}
+    {% for result in pc_search.search_results %}
+      {% set pc = result.asset %}
+      <p><a href="?asset_id={{ pc.id }}">{{ pc.custom_name or pc.inventory_number or 'Компьютер' }}{% if pc.inventory_number and pc.custom_name %} · {{ pc.inventory_number }}{% endif %}</a></p>
+    {% else %}<p>Компьютеры не найдены.</p>{% endfor %}
+  {% endif %}
+  {% if pc_search and pc_search.pages > 1 %}
+    <nav aria-label="Страницы поиска ПК">
+      {% if pc_search.page > 1 %}<a href="?pc_q={{ pc_q|urlencode }}&amp;pc_page={{ pc_search.page - 1 }}">Назад</a>{% endif %}
+      {% if pc_search.page < pc_search.pages %}<a href="?pc_q={{ pc_q|urlencode }}&amp;pc_page={{ pc_search.page + 1 }}">Далее</a>{% endif %}
+    </nav>
+  {% endif %}
+  {% if history %}
+    <details class="inventory-card">
+      <summary>История завершённых назначений</summary>
+      <ul>
+        {% for row in history %}
+        <li>{{ row.ended_at.strftime('%d.%m.%Y %H:%M') }} UTC · {{ row.ended_by }} · {{ row.end_reason }} · <code>{{ row.asset_id }}</code></li>
+        {% endfor %}
+      </ul>
+    </details>
+  {% endif %}
+{% else %}
+  {% if chosen_pc %}<p>Выберите сотрудника для компьютера <strong>{{ chosen_pc.custom_name or chosen_pc.inventory_number or 'Компьютер' }}</strong>.</p>{% endif %}
+  <form method="get" action="/inventory/people" class="inventory-search" role="search">
+    {% if chosen_pc %}<input type="hidden" name="asset_id" value="{{ chosen_pc.id }}">{% endif %}
+    <label for="employee-search">ФИО или подразделение</label>
+    <div class="inventory-search-controls">
+      <input id="employee-search" type="search" name="q" maxlength="120" value="{{ q }}">
+      <button class="button" type="submit">Найти сотрудника</button>
+    </div>
+  </form>
+  <details class="inventory-card">
+    <summary>Добавить сотрудника</summary>
+    <form method="post" action="/inventory/people" class="inventory-search">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      {% if chosen_pc %}<input type="hidden" name="asset_id" value="{{ chosen_pc.id }}">{% endif %}
+      <label>ФИО <input name="full_name" required maxlength="240"></label>
+      <label>Подразделение <input name="department" required maxlength="240"></label>
+      <button class="button" type="submit">Добавить</button>
+    </form>
+  </details>
+  {% for employee in people %}
+    <article class="inventory-card">
+      <strong><a href="/inventory/people/{{ employee.inventory_person_id }}{% if chosen_pc %}?asset_id={{ chosen_pc.id }}{% endif %}">{{ employee.full_name }}</a></strong>
+      <p>{{ employee.department }}</p>
+    </article>
+  {% else %}<p>Сотрудники не найдены.</p>{% endfor %}
+  {% set context = 'q=' ~ (q|urlencode) ~ ('&asset_id=' ~ chosen_pc.id if chosen_pc else '') %}
+  <nav aria-label="Страницы сотрудников">
+    {% if page > 1 %}<a href="?{{ context }}&amp;page={{ page - 1 }}">Назад</a>{% endif %}
+    <span>Страница {{ page }}</span>
+    {% if has_more %}<a href="?{{ context }}&amp;page={{ page + 1 }}">Далее</a>{% endif %}
+  </nav>
+{% endif %}
+</section>
+{% endblock %}

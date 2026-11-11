@@ -46,7 +46,8 @@
       </details>
       <details class="nav-group" {% if nav_path.startswith('/inventory') %}open{% endif %}>
         <summary>Инвентаризация</summary>
-        {{ nav_item('/inventory', 'Локации и карточки', nav_path.startswith('/inventory') and not nav_path.startswith('/inventory/network-links') and not nav_path.startswith('/inventory/deleted')) }}
+        {{ nav_item('/inventory', 'Локации и карточки', nav_path.startswith('/inventory') and not nav_path.startswith('/inventory/network-links') and not nav_path.startswith('/inventory/deleted') and not nav_path.startswith('/inventory/people')) }}
+        {% if can_link_inventory_people|default(false) %}{{ nav_item('/inventory/people', 'Сотрудники и устройства', nav_path.startswith('/inventory/people')) }}{% endif %}
         {{ nav_item('/network/hosts?inventory_link=all', 'Выбрать устройство сети', nav_path.startswith('/inventory/network-links')) }}
         {% if can_delete_inventory|default(user.is_admin if user else false) %}{{ nav_item('/inventory/deleted', 'Удалённые карточки', nav_path.startswith('/inventory/deleted')) }}{% endif %}
       </details>

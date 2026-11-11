@@ -185,3 +185,40 @@ def test_concurrent_card_deletion_cannot_leave_a_live_assignment(staging):
     with session_scope() as db:
         assert db.scalar(select(InventoryPersonAssignment.id).where(InventoryPersonAssignment.asset_id == asset)) is None
     assert client.get(f"{INTERNAL}/{person}", headers=service).json()["assignments"] == []
+
+
+
+def test_operator_page_assigns_inventory_pc_and_requires_csrf(staging):
+    client, csrf, service = staging
+    asset = _create_asset(custom_name="Fixture operator PC", inventory_number="PC-OPS")
+    index = client.get("/inventory/people", params={"asset_id": asset})
+    assert index.status_code == 200
+    assert index.headers["Cache-Control"] == "no-store"
+    assert "Fixture operator PC" in index.text
+    assert TestClient(client.app).get("/inventory/people").status_code in {401, 403}
+    created = client.post("/inventory/people", data={
+        "full_name": "Fixture employee", "department": "Service", "asset_id": asset,
+        "csrf_token": csrf["X-CSRF-Token"],
+    }, follow_redirects=False)
+    assert created.status_code == 303
+    path = created.headers["Location"]
+    person = path.split("?")[0].rsplit("/", 1)[1]
+    _create_asset("PRINTER", custom_name="Fixture operator printer", inventory_number="PC-OPS")
+    search = client.get(path.split("?")[0], params={"pc_q": "pc-ops"})
+    assert "Fixture operator PC" in search.text
+    assert "Fixture operator printer" not in search.text
+    assignment = f"/inventory/people/{person}/assign"
+    assert client.post(assignment, data={"asset_id": asset, "role": "primary"}).status_code == 400
+    result = client.post(assignment, data={
+        "asset_id": asset, "role": "primary", "csrf_token": csrf["X-CSRF-Token"],
+    })
+    assert result.status_code == 200
+    assert "Fixture operator PC" in result.text
+    assert "Агент не обнаружен" in result.text
+    row, = client.get(f"{INTERNAL}/{person}", headers=service).json()["assignments"]
+    ended = client.post(f"/inventory/people/{person}/assignments/{row['assignment_id']}/end", data={
+        "reason": "Fixture reassignment", "csrf_token": csrf["X-CSRF-Token"],
+    })
+    assert ended.status_code == 200
+    assert "Fixture reassignment" in ended.text
+    assert client.get(f"{INTERNAL}/{person}", headers=service).json()["assignments"] == []

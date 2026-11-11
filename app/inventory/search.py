@@ -5,7 +5,7 @@ import re
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import InventoryAsset, InventoryAssetIdentifier, InventoryLocation
+from .models import InventoryAsset, InventoryAssetIdentifier, InventoryAssetType, InventoryLocation
 
 
 PAGE_SIZE = 50
@@ -29,7 +29,7 @@ def _matches(values: list[str], terms: list[str]) -> bool:
         for term in terms)
 
 
-def search_inventory(db: Session, query: str, page: int = 1) -> dict:
+def search_inventory(db: Session, query: str, page: int = 1, *, asset_type: InventoryAssetType | None = None) -> dict:
     query = " ".join(query[:255].split())
     locations = sorted(db.scalars(select(InventoryLocation)),
         key=lambda item: (_normalize(item.name), item.id))
@@ -44,12 +44,15 @@ def search_inventory(db: Session, query: str, page: int = 1) -> dict:
     identifiers = defaultdict(list)
     # Three batched reads: no per-card queries or external network calls. Python
     # casefold is required because SQLite lower/LIKE do not fold Russian text.
+    active_assets = [InventoryAsset.deleted_at.is_(None)]
+    if asset_type is not None:
+        active_assets.append(InventoryAsset.asset_type == asset_type)
     for item in db.scalars(select(InventoryAssetIdentifier).join(
         InventoryAsset, InventoryAsset.id == InventoryAssetIdentifier.asset_id).where(
-        InventoryAssetIdentifier.is_current.is_(True), InventoryAsset.deleted_at.is_(None))):
+        InventoryAssetIdentifier.is_current.is_(True), *active_assets)):
         identifiers[item.asset_id].append(item.value)
     matches = []
-    for asset in db.scalars(select(InventoryAsset).where(InventoryAsset.deleted_at.is_(None))):
+    for asset in db.scalars(select(InventoryAsset).where(*active_assets)):
         location = by_location.get(asset.location_id)
         values = [getattr(asset, field) for field in SEARCH_FIELDS]
         values.extend(identifiers[asset.id])
