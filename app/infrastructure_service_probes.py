@@ -180,15 +180,19 @@ def _sip_options(ip: str, port: int) -> str:
     return "unreachable" if code in {500, 502, 503, 504} else "unknown"
 
 
+def probe_icmp(ip: str) -> bool:
+    ip = str(ipaddress.ip_address(ip))
+    result = subprocess.run(["/usr/bin/ping", "-n", "-c", "1", "-W", "2", ip],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            timeout=TIMEOUT, check=False)
+    return result.returncode == 0
+
+
 def _probe(spec: dict) -> str:
     try:
         protocol = spec["type"]
         if protocol == "icmp":
-            ip = str(ipaddress.ip_address(spec["ip"]))
-            result = subprocess.run(["/usr/bin/ping", "-n", "-c", "1", "-W", "2", ip],
-                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                    timeout=TIMEOUT, check=False)
-            return "reachable" if result.returncode == 0 else "unknown"
+            return "reachable" if probe_icmp(spec["ip"]) else "unknown"
         port = spec["port"]
         if type(port) is not int or not 1 <= port <= 65535:
             return "unknown"

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import os
 import re
 import ssl
+import subprocess
 import tempfile
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
@@ -24,7 +26,7 @@ from netctl.db import connect_read_only, list_sources
 from netctl.switch_queries import query_confirmed_attachment_ports, query_observed_mac_ports
 
 from .infrastructure_map import INTERFACE_NAME, MAX_SNAPSHOT_BYTES, NETWORK_KINDS, observation_is_fresh
-from .infrastructure_service_probes import apply_service_probes
+from .infrastructure_service_probes import apply_service_probes, probe_icmp
 from .netctl_client import NetctlError, run_netctl
 from .server_health_view import build_server_health_view
 
@@ -95,6 +97,81 @@ def _guest_observation(macs: set[str], host_macs: dict, counts: Counter, now: da
     if covered and observations and all(observations):
         return max(observations, key=lambda item: item["checkedAt"])
     return None
+
+
+def _arp_mappings(rows: list[dict], now: datetime) -> dict:
+    mappings = {}
+    for row in rows:
+        ip = row.get("ip")
+        mac = str(row.get("mac") or "").lower()
+        observed = row.get("last_seen_at")
+        if isinstance(ip, str) and MAC.fullmatch(mac) and observation_is_fresh(observed, now):
+            stamp = datetime.fromisoformat(observed)
+            known = mappings.setdefault(ip, {})
+            known[mac] = max(known.get(mac, stamp), stamp)
+    return {ip: next(iter(macs.items())) for ip, macs in mappings.items() if len(macs) == 1}
+
+
+def _verified_arp_checks(rows: list[dict], hosts: dict, now: datetime) -> dict:
+    checks = {}
+    for ip, (mac, arp_at) in _arp_mappings(rows, now).items():
+        probe = _host_observation(hosts.get(ip, {}), now)
+        if probe and probe["state"] == "reachable" and datetime.fromisoformat(probe["checkedAt"]) >= arp_at:
+            checks.setdefault(mac, []).append((ip, {**probe, "method": probe["method"] + " · ARP"}))
+    return checks
+
+
+def _probe_on_link_guest(address: str, mac: str) -> bool:
+    def ip_query(*args):
+        return json.loads(subprocess.check_output(["/usr/sbin/ip", "-j", *args], timeout=2))
+
+    try:
+        routes = ip_query("route", "get", address)
+        if len(routes) != 1 or routes[0].get("gateway") or routes[0].get("via") or not routes[0].get("dev"):
+            return False
+        if not probe_icmp(address):
+            return False
+        neighbors = ip_query("neigh", "show", "to", address, "dev", routes[0]["dev"])
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+    # Linux moves a cached neighbor to DELAY/PROBE when sending traffic before revalidation.
+    return any(row.get("dst") == address and str(row.get("lladdr", "")).lower() == mac
+               and {"REACHABLE", "DELAY", "PROBE"}.intersection(row.get("state", [])) for row in neighbors)
+
+
+def _collect_guest_arp_probes(pve: dict, network: dict, configured: dict, now: datetime) -> dict:
+    configs = pve.get("configs", {})
+    counts = Counter(mac for config in configs.values() for mac in _guest_macs(config))
+    arp = _arp_mappings(network.get("arp", []), now)
+    candidates = []
+    for guest in pve.get("guests", []):
+        vmid = str(guest["vmid"])
+        if guest.get("status") != "running" or guest.get("template") or vmid not in configured:
+            continue
+        try:
+            address = str(ipaddress.IPv4Address(configured[vmid]))
+        except (TypeError, ValueError):
+            continue
+        if address not in arp:
+            continue
+        mac, _ = arp[address]
+        interfaces = _guest_interfaces(configs.get(vmid, {}))
+        if counts[mac] == 1 and any(nic_mac == mac and not disabled for _, _, disabled, nic_mac in interfaces.values()):
+            candidates.append((address, mac))
+
+    def check(candidate):
+        address, mac = candidate
+        if _probe_on_link_guest(address, mac):
+            return mac, address, _observation("reachable", "UI_VPN", "ICMP · ARP", datetime.now(timezone.utc).isoformat())
+        return None
+
+    checks = {}
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        for result in pool.map(check, candidates):
+            if result:
+                mac, address, observation = result
+                checks.setdefault(mac, []).append((address, observation))
+    return checks
 
 
 def _route_checks(intent: dict, source: str, routes: list[dict], now: datetime) -> list[dict]:
@@ -387,6 +464,9 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
     overview_guests = []
     pve_at = pve.get("at", now.isoformat())
     if pve:
+        arp_checks = _verified_arp_checks(network.get("arp", []), host_ips, now)
+        for mac, checks in network.get("guest_arp_probes", {}).items():
+            arp_checks.setdefault(mac, []).extend(checks)
         cluster = next((row for row in pve["cluster"] if row.get("type") == "cluster"), {})
         cluster_id = "proxmox:cluster"
         hub = node(cluster_id, cluster.get("name", "Proxmox"), "Кластер Proxmox", origin="Proxmox")
@@ -431,10 +511,20 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 status, label = "unknown", "Шаблон"
             source(item, "Proxmox", status, pve_at, label)
             item.pop("reachability", None)
+            interfaces = guest_interfaces.get(str(vmid), {})
             if not guest.get("template") and guest.get("status") == "stopped":
                 item["reachability"] = _observation("stopped", "Proxmox", "Состояние ВМ", pve_at)
             elif guest.get("status") == "running" and not guest.get("template") and observation_is_fresh(pve_at, now):
-                observation = _guest_observation(guest_macs.get(str(vmid), set()), host_macs, mac_counts, now)
+                disabled_macs = {mac for _, _, disabled, mac in interfaces.values() if disabled}
+                usable_macs = guest_macs.get(str(vmid), set()) - disabled_macs
+                observation = _guest_observation(usable_macs, host_macs, mac_counts, now)
+                if not observation or observation["state"] != "reachable":
+                    verified = [check for _, _, disabled, mac in interfaces.values()
+                                if not disabled and mac in usable_macs and mac_counts[mac] == 1
+                                for check in arp_checks.get(mac, [])]
+                    if verified:
+                        address, observation = max(verified, key=lambda pair: datetime.fromisoformat(pair[1]["checkedAt"]))
+                        item["properties"]["IP проверки по ARP"] = address
                 if observation:
                     item["reachability"] = observation
             item["properties"].update({"VMID": str(vmid), "Узел Proxmox": host, "Состояние ВМ": label})
@@ -445,7 +535,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             if status == "ok" and guest.get("cpu") is not None:
                 item["properties"]["CPU по Proxmox"] = f"{100 * guest['cpu']:.1f}%"
             edge(host, key, "Размещение ВМ", "Proxmox", details=f"VM {vmid}", at=pve_at)
-            for name, (bridge, vlan, disabled, mac) in guest_interfaces.get(str(vmid), {}).items():
+            for name, (bridge, vlan, disabled, mac) in interfaces.items():
                 observed_bridge = pve.get("bridges", {}).get(host, {}).get(bridge, {})
                 uplinks = [value for value in re.split(r"[\s,]+", observed_bridge.get("bridge_ports") or "")
                            if INTERFACE_NAME.fullmatch(value) and value != "none"]
@@ -574,6 +664,15 @@ def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | N
         )]
         if guest_macs:
             data["guest_fdb"] = query_observed_mac_ports(connection, guest_macs)
+            data["arp"] = [dict(row) for row in connection.execute(
+                """
+                SELECT a.ip, a.mac, a.last_seen_at
+                FROM arp_entries AS a
+                JOIN network_sources AS s ON s.id = a.source_id
+                WHERE s.enabled = 1 AND s.driver IN ('mikrotik_api', 'mikrotik_ssh')
+                  AND a.complete = 1 AND a.dynamic = 1
+                """
+            )]
         if route_sources:
             data["routes"] = [dict(row) for row in connection.execute(
                 """
@@ -656,6 +755,9 @@ def main() -> int:
         guest_macs = {mac for config in pve.get("configs", {}).values() for mac in _guest_macs(config)}
         route_sources = {item["source"] for item in bindings.get("route_evidence", {}).values() if item.get("source")}
         network = read_network(guest_macs, route_sources)
+        network["guest_arp_probes"] = _collect_guest_arp_probes(
+            pve, network, bindings.get("guest_probe_ips", {}), datetime.now(timezone.utc),
+        )
         now = datetime.now(timezone.utc)
         graph = build_graph(context, network, build_server_health_view(args.server_health, now), pve, bindings, now)
         apply_service_probes(graph["nodes"], bindings.get("service_probes", {}))

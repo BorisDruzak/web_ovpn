@@ -546,6 +546,82 @@ def test_browser_can_refresh_snapshot_only_with_a_web_session(tmp_path, monkeypa
     assert 'data-snapshot-url="/network/infrastructure/snapshot"' in client.get("/network/infrastructure").text
 
 
+def test_guest_reachability_accepts_current_arp_with_newer_successful_probe():
+    from app.infrastructure_collect import build_graph
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    mac, other = "02:00:00:00:00:03", "02:00:00:00:00:04"
+    address = "192.0.2.21"
+    pve = {
+        "at": at, "cluster": [], "nodes": [{"node": "pve1", "status": "online"}],
+        "guests": [{"vmid": 108, "node": "pve1", "type": "qemu", "status": "running"}],
+        "configs": {"108": {"net0": f"virtio={mac},bridge=vmbr0"}},
+    }
+    seen = (now - timedelta(minutes=1)).isoformat()
+    host = {"ip": address, "mac": other, "availability": {"state": "online", "reason": "active_probe",
+            "active_method": "icmp", "checked_at": at, "run_status": "success"}}
+    arp = {"ip": address, "mac": mac, "last_seen_at": seen}
+    network = {"hosts": [host], "arp": [arp]}
+
+    def guest():
+        graph = build_graph({}, network, {}, pve, {}, now)
+        return next(node for node in graph["nodes"] if node.get("vmid") == 108)
+
+    node = guest()
+    assert node["reachability"]["state"] == "reachable"
+    assert node["properties"]["IP проверки по ARP"] == address
+    network["arp"].append({**arp, "mac": other})
+    assert "reachability" not in guest()
+    network["arp"].pop()
+    host["availability"]["checked_at"] = (now - timedelta(minutes=2)).isoformat()
+    assert "reachability" not in guest()
+    host["availability"]["checked_at"] = at
+    pve["configs"]["108"]["net0"] += ",link_down=1"
+    assert "reachability" not in guest()
+
+
+def test_guest_arp_probe_requires_on_link_identity_and_current_proxmox_interface(monkeypatch):
+    from app import infrastructure_collect as collector
+
+    now = datetime.now(timezone.utc)
+    ip, mac = "192.0.2.21", "02:00:00:00:00:03"
+    guest = {"vmid": 108, "node": "pve1", "type": "qemu", "status": "running"}
+    config = {"net0": f"virtio={mac},bridge=vmbr0"}
+    pve = {"cluster": [], "nodes": [], "guests": [guest], "configs": {"108": config}}
+    arp = {"ip": ip, "mac": mac, "last_seen_at": now.isoformat()}
+    network = {"arp": [arp]}
+    route = {"dev": "ens18"}
+    neighbor = {"dst": ip, "lladdr": mac, "state": ["DELAY"]}
+    pings = []
+    monkeypatch.setattr(collector, "probe_icmp", lambda address: pings.append(address) or True)
+    monkeypatch.setattr(collector.subprocess, "check_output",
+                        lambda args, **_: json.dumps([route if args[2] == "route" else neighbor]).encode())
+
+    def collect():
+        return collector._collect_guest_arp_probes(pve, network, {"108": ip}, now)
+
+    network["guest_arp_probes"] = collect()
+    graph = collector.build_graph({}, network, {}, pve, {}, datetime.now(timezone.utc))
+    node = next(node for node in graph["nodes"] if node.get("vmid") == 108)
+    assert node["reachability"]["source"] == "UI_VPN"
+    assert node["properties"]["IP проверки по ARP"] == ip
+    assert pings == [ip]
+    route["gateway"] = "192.0.2.1"
+    assert collect() == {}
+    assert pings == [ip]
+    del route["gateway"]
+    neighbor["lladdr"] = "02:00:00:00:00:05"
+    assert collect() == {}
+    assert pings == [ip, ip]
+    network["arp"].append({**arp, "mac": neighbor["lladdr"]})
+    assert collect() == {}
+    network["arp"].pop()
+    config["net0"] += ",link_down=1"
+    assert collect() == {}
+    assert pings == [ip, ip]
+
+
 def test_inventory_binding_needs_matching_guest_mac():
     from app.infrastructure_collect import build_graph
 
