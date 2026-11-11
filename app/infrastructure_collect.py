@@ -889,6 +889,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 status, label = "unknown", "Шаблон"
             source(item, "Proxmox", status, pve_at, label)
             item.pop("reachability", None)
+            config = pve.get("configs", {}).get(str(vmid), {})
             interfaces = guest_interfaces.get(str(vmid), {})
             if observation_is_fresh(pve_at, now):
                 for service, spec in guest_services.get(str(vmid), []):
@@ -913,6 +914,11 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                     if verified:
                         address, observation = max(verified, key=lambda pair: datetime.fromisoformat(pair[1]["checkedAt"]))
                         item["properties"]["IP проверки по ARP"] = address
+                configured_nics = {name for name in config if re.fullmatch(r"net[0-9]+", name)}
+                if (guest.get("type") == "qemu" and config.get("directNetworkOnly") is True
+                        and interfaces and configured_nics == interfaces.keys()
+                        and all(disabled for _, _, disabled, _ in interfaces.values())):
+                    observation = _observation("unreachable", "Proxmox", "Все адаптеры ВМ отключены", pve_at)
                 if observation:
                     item["reachability"] = observation
             item["properties"].update({"VMID": str(vmid), "Узел Proxmox": host, "Состояние ВМ": label})
@@ -1080,7 +1086,12 @@ def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: set[s
             config = get(f"nodes/{node}/{guest['type']}/{int(key)}/config?current=1")
         except (URLError, TimeoutError):
             return key, {}
-        return key, {name: value for name, value in config.items() if re.fullmatch(r"net[0-9]+", name)}
+        network = {name: value for name, value in config.items() if re.fullmatch(r"net[0-9]+", name)}
+        if guest["type"] == "qemu":
+            network["directNetworkOnly"] = not any(
+                re.fullmatch(r"args|hookscript|(?:hostpci|usb)[0-9]+", name) for name in config
+            )
+        return key, network
 
     def read_interface(node, interface):
         try:

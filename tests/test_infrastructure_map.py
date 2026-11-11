@@ -666,6 +666,46 @@ def test_guest_placement_includes_current_bridge_and_configured_members(tmp_path
     assert not stale_link["portEvidence"][0]["confirmed"]
 
 
+def test_running_vm_is_unreachable_when_every_configured_adapter_is_disconnected(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    mac = "02:00:00:00:00:03"
+    disconnected = f"virtio={mac},bridge=vmbr1,link_down=1"
+    pve = {
+        "at": now.isoformat(), "cluster": [], "nodes": [{"node": "pve1", "status": "online"}],
+        "guests": [{"vmid": 122, "node": "pve1", "type": "qemu", "status": "running"}],
+        "configs": {"122": {"net0": disconnected, "directNetworkOnly": True}},
+    }
+    network = {"hosts": [{"mac": mac, "availability": {
+        "checked_at": now.isoformat(), "run_status": "success", "state": "online",
+        "reason": "active_probe", "active_method": "icmp",
+    }}]}
+    path = tmp_path / "graph.json"
+
+    def load(at=now):
+        graph = build_graph({}, network, {}, pve, {}, at)
+        path.write_text(json.dumps(graph), encoding="utf-8")
+        return next(node for node in load_infrastructure_map(path, at)["nodes"] if node["vmid"] == 122)
+
+    node = load()
+    assert node["properties"]["Состояние ВМ"] == "Запущена"
+    assert node["mapStatus"] == "critical"
+    assert node["reachability"]["source"] == "Proxmox"
+    assert node["reachability"]["method"] == "Все адаптеры ВМ отключены"
+    config = pve["configs"]["122"]
+    config["net1"] = "virtio=02:00:00:00:00:04"
+    assert load()["mapStatus"] == "unknown"
+    del config["net1"]
+    del config["directNetworkOnly"]
+    assert load()["mapStatus"] == "unknown"
+    config["directNetworkOnly"] = True
+    assert load(now + timedelta(hours=1))["mapStatus"] == "unknown"
+    config.clear()
+    assert load()["mapStatus"] == "unknown"
+
+
 def test_vm_switch_observation_requires_current_mac_and_declared_host_port(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map
