@@ -2193,15 +2193,20 @@ def test_sip_options_validates_transaction_and_treats_silence_as_unknown(monkeyp
         def sendall(self, request):
             assert request.startswith(b"OPTIONS sip:192.0.2.13:5060 SIP/2.0")
             self.requests.append(request)
-            self.headers = [line for line in request.split(b"\r\n") if line.startswith((b"Call-ID:", b"CSeq:"))]
+            self.headers = [line for line in request.split(b"\r\n") if line.startswith((b"Via:", b"Call-ID:", b"CSeq:"))]
+            self.sent_final = False
 
         def recv(self, size):
             if len(self.requests) <= self.drop_count:
                 raise TimeoutError
             if self.code == b"refused":
                 raise ConnectionRefusedError
-            if self.code is None:
+            if self.before_final:
+                code, headers = self.before_final.pop(0)
+                return b"\r\n".join([b"SIP/2.0 " + code, *headers(self.headers), b"", b""])
+            if self.code is None or self.sent_final:
                 raise TimeoutError
+            self.sent_final = True
             headers = self.headers if self.match else [b"Call-ID: unrelated", b"CSeq: 1 OPTIONS"]
             return b"\r\n".join([b"SIP/2.0 " + self.code, *headers, b"", b""])
 
@@ -2214,6 +2219,7 @@ def test_sip_options_validates_transaction_and_treats_silence_as_unknown(monkeyp
 
     wire = Datagram()
     wire.drop_count = 0
+    wire.before_final = []
     monkeypatch.setattr(probes.socket, "socket", lambda *args: wire)
     monkeypatch.setattr(probes.socket, "MSG_ERRQUEUE", 8192, raising=False)
     spec = {"type": "sip_options", "ip": "192.0.2.13", "port": 5060}
@@ -2235,7 +2241,7 @@ def test_sip_options_validates_transaction_and_treats_silence_as_unknown(monkeyp
         public = _public_node(node, datetime.now(timezone.utc))["serviceChecks"][-1]
         assert (public["source"], public["reason"], public.get("responseCode")) == ("UI_VPN", reason, response_code)
         assert public.get("errorSource") == offender
-        assert public["attempts"] == len(wire.requests) == (3 if code is None else 1)
+        assert public["attempts"] == len(wire.requests) == (3 if code is None or not match else 1)
     node["serviceChecks"][-1].update(reason="arbitrary output", responseCode=900, attempts=4)
     public = _public_node(node, datetime.now(timezone.utc))["serviceChecks"][-1]
     assert "reason" not in public and "responseCode" not in public and "attempts" not in public
@@ -2245,6 +2251,23 @@ def test_sip_options_validates_transaction_and_treats_silence_as_unknown(monkeyp
     result = _public_node(node, datetime.now(timezone.utc))["serviceChecks"][-1]
     assert result["state"] == "reachable" and result["attempts"] == 2
     assert len(wire.requests) == 2 and wire.requests[0] == wire.requests[1]
+
+    wire.requests, wire.drop_count = [], 0
+    wire.before_final = [
+        (b"200 OK", lambda headers: [b"v: SIP/2.0/UDP 192.0.2.14;branch=z9hG4bKunrelated", *headers[1:]]),
+        (b"100 Trying", lambda headers: headers),
+    ]
+    wire.code = b"503 Service Unavailable"
+    probes.apply_service_probes([node], {"pbx": [spec]})
+    result = _public_node(node, datetime.now(timezone.utc))["serviceChecks"][-1]
+    assert (result["state"], result["responseCode"], result["attempts"]) == ("unreachable", 503, 1)
+
+    wire.requests = []
+    wire.before_final = [(b"100 Trying", lambda headers: headers)]
+    wire.code = None
+    probes.apply_service_probes([node], {"pbx": [spec]})
+    result = _public_node(node, datetime.now(timezone.utc))["serviceChecks"][-1]
+    assert (result["state"], result["responseCode"], result["attempts"]) == ("unknown", 100, 3)
 
 
 def test_infrastructure_map_serves_only_public_snapshot(tmp_path, monkeypatch):

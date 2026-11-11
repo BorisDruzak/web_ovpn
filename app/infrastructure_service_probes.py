@@ -319,6 +319,27 @@ def _sip_udp_failure(connection: socket.socket, option: tuple[int, int] | None,
     return fallback
 
 
+def _sip_response_code(response: bytes, transaction: str) -> int | None:
+    header, separator, _ = response.partition(b"\r\n\r\n")
+    if not separator:
+        return None
+    status_line, *lines = header.split(b"\r\n")
+    status = re.fullmatch(rb"SIP/2\.0 ([1-6][0-9]{2})(?: .*)?", status_line)
+    headers = {}
+    for line in lines:
+        name, separator, value = line.partition(b":")
+        if separator:
+            name = name.strip().lower()
+            headers.setdefault({b"v": b"via", b"i": b"call-id"}.get(name, name), value.strip())
+    via = headers.get(b"via", b"").split(b",", 1)[0]
+    branch = re.search(rb"(?:^|;)\s*(?i:branch)\s*=\s*([^;\s]+)", via)
+    if (status and branch and branch[1] == f"z9hG4bK{transaction}".encode("ascii")
+            and headers.get(b"call-id") == transaction.encode("ascii")
+            and headers.get(b"cseq", b"").split() == [b"1", b"OPTIONS"]):
+        return int(status[1])
+    return None
+
+
 def _sip_options(spec: dict) -> dict:
     port = spec.get("port")
     try:
@@ -347,35 +368,33 @@ def _sip_options(spec: dict) -> dict:
                 "CSeq: 1 OPTIONS", "Content-Length: 0", "", "",
             ]
             payload = "\r\n".join(request).encode("ascii")
+            incomplete = {"state": "unknown", "reason": "timeout"}
             for attempts, wait in enumerate(SIP_OPTIONS_WAIT, 1):
+                deadline = monotonic() + wait
                 connection.settimeout(wait)
                 try:
                     connection.sendall(payload)
-                    response = connection.recv(8192)
+                    while (remaining := deadline - monotonic()) > 0:
+                        connection.settimeout(remaining)
+                        code = _sip_response_code(connection.recv(8192), transaction)
+                        if code is None:
+                            if "responseCode" not in incomplete:
+                                incomplete["reason"] = "unexpected_response"
+                            continue
+                        if code < 200:
+                            incomplete.update(reason="sip_response", responseCode=code)
+                            continue
+                        state = "reachable" if code < 300 else "unreachable" if code in {500, 502, 503, 504} else "unknown"
+                        return {"state": state, "reason": "sip_response", "responseCode": code, "attempts": attempts}
                 except TimeoutError:
                     continue
                 except OSError as exc:
                     return {**_sip_udp_failure(connection, error_option, family, ip, port, exc), "attempts": attempts}
-                break
-            else:
-                return {"state": "unknown", "reason": "timeout", "attempts": attempts}
+            return {**incomplete, "attempts": attempts}
     except TimeoutError:
         return {"state": "unknown", "reason": "timeout"}
     except OSError:
         return {"state": "unknown", "reason": "transport_error"}
-    head = response.partition(b"\r\n\r\n")[0].split(b"\r\n")
-    status = re.fullmatch(rb"SIP/2\.0 ([1-6][0-9]{2})(?: .*)?", head[0])
-    headers = {}
-    for line in head[1:]:
-        name, separator, value = line.partition(b":")
-        if separator:
-            headers[name.strip().lower()] = value.strip()
-    if (not status or headers.get(b"call-id", headers.get(b"i")) != transaction.encode()
-            or headers.get(b"cseq", b"").split() != [b"1", b"OPTIONS"]):
-        return {"state": "unknown", "reason": "unexpected_response", "attempts": attempts}
-    code = int(status[1])
-    state = "reachable" if 200 <= code < 300 else "unreachable" if code in {500, 502, 503, 504} else "unknown"
-    return {"state": state, "reason": "sip_response", "responseCode": code, "attempts": attempts}
 
 
 def probe_icmp(ip: str, *, source_ip: str | None = None) -> bool:
