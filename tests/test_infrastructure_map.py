@@ -1962,9 +1962,12 @@ def test_sip_options_validates_transaction_and_treats_silence_as_unknown(monkeyp
 
         def sendall(self, request):
             assert request.startswith(b"OPTIONS sip:192.0.2.13:5060 SIP/2.0")
+            self.requests.append(request)
             self.headers = [line for line in request.split(b"\r\n") if line.startswith((b"Call-ID:", b"CSeq:"))]
 
         def recv(self, size):
+            if len(self.requests) <= self.drop_count:
+                raise TimeoutError
             if self.code == b"refused":
                 raise ConnectionRefusedError
             if self.code is None:
@@ -1980,6 +1983,7 @@ def test_sip_options_validates_transaction_and_treats_silence_as_unknown(monkeyp
             return b"", [(*self.option, extended + address)], 0, ("192.0.2.13", 5060)
 
     wire = Datagram()
+    wire.drop_count = 0
     monkeypatch.setattr(probes.socket, "socket", lambda *args: wire)
     monkeypatch.setattr(probes.socket, "MSG_ERRQUEUE", 8192, raising=False)
     spec = {"type": "sip_options", "ip": "192.0.2.13", "port": 5060}
@@ -1994,15 +1998,23 @@ def test_sip_options_validates_transaction_and_treats_silence_as_unknown(monkeyp
         (b"refused", True, "192.0.2.1", "unknown", "icmp_rejected", None),
     ]:
         wire.code, wire.match, wire.offender = code, match, offender
+        wire.requests = []
         probes.apply_service_probes([node], {"pbx": [spec]})
         check = node["serviceChecks"][-1]
         assert node["reachability"]["state"] == check["state"] == state
         public = _public_node(node, datetime.now(timezone.utc))["serviceChecks"][-1]
         assert (public["source"], public["reason"], public.get("responseCode")) == ("UI_VPN", reason, response_code)
         assert public.get("errorSource") == offender
-    node["serviceChecks"][-1].update(reason="arbitrary output", responseCode=900)
+        assert public["attempts"] == len(wire.requests) == (3 if code is None else 1)
+    node["serviceChecks"][-1].update(reason="arbitrary output", responseCode=900, attempts=4)
     public = _public_node(node, datetime.now(timezone.utc))["serviceChecks"][-1]
-    assert "reason" not in public and "responseCode" not in public
+    assert "reason" not in public and "responseCode" not in public and "attempts" not in public
+    wire.requests, wire.drop_count = [], 1
+    wire.code, wire.match, wire.offender = b"200 OK", True, None
+    probes.apply_service_probes([node], {"pbx": [spec]})
+    result = _public_node(node, datetime.now(timezone.utc))["serviceChecks"][-1]
+    assert result["state"] == "reachable" and result["attempts"] == 2
+    assert len(wire.requests) == 2 and wire.requests[0] == wire.requests[1]
 
 
 def test_infrastructure_map_serves_only_public_snapshot(tmp_path, monkeypatch):

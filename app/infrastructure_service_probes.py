@@ -24,6 +24,7 @@ import dns.rcode
 
 TIMEOUT = 3
 HTTP_BODY_LIMIT = 32 * 1024
+SIP_OPTIONS_WAIT = (0.5, 1.0, 1.5)
 
 
 def _http_path(path: object) -> str:
@@ -316,13 +317,19 @@ def _sip_options(spec: dict) -> dict:
                 f"From: <sip:monitor@{local}>;tag={transaction}", f"Call-ID: {transaction}",
                 "CSeq: 1 OPTIONS", "Content-Length: 0", "", "",
             ]
-            try:
-                connection.sendall("\r\n".join(request).encode("ascii"))
-                response = connection.recv(8192)
-            except TimeoutError:
-                raise
-            except OSError as exc:
-                return _sip_udp_failure(connection, error_option, family, ip, port, exc)
+            payload = "\r\n".join(request).encode("ascii")
+            for attempts, wait in enumerate(SIP_OPTIONS_WAIT, 1):
+                connection.settimeout(wait)
+                try:
+                    connection.sendall(payload)
+                    response = connection.recv(8192)
+                except TimeoutError:
+                    continue
+                except OSError as exc:
+                    return {**_sip_udp_failure(connection, error_option, family, ip, port, exc), "attempts": attempts}
+                break
+            else:
+                return {"state": "unknown", "reason": "timeout", "attempts": attempts}
     except TimeoutError:
         return {"state": "unknown", "reason": "timeout"}
     except OSError:
@@ -336,10 +343,10 @@ def _sip_options(spec: dict) -> dict:
             headers[name.strip().lower()] = value.strip()
     if (not status or headers.get(b"call-id", headers.get(b"i")) != transaction.encode()
             or headers.get(b"cseq", b"").split() != [b"1", b"OPTIONS"]):
-        return {"state": "unknown", "reason": "unexpected_response"}
+        return {"state": "unknown", "reason": "unexpected_response", "attempts": attempts}
     code = int(status[1])
     state = "reachable" if 200 <= code < 300 else "unreachable" if code in {500, 502, 503, 504} else "unknown"
-    return {"state": state, "reason": "sip_response", "responseCode": code}
+    return {"state": state, "reason": "sip_response", "responseCode": code, "attempts": attempts}
 
 
 def probe_icmp(ip: str, *, source_ip: str | None = None) -> bool:

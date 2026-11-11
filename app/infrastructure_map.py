@@ -211,6 +211,9 @@ def _public_service_check(check: dict, now: datetime) -> dict:
     code = check.get("responseCode")
     if reason == "sip_response" and type(code) is int and 100 <= code <= 699:
         result["responseCode"] = code
+    attempts = check.get("attempts")
+    if result["method"] == "SIP OPTIONS (UDP)" and type(attempts) is int and 1 <= attempts <= 3:
+        result["attempts"] = attempts
     return result
 
 

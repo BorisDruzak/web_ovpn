@@ -573,7 +573,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         ].filter(Boolean).map(value => ' · ' + value).join('');
         const source = check.source ? ' · ' + check.source : '';
         const time = check.checkedAt ? ' · ' + formatTime(check.checkedAt) : '';
-        row.append(make('strong', endpoint || 'Проверка'), make('small', result + (reason ? ' · ' + reason + errorSource : '') + gateway + management + source + time + (check.stale ? ' · устарело' : '')));
+        const attempts = check.attempts ? ' · попыток: ' + check.attempts : '';
+        row.append(make('strong', endpoint || 'Проверка'), make('small', result + (reason ? ' · ' + reason + errorSource : '') + attempts + gateway + management + source + time + (check.stale ? ' · устарело' : '')));
         list.append(row);
       }
       propertiesSection.append(make('h3', 'Проверки'), list);
