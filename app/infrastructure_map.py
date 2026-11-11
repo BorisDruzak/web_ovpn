@@ -158,6 +158,26 @@ def _physical_port_alias(row: dict) -> str:
     return f"Port{physical[1]}" if physical else ""
 
 
+def _public_port_telemetry(sample: object, port: dict, now: datetime) -> dict:
+    if port["state"] != "up" or not isinstance(sample, dict):
+        return {}
+    stamp = _time(sample.get("checkedAt"))
+    interval = _number(sample.get("intervalSeconds"))
+    if (stamp is None or stamp.isoformat() != port["checkedAt"] or interval is None
+            or not 0 < interval <= MAX_AGE.total_seconds() or now - stamp + timedelta(seconds=interval) > MAX_AGE):
+        return {}
+    metrics = {}
+    for key in ("rxBps", "txBps"):
+        value = _number(sample.get(key))
+        if value is not None and 0 <= value <= 10**15:
+            metrics[key] = value
+    for key in ("rxErrors", "txErrors", "rxDiscards", "txDiscards"):
+        value = sample.get(key)
+        if type(value) is int and 0 <= value < 2**53:
+            metrics[key] = value
+    return {"checkedAt": port["checkedAt"], "intervalSeconds": interval, **metrics} if metrics else {}
+
+
 def port_label_key(label: str) -> str:
     label = label.strip().casefold()
     gigabit = re.fullmatch(r"(?:gi|gigabitethernet)\s*(\d+/\d+/\d+)", label)
@@ -359,6 +379,10 @@ def _public_node(row: dict, now: datetime) -> dict:
     for port, alias in zip(ports, physical_aliases):
         if alias and port_label_key(alias) != port_label_key(port["name"]) and label_counts[port_label_key(alias)] == 1:
             port["aliases"] = [alias]
+    for port, raw_port in zip(ports, port_rows):
+        telemetry = _public_port_telemetry(raw_port.get("telemetry"), port, now)
+        if telemetry:
+            port["telemetry"] = telemetry
     observer = next((source for source in sources if source["name"] == "Server Observer"), None)
     aliases = row.get("aliases")
     resources = {}

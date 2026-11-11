@@ -1604,6 +1604,33 @@ def test_vm_switch_observation_requires_current_mac_and_declared_host_port(tmp_p
     assert physical_ports() == []
 
 
+def test_switch_port_telemetry_requires_matching_current_collection(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    context = {"devices": [{"id": "sw", "name": "Switch", "kind": "switch"}]}
+    sample = {"source": "core", "port_key": "physical:7", "collector_run_id": 11, "observed_at": at,
+              "sample_interval_seconds": 300, "rx_bps": 250000, "tx_bps": 0, "in_errors_delta": 2}
+    network = {"sources": [{"id": 1, "name": "core", "driver": "snmp_switch",
+                            "driver_options": {"intent_stable_id": "sw"}}],
+               "ports": [{"source": "core", "port_key": "physical:7", "name": "Port7",
+                          "collector_run_id": 11, "oper_status": "up", "last_seen_at": at}],
+               "port_telemetry": [sample]}
+    path = tmp_path / "map.json"
+
+    def read(when=now):
+        path.write_text(json.dumps(build_graph(context, network, {}, {}, {}, now)), encoding="utf-8")
+        return load_infrastructure_map(path, when)["nodes"][0]["ports"][0]
+
+    assert read()["telemetry"] == {"checkedAt": at, "intervalSeconds": 300,
+                                    "rxBps": 250000, "txBps": 0, "rxErrors": 2}
+    assert "telemetry" not in read(now + timedelta(minutes=21))
+    sample["collector_run_id"] = 10
+    assert "telemetry" not in read()
+
+
 def test_collection_reads_source_registry_without_syncing_config(monkeypatch):
     from app import infrastructure_collect as collector
 

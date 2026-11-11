@@ -876,6 +876,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
     for port in network.get("ports", []):
         port_groups.setdefault(port["source"], []).append(port)
         port_names[(port["source"], port.get("port_key"))] = port.get("name") or port.get("port_key")
+    port_telemetry = {(row["source"], row["port_key"], row["collector_run_id"], row["observed_at"]): row
+                      for row in network.get("port_telemetry", [])}
 
     def port_label(source_name, key):
         return port_names.get((source_name, key), key)
@@ -916,6 +918,16 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                  "speedBps": port.get("speed_bps"), "checkedAt": port.get("last_seen_at")}
                 for port in ports if port.get("collector_run_id") == latest_run
             ]
+            for port in item["ports"]:
+                sample = port_telemetry.get((name, port["key"], latest_run, port["checkedAt"]))
+                if not sample or port["state"] != "up":
+                    continue
+                port["telemetry"] = {
+                    "checkedAt": sample["observed_at"], "intervalSeconds": sample["sample_interval_seconds"],
+                    "rxBps": sample.get("rx_bps"), "txBps": sample.get("tx_bps"),
+                    "rxErrors": sample.get("in_errors_delta"), "txErrors": sample.get("out_errors_delta"),
+                    "rxDiscards": sample.get("in_discards_delta"), "txDiscards": sample.get("out_discards_delta"),
+                }
         if "fdb_entries" in status:
             item["properties"]["Записи MAC-таблицы"] = str(status["fdb_entries"])
     features = {item["id"]: item for item in context.get("features", []) if item.get("kind") == "policy_based_ipsec"}
@@ -1628,6 +1640,16 @@ def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | N
     }
     with closing(connect_read_only(DEFAULT_DB_URL)) as connection:
         data = {"sources": list_sources(connection), "attachments": query_confirmed_attachment_ports(connection)}
+        data["port_telemetry"] = [dict(row) for row in connection.execute(
+            """
+            SELECT s.name AS source, t.port_key, t.collector_run_id, t.observed_at,
+                   t.sample_interval_seconds, t.rx_bps, t.tx_bps, t.in_errors_delta,
+                   t.out_errors_delta, t.in_discards_delta, t.out_discards_delta
+            FROM current_switch_port_telemetry AS t
+            JOIN network_sources AS s ON s.id = t.source_id
+            WHERE s.enabled = 1 AND s.driver = 'snmp_switch' AND t.telemetry_state = 'ok'
+            """
+        )]
         data["switch_management_fdb"] = _switch_management_fdb(connection, data["sources"])
         data["router_neighbors"] = [dict(row) for row in connection.execute(
             """
