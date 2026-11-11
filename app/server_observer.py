@@ -150,12 +150,14 @@ _ROLE_PROBES = {
     "directum": _powershell_probe(
         "$running={param([string]$n)"
         "$s=Get-Service -Name $n -ErrorAction SilentlyContinue;[bool]($s -and $s.Status -eq 'Running')};"
+        "$directum=Get-Service -Name 'DirectumRXServiceRunner' -ErrorAction SilentlyContinue;"
+        "if(-not $directum){$directum=Get-Service -Name 'DirectumRX' -ErrorAction SilentlyContinue};"
         "$c=Get-CimInstance Win32_LogicalDisk -Filter 'DeviceID=\"C:\"' -ErrorAction Stop;"
         "$logs=Get-ChildItem -LiteralPath 'C:\\rxdata\\logs' -File -Recurse -ErrorAction SilentlyContinue|"
         "Measure-Object -Property Length -Sum;"
         "[pscustomobject]@{free_percent=[math]::Round(100*$c.FreeSpace/$c.Size,2);"
         "log_bytes=[int64]$logs.Sum;"
-        "services=@{directumrx=[bool](& $running 'DirectumRX');"
+        "services=@{directumrx=[bool]($directum -and $directum.Status -eq 'Running');"
         "mongo=[bool](& $running 'MongoDB');rabbitmq=[bool](& $running 'RabbitMQ');"
         "redis=[bool](& $running 'Redis');iis=[bool](& $running 'W3SVC');dns=[bool](& $running 'DNS')}}|ConvertTo-Json "
         "-Compress",

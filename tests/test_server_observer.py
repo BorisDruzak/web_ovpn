@@ -361,9 +361,12 @@ def test_windows_service_probes_require_running_status():
     assert active_directory.index("$running=") < active_directory.index("[pscustomobject]@{")
     assert "Status -eq 'Running'" in directum
     assert "Status -eq 'Running'" in active_directory
+    assert "$directum=Get-Service -Name 'DirectumRXServiceRunner' -ErrorAction SilentlyContinue;" in directum
+    assert "if(-not $directum){$directum=Get-Service -Name 'DirectumRX' -ErrorAction SilentlyContinue};" in directum
+    assert "directumrx=[bool]($directum -and $directum.Status -eq 'Running')" in directum
     assert all(
         f"& $running '{service}'" in directum
-        for service in ("DirectumRX", "MongoDB", "RabbitMQ", "Redis", "W3SVC", "DNS")
+        for service in ("MongoDB", "RabbitMQ", "Redis", "W3SVC", "DNS")
     )
     assert all(
         f"& $running '{service}'" in active_directory
