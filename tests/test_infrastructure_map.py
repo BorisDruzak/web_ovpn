@@ -110,7 +110,9 @@ def test_observer_disk_measurements_publish_units_and_reported_warning_threshold
             {"name": "unrelated_metric", "status": "ok", "observed": 42, "expected": 45},
         ]},
     ]}
-    snapshot.write_text(json.dumps(build_graph({}, {}, report, {}, {}, now)), encoding="utf-8")
+    graph = build_graph({}, {}, report, {}, {}, now)
+    graph["serverObserverAt"] = stamp
+    snapshot.write_text(json.dumps(graph), encoding="utf-8")
 
     def read(when=now):
         node, = load_infrastructure_map(snapshot, when)["nodes"]
@@ -125,9 +127,11 @@ def test_observer_disk_measurements_publish_units_and_reported_warning_threshold
     assert checks["data_disk_free"]["observed"] is None
     assert "warningThreshold" not in checks["data_disk_free"]
     assert "warningThreshold" not in checks["unrelated_metric"]
-    old = read(now + timedelta(minutes=26))["c_disk_free"]
+    old = read(now + timedelta(minutes=16))["c_disk_free"]
     assert old["stale"] and old["status"] == "unknown"
     assert old["observed"] == 5.32 and old["checkedAt"] == stamp
+    public = load_infrastructure_map(snapshot, now + timedelta(minutes=16))
+    assert public["availability"] == "ready" and public["collectionIssues"] == ["server_observer_stale"]
 
 
 def test_qemu_prelaunch_reports_guest_state_backup_lock_and_configured_bridge(tmp_path):
@@ -1546,6 +1550,11 @@ def test_network_observer_failure_keeps_proxmox_and_independent_checks(tmp_path,
     monkeypatch.setattr(collector, "read_network", lambda *args, **kwargs: {"sources": []})
     assert collector.main() == 0
     assert "collectionIssues" not in load_infrastructure_map(path)
+    monkeypatch.setattr(collector, "build_server_health_view", lambda *_: {"freshness": "missing", "targets": []})
+    assert collector.main() == 0
+    incomplete = load_infrastructure_map(path)
+    assert incomplete["collectionIssues"] == ["server_observer_unavailable"]
+    assert next(n for n in incomplete["nodes"] if n["id"] == "web")["serviceChecks"][0]["httpStatus"] == 200
 
 
 def test_proxmox_physical_port_inventory_preserves_admin_state_without_carrier(tmp_path, monkeypatch):

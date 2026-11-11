@@ -1212,6 +1212,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
     guest_services = {}
     roles = bindings.get("roles", {})
     targets = {target["role"]: target for target in server.get("targets", [])}
+    observer_current = server.get("freshness") == "current" and server.get("collector", {}).get("status") != "error"
     for role in dict.fromkeys([*targets, *roles]):
         target = targets.get(role, {})
         configured = roles.get(role, {})
@@ -1219,7 +1220,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         item = node("role:" + role, configured.get("label") or role, "Сервис",
                     nodes.get(host, {}).get("site", ""), "UI_VPN")
         source(item, "Server Observer", target.get("status", "unknown"), target.get("observed_at"))
-        item["sources"][-1]["stale"] = server.get("freshness") != "current"
+        item["sources"][-1]["stale"] = not observer_current
         target_checks = target.get("checks", [])
         valid_report = role != "acti_backup" or [check["status"] for check in target_checks
                                                   if check["name"] == "watchdog_fresh"] == ["ok"]
@@ -1231,7 +1232,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         item["requiredObserverChecks"] = configured.get("required_observer_checks", [])
         checked_at = target.get("observed_at")
         functional = FUNCTIONAL_CHECKS.get(role)
-        if functional and valid_report and server.get("freshness") == "current" and observation_is_fresh(checked_at, now):
+        if functional and valid_report and observer_current and observation_is_fresh(checked_at, now):
             check_name, method = functional
             result = next((check["status"] for check in target_checks if check["name"] == check_name), None)
             if result in {"ok", "critical", "warn"}:
@@ -1954,7 +1955,14 @@ def main() -> int:
                 context, network["sources"], bindings.get("asset_mac_probes", {}),
             )
         now = datetime.now(timezone.utc)
-        graph = build_graph(context, network, build_server_health_view(args.server_health, now), pve, bindings, now)
+        server = build_server_health_view(args.server_health, now)
+        if server.get("freshness") in ("missing", "invalid") or server.get("collector", {}).get("status") == "error":
+            collection_issues.append("server_observer_unavailable")
+        elif server.get("freshness") == "stale":
+            collection_issues.append("server_observer_stale")
+        graph = build_graph(context, network, server, pve, bindings, now)
+        if server.get("collected_at"):
+            graph["serverObserverAt"] = server["collected_at"]
         probes = {**bindings.get("service_probes", {}),
                   **{asset: [{"type": "icmp", "ip": address}]
                      for asset, address in bindings.get("asset_ip_checks", {}).items()},

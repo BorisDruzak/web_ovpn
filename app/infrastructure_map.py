@@ -10,6 +10,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .server_observer import STALE_AFTER as SERVER_OBSERVER_MAX_AGE
+
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
@@ -76,9 +78,9 @@ def _text(value: object, limit: int = 160) -> str:
     return value[:limit] if isinstance(value, str) else ""
 
 
-def observation_is_fresh(value: object, now: datetime) -> bool:
+def observation_is_fresh(value: object, now: datetime, *, max_age: timedelta = MAX_AGE) -> bool:
     stamp = _time(value)
-    return stamp is not None and timedelta(0) <= now - stamp <= MAX_AGE
+    return stamp is not None and timedelta(0) <= now - stamp <= max_age
 
 
 def _rows(value: object, limit: int) -> list[dict]:
@@ -131,10 +133,12 @@ def _public_reachability(value: object, now: datetime) -> dict:
     stamp = _time(value.get("checkedAt"))
     if stamp is None or stamp > now:
         return empty
-    stale = not observation_is_fresh(value.get("checkedAt"), now)
+    source = _text(value.get("source"), 48)
+    max_age = SERVER_OBSERVER_MAX_AGE if source == "Server Observer" else MAX_AGE
+    stale = now - stamp > max_age
     return {
         "state": "unknown" if stale else value["state"],
-        "source": _text(value.get("source"), 48), "method": _text(value.get("method"), 32),
+        "source": source, "method": _text(value.get("method"), 32),
         "checkedAt": stamp.isoformat(), "stale": stale,
     }
 
@@ -455,13 +459,15 @@ def _public_node(row: dict, now: datetime) -> dict:
     sources = []
     for item in _rows(row.get("sources"), 12):
         stamp = _time(item.get("at"))
+        name = _text(item.get("name"), 48)
+        max_age = SERVER_OBSERVER_MAX_AGE if name == "Server Observer" else MAX_AGE
         sources.append({
-            "name": _text(item.get("name"), 48),
+            "name": name,
             "status": _state(item.get("status")),
             "label": _text(item.get("label"), 64),
             "raw": _text(item.get("raw"), 32),
             "at": stamp.isoformat() if stamp else None,
-            "stale": item.get("stale") is True or not observation_is_fresh(item.get("at"), now),
+            "stale": item.get("stale") is True or not observation_is_fresh(item.get("at"), now, max_age=max_age),
         })
     fresh = [source for source in sources if not source["stale"]]
     supplied = row.get("properties")
@@ -784,7 +790,12 @@ def load_infrastructure_map(path: Path, now: datetime | None = None, *, db: Sess
         return list(dict.fromkeys(value for value in values[:600] if isinstance(value, str) and value in nodes))
 
     raw_issues = raw.get("collectionIssues")
-    issues = [name for name in ("proxmox", "network_observer") if isinstance(raw_issues, list) and name in raw_issues]
+    known_issues = ("proxmox", "network_observer", "server_observer_unavailable", "server_observer_stale")
+    issues = [name for name in known_issues if isinstance(raw_issues, list) and name in raw_issues]
+    observer_at = _time(raw.get("serverObserverAt"))
+    if (observer_at and now - observer_at > SERVER_OBSERVER_MAX_AGE
+            and not {"server_observer_stale", "server_observer_unavailable"}.intersection(issues)):
+        issues.append("server_observer_stale")
     return {
         **empty, "availability": "stale" if now - stamp > MAX_AGE else "ready",
         "snapshotAt": stamp.isoformat(), "nodes": list(nodes.values()), "links": links,

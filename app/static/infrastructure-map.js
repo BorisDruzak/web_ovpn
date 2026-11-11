@@ -51,6 +51,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   const collectionMessages = {
     proxmox: 'Опрос Proxmox завершился ошибкой. Текущее состояние и размещение ВМ не подтверждены.',
     network_observer: 'Опрос Network Observer завершился ошибкой. Свежие данные SNMP, LLDP и MAC-таблиц недоступны.',
+    server_observer_unavailable: 'Отчёт Server Observer недоступен. Внутренние проверки серверов не подтверждены.',
+    server_observer_stale: 'Отчёт Server Observer устарел. Внутренние проверки серверов не подтверждены.',
   };
   function showAvailability(message = [availabilityLabels[data.availability],
     ...(data.collectionIssues ?? []).map(issue => collectionMessages[issue])].filter(Boolean).join(' ')) {
