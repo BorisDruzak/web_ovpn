@@ -411,6 +411,36 @@ def test_http_probe_matches_json_health_fields_without_fixing_the_version():
     assert results == ["reachable", "unknown", "unreachable", "unknown", "unknown", "unreachable"]
 
 
+def test_dns_probe_requires_an_answer_to_the_actual_query(monkeypatch):
+    import dns.message
+    import dns.rrset
+
+    from app import infrastructure_service_probes as probes
+
+    spec = {"type": "dns", "ip": "192.0.2.53", "port": 53, "name": "service.example.", "record": "A"}
+
+    def check(*answers):
+        def reply(query, *args, **kwargs):
+            response = dns.message.make_response(query)
+            response.answer.extend(dns.rrset.from_text(owner, 60, "IN", kind, *records)
+                                   for owner, kind, records in answers)
+            return dns.message.from_wire(response.to_wire()), False
+
+        monkeypatch.setattr(probes.dns.query, "udp_with_fallback", reply)
+        return probes._probe(spec)
+
+    assert check(("unrelated.example.", "A", ["192.0.2.10"])) == "unreachable"
+    alias = ("service.example.", "CNAME", ["host.example."])
+    assert check(alias, ("host.example.", "A", ["192.0.2.11"])) == "reachable"
+
+    spec["expected_addresses"] = ["192.0.2.10", "192.0.2.11"]
+    assert check(alias, ("host.example.", "A", ["192.0.2.11"])) == "unreachable"
+    assert check(alias, ("host.example.", "A", ["192.0.2.11", "192.0.2.10"])) == "reachable"
+    assert check(alias, ("host.example.", "A", ["192.0.2.11", "192.0.2.10", "192.0.2.12"])) == "unreachable"
+    spec["expected_addresses"] = ["2001:db8::10"]
+    assert check(alias, ("host.example.", "A", ["192.0.2.10"])) == "unknown"
+
+
 def test_https_probe_checks_dns_name_against_ca_while_connecting_to_verified_ip(monkeypatch, tmp_path):
     from contextlib import nullcontext
     from types import SimpleNamespace

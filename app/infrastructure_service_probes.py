@@ -21,7 +21,6 @@ import dns.exception
 import dns.message
 import dns.query
 import dns.rcode
-import dns.rdatatype
 
 TIMEOUT = 3
 HTTP_BODY_LIMIT = 32 * 1024
@@ -150,6 +149,15 @@ def _dns(ip: str, port: int, spec: dict) -> str:
     name = spec.get("name")
     if record not in {"A", "AAAA", "SOA"} or not isinstance(name, str) or not name.endswith("."):
         raise ValueError("invalid DNS probe contract")
+    expected = spec.get("expected_addresses")
+    expected_ips = set()
+    if expected is not None:
+        if (record == "SOA" or not isinstance(expected, list) or not 1 <= len(expected) <= 16
+                or not all(isinstance(value, str) for value in expected)):
+            raise ValueError("invalid DNS address contract")
+        expected_ips = {ipaddress.ip_address(value) for value in expected}
+        if any(value.version != (4 if record == "A" else 6) for value in expected_ips):
+            raise ValueError("DNS address family must match the record type")
     query = dns.message.make_query(name, record)
     response, _ = dns.query.udp_with_fallback(query, ip, timeout=TIMEOUT, port=port)
     rcode = response.rcode()
@@ -157,8 +165,10 @@ def _dns(ip: str, port: int, spec: dict) -> str:
         return "unreachable"
     if rcode != dns.rcode.NOERROR:
         return "unknown"
-    wanted = dns.rdatatype.from_text(record)
-    return "reachable" if any(rrset.rdtype == wanted for rrset in response.answer) else "unreachable"
+    answer = response.resolve_chaining().answer
+    if not answer or (expected_ips and {ipaddress.ip_address(value.address) for value in answer} != expected_ips):
+        return "unreachable"
+    return "reachable"
 
 
 def _ldap(ip: str, port: int, spec: dict) -> str:
@@ -413,7 +423,7 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 "source": "UI_VPN", "method": method,
                 "port": valid_port,
                 "path": spec.get("path") if protocol in {"http", "https", "zabbix_api"} else None,
-                "target": spec.get("ip") if protocol in {"icmp", "sip_options", "zabbix_api", "postgresql"}
+                "target": spec.get("ip") if protocol in {"icmp", "sip_options", "zabbix_api", "postgresql", "dns"}
                 or "probeTargetIP" in node else None,
                 "checkedAt": datetime.now(timezone.utc).isoformat(),
             }
