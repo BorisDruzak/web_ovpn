@@ -740,6 +740,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       const list = make('ul',null,'map-detail-list');
       const observations = make('ul',null,'map-detail-list');
       const portLabels = {up: 'линк поднят', down: 'линк опущен', disabled: 'порт отключён'};
+      const comparisonLabels = {
+        both_up: 'Оба линка подняты', one_down: 'Один линк опущен или отключён',
+        both_down: 'Оба линка опущены или отключены', speed_mismatch: 'Скорости линков различаются',
+      };
       for (const edge of links.slice().sort((a,b) => Number(b.confirmed)-Number(a.confirmed))) {
         const unconfirmedPath = !selectedPort && !edge.confirmed && pathKinds.has(edge.kind);
         const peer = byId.get(edge.a === id ? edge.b : edge.a);
@@ -750,6 +754,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const status = edge.confirmed || unconfirmedPath ? edge.source : 'Связь не подтверждена · ' + edge.source;
         li.append(go,make('small',edge.kind+' · '+status+(edge.details ? ' · '+edge.details : '')));
         const renderedPorts = new Set();
+        const comparedPorts = new Set();
         for (const evidence of edge.portEvidence ?? []) {
           const [local, remote] = edge.a === id ? [evidence.a, evidence.b] : [evidence.b, evidence.a];
           const ports = (local || 'порт неизвестен') + ' ↔ ' + (remote || 'порт неизвестен');
@@ -765,6 +770,14 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
             const device = byId.get(edge[side]).name;
             const state = [portLabels[port.state], formatPortSpeed(port.speedBps), 'SNMP', formatTime(port.checkedAt)];
             li.append(make('small', `${device} ${port.name}: ${state.filter(Boolean).join(' · ')}`));
+          }
+          if (evidence.portComparison) {
+            const pair = JSON.stringify(['a', 'b'].map(side => evidence.portStates[side].name));
+            if (!comparedPorts.has(pair)) {
+              comparedPorts.add(pair);
+              const {state, checkedAt} = evidence.portComparison;
+              li.append(make('small', comparisonLabels[state] + ' · SNMP · ' + formatTime(checkedAt)));
+            }
           }
           if (evidence.confirmed && evidence.virtual) {
             const network = evidence.virtual;

@@ -584,6 +584,21 @@ def _attach_storage_assignments(nodes: dict, links: list[dict], cluster_id: str)
         }
 
 
+def _compare_link_ports(ports: dict) -> dict:
+    if set(ports) != {"a", "b"}:
+        return {}
+    a, b = ports["a"], ports["b"]
+    first, last = sorted((_time(a["checkedAt"]), _time(b["checkedAt"])))
+    if last - first > timedelta(minutes=2):
+        return {}
+    up_count = sum(port["state"] == "up" for port in (a, b))
+    if up_count == 2:
+        state = "speed_mismatch" if a["speedBps"] and b["speedBps"] and a["speedBps"] != b["speedBps"] else "both_up"
+    else:
+        state = "one_down" if up_count else "both_down"
+    return {"state": state, "checkedAt": first.isoformat()}
+
+
 def load_infrastructure_map(path: Path, now: datetime | None = None, *, db: Session | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
     empty = {
@@ -678,6 +693,12 @@ def load_infrastructure_map(path: Path, now: datetime | None = None, *, db: Sess
                                   "netctl FDB + Proxmox", "Proxmox", "SNMP LACP + ARP", "MikroTik · ARP",
                                   "MikroTik · ARP + FDB", RECIPROCAL_MAC_SOURCE, SHARED_LLDP_SOURCE} and row.get("observedAt"):
                 confirmed = confirmed and observation_is_fresh(row["observedAt"], now)
+            if confirmed and edge["kind"] == "Сетевое соединение":
+                for report in evidence:
+                    if report["confirmed"]:
+                        comparison = _compare_link_ports(report.get("portStates", {}))
+                        if comparison:
+                            report["portComparison"] = comparison
             links.append({**edge, "confirmed": confirmed, "portEvidence": evidence})
     if db is not None and endpoint_keys and now - stamp <= MAX_AGE:
         _attach_endpoint_presence(db, endpoint_keys, nodes, now)

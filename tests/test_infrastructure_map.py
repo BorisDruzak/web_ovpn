@@ -909,6 +909,38 @@ def test_map_reports_port_state_for_declared_pair_without_confirming_cable(tmp_p
     assert set(load()) == {"b"}
 
 
+def test_direct_link_compares_contemporaneous_port_samples(tmp_path):
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    stamp = now.isoformat()
+    nodes = [{"id": key, "name": key, "kind": "Коммутатор",
+              "ports": [{"name": "ge1", "state": "up", "speedBps": 10**9, "checkedAt": stamp}]}
+             for key in ("a", "b")]
+    report = {"a": "ge1", "b": "ge1", "source": "LLDP · двустороннее", "confirmed": True, "at": stamp}
+    link = {"a": "a", "b": "b", "kind": "Сетевое соединение", "source": report["source"],
+            "confirmed": True, "observedAt": stamp, "portEvidence": [report]}
+    path = tmp_path / "map.json"
+
+    def comparison():
+        path.write_text(json.dumps({"schema": 1, "snapshotAt": stamp, "nodes": nodes, "links": [link]}),
+                        encoding="utf-8")
+        return load_infrastructure_map(path, now)["links"][0]["portEvidence"][0].get("portComparison")
+
+    assert comparison() == {"state": "both_up", "checkedAt": stamp}
+    nodes[1]["ports"][0]["speedBps"] = 100_000_000
+    assert comparison()["state"] == "speed_mismatch"
+    nodes[1]["ports"][0]["state"] = "down"
+    assert comparison()["state"] == "one_down"
+    nodes[0]["ports"][0]["state"] = "disabled"
+    assert comparison()["state"] == "both_down"
+    nodes[1]["ports"][0]["checkedAt"] = (now - timedelta(minutes=3)).isoformat()
+    assert comparison() is None
+    nodes[1]["ports"][0]["checkedAt"] = stamp
+    link["kind"] = "Путь по MAC-таблице"
+    assert comparison() is None
+
+
 def test_slot_port_alias_requires_matching_snmp_ifindex():
     from app.infrastructure_map import _public_node, index_port_states
 
