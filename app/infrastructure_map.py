@@ -98,6 +98,24 @@ def _public_port(row: dict, now: datetime) -> dict:
     }
 
 
+def _public_service_check(check: dict, now: datetime) -> dict:
+    path = _text(check.get("path"))
+    port = check.get("port")
+    result = {
+        **_public_reachability(check, now),
+        "port": port if type(port) is int and 1 <= port <= 65535 else None,
+        "target": _network_address(check.get("target")), "via": _network_address(check.get("via")),
+        "path": path if re.fullmatch(r"/[A-Za-z0-9._/-]{0,159}", path) and not path.startswith("//") else "",
+    }
+    reason = check.get("reason")
+    if reason in ("connection_refused", "timeout", "transport_error", "unexpected_response", "sip_response"):
+        result["reason"] = reason
+    code = check.get("responseCode")
+    if reason == "sip_response" and type(code) is int and 100 <= code <= 699:
+        result["responseCode"] = code
+    return result
+
+
 def _public_node(row: dict, now: datetime) -> dict:
     sources = []
     for item in _rows(row.get("sources"), 12):
@@ -135,14 +153,7 @@ def _public_node(row: dict, now: datetime) -> dict:
         "sources": sources,
         "properties": properties,
         "ports": [port for port in ports if port["name"]],
-        "serviceChecks": [
-            {**_public_reachability(check, now),
-             "port": check["port"] if type(check.get("port")) is int and 1 <= check["port"] <= 65535 else None,
-             "target": _network_address(check.get("target")), "via": _network_address(check.get("via")),
-             "path": path if re.fullmatch(r"/[A-Za-z0-9._/-]{0,159}", path) and not path.startswith("//") else ""}
-            for check in _rows(row.get("serviceChecks"), 16)
-            for path in [_text(check.get("path"))]
-        ],
+        "serviceChecks": [_public_service_check(check, now) for check in _rows(row.get("serviceChecks"), 16)],
         "checks": [
             {"name": _text(check.get("name"), 64),
              "status": _state(check.get("status")) if observer and not observer["stale"] else "unknown",

@@ -1282,6 +1282,7 @@ def test_route_evidence_is_scoped_and_does_not_mark_service_available():
 
 def test_sip_options_validates_transaction_and_treats_silence_as_unknown(monkeypatch):
     from app import infrastructure_service_probes as probes
+    from app.infrastructure_map import _public_node
 
     class Datagram:
         def __enter__(self):
@@ -1314,11 +1315,23 @@ def test_sip_options_validates_transaction_and_treats_silence_as_unknown(monkeyp
     wire = Datagram()
     monkeypatch.setattr(probes.socket, "socket", lambda *args: wire)
     spec = {"type": "sip_options", "ip": "192.0.2.13", "port": 5060}
-    for code, match, state in [(b"200 OK", True, "reachable"), (b"503 Busy", True, "unreachable"),
-                               (b"200 OK", False, "unknown"), (None, True, "unknown"),
-                               (b"refused", True, "unreachable")]:
+    node = {"id": "pbx", "kind": "Сервис"}
+    for code, match, state, reason, response_code in [
+        (b"200 OK", True, "reachable", "sip_response", 200),
+        (b"503 Busy", True, "unreachable", "sip_response", 503),
+        (b"200 OK", False, "unknown", "unexpected_response", None),
+        (None, True, "unknown", "timeout", None),
+        (b"refused", True, "unreachable", "connection_refused", None),
+    ]:
         wire.code, wire.match = code, match
-        assert probes._probe(spec) == state
+        probes.apply_service_probes([node], {"pbx": [spec]})
+        check = node["serviceChecks"][-1]
+        assert node["reachability"]["state"] == check["state"] == state
+        public = _public_node(node, datetime.now(timezone.utc))["serviceChecks"][-1]
+        assert (public["source"], public["reason"], public.get("responseCode")) == ("UI_VPN", reason, response_code)
+    node["serviceChecks"][-1].update(reason="arbitrary output", responseCode=900)
+    public = _public_node(node, datetime.now(timezone.utc))["serviceChecks"][-1]
+    assert "reason" not in public and "responseCode" not in public
 
 
 def test_infrastructure_map_serves_only_public_snapshot(tmp_path, monkeypatch):

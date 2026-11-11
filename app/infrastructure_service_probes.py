@@ -232,7 +232,14 @@ def _openvpn_management() -> str:
     return "unknown"
 
 
-def _sip_options(ip: str, port: int) -> str:
+def _sip_options(spec: dict) -> dict:
+    port = spec.get("port")
+    try:
+        ip = str(ipaddress.ip_address(spec["ip"]))
+    except (KeyError, ValueError):
+        return {"state": "unknown"}
+    if type(port) is not int or not 1 <= port <= 65535:
+        return {"state": "unknown"}
     family = socket.AF_INET6 if ":" in ip else socket.AF_INET
     destination = f"[{ip}]" if family == socket.AF_INET6 else ip
     transaction = uuid.uuid4().hex
@@ -254,9 +261,11 @@ def _sip_options(ip: str, port: int) -> str:
             connection.sendall("\r\n".join(request).encode("ascii"))
             response = connection.recv(8192)
     except ConnectionRefusedError:
-        return "unreachable"
+        return {"state": "unreachable", "reason": "connection_refused"}
+    except TimeoutError:
+        return {"state": "unknown", "reason": "timeout"}
     except OSError:
-        return "unknown"
+        return {"state": "unknown", "reason": "transport_error"}
     head = response.partition(b"\r\n\r\n")[0].split(b"\r\n")
     status = re.fullmatch(rb"SIP/2\.0 ([1-6][0-9]{2})(?: .*)?", head[0])
     headers = {}
@@ -266,11 +275,10 @@ def _sip_options(ip: str, port: int) -> str:
             headers[name.strip().lower()] = value.strip()
     if (not status or headers.get(b"call-id", headers.get(b"i")) != transaction.encode()
             or headers.get(b"cseq", b"").split() != [b"1", b"OPTIONS"]):
-        return "unknown"
+        return {"state": "unknown", "reason": "unexpected_response"}
     code = int(status[1])
-    if 200 <= code < 300:
-        return "reachable"
-    return "unreachable" if code in {500, 502, 503, 504} else "unknown"
+    state = "reachable" if 200 <= code < 300 else "unreachable" if code in {500, 502, 503, 504} else "unknown"
+    return {"state": state, "reason": "sip_response", "responseCode": code}
 
 
 def probe_icmp(ip: str, *, source_ip: str | None = None) -> bool:
@@ -307,8 +315,6 @@ def _probe(spec: dict) -> str:
             with socket.create_connection((ip, port), timeout=TIMEOUT) as connection:
                 connection.sendall(struct.pack("!II", 8, 80877103))  # PostgreSQL SSLRequest
                 return "reachable" if connection.recv(1) in {b"S", b"N"} else "unreachable"
-        if protocol == "sip_options":
-            return _sip_options(ip, port)
     except (ssl.SSLError, http.client.HTTPException, KeyError, TypeError, ValueError):
         return "unknown"
     except (TimeoutError, ConnectionRefusedError, ConnectionResetError, dns.exception.Timeout):
@@ -344,7 +350,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 method = "ICMP адреса из инвентаря"
             port = spec.get("port")
             observation = {
-                "state": _probe(spec), "method": method,
+                **(_sip_options(spec) if protocol == "sip_options" else {"state": _probe(spec)}),
+                "source": "UI_VPN", "method": method,
                 "port": port if type(port) is int and 1 <= port <= 65535 else None,
                 "path": spec.get("path") if protocol in {"http", "https", "zabbix_api"} else None,
                 "target": spec.get("ip") if protocol in {"icmp", "sip_options", "zabbix_api", "postgresql"}
