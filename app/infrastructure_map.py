@@ -10,6 +10,7 @@ MAX_SNAPSHOT_BYTES = 1_000_000
 MAX_AGE = timedelta(minutes=25)
 STATES = ("critical", "warn", "ok", "unknown")
 NETWORK_KINDS = ("Коммутатор", "Маршрутизатор", "Точка доступа", "Сетевое устройство")
+REACHABILITY_STATES = ("reachable", "unreachable", "stopped")
 PUBLIC_PROPERTIES = {
     "Модель", "VMID", "Размещение по GitHub", "Источник сбора",
     "Порты (линк поднят / всего)", "Записи MAC-таблицы", "Соседство LLDP",
@@ -55,6 +56,21 @@ def _number(value: object) -> int | float | None:
     return value if type(value) is float and math.isfinite(value) else None
 
 
+def _public_reachability(value: object, now: datetime) -> dict:
+    empty = {"state": "unknown", "source": "", "method": "", "checkedAt": None, "stale": False}
+    if not isinstance(value, dict) or value.get("state") not in REACHABILITY_STATES:
+        return empty
+    stamp = _time(value.get("checkedAt"))
+    if stamp is None or stamp > now:
+        return empty
+    stale = not observation_is_fresh(value.get("checkedAt"), now)
+    return {
+        "state": "unknown" if stale else value["state"],
+        "source": _text(value.get("source"), 48), "method": _text(value.get("method"), 32),
+        "checkedAt": stamp.isoformat(), "stale": stale,
+    }
+
+
 def _public_node(row: dict, now: datetime) -> dict:
     sources = []
     for item in _rows(row.get("sources"), 12):
@@ -83,6 +99,7 @@ def _public_node(row: dict, now: datetime) -> dict:
         "vmid": row.get("vmid") if type(row.get("vmid")) is int else None,
         "aliases": [_text(value) for value in aliases[:12] if isinstance(value, str)] if isinstance(aliases, list) else [],
         "status": next((state for state in STATES if any(source["status"] == state for source in fresh)), "unknown"),
+        "reachability": _public_reachability(row.get("reachability"), now),
         "sources": sources,
         "properties": properties,
         "checks": [

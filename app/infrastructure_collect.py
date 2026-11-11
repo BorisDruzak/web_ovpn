@@ -9,15 +9,18 @@ import os
 import re
 import ssl
 import tempfile
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.error import URLError
 from urllib.parse import quote, urlsplit
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 
 from netctl.context import load_context_bytes, load_schema, validate_context
 
 from .infrastructure_map import MAX_SNAPSHOT_BYTES, NETWORK_KINDS, observation_is_fresh
-from .netctl_client import run_netctl
+from .netctl_client import NetctlError, run_netctl
 from .server_health_view import build_server_health_view
 
 KINDS = {
@@ -28,6 +31,44 @@ KINDS = {
 }
 HEALTH = {"success": "ok", "ok": "ok", "partial": "warn", "warn": "warn", "critical": "critical"}
 MAC = re.compile(r"(?i)(?:[0-9a-f]{2}:){5}[0-9a-f]{2}")
+HTTP_CHECKS = {"https_live", "https_healthcheck"}
+
+
+def _observation(state: str, source: str, method: str, checked_at: str) -> dict:
+    return {"state": state, "source": source, "method": method, "checkedAt": checked_at}
+
+
+def _host_observation(host: dict, now: datetime) -> dict | None:
+    value = host.get("availability") or {}
+    checked_at = value.get("checked_at")
+    if value.get("run_status") != "success" or not observation_is_fresh(checked_at, now):
+        return None
+    if value.get("state") == "online" and value.get("reason") == "active_probe":
+        method = {"icmp": "ICMP", "tcp": "TCP", "arp": "ARP"}.get(value.get("active_method"), "Активная проверка")
+        return _observation("reachable", "netctl", method, checked_at)
+    if value.get("state") == "offline" and value.get("reason") == "active_negative_no_passive_evidence":
+        return _observation("unreachable", "netctl", "Активная проверка", checked_at)
+    return None
+
+
+def _guest_macs(config: dict) -> set[str]:
+    return {match.lower() for key, value in config.items()
+            if re.fullmatch(r"net[0-9]+", key) and isinstance(value, str)
+            for match in MAC.findall(value)}
+
+
+def _guest_observation(macs: set[str], host_macs: dict, counts: Counter, now: datetime) -> dict | None:
+    observations = [
+        _host_observation(host, now)
+        for mac in macs if counts[mac] == 1 for host in host_macs.get(mac, [])
+    ]
+    reachable = [item for item in observations if item and item["state"] == "reachable"]
+    if reachable:
+        return max(reachable, key=lambda item: item["checkedAt"])
+    covered = all(counts[mac] == 1 and host_macs.get(mac) for mac in macs)
+    if covered and observations and all(observations):
+        return max(observations, key=lambda item: item["checkedAt"])
+    return None
 
 
 def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings: dict, now: datetime) -> dict:
@@ -53,12 +94,23 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         item["sources"].append({"name": name, "raw": raw, "status": HEALTH.get(raw, "unknown"),
                                 "at": at, "label": label})
 
+    host_ips = {}
+    host_macs = {}
+    for host in network.get("hosts", []):
+        if host.get("ip"):
+            host_ips[host["ip"]] = host
+        mac = str(host.get("mac") or "").lower()
+        if MAC.fullmatch(mac):
+            host_macs.setdefault(mac, []).append(host)
     addresses = {}
     names = {}
     for device in context.get("devices", []):
         key = device["id"]
         item = node(key, device["name"], KINDS.get(device["kind"], "Сервер"), device.get("site", ""))
         addresses.setdefault(str(device.get("management_ip") or ""), []).append(key)
+        observation = _host_observation(host_ips.get(device.get("management_ip"), {}), now)
+        if observation:
+            item["reachability"] = observation
         names.setdefault(device["name"].casefold(), []).append(key)
         if device.get("model"):
             item["properties"]["Модель"] = device["model"]
@@ -91,8 +143,15 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         if row.get("id") is not None:
             source_ids[row["id"]] = key
         status = switch_status.get(name, {})
-        source(item, "Network Observer", status.get("last_status") or row.get("last_status"),
-               row.get("last_collect_at") or status.get("last_success_at"))
+        raw = status.get("last_status") or row.get("last_status")
+        collected_at = row.get("last_collect_at") or status.get("last_success_at")
+        source(item, "Network Observer", raw, collected_at)
+        direct = _host_observation(host_ips.get(row.get("host"), {}), now)
+        if raw in {"ok", "success"} and row.get("enabled") and observation_is_fresh(collected_at, now):
+            method = "SNMP" if row.get("driver") == "snmp_switch" else "Опрос устройства"
+            item["reachability"] = _observation("reachable", "Network Observer", method, collected_at)
+        elif direct:
+            item["reachability"] = direct
         item["properties"]["Источник сбора"] = name
         if name in port_groups:
             ports = port_groups[name]
@@ -130,6 +189,13 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         item["checks"] = [{"name": check["name"], "status": HEALTH.get(check["status"], "unknown"),
                            "observed": check.get("observed"), "latency": check.get("latency_ms")}
                           for check in target.get("checks", [])]
+        checked_at = target.get("observed_at")
+        http = [check["status"] for check in target.get("checks", []) if check["name"] in HTTP_CHECKS]
+        if server.get("freshness") == "current" and observation_is_fresh(checked_at, now) and http:
+            if "ok" in http or all(status == "critical" for status in http):
+                item["reachability"] = _observation(
+                    "reachable" if "ok" in http else "unreachable", "Server Observer", "HTTPS", checked_at,
+                )
         edge(host, item["id"], "Цель проверки", "Настройки карты")
 
     cluster_id = ""
@@ -142,6 +208,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         hub = node(cluster_id, cluster.get("name", "Proxmox"), "Кластер Proxmox", origin="Proxmox")
         quorum = cluster.get("quorate")
         source(hub, "Proxmox", {1: "ok", 0: "critical"}.get(quorum, "unknown"), pve_at)
+        hub["reachability"] = _observation("reachable", "Proxmox", "API кластера", pve_at)
         for host in sorted(pve["nodes"], key=lambda row: row["node"]):
             key = host["node"]
             item = node(key, key, "Гипервизор", origin="Proxmox")
@@ -149,7 +216,12 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             online = host.get("status") == "online"
             label = {"online": "В сети", "offline": "Не в сети"}.get(host.get("status"), "Неизвестно")
             source(item, "Proxmox", "ok" if online else "critical" if label == "Не в сети" else "unknown", pve_at, label)
+            if host.get("status") in {"online", "offline"} and observation_is_fresh(pve_at, now):
+                state = "reachable" if online else "unreachable"
+                item.setdefault("reachability", _observation(state, "Proxmox", "Состояние узла в кластере", pve_at))
             edge(cluster_id, key, "Узел кластера", "Proxmox")
+        guest_macs = {key: _guest_macs(config) for key, config in pve.get("configs", {}).items()}
+        mac_counts = Counter(mac for macs in guest_macs.values() for mac in macs)
         for guest in sorted(pve["guests"], key=lambda row: row["vmid"]):
             vmid, host = guest["vmid"], guest["node"]
             binding = bindings.get("guests", {}).get(str(vmid), {})
@@ -172,6 +244,13 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             if guest.get("template"):
                 status, label = "unknown", "Шаблон"
             source(item, "Proxmox", status, pve_at, label)
+            item.pop("reachability", None)
+            if not guest.get("template") and guest.get("status") == "stopped":
+                item["reachability"] = _observation("stopped", "Proxmox", "Состояние ВМ", pve_at)
+            elif guest.get("status") == "running" and not guest.get("template") and observation_is_fresh(pve_at, now):
+                observation = _guest_observation(guest_macs.get(str(vmid), set()), host_macs, mac_counts, now)
+                if observation:
+                    item["reachability"] = observation
             item["properties"].update({"VMID": str(vmid), "Узел Proxmox": host, "Состояние ВМ": label})
             if guest.get("maxmem"):
                 item["properties"]["Память (выделено)"] = _gib(guest["maxmem"])
@@ -189,11 +268,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
 
 
 def _matches_mac(expected: str | None, config: dict) -> bool:
-    if not isinstance(expected, str) or not MAC.fullmatch(expected):
-        return False
-    return any(expected.lower() == match.lower() for key, value in config.items()
-               if re.fullmatch(r"net[0-9]+", key) and isinstance(value, str)
-               for match in MAC.findall(value))
+    return isinstance(expected, str) and expected.lower() in _guest_macs(config)
 
 
 def _gib(value: int) -> str:
@@ -224,11 +299,19 @@ def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: dict)
 
     result = {"cluster": get("cluster/status"), "nodes": get("cluster/resources?type=node"),
               "guests": get("cluster/resources?type=vm"), "configs": {}}
-    for guest in result["guests"]:
+    def read_guest(guest):
         key = str(guest["vmid"])
-        if key in guests and guest["type"] in {"qemu", "lxc"}:
-            node = quote(guest["node"], safe="")
-            result["configs"][key] = get(f"nodes/{node}/{guest['type']}/{int(key)}/config")
+        node = quote(guest["node"], safe="")
+        try:
+            config = get(f"nodes/{node}/{guest['type']}/{int(key)}/config")
+        except (URLError, TimeoutError):
+            return key, {}
+        return key, {name: value for name, value in config.items() if re.fullmatch(r"net[0-9]+", name)}
+
+    candidates = [guest for guest in result["guests"] if guest["type"] in {"qemu", "lxc"}
+                  and (str(guest["vmid"]) in guests or guest.get("status") == "running")]
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        result["configs"] = dict(pool.map(read_guest, candidates))
     result["at"] = datetime.now(timezone.utc).isoformat()
     return result
 
@@ -240,6 +323,10 @@ def read_network() -> dict:
         "links": (["topology", "links"], "links"),
     }
     data = {name: run_netctl(args, timeout=15)[key] for name, (args, key) in commands.items()}
+    try:
+        data["hosts"] = run_netctl(["hosts", "export", "--status", "all"], timeout=25)["hosts"]
+    except NetctlError:
+        data["hosts"] = []
     for query, key in (("ports", "ports"), ("lldp", "lldp_neighbors")):
         items = data[query] = []
         offset = 0

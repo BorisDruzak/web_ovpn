@@ -8,13 +8,13 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   const related = root.querySelector('#map-related');
   const search = root.querySelector('#map-query');
   const feedback = root.querySelector('#map-search-result');
-  const labels = {ok:'Норма', warn:'Предупреждение', critical:'Проблема', unknown:'Нет подтверждённого состояния'};
-  const checks = {
-    c_disk_free:'Свободное место на диске C:', rxdata_log_bytes:'Размер журналов Directum', directumrx_active:'Служба DirectumRX',
-    mongo_active:'MongoDB', rabbitmq_active:'RabbitMQ', redis_active:'Redis', iis_active:'IIS', dns_active:'DNS',
-    data_disk_free:'Свободное место на диске данных', root_disk_free:'Свободное место на системном диске',
-    https_healthcheck:'Проверка HTTPS', internal_dns:'Внутренний DNS', external_dns:'Внешний DNS'
+  const availabilityStates = {
+    reachable: {label:'Доступен', color:'ok'},
+    unreachable: {label:'Не отвечает', color:'critical'},
+    stopped: {label:'Выключен', color:'warn'},
+    unknown: {label:'Доступность не подтверждена', color:'unknown'},
   };
+  const availabilityOf = node => availabilityStates[node.reachability?.state] ?? availabilityStates.unknown;
   const byId = new Map(data.nodes.map(node => [node.id, node]));
   const incident = new Map(data.nodes.map(node => [node.id, []]));
   const connected = new Map(data.nodes.map(node => [node.id, []]));
@@ -74,12 +74,13 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const node = byId.get(id);
     const button = make('button', null, 'map-node');
     button.type = 'button';
-    button.dataset.state = node.status;
-    button.setAttribute('aria-label', node.name + ', ' + (node.properties['Состояние ВМ'] ?? labels[node.status]));
+    const availability = availabilityOf(node);
+    button.dataset.state = availability.color;
+    button.setAttribute('aria-label', node.name + ', ' + availability.label);
     button.setAttribute('aria-pressed', 'false');
-    const label = node.guest && view === 'overview' ? 'ВМ ' + node.vmid : node.name;
+    const label = node.guest && focusedRanks ? 'ВМ ' + node.vmid : node.name;
     button.append(make('i'), make('span', label));
-    button.firstChild.dataset.state = node.status;
+    button.firstChild.dataset.state = availability.color;
     button.addEventListener('click', () => select(id));
     buttons.set(id, button);
     return button;
@@ -101,13 +102,18 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   const networkRoots = data.nodes.filter(node => networkKinds.has(node.kind)).map(node => node.id);
   const primary = networkRoots.sort((a, b) => connected.get(b).length - connected.get(a).length || nameOrder(a, b))[0];
   const anchors = [primary, ...data.overviewGuests].filter(Boolean);
-  const onOverview = node => node.id !== data.clusterId && (!node.guest || data.overviewGuests.includes(node.id));
-  const overviewIds = new Set(data.nodes.filter(onOverview).map(node => node.id));
-  const networkDistance = primary ? traversal(primary, new Set(), overviewIds) : new Map();
+  const onBackbone = node => node.id !== data.clusterId && (!node.guest || data.overviewGuests.includes(node.id));
+  const backboneIds = new Set(data.nodes.filter(onBackbone).map(node => node.id));
+  const networkDistance = primary ? traversal(primary, new Set(), backboneIds) : new Map();
 
   function focusedTopology(id) {
     const path = [id];
     let current = id;
+    const host = byId.get(id).pveHost;
+    if (!networkDistance.has(id) && connected.get(id).includes(host)) {
+      path.unshift(host);
+      current = host;
+    }
     while (networkDistance.get(current) > 0) {
       const parent = connected.get(current).find(peer => networkDistance.get(peer) === networkDistance.get(current) - 1);
       if (!parent) break;
@@ -121,7 +127,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     }
     const ranks = new Map(path.map((nodeId, rank) => [nodeId, rank]));
     for (const peer of connected.get(id)) {
-      if (overviewIds.has(peer) && !ranks.has(peer)) ranks.set(peer, path.length);
+      if (!ranks.has(peer)) ranks.set(peer, path.length);
     }
     return ranks;
   }
@@ -161,6 +167,17 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     grid.append(...ids.map(nodeButton));
     section.append(grid);
   }
+  function addGuestGroups(guests) {
+    const hosts = new Map();
+    for (const guest of guests) {
+      if (!hosts.has(guest.pveHost)) hosts.set(guest.pveHost, []);
+      hosts.get(guest.pveHost).push(guest);
+    }
+    for (const [host, entries] of hosts) {
+      addGrid((host || 'Без размещения') + ' · ВМ и контейнеры (' + entries.length + ')',
+              entries.sort((a,b) => a.vmid - b.vmid).map(node => node.id));
+    }
+  }
   function renderView(mode, focus=null) {
     if (selected) clearSelection();
     resize.disconnect();
@@ -189,7 +206,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     } else {
       const isOverview = mode === 'overview';
       const visible = new Set(data.nodes.filter(node => isOverview
-        ? onOverview(node)
+        ? onBackbone(node)
         : networkKinds.has(node.kind)).map(node => node.id));
       const order = [...new Set([...anchors.filter(id => visible.has(id)), ...visible])];
       const components = new Map();
@@ -206,6 +223,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       const other = [...components].filter(([seed]) => seed !== primary).map(([,component]) => component);
       if (other.length) addGraph(isOverview ? 'Серверы и сервисы' : 'Другие подтверждённые соединения', other);
       if (isolated.length) addGrid('Узлы без подтверждённых связей в этом разделе', isolated.sort(nameOrder));
+      if (isOverview) {
+        if (byId.has(data.clusterId)) addGrid('Кластер Proxmox', [data.clusterId]);
+        addGuestGroups(data.nodes.filter(node => node.guest && !visible.has(node.id)));
+      }
     }
     for (const {graph} of graphs) resize.observe(graph);
     requestAnimationFrame(draw);
@@ -305,16 +326,17 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const list = make('ul', null, 'map-related-list');
     for (const peerId of ids) {
       const peer = byId.get(peerId);
+      const availability = availabilityOf(peer);
       const entry = make('li');
       const open = make('button', null, 'map-related-node');
       open.type = 'button';
       open.setAttribute('aria-pressed', String(peerId === id));
       const dot = make('i');
-      dot.dataset.state = peer.status;
+      dot.dataset.state = availability.color;
       const title = make('span', peer.guest ? 'ВМ ' + peer.vmid : peer.name);
       title.append(make('small', peer.guest ? peer.name : peer.kind));
-      const state = make('span', peer.properties['Состояние ВМ'] ?? (peer.status === 'unknown' ? 'Нет данных' : labels[peer.status]), 'map-related-state');
-      state.dataset.state = peer.status;
+      const state = make('span', availability.color === 'unknown' ? 'Нет подтверждения' : availability.label, 'map-related-state');
+      state.dataset.state = availability.color;
       open.append(dot, title, state);
       open.addEventListener('click', () => select(peerId));
       entry.append(open);
@@ -327,7 +349,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   function select(id, reveal=true) {
     const target = byId.get(id);
     if (!target) return;
-    if (view === 'overview' && onOverview(target)) {
+    if (view === 'overview') {
       renderView('overview', id);
     } else if (!buttons.has(id)) {
       const clusterItem = target.guest || data.nodeOrder.includes(id) || id === data.clusterId;
@@ -346,41 +368,27 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const close = make('button','Закрыть','map-close');
     close.type = 'button';
     close.addEventListener('click', closeSelection);
-    const state = make('p', node.properties['Состояние ВМ'] ?? labels[node.status], 'map-state');
-    state.dataset.state = node.status;
+    const availability = availabilityOf(node);
+    const state = make('p', availability.label, 'map-state');
+    state.dataset.state = availability.color;
     const identity = make('div', null, 'map-detail-identity');
     identity.append(make('h2', node.name), state);
     heading.append(identity, close);
     const properties = make('dl');
-    const items = {'Тип':node.kind, 'Площадка':node.site, 'Объект из':node.origin, ...node.properties};
+    const observation = node.reachability ?? {};
+    const checked = observation.checkedAt ? formatTime(observation.checkedAt) + (observation.stale ? ' · устарело' : '') : '';
+    const items = {
+      'Тип': node.kind, 'VMID': node.guest ? String(node.vmid) : '', 'Узел Proxmox': node.pveHost,
+      'Источник': observation.source, 'Способ проверки': observation.method, 'Проверено': checked,
+    };
     for (const [name,value] of Object.entries(items)) {
       if (value) properties.append(make('dt',name), make('dd',value));
     }
-    for (const input of node.sources) {
-      const message = input.label || (input.raw === 'error' ? 'Ошибка сбора' : labels[input.status]);
-      properties.append(make('dt',input.name), make('dd',message + (input.at ? ' · '+formatTime(input.at) : '') + (input.stale ? ' · устарело' : '')));
-    }
     const columns = make('div', null, 'map-detail-columns');
     const propertiesSection = make('section');
-    propertiesSection.append(make('h3', 'Свойства'), properties);
+    propertiesSection.append(make('h3', 'Доступность'), properties);
     columns.append(propertiesSection);
     details.append(heading, columns);
-    if (node.checks.length) {
-      const list = make('ul',null,'map-detail-list');
-      const checkStatusOrder = {critical:0,warn:1,unknown:2,ok:3};
-      const sorted = node.checks.slice().sort((a,b) => checkStatusOrder[a.status]-checkStatusOrder[b.status]);
-      for (const check of sorted) {
-        const li = make('li',null,'map-check');
-        const dot = make('i');
-        dot.dataset.state = check.status;
-        const value = check.name.endsWith('_disk_free') && typeof check.observed === 'number' ? ' · '+check.observed+'%' : '';
-        li.append(dot, make('span',(checks[check.name] ?? check.name)+' · '+labels[check.status]+value));
-        list.append(li);
-      }
-      const observations = make('section');
-      observations.append(make('h3','Проверки UI_VPN'), list);
-      columns.append(observations);
-    }
     const links = incident.get(id);
     if (links.length) {
       const list = make('ul',null,'map-detail-list');
@@ -443,8 +451,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       headings: Array.from(groups.querySelectorAll('h2'), element => ({...box(element), text: element.textContent})),
       nodes: Array.from(buttons, ([id, element]) => {
         const node = byId.get(id);
-        return {...box(element), id, text: element.textContent, status: node.status,
-                name: node.name, state: node.properties['Состояние ВМ'] ?? labels[node.status]};
+        const availability = availabilityOf(node);
+        return {...box(element), id, text: element.textContent, status: availability.color,
+                name: node.name, state: availability.label};
       }),
       lines: graphs.flatMap(({svg}) => Array.from(svg.querySelectorAll('path'), element => ({
         ...box(svg), path: element.getAttribute('d'), active: element.classList.contains('active'),
