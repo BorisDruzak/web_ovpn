@@ -806,6 +806,22 @@ def test_shared_lldp_ports_publish_paths_and_require_live_port_and_unique_chassi
     proof = next(p for p in links["one"]["portEvidence"] if p["confirmed"])
     assert (proof["a"], proof["b"], proof["portStates"]["a"]["state"]) == ("gigabitEthernet 1/0/48", "", "up")
     assert not read(now + timedelta(hours=1))["one"]["confirmed"]
+    address = "192.0.2.22"
+    rows[1]["management_addresses"] = [address]
+    network["arp"] = [{"ip": address, "mac": unexpected, "last_seen_at": at}]
+    network["hosts"] = [{"ip": address, "mac": unexpected, "last_seen_at": at}]
+    neighbors = [{"identity": "two", "address": address, "mac": unexpected, "last_seen_at": at}]
+    network["router_neighbors"] = neighbors
+    assert read()["two"]["confirmed"]
+    neighbors[0]["last_seen_at"] = (now - timedelta(hours=1)).isoformat()
+    assert not read()["two"]["confirmed"]
+    neighbors[0]["last_seen_at"] = at
+    neighbors.append({**neighbors[0], "mac": first})
+    assert not read()["two"]["confirmed"]
+    neighbors.pop()
+    context["devices"][1]["management_ip"] = address
+    assert not read()["two"]["confirmed"]
+    context["devices"][1].pop("management_ip")
     rows.append({**rows[0], "local_port_key": "ifindex:47"})
     assert not read()["one"]["confirmed"]
     rows.pop()

@@ -950,7 +950,9 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         mac = str(row.get("mac") or "").lower()
         if MAC.fullmatch(mac) and observation_is_fresh(row.get("last_seen_at"), now):
             name = str(row.get("identity") or "").casefold()
-            router_neighbor_macs.setdefault((name, row.get("address")), set()).add(mac)
+            stamp = datetime.fromisoformat(row["last_seen_at"])
+            by_mac = router_neighbor_macs.setdefault((name, row.get("address")), {})
+            by_mac[mac] = max(by_mac.get(mac, stamp), stamp)
     lldp_port_states = {key: index_port_states(item.get("ports", []), now) for key, item in nodes.items()
                         if item["kind"] == NETWORK_KINDS[0]}
     for row in fresh_lldp:
@@ -973,23 +975,46 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             direct = bool(raw_port) and len(peers) == 1 and len(chassis_ports) <= 1 and not shared
             note = " · общий порт" if shared else "" if direct else " · соседство неоднозначно"
             item["properties"]["Соседство LLDP"] = f"{nodes[a]['name']} · {port}{note}"
+            advertised = row.get("management_addresses", [])
+            alternate = None
             if conflict:
                 item["properties"]["Сопоставление LLDP"] = "MAC шасси отличается от инвентаря"
+                if (shared and item["kind"] == NETWORK_KINDS[1] and len(advertised) == 1
+                        and not declared_devices_by_mac.get(chassis_mac)):
+                    address, = advertised
+                    arp = arp_mappings.get(address)
+                    router_macs = router_neighbor_macs.get((name, address), {})
+                    if (arp and arp[0] == chassis_mac and set(router_macs) == {chassis_mac}
+                            and fresh_macs_by_ip.get(address) == lldp_address_owners.get(address) == {chassis_mac}
+                            and set(addresses.get(address, [])) <= {neighbor}):
+                        alternate = (address, min(arp[1], router_macs[chassis_mac]))
+                        item["properties"]["Сопоставление LLDP"] += " · текущий MAC подтверждён по ARP и MikroTik"
             observed_at = row["observed_at"]
             if shared and raw_port:
                 live_port = lldp_port_states.get(a, {}).get(port_label_key(port))
                 confirmed = (bool(live_port and live_port["state"] == "up")
-                             and declared_devices_by_mac.get(chassis_mac) == {neighbor}
+                             and (declared_devices_by_mac.get(chassis_mac) == {neighbor} or alternate is not None)
                              and chassis_ports == {raw_port})
                 if confirmed:
-                    observed_at = min(datetime.fromisoformat(observed_at), datetime.fromisoformat(live_port["checkedAt"])).isoformat()
-                detail = "MAC шасси отличается от инвентаря" if conflict else ""
-                edge(a, neighbor, SHARED_LLDP_KIND, SHARED_LLDP_SOURCE, confirmed, details=detail,
+                    stamp = min(datetime.fromisoformat(observed_at), datetime.fromisoformat(live_port["checkedAt"]))
+                    observed_at = min(stamp, alternate[1]).isoformat() if alternate else stamp.isoformat()
+                edge(a, neighbor, SHARED_LLDP_KIND, SHARED_LLDP_SOURCE, confirmed,
+                     details=item["properties"].get("Сопоставление LLDP", "") if conflict else "",
                      ports=(port, ""), at=observed_at)
             else:
                 edge(a, neighbor, "Сетевое соединение", "LLDP UI_VPN", direct and not conflict,
                      details=note.removeprefix(" · "), ports=(port, remote or ""), at=observed_at)
-            advertised = row.get("management_addresses", [])
+            if alternate:
+                address = alternate[0]
+                item["properties"].pop("IP заявлен в LLDP", None)
+                item["properties"]["Адрес управления по LLDP"] = address
+                host = host_ips.get(address, {})
+                observation = _host_observation(host, now) if str(host.get("mac") or "").lower() == chassis_mac else None
+                if observation:
+                    observation["checkedAt"] = min(datetime.fromisoformat(observation["checkedAt"]),
+                                                   datetime.fromisoformat(row["observed_at"]), alternate[1]).isoformat()
+                    item.setdefault("reachability", observation)
+                continue
             if len(advertised) == 1 and "Адрес управления по LLDP" not in item["properties"]:
                 item["properties"]["IP заявлен в LLDP"] = advertised[0]
             if declared_devices_by_mac.get(chassis_mac) != {neighbor} or "reachability" in item:
@@ -997,7 +1022,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             verified = []
             for address in advertised:
                 host_mac = str(host_ips.get(address, {}).get("mac") or "").lower()
-                same_identity = host_mac == chassis_mac or router_neighbor_macs.get((name, address)) == {host_mac}
+                same_identity = host_mac == chassis_mac or set(router_neighbor_macs.get((name, address), {})) == {host_mac}
                 if (same_identity and fresh_macs_by_ip.get(address) == {host_mac}
                         and lldp_address_owners.get(address) == {chassis_mac}
                         and set(addresses.get(address, [])) <= {neighbor}):
