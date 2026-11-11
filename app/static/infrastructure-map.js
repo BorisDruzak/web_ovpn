@@ -326,6 +326,33 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     });
   }
 
+  function guestsForPort(id, port) {
+    const key = portKey(port);
+    const guests = new Map();
+    for (const edge of data.links) {
+      if (!edge.confirmed) continue;
+      for (const report of edge.portEvidence ?? []) {
+        if (!report.confirmed || !report.virtual) continue;
+        const {switchPorts, switchUplink} = report.virtual;
+        const guest = byId.get(edge.b);
+        const macLabel = guest.kind === 'Контейнер' ? 'MAC контейнера замечен' : 'MAC ВМ замечен';
+        const observations = (switchPorts ?? []).map(match => ({match, label: macLabel + ' · netctl FDB'}));
+        if (switchUplink) {
+          const label = switchUplink.viaMacTable ? 'Путь аплинка по MAC-таблице' : 'Аплинк моста';
+          observations.push({match: switchUplink, label});
+        }
+        for (const {match, label} of observations) {
+          if (match.id !== id || portKey(match.port) !== key) continue;
+          if (!guests.has(guest.id)) guests.set(guest.id, new Set());
+          const host = byId.get(edge.a).name;
+          const vlan = match.vlan ? 'VLAN ' + match.vlan : '';
+          guests.get(guest.id).add([label, host, report.a, report.b, vlan, formatTime(match.at)].filter(Boolean).join(' · '));
+        }
+      }
+    }
+    return guests;
+  }
+
   function updateNodeUrl(id, port=null) {
     const url = new URL(window.location.href);
     if (id) url.searchParams.set('node', id);
@@ -643,13 +670,30 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       }
       const relationships = make('section');
       relationships.append(make('h3', selectedPort ? 'Наблюдения по порту ' + selectedPort : 'Наблюдения о связях'));
-      if (!links.length) relationships.append(make('p', 'Для этого порта нет наблюдений о связях'));
+      const guests = selectedPort ? guestsForPort(id, selectedPort) : null;
+      if (!links.length && !guests?.size) relationships.append(make('p', 'Для этого порта нет наблюдений о связях'));
       if (list.children.length) relationships.append(list);
       if (observations.children.length) {
         const panel = make('details', null, 'map-port-panel');
         panel.dataset.section = 'mac-paths';
         panel.append(make('summary', `Неподтверждённые пути (${observations.children.length})`), observations);
         relationships.append(panel);
+      }
+      if (guests?.size) {
+        const guestList = make('ul', null, 'map-detail-list');
+        guestList.dataset.section = 'guest-observations';
+        for (const [guestId, readings] of guests) {
+          const guest = byId.get(guestId);
+          const kind = guest.kind === 'Контейнер' ? 'LXC' : 'ВМ';
+          const label = guest.vmid ? `${kind} ${guest.vmid} · ${guest.name}` : guest.name;
+          const item = make('li');
+          const open = make('button', label);
+          open.type = 'button';
+          open.addEventListener('click', () => select(guestId));
+          item.append(open, ...Array.from(readings, reading => make('small', reading)));
+          guestList.append(item);
+        }
+        relationships.append(make('h3', 'Наблюдения о ВМ и контейнерах'), guestList);
       }
       columns.append(relationships);
     }
