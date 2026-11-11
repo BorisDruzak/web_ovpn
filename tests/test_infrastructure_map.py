@@ -280,12 +280,53 @@ def test_guest_placement_includes_current_bridge_and_configured_members(tmp_path
     assert link["portEvidence"] == [{
         "a": "vmbr1", "b": "net0", "source": "Proxmox · конфигурация ВМ", "at": at,
         "confirmed": True, "vlan": 100,
-        "virtual": {"linkDisabled": True, "bridgeActive": True, "uplinks": ["bond0", "eno2"]},
+        "virtual": {"linkDisabled": True, "bridgeActive": True, "uplinks": ["bond0", "eno2"], "switchPorts": []},
     }]
     stale_link = next(link for link in load_infrastructure_map(path, now + timedelta(hours=1))["links"]
                       if link["b"] == "pve-guest:103")
     assert not stale_link["confirmed"]
     assert not stale_link["portEvidence"][0]["confirmed"]
+
+
+def test_vm_switch_observation_requires_current_mac_and_declared_host_port(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    mac = "02:00:00:00:00:03"
+    context = {
+        "devices": [{"id": name, "name": name, "kind": kind}
+                    for name, kind in [("pve1", "hypervisor"), ("sw", "switch")]],
+        "links": [{"relation": "connected_to", "state": {"verified": True},
+                   "endpoint_a": {"device": "sw", "interface": "XE3"},
+                   "endpoint_b": {"device": "pve1", "interface": "vm_net_10g"}}],
+    }
+    pve = {
+        "at": at, "cluster": [], "nodes": [{"node": "pve1", "status": "online"}],
+        "guests": [{"vmid": 103, "node": "pve1", "type": "qemu", "status": "running"}],
+        "configs": {"103": {"net0": f"virtio={mac},bridge=vmbr1"}},
+    }
+    network = {
+        "sources": [{"id": 1, "name": "switch-source", "driver": "snmp_switch",
+                     "driver_options": {"intent_stable_id": "sw"}}],
+        "ports": [{"source": "switch-source", "port_key": "index:3", "name": "xe3"}],
+        "guest_fdb": [{"mac": mac, "source_id": 1, "port_key": port, "vlan_id": 1, "observed_at": at}
+                      for port in ("index:3", "unrelated")],
+    }
+    path = tmp_path / "graph.json"
+
+    def switch_ports(rendered_at):
+        graph = build_graph(context, network, {}, pve, {}, now)
+        path.write_text(json.dumps(graph), encoding="utf-8")
+        assert mac not in path.read_text(encoding="utf-8")
+        link = next(edge for edge in load_infrastructure_map(path, rendered_at)["links"] if edge["b"] == "pve-guest:103")
+        return link["portEvidence"][0]["virtual"]["switchPorts"]
+
+    assert switch_ports(now) == [{"id": "sw", "port": "xe3", "vlan": 1, "at": at}]
+    assert switch_ports(now + timedelta(hours=1)) == []
+    pve["configs"]["103"]["net0"] += ",link_down=1"
+    assert switch_ports(now) == []
 
 
 def test_collection_reads_source_registry_without_syncing_config(monkeypatch):

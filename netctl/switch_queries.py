@@ -48,6 +48,23 @@ def query_confirmed_attachment_ports(conn: sqlite3.Connection) -> list[dict[str,
     ]
 
 
+def query_observed_mac_ports(conn: sqlite3.Connection, macs: set[str]) -> list[dict[str, Any]]:
+    if not macs:
+        return []
+    return [dict(row) for row in conn.execute(
+        """
+        SELECT f.source_id, f.port_key, f.mac, f.vlan_id, f.last_seen_at AS observed_at
+        FROM current_switch_fdb AS f
+        JOIN network_sources AS s ON s.id = f.source_id
+        JOIN switch_ports AS p ON p.source_id = f.source_id AND p.port_key = f.port_key
+        WHERE lower(f.mac) IN (SELECT value FROM json_each(?))
+          AND s.enabled = 1 AND p.oper_status = 'up' AND lower(f.status) NOT IN ('self', 'mgmt')
+        ORDER BY f.source_id, f.port_key, f.vlan_id, f.mac
+        """,
+        (json.dumps(sorted(macs)),),
+    )]
+
+
 def validate_pagination(
     limit: int, offset: int, *, maximum: int = MAX_PAGE_SIZE
 ) -> None:

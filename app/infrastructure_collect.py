@@ -21,7 +21,7 @@ from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_ope
 from netctl.config import DEFAULT_DB_URL
 from netctl.context import load_context_bytes, load_schema, validate_context
 from netctl.db import connect_read_only, list_sources
-from netctl.switch_queries import query_confirmed_attachment_ports
+from netctl.switch_queries import query_confirmed_attachment_ports, query_observed_mac_ports
 
 from .infrastructure_map import INTERFACE_NAME, MAX_SNAPSHOT_BYTES, NETWORK_KINDS, observation_is_fresh
 from .infrastructure_service_probes import apply_service_probes
@@ -76,8 +76,10 @@ def _guest_interfaces(config: dict) -> dict:
         bridge = options.get("bridge", "")
         if INTERFACE_NAME.fullmatch(bridge):
             tag = options.get("tag", "")
+            first_value = raw.partition(",")[0].partition("=")[2]
+            mac = options.get("hwaddr", first_value)
             interfaces[name] = (bridge, int(tag) if re.fullmatch(r"[0-9]{1,4}", tag) else None,
-                                options.get("link_down") == "1")
+                                options.get("link_down") == "1", mac.lower() if MAC.fullmatch(mac) else "")
     return interfaces
 
 
@@ -165,13 +167,20 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         host = service.get("device")
         node(service["id"], service["name"], "Сервис", nodes.get(host, {}).get("site", ""))
         edge(host, service["id"], "Размещение", "GitHub")
+    verified_host_ports = set()
     for link in context.get("links", []):
         if link.get("state", {}).get("intent") == "absent":
             continue
         a, b = link["endpoint_a"], link["endpoint_b"]
         kind = "Размещение ВМ" if link.get("relation") == "virtualized_on" else "Сетевое соединение"
         ports = (a.get("interface") or "", b.get("interface") or "")
-        edge(a["device"], b["device"], kind, "GitHub", link.get("state", {}).get("verified") is True, ports=ports)
+        verified = link.get("state", {}).get("verified") is True
+        edge(a["device"], b["device"], kind, "GitHub", verified, ports=ports)
+        if verified and link.get("relation") == "connected_to":
+            for switch, host in ((a, b), (b, a)):
+                if (nodes.get(switch["device"], {}).get("kind") == NETWORK_KINDS[0]
+                        and nodes.get(host["device"], {}).get("kind") == "Гипервизор"):
+                    verified_host_ports.add((host["device"], switch["device"], (switch.get("interface") or "").casefold()))
 
     switch_status = {row["source"]: row for row in network.get("switches", [])}
     port_groups = {}
@@ -263,6 +272,16 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                     if observation:
                         item["reachability"] = observation
 
+    guest_switch_ports = {}
+    for report in network.get("guest_fdb", []):
+        switch = source_ids.get(report["source_id"])
+        at = report["observed_at"]
+        if switch and observation_is_fresh(at, now):
+            port = port_label(source_names[report["source_id"]], report["port_key"])
+            guest_switch_ports.setdefault(report["mac"].lower(), []).append(
+                {"id": switch, "port": port, "at": at, "vlan": report["vlan_id"]},
+            )
+
     roles = bindings.get("roles", {})
     for target in server.get("targets", []):
         role = target["role"]
@@ -309,6 +328,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             edge(cluster_id, key, "Узел кластера", "Proxmox")
         guest_macs = {key: _guest_macs(config) for key, config in pve.get("configs", {}).items()}
         mac_counts = Counter(mac for macs in guest_macs.values() for mac in macs)
+        guest_interfaces = {key: _guest_interfaces(config) for key, config in pve.get("configs", {}).items()}
+        interface_mac_counts = Counter(mac for interfaces in guest_interfaces.values() for _, _, _, mac in interfaces.values())
         for guest in sorted(pve["guests"], key=lambda row: row["vmid"]):
             vmid, host = guest["vmid"], guest["node"]
             binding = bindings.get("guests", {}).get(str(vmid), {})
@@ -346,13 +367,19 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             if status == "ok" and guest.get("cpu") is not None:
                 item["properties"]["CPU по Proxmox"] = f"{100 * guest['cpu']:.1f}%"
             edge(host, key, "Размещение ВМ", "Proxmox", details=f"VM {vmid}", at=pve_at)
-            for name, (bridge, vlan, disabled) in _guest_interfaces(pve.get("configs", {}).get(str(vmid), {})).items():
+            for name, (bridge, vlan, disabled, mac) in guest_interfaces.get(str(vmid), {}).items():
                 observed_bridge = pve.get("bridges", {}).get(host, {}).get(bridge, {})
                 uplinks = [value for value in re.split(r"[\s,]+", observed_bridge.get("bridge_ports") or "")
                            if INTERFACE_NAME.fullmatch(value) and value != "none"]
                 active = observed_bridge.get("active")
+                switch_ports = []
+                if status == "ok" and not disabled and interface_mac_counts[mac] == 1 and mac_counts[mac] == 1:
+                    switch_ports = [
+                        report for report in guest_switch_ports.get(mac, [])
+                        if (host, report["id"], report["port"].casefold()) in verified_host_ports
+                    ]
                 virtual = {"linkDisabled": disabled, "bridgeActive": bool(active) if active in (0, 1) else None,
-                           "uplinks": uplinks}
+                           "uplinks": uplinks, "switchPorts": switch_ports}
                 edge(host, key, "Размещение ВМ", "Proxmox", details=f"VM {vmid}", at=pve_at,
                      ports=(bridge, name), vlan=vlan, virtual=virtual)
         for key, value in list(edges.items()):
@@ -444,7 +471,7 @@ def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: dict)
     with ThreadPoolExecutor(max_workers=6) as pool:
         result["configs"] = dict(pool.map(read_guest, candidates))
         used_bridges = {(guest["node"], bridge) for guest in candidates
-                        for bridge, _, _ in _guest_interfaces(result["configs"][str(guest["vmid"])]).values()}
+                        for bridge, _, _, _ in _guest_interfaces(result["configs"][str(guest["vmid"])]).values()}
         for node, bridge, data in pool.map(read_bridge, sorted(used_bridges)):
             if data:
                 result["bridges"].setdefault(node, {})[bridge] = data
@@ -452,13 +479,15 @@ def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: dict)
     return result
 
 
-def read_network() -> dict:
+def read_network(guest_macs: set[str] | None = None) -> dict:
     commands = {
         "switches": (["switches", "status"], "switches"),
         "links": (["topology", "links"], "links"),
     }
     with closing(connect_read_only(DEFAULT_DB_URL)) as connection:
         data = {"sources": list_sources(connection), "attachments": query_confirmed_attachment_ports(connection)}
+        if guest_macs:
+            data["guest_fdb"] = query_observed_mac_ports(connection, guest_macs)
     data.update({name: run_netctl(args, timeout=15)[key] for name, (args, key) in commands.items()})
     try:
         data["hosts"] = run_netctl(["hosts", "export", "--status", "all"], timeout=25)["hosts"]
@@ -527,7 +556,8 @@ def main() -> int:
             pve = json.loads(args.proxmox_export.read_text(encoding="utf-8"))
             if not pve.get("at"):
                 raise ValueError("Proxmox export requires observation time")
-        network = read_network()
+        guest_macs = {mac for config in pve.get("configs", {}).values() for mac in _guest_macs(config)}
+        network = read_network(guest_macs)
         now = datetime.now(timezone.utc)
         graph = build_graph(context, network, build_server_health_view(args.server_health, now), pve, bindings, now)
         apply_service_probes(graph["nodes"], bindings.get("service_probes", {}))

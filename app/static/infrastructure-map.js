@@ -486,6 +486,11 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
             if (network.bridgeActive === false) notes.push('Мост неактивен');
             if (network.uplinks.length) notes.push('Интерфейсы моста: ' + network.uplinks.join(', '));
             if (notes.length) li.append(make('small', notes.join(' · ')));
+            for (const observed of network.switchPorts ?? []) {
+              const name = byId.get(observed.id).name;
+              const vlan = observed.vlan ? ' · VLAN ' + observed.vlan : '';
+              li.append(make('small', 'MAC ВМ замечен на ' + name + ' ' + observed.port + vlan + ' · netctl FDB · ' + formatTime(observed.at)));
+            }
           }
         }
         list.append(li);

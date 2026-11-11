@@ -215,6 +215,14 @@ def load_infrastructure_map(path: Path, now: datetime | None = None) -> dict:
                         "bridgeActive": virtual["bridgeActive"] if type(virtual.get("bridgeActive")) is bool else None,
                         "uplinks": [value for value in uplinks[:32] if isinstance(value, str) and INTERFACE_NAME.fullmatch(value)]
                         if isinstance(uplinks, list) else [],
+                        "switchPorts": [
+                            {"id": switch_id, "port": _text(match.get("port"), 64), "at": _time(match["at"]).isoformat(),
+                             "vlan": match["vlan"] if type(match.get("vlan")) is int and 1 <= match["vlan"] <= 4094 else None}
+                            for match in _rows(virtual.get("switchPorts"), 12)
+                            for switch_id in [_text(match.get("id"))]
+                            if switch_id in nodes and nodes[switch_id]["kind"] == NETWORK_KINDS[0]
+                            and observation_is_fresh(match.get("at"), now)
+                        ],
                     }
             confirmed = row.get("confirmed") is True
             if edge["source"] in {"netctl", "LLDP UI_VPN", "netctl FDB", "Proxmox"} and row.get("observedAt"):
