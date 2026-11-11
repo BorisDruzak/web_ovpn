@@ -425,20 +425,49 @@ def _sip_options(spec: dict) -> dict:
         return {"state": "unknown", "reason": "transport_error"}
 
 
-def probe_icmp(ip: str, *, source_ip: str | None = None) -> bool:
+def _ping(ip: str, *, source_ip: str | None = None) -> subprocess.CompletedProcess:
     ip = str(ipaddress.ip_address(ip))
     bind = ["-I", str(ipaddress.ip_address(source_ip))] if source_ip is not None else []
-    result = subprocess.run(["/usr/bin/ping", "-n", "-c", "1", "-W", "2", *bind, ip],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                            timeout=TIMEOUT, check=False)
-    return result.returncode == 0
+    return subprocess.run(["/usr/bin/ping", "-n", "-c", "1", "-W", "2", *bind, ip],
+                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                          env={**os.environ, "LC_ALL": "C"}, timeout=TIMEOUT, check=False)
+
+
+def probe_icmp(ip: str, *, source_ip: str | None = None) -> bool:
+    return _ping(ip, source_ip=source_ip).returncode == 0
+
+
+def _icmp_check(ip: str) -> dict:
+    try:
+        ping = _ping(ip)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return {"state": "unknown", "reason": "icmp_probe_error"}
+    if ping.returncode == 0:
+        result = {"state": "reachable"}
+        timing = re.search(rb"^\d+ bytes from [^\r\n]+: icmp_seq=\d+ [^\r\n]*\btime=([0-9]+(?:\.[0-9]+)?) ms",
+                           ping.stdout, re.MULTILINE)
+        if timing:
+            result["roundTripMs"] = float(timing[1])
+        return result
+    if ping.returncode == 1:
+        rejected = re.search(rb"^From ([a-fA-F0-9:.]+) icmp_seq=\d+ Destination[^\r\n]*[Uu]nreachable",
+                             ping.stdout, re.MULTILINE)
+        if rejected:
+            try:
+                sender = str(ipaddress.ip_address(rejected[1].decode("ascii")))
+            except ValueError:
+                pass
+            else:
+                return {"state": "unknown", "reason": "icmp_unreachable", "errorSource": sender}
+        return {"state": "unknown", "reason": "icmp_no_echo_reply"}
+    return {"state": "unknown", "reason": "icmp_probe_error"}
 
 
 def _probe(spec: dict) -> str:
     try:
         protocol = spec["type"]
         if protocol == "icmp":
-            return "reachable" if probe_icmp(spec["ip"]) else "unknown"
+            return _icmp_check(spec["ip"])["state"]
         if protocol == "dns":
             return _dns(spec)["state"]
         if protocol in {"http", "https"}:
@@ -488,8 +517,9 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
         checks = []
         required = []
         for spec in specs:
-            protocol = spec.get("type")
-            method = methods.get(protocol, "") if isinstance(protocol, str) else ""
+            protocol = spec.get("type") if isinstance(spec.get("type"), str) else ""
+            method = methods.get(protocol, "")
+            supplemental = node["kind"] != "Сервис" or spec.get("supplemental") is True
             if node["kind"] != "Сервис":
                 method = "ICMP адреса из инвентаря"
             port = spec.get("port")
@@ -501,6 +531,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 details = _sip_options(spec)
             elif protocol == "dns":
                 details = _dns(spec)
+            elif protocol == "icmp":
+                details = _icmp_check(spec.get("ip"))
             elif protocol in {"http", "https"}:
                 details = _http_probe(spec)
             else:
@@ -509,6 +541,7 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 details["reason"] = "icmp_identity_unconfirmed"
             observation = {
                 **details,
+                **({"supplemental": True} if supplemental else {}),
                 "source": "UI_VPN", "method": method,
                 "port": valid_port,
                 "path": spec.get("path") if protocol in {"http", "https", "zabbix_api"} else None,
@@ -517,7 +550,7 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 "checkedAt": datetime.now(timezone.utc).isoformat(),
             }
             checks.append(observation)
-            if node["kind"] == "Сервис" and spec.get("supplemental") is not True:
+            if not supplemental:
                 required.append(observation)
         node.setdefault("serviceChecks", []).extend(checks)
         if not required:

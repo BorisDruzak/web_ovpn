@@ -674,6 +674,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       const reasons = {
         connection_refused: 'Отказ на UDP-запрос, источник не определён', timeout: 'Ответ не получен вовремя',
         icmp_port_unreachable: 'ICMP: UDP-порт недоступен', icmp_rejected: 'Получен отказ ICMP',
+        icmp_no_echo_reply: 'Нет ответа ICMP Echo Reply', icmp_unreachable: 'Получено сообщение о недостижимости',
+        icmp_probe_error: 'Не удалось выполнить ICMP-проверку',
         transport_error: 'Ошибка сетевого запроса', unexpected_response: 'Ответ не соответствует запросу',
         dns_no_answer: 'Нет записи запрошенного типа', dns_address_mismatch: 'Адреса не совпадают с ожидаемыми',
         http_content_type: 'Неожиданный тип ответа', http_body_limit: 'Ответ превышает лимит проверки',
@@ -711,7 +713,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const dns = [check.dns?.rcode, check.dns?.transport, check.dns?.addresses?.join(', ')]
           .filter(Boolean).map(value => ' · ' + value).join('');
         const http = check.httpStatus ? ' · HTTP ' + check.httpStatus : '';
-        row.append(make('strong', endpoint || 'Проверка'), make('small', result + http + (reason ? ' · ' + reason + errorSource : '') + dns + attempts + gateway + management + source + time + (check.stale ? ' · устарело' : '')));
+        const rtt = check.roundTripMs === undefined ? '' : ' · RTT ' +
+          check.roundTripMs.toLocaleString('ru-RU', {maximumFractionDigits: 3}) + ' мс';
+        const scope = check.supplemental ? ' · дополнительная проверка' : '';
+        row.append(make('strong', endpoint || 'Проверка'), make('small', result + http + (reason ? ' · ' + reason + errorSource : '') + dns + rtt + attempts + gateway + management + scope + source + time + (check.stale ? ' · устарело' : '')));
         list.append(row);
       }
       propertiesSection.append(make('h3', 'Проверки'), list);

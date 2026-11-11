@@ -1286,7 +1286,7 @@ def test_matching_fdb_attachment_adds_evidence_and_supplemental_ip_check(monkeyp
                "attachments": [{"source_id": 1, "port_key": "Port7", "mac": mac, "observed_at": at, "vlan_id": 20}]}
     bindings = {"asset_ip_checks": {"pc": address}}
     configured = {"pc": [{"type": "icmp", "ip": address}]}
-    monkeypatch.setattr(probes, "_probe", lambda spec: "reachable")
+    monkeypatch.setattr(probes, "_icmp_check", lambda ip: {"state": "reachable"})
 
     def build():
         graph = build_graph(context, network, {}, {}, bindings, now)
@@ -2281,6 +2281,43 @@ def test_route_checks_report_mismatch_inactive_and_missing_observation():
     assert [(check["target"], check["state"]) for check in checks] == [
         (destination, "reachable"), (host, "reachable"),
     ]
+
+
+def test_icmp_diagnostics_distinguish_echo_silence_and_probe_error(monkeypatch):
+    from subprocess import CompletedProcess, TimeoutExpired
+    from app import infrastructure_service_probes as probes
+    from app.infrastructure_map import _public_service_check
+
+    readings = {
+        "192.0.2.1": (0, b"64 bytes from 192.0.2.1: icmp_seq=1 ttl=64 time=0.401 ms\n"),
+        "192.0.2.2": (1, b""),
+        "192.0.2.3": (1, b"From 192.0.2.254 icmp_seq=1 Destination Host Unreachable\n"),
+        "192.0.2.4": (2, b"raw output must not be public"),
+    }
+
+    def run(command, **kwargs):
+        assert kwargs["env"]["LC_ALL"] == "C"
+        if command[-1] == "192.0.2.5":
+            raise TimeoutExpired(command, 3)
+        code, output = readings[command[-1]]
+        return CompletedProcess(command, code, stdout=output)
+
+    monkeypatch.setattr(probes.subprocess, "run", run)
+    nodes = [{"id": key, "kind": "Сервис"} for key in (*readings, "192.0.2.5")]
+    probes.apply_service_probes(nodes, {
+        node["id"]: [{"type": "icmp", "ip": node["id"], "supplemental": True}] for node in nodes
+    })
+    now = datetime.now(timezone.utc)
+    checks = [_public_service_check(node["serviceChecks"][0], now) for node in nodes]
+    assert all("reachability" not in node for node in nodes)
+    assert all(check["supplemental"] is True for check in checks)
+    assert [(c["state"], c.get("reason")) for c in checks] == [
+        ("reachable", None), ("unknown", "icmp_no_echo_reply"), ("unknown", "icmp_unreachable"),
+        ("unknown", "icmp_probe_error"), ("unknown", "icmp_probe_error"),
+    ]
+    assert checks[0]["roundTripMs"] == 0.401
+    assert checks[2]["errorSource"] == "192.0.2.254"
+    assert "raw output" not in json.dumps(checks)
 
 
 def test_sip_options_validates_transaction_and_treats_silence_as_unknown(monkeypatch):
