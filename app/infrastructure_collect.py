@@ -245,6 +245,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             if host.get("ip") and observation_is_fresh(host.get("last_seen_at"), now):
                 fresh_macs_by_ip.setdefault(host["ip"], set()).add(mac)
     addresses = {}
+    address_by_asset = {}
     names = {}
     declared_macs = {}
     declared_devices_by_mac = {}
@@ -252,6 +253,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         key = device["id"]
         item = node(key, device["name"], KINDS.get(device["kind"], "Сервер"), device.get("site", ""))
         addresses.setdefault(str(device.get("management_ip") or ""), []).append(key)
+        address_by_asset[key] = device.get("management_ip")
         observation = _host_observation(host_ips.get(device.get("management_ip"), {}), now)
         if observation:
             item["reachability"] = observation
@@ -270,6 +272,12 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         if intent and route.get("source"):
             item["serviceChecks"] = _route_checks(intent, route["source"], network.get("routes", []), now)
         edge(host, service["id"], "Размещение", "GitHub")
+    for service_id, spec in bindings.get("asset_services", {}).items():
+        asset = spec["asset"]
+        if asset in address_by_asset and service_id not in nodes:
+            item = node(service_id, spec["label"], "Сервис", nodes[asset]["site"], "UI_VPN")
+            item["probeTargetIP"] = address_by_asset[asset]
+            edge(asset, service_id, "Размещение", "Настройки карты")
     verified_host_ports = set()
     for link in context.get("links", []):
         if link.get("state", {}).get("intent") == "absent":
@@ -463,7 +471,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
     for service_id, spec in bindings.get("guest_services", {}).items():
         if service_id not in nodes:
             item = node(service_id, spec["label"], "Сервис", origin="UI_VPN")
-            item["guestProbeIP"] = None
+            item["probeTargetIP"] = None
             guest_services.setdefault(str(spec["vmid"]), []).append((item, spec))
 
     cluster_id = ""
@@ -532,7 +540,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                     address = bindings.get("guest_probe_ips", {}).get(str(vmid))
                     if (status == "ok" and arp_mappings.get(address, (None,))[0] == mac
                             and any(nic_mac == mac and not disabled for _, _, disabled, nic_mac in interfaces.values())):
-                        service["guestProbeIP"] = address
+                        service["probeTargetIP"] = address
             if not guest.get("template") and guest.get("status") == "stopped":
                 item["reachability"] = _observation("stopped", "Proxmox", "Состояние ВМ", pve_at)
             elif guest.get("status") == "running" and not guest.get("template") and observation_is_fresh(pve_at, now):

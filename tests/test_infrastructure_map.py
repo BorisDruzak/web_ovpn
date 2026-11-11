@@ -87,6 +87,59 @@ def test_service_requires_all_http_checks_and_rejects_unexpected_response():
     assert nodes[1]["serviceChecks"][1]["path"] == "/unexpected"
 
 
+def test_asset_https_probe_validates_certificate_before_sending_request(monkeypatch):
+    from hashlib import sha256
+    from types import SimpleNamespace
+    from app.infrastructure_collect import build_graph
+    from app import infrastructure_service_probes as probes
+
+    now = datetime.now(timezone.utc)
+    events = []
+    cert = b"peer-certificate"
+
+    class Connection:
+        def __init__(self, ip, port, *, timeout, context):
+            assert (ip, port) == ("192.0.2.14", 8007)
+            assert context.verify_mode == probes.ssl.CERT_NONE
+            self.sock = SimpleNamespace(getpeercert=lambda **_: cert)
+
+        def connect(self):
+            events.append("connect")
+
+        def request(self, method, path, headers):
+            events.append((method, path))
+
+        def getresponse(self):
+            return SimpleNamespace(status=200, getheader=lambda *_: "text/html",
+                                   read=lambda _: b'<script src="/js/proxmox-backup-gui.js">')
+
+        def close(self):
+            events.append("close")
+
+    monkeypatch.setattr(probes.http.client, "HTTPSConnection", Connection)
+    context = {"devices": [{"id": "pbs", "name": "PBS", "kind": "backup_server",
+                            "management_ip": "192.0.2.14"}]}
+    bindings = {"asset_services": {"pbs-web": {"asset": "pbs", "label": "PBS Web"}}}
+    graph = build_graph(context, {}, {}, {}, bindings, now)
+    node = next(node for node in graph["nodes"] if node["id"] == "pbs-web")
+    assert any(link["a"] == "pbs" and link["b"] == "pbs-web" and link["confirmed"] for link in graph["links"])
+    spec = {"type": "https", "ip": "192.0.2.15", "port": 8007, "path": "/",
+            "content_type": "text/html", "body_contains": "/js/proxmox-backup-gui.js",
+            "tls_sha256": "0" * 64}
+    configured = {"pbs-web": [spec]}
+    probes.apply_service_probes(graph["nodes"], configured)
+    assert not events
+    spec["ip"] = "192.0.2.14"
+    probes.apply_service_probes(graph["nodes"], configured)
+    assert events == ["connect", "close"]
+    assert node["reachability"]["state"] == "unknown"
+    events.clear()
+    spec["tls_sha256"] = sha256(cert).hexdigest()
+    probes.apply_service_probes(graph["nodes"], configured)
+    assert events == ["connect", ("GET", "/"), "close"]
+    assert node["reachability"]["state"] == "reachable"
+
+
 def test_zabbix_version_checks_matching_json_rpc_response():
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from threading import Thread

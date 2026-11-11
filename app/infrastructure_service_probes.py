@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import http.client
 import ipaddress
 import json
@@ -39,8 +40,22 @@ def _http(ip: str, port: int, spec: dict) -> str:
     if not all(isinstance(value, (str, type(None))) for value in (body_expected, body_marker, content_type)) or not (body_expected or body_marker or content_type):
         raise ValueError("HTTP probe requires a response contract")
     tls = spec["type"] == "https"
-    connection = http.client.HTTPSConnection(ip, port, timeout=TIMEOUT) if tls else http.client.HTTPConnection(ip, port, timeout=TIMEOUT)
+    fingerprint = spec.get("tls_sha256")
+    context = None
+    if fingerprint is not None:
+        if not tls or not isinstance(fingerprint, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", fingerprint):
+            raise ValueError("invalid HTTPS certificate fingerprint")
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+    connection = (http.client.HTTPSConnection(ip, port, timeout=TIMEOUT, context=context) if tls
+                  else http.client.HTTPConnection(ip, port, timeout=TIMEOUT))
     try:
+        if fingerprint is not None:
+            connection.connect()
+            certificate = connection.sock.getpeercert(binary_form=True)
+            if not certificate or hashlib.sha256(certificate).hexdigest() != fingerprint.lower():
+                return "unknown"
         connection.request("GET", path, headers={"Accept-Encoding": "identity"})
         response = connection.getresponse()
         if 500 <= response.status < 600:
@@ -260,9 +275,9 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
         node, specs = target
         if not isinstance(specs, list) or not specs or len(specs) > 4 or not all(isinstance(spec, dict) for spec in specs):
             return node, None
-        if "guestProbeIP" in node:
-            guest_address = node["guestProbeIP"]
-            if not guest_address or any(spec.get("ip") != guest_address for spec in specs):
+        if "probeTargetIP" in node:
+            target_address = node["probeTargetIP"]
+            if not target_address or any(spec.get("ip") != target_address for spec in specs):
                 return node, None
         methods = {"http": "HTTP", "https": "HTTPS", "dns": "DNS", "ldap": "LDAP", "smb": "SMB2",
                    "zabbix_api": "Zabbix API",
@@ -277,7 +292,7 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 "state": _probe(spec), "method": method,
                 "port": port if type(port) is int and 1 <= port <= 65535 else None,
                 "path": spec.get("path") if protocol in {"http", "https", "zabbix_api"} else None,
-                "target": spec.get("ip") if protocol in {"icmp", "sip_options", "zabbix_api"} else None,
+                "target": spec.get("ip") if protocol in {"icmp", "sip_options", "zabbix_api"} or "probeTargetIP" in node else None,
                 "checkedAt": datetime.now(timezone.utc).isoformat(),
             }
             checks.append(observation)
