@@ -142,12 +142,24 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
         node, specs = target
         if not isinstance(specs, list) or not specs or len(specs) > 4 or not all(isinstance(spec, dict) for spec in specs):
             return node, {}
-        results = [_probe(spec) for spec in specs]
-        state = "unreachable" if "unreachable" in results else "reachable" if all(s == "reachable" for s in results) else "unknown"
         methods = {"http": "HTTP", "https": "HTTPS", "dns": "DNS", "ldap": "LDAP", "smb": "SMB2"}
-        method = " + ".join(dict.fromkeys(methods.get(spec.get("type"), "") for spec in specs))
+        checks = []
+        for spec in specs:
+            protocol = spec.get("type")
+            method = methods.get(protocol, "") if isinstance(protocol, str) else ""
+            port = spec.get("port")
+            checks.append({
+                "state": _probe(spec), "method": method,
+                "port": port if type(port) is int and 1 <= port <= 65535 else None,
+                "path": spec.get("path") if method in {"HTTP", "HTTPS"} else None,
+                "checkedAt": datetime.now(timezone.utc).isoformat(),
+            })
+        results = [check["state"] for check in checks]
+        state = "unreachable" if "unreachable" in results else "reachable" if all(s == "reachable" for s in results) else "unknown"
+        method = " + ".join(dict.fromkeys(check["method"] for check in checks if check["method"]))
+        node["serviceChecks"] = checks
         return node, {"state": state, "source": "Проверка сервиса", "method": method,
-                      "checkedAt": datetime.now(timezone.utc).isoformat()}
+                      "checkedAt": checks[-1]["checkedAt"]}
 
     with ThreadPoolExecutor(max_workers=6) as pool:
         for node, observation in pool.map(check, targets):

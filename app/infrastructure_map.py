@@ -103,6 +103,13 @@ def _public_node(row: dict, now: datetime) -> dict:
         "reachability": _public_reachability(row.get("reachability"), now),
         "sources": sources,
         "properties": properties,
+        "serviceChecks": [
+            {**_public_reachability(check, now),
+             "port": check["port"] if type(check.get("port")) is int and 1 <= check["port"] <= 65535 else None,
+             "path": path if re.fullmatch(r"/[A-Za-z0-9._/-]{0,159}", path) and not path.startswith("//") else ""}
+            for check in _rows(row.get("serviceChecks"), 4)
+            for path in [_text(check.get("path"))]
+        ],
         "checks": [
             {"name": _text(check.get("name"), 64), "status": _state(check.get("status")) if fresh else "unknown",
              "observed": _number(check.get("observed")), "latency": _number(check.get("latency"))}
@@ -164,7 +171,20 @@ def load_infrastructure_map(path: Path, now: datetime | None = None) -> dict:
     for row in _rows(raw.get("links"), 2400):
         edge = {key: _text(row.get(key)) for key in ("a", "b", "kind", "source", "details")}
         if edge["a"] in nodes and edge["b"] in nodes and edge["a"] != edge["b"]:
-            links.append({**edge, "confirmed": row.get("confirmed") is True})
+            evidence = []
+            for report in _rows(row.get("portEvidence"), 24):
+                observed = _time(report.get("at"))
+                source = _text(report.get("source"), 48)
+                evidence.append({
+                    "a": _text(report.get("a"), 64), "b": _text(report.get("b"), 64), "source": source,
+                    "at": observed.isoformat() if observed else None,
+                    "confirmed": report.get("confirmed") is True and (
+                        source == "GitHub" or observation_is_fresh(report.get("at"), now)),
+                })
+            confirmed = row.get("confirmed") is True
+            if edge["source"] in {"netctl", "LLDP UI_VPN"} and "observedAt" in row:
+                confirmed = confirmed and observation_is_fresh(row["observedAt"], now)
+            links.append({**edge, "confirmed": confirmed, "portEvidence": evidence})
     _map_statuses(nodes, links)
     revision = _text(raw.get("git"), 41)
 

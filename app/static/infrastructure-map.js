@@ -392,6 +392,18 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const columns = make('div', null, 'map-detail-columns');
     const propertiesSection = make('section');
     propertiesSection.append(make('h3', 'Доступность'), properties);
+    if (node.serviceChecks?.length) {
+      const list = make('ul', null, 'map-detail-list');
+      for (const check of node.serviceChecks) {
+        const row = make('li');
+        const endpoint = [check.method, check.port, check.path].filter(Boolean).join(' ');
+        const result = {reachable:'Отвечает', unreachable:'Сбой проверки'}[check.state] ?? 'Нет подтверждения';
+        const time = check.checkedAt ? ' · ' + formatTime(check.checkedAt) : '';
+        row.append(make('strong', endpoint || 'Проверка'), make('small', result + time + (check.stale ? ' · устарело' : '')));
+        list.append(row);
+      }
+      propertiesSection.append(make('h3', 'Проверки службы'), list);
+    }
     for (const [key, title] of [['unavailable', 'Недоступные сервисы'], ['unknown', 'Сервисы без подтверждения']]) {
       const ids = node.serviceAvailability?.[key] ?? [];
       if (!ids.length) continue;
@@ -419,6 +431,13 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         go.addEventListener('click',() => select(peer.id));
         const status = edge.confirmed ? edge.source : 'Связь не подтверждена · ' + edge.source;
         li.append(go,make('small',edge.kind+' · '+status+(edge.details ? ' · '+edge.details : '')));
+        for (const evidence of edge.portEvidence ?? []) {
+          const [local, remote] = edge.a === id ? [evidence.a, evidence.b] : [evidence.b, evidence.a];
+          const ports = (local || 'порт неизвестен') + ' ↔ ' + (remote || 'порт неизвестен');
+          const source = evidence.source === 'GitHub' ? 'GitHub (конфигурация)' : evidence.source;
+          const time = evidence.at ? ' · ' + formatTime(evidence.at) : '';
+          li.append(make('small', ports + ' · ' + source + time + (evidence.confirmed ? '' : ' · без подтверждения')));
+        }
         list.append(li);
       }
       const relationships = make('section');

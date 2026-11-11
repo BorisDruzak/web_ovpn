@@ -80,6 +80,42 @@ def test_service_requires_all_http_checks_and_rejects_unexpected_response():
             server.shutdown()
             worker.join()
     assert [node["reachability"]["state"] for node in nodes] == ["reachable", "unknown", "unreachable"]
+    assert [[check["state"] for check in node["serviceChecks"]] for node in nodes] == [
+        ["reachable", "reachable"], ["reachable", "unknown"], ["reachable", "unreachable"],
+    ]
+    assert nodes[1]["serviceChecks"][1]["path"] == "/unexpected"
+
+
+def test_port_evidence_keeps_direction_and_parallel_links(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    observed = (now - timedelta(minutes=1)).isoformat()
+    devices = [{"id": key, "name": key, "kind": "switch", "management_ip": ip}
+               for key, ip in (("west", "192.0.2.1"), ("east", "192.0.2.2"))]
+    declared = {"endpoint_a": {"device": "west", "interface": "west-1"},
+                "endpoint_b": {"device": "east", "interface": "east-1"}}
+    network = {
+        "sources": [{"id": index, "name": d["id"], "host": d["management_ip"]}
+                    for index, d in enumerate(devices, 1)],
+        "ports": [{"source": "east", "port_key": "index:2", "name": "east-2"}],
+        "links": [{"source_a_id": 2, "source_b_id": 1, "port_a_key": "index:2",
+                   "port_b_key": "west-2", "last_seen_at": observed, "state": "confirmed"}],
+        "lldp": [{"source": "west", "system_name": "east", "local_port_key": "west-3",
+                  "port_id_subtype": 3, "port_id": "00:01:02:03:04:05", "observed_at": observed}],
+    }
+    graph = build_graph({"devices": devices, "links": [declared]}, network, {}, {}, {}, now)
+    path = tmp_path / "infrastructure.json"
+    path.write_text(json.dumps(graph), encoding="utf-8")
+    link, = load_infrastructure_map(path, now)["links"]
+    assert (link["a"], link["b"]) == ("west", "east")
+    assert [(row["a"], row["b"], row["confirmed"]) for row in link["portEvidence"]] == [
+        ("west-1", "east-1", False), ("west-2", "east-2", True), ("west-3", "", True),
+    ]
+    stale_link, = load_infrastructure_map(path, now + timedelta(hours=1))["links"]
+    assert not stale_link["confirmed"]
+    assert all(not row["confirmed"] for row in stale_link["portEvidence"])
 
 
 def test_collection_reads_source_registry_without_syncing_config(monkeypatch):

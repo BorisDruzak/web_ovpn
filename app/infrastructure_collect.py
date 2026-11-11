@@ -90,14 +90,26 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             "properties": {}, "sources": [], "checks": [],
         })
 
-    def edge(a, b, kind, source, confirmed=True, details=""):
+    def edge(a, b, kind, source, confirmed=True, details="", ports=None, at=None):
         if a not in nodes or b not in nodes or a == b:
             return
         key = (tuple(sorted((a, b))), kind)
         current = edges.get(key)
+        evidence = current.get("portEvidence", []) if current else []
         if not current or confirmed and (not current["confirmed"] or source != "GitHub"):
             edges[key] = {"a": a, "b": b, "kind": kind, "source": source,
-                          "confirmed": confirmed, "details": details}
+                          "confirmed": confirmed, "details": details, "observedAt": at}
+        if current and edges[key]["a"] != current["a"]:
+            evidence = [{**item, "a": item["b"], "b": item["a"]} for item in evidence]
+        if ports and any(ports):
+            if edges[key]["a"] != a:
+                ports = ports[::-1]
+            report = {"a": ports[0], "b": ports[1], "source": source, "at": at,
+                      "confirmed": confirmed}
+            if report not in evidence:
+                evidence.append(report)
+        if evidence:
+            edges[key]["portEvidence"] = evidence
 
     def source(item, name, raw, at, label=""):
         item["sources"].append({"name": name, "raw": raw, "status": HEALTH.get(raw, "unknown"),
@@ -132,15 +144,18 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             continue
         a, b = link["endpoint_a"], link["endpoint_b"]
         kind = "Размещение ВМ" if link.get("relation") == "virtualized_on" else "Сетевое соединение"
-        ports = " ↔ ".join(endpoint["interface"] for endpoint in (a, b) if endpoint.get("interface"))
-        edge(a["device"], b["device"], kind, "GitHub", link.get("state", {}).get("verified") is True, ports)
+        ports = (a.get("interface") or "", b.get("interface") or "")
+        edge(a["device"], b["device"], kind, "GitHub", link.get("state", {}).get("verified") is True, ports=ports)
 
     switch_status = {row["source"]: row for row in network.get("switches", [])}
     port_groups = {}
+    port_names = {}
     for port in network.get("ports", []):
         port_groups.setdefault(port["source"], []).append(port)
+        port_names[(port["source"], port.get("port_key"))] = port.get("name") or port.get("port_key")
     source_nodes = {}
     source_ids = {}
+    source_names = {}
     for row in network.get("sources", []):
         name = row["name"]
         candidates = addresses.get(str(row.get("host") or ""), []) if row.get("host") else []
@@ -151,6 +166,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         source_nodes[name] = key
         if row.get("id") is not None:
             source_ids[row["id"]] = key
+            source_names[row["id"]] = name
         status = switch_status.get(name, {})
         raw = status.get("last_status") or row.get("last_status")
         collected_at = row.get("last_collect_at") or status.get("last_success_at")
@@ -171,10 +187,15 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
     for row in network.get("links", []):
         a = source_ids.get(row.get("source_a_id"))
         b = source_ids.get(row.get("source_b_id"))
-        ports = " ↔ ".join(row[field] for field in ("port_a_key", "port_b_key") if row.get(field))
+        ports = []
+        for side in ("a", "b"):
+            raw = row.get(f"port_{side}_key") or ""
+            name = source_names.get(row.get(f"source_{side}_id"))
+            ports.append(port_names.get((name, raw), raw))
         observed = row.get("last_seen_at")
         fresh = observation_is_fresh(observed, now)
-        edge(a, b, "Сетевое соединение", "netctl", row.get("state") == "confirmed" and fresh, ports)
+        edge(a, b, "Сетевое соединение", "netctl", row.get("state") == "confirmed" and fresh,
+             ports=ports, at=observed)
     for row in network.get("lldp", []):
         if not observation_is_fresh(row.get("observed_at"), now):
             continue
@@ -182,9 +203,12 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         name = str(row.get("system_name") or "").casefold()
         candidates = [key for key in names.get(name, []) if nodes[key]["kind"] in NETWORK_KINDS]
         if a and len(candidates) == 1 and a != candidates[0]:
-            port = row.get("local_port_key", "")
+            raw_port = row.get("local_port_key", "")
+            port = port_names.get((row.get("source"), raw_port), raw_port)
+            remote = row.get("port_id") if str(row.get("port_id_subtype")) in {"1", "5"} else ""
             nodes[candidates[0]]["properties"]["Соседство LLDP"] = f"{nodes[a]['name']} · {port}"
-            edge(a, candidates[0], "Сетевое соединение", "LLDP UI_VPN", True, port)
+            edge(a, candidates[0], "Сетевое соединение", "LLDP UI_VPN", True,
+                 ports=(port, remote or ""), at=row.get("observed_at"))
 
     roles = bindings.get("roles", {})
     for target in server.get("targets", []):
