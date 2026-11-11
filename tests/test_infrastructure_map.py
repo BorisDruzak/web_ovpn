@@ -4,6 +4,32 @@ from datetime import datetime, timedelta, timezone
 from test_context_api import make_client
 
 
+def test_collection_reads_source_registry_without_syncing_config(monkeypatch):
+    from app import infrastructure_collect as collector
+
+    calls = []
+
+    class ReadConnection:
+        def close(self):
+            calls.append("closed")
+
+    def netctl(args, **kwargs):
+        payloads = {
+            ("switches", "status"): {"switches": []},
+            ("topology", "links"): {"links": []},
+            ("hosts", "export"): {"hosts": []},
+            ("switches", "ports"): {"ports": [], "pagination": {"next_offset": None}},
+            ("switches", "lldp"): {"lldp_neighbors": [], "pagination": {"next_offset": None}},
+        }
+        return payloads[tuple(args[:2])]
+
+    monkeypatch.setattr(collector, "connect_read_only", lambda url: ReadConnection())
+    monkeypatch.setattr(collector, "list_sources", lambda conn: [{"id": 1, "name": "test"}])
+    monkeypatch.setattr(collector, "run_netctl", netctl)
+    assert collector.read_network()["sources"] == [{"id": 1, "name": "test"}]
+    assert calls == ["closed"]
+
+
 def test_infrastructure_map_serves_only_public_snapshot(tmp_path, monkeypatch):
     path = tmp_path / "infrastructure.json"
     monkeypatch.setenv("INFRASTRUCTURE_MAP_SNAPSHOT_PATH", str(path))

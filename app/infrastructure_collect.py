@@ -11,13 +11,16 @@ import ssl
 import tempfile
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import URLError
 from urllib.parse import quote, urlsplit
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 
+from netctl.config import DEFAULT_DB_URL
 from netctl.context import load_context_bytes, load_schema, validate_context
+from netctl.db import connect_read_only, list_sources
 
 from .infrastructure_map import MAX_SNAPSHOT_BYTES, NETWORK_KINDS, observation_is_fresh
 from .netctl_client import NetctlError, run_netctl
@@ -318,11 +321,12 @@ def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: dict)
 
 def read_network() -> dict:
     commands = {
-        "sources": (["sources", "list"], "sources"),
         "switches": (["switches", "status"], "switches"),
         "links": (["topology", "links"], "links"),
     }
-    data = {name: run_netctl(args, timeout=15)[key] for name, (args, key) in commands.items()}
+    with closing(connect_read_only(DEFAULT_DB_URL)) as connection:
+        data = {"sources": list_sources(connection)}
+    data.update({name: run_netctl(args, timeout=15)[key] for name, (args, key) in commands.items()})
     try:
         data["hosts"] = run_netctl(["hosts", "export", "--status", "all"], timeout=25)["hosts"]
     except NetctlError:
