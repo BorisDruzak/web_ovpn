@@ -5485,7 +5485,12 @@ def test_attachment_view_includes_physical_service_hosts_and_distinguishes_port_
     raw = {"schema": 1, "snapshotAt": stamp, "nodes": [
         {"id": "web", "name": "Web", "kind": "Сервис"},
         {"id": "server", "name": "Server", "kind": "Сервер"},
-        {"id": "sw", "name": "Switch", "kind": "Коммутатор"},
+        {"id": "sw", "name": "Switch", "kind": "Коммутатор", "ports": [
+            {"name": "xe1", "state": "up", "checkedAt": stamp, "speedBps": 10**10,
+             "lldpNeighborCount": 1,
+             "lldpNeighbors": [{"chassisId": "02:00:00:00:00:01", "inventoryDeviceId": "server",
+                                "portId": "bond0", "portIdSubtype": "interface_name"}]},
+        ]},
         {"id": "unbound", "name": "Unbound", "kind": "Сервер"},
     ], "links": [
         {"a": "server", "b": "web", "kind": "Размещение", "confirmed": True},
@@ -5514,18 +5519,33 @@ def test_attachment_view_includes_physical_service_hosts_and_distinguishes_port_
     assert host["host"]["id"] == "server" and host["connectionTotal"] == 2
     direct, learned = host["connections"]
     assert direct["peer"]["id"] == "sw" and direct["kind"] == "Сетевое соединение"
+    logical_peer = {"localPort": "xe1", "chassisId": "02:00:00:00:00:01", "portId": "bond0",
+                    "portIdSubtype": "interface_name", "checkedAt": stamp}
     assert direct["ports"] == [
         {"hostPort": "eth0", "peerPort": "ge1", "source": "LLDP UI_VPN", "checkedAt": stamp,
          "confirmed": True, "pairEvidence": "current"},
-        {"hostPort": "", "peerPort": "xe1", "source": "GitHub", "checkedAt": None, "confirmed": False},
+        {"hostPort": "", "peerPort": "xe1", "source": "GitHub", "checkedAt": None, "confirmed": False,
+         "portStates": {"peer": {"name": "xe1", "state": "up", "checkedAt": stamp,
+                                 "speedBps": 10**10, "stale": False}},
+         "lldpPeers": {"peer": [logical_peer]}},
     ]
     reading, = learned["ports"]
     assert learned["kind"] == "Путь по MAC-таблице" and reading["peerPort"] == "ge1"
     assert reading["hostPort"] == "" and "pairEvidence" not in reading
     assert reading["learnedEndpoint"]["deviceId"] == "server"
+    assert host["pendingPortPairTotal"] == 1
+    pending, = host["pendingPortPairs"]
+    assert (pending["a"], pending["portA"], pending["b"], pending["portB"]) == ("sw", "xe1", "server", "")
+    assert pending["identifiedPeerSides"] == ["a"] and pending["missingPortSides"] == ["b"]
+    assert pending["observedPaths"] == []
+    assert pending["lldpPeers"] == {"a": [logical_peer]}
+    assert pending["portObservations"]["a"]["speedBps"] == 10**10
     assert read("server")["physicalHosts"] == [host]
-    inverse = read("sw")["physicalHosts"][0]["connections"][0]["ports"][0]
+    switch, = read("sw")["physicalHosts"]
+    assert switch["pendingPortPairs"] == [pending]
+    inverse = switch["connections"][0]["ports"][0]
     assert (inverse["hostPort"], inverse["peerPort"]) == ("ge1", "eth0")
+    assert read("unbound")["physicalHosts"][0]["pendingPortPairs"] == []
 
 
 def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path, monkeypatch):

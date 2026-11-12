@@ -1451,9 +1451,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         go.type = 'button';
         go.addEventListener('click',() => select(peer.id));
         const reciprocal = edge.confirmed && edge.source === reciprocalMacSource;
-        const status = edge.confirmed || unconfirmedPath ? edge.source : 'Связь не подтверждена · ' + edge.source;
+        const pending = edge.kind === 'Сетевое соединение' ? 'Пара портов не подтверждена' : 'Связь не подтверждена';
+        const status = edge.confirmed || unconfirmedPath ? edge.source : pending + ' · ' + edge.source;
         li.append(go,make('small',edge.kind+' · '+status+(edge.details ? ' · '+edge.details : '')));
-        if (reciprocal) li.append(make('small', 'Прямое соединение не подтверждено'));
+        if (edge.confirmed && pathKinds.has(edge.kind)) li.append(make('small', 'Прямое соединение не подтверждено'));
         const renderedPorts = new Set();
         const aggregates = new Set((edge.portEvidence ?? []).flatMap(({lacp}) =>
           lacp?.aggregateState ? [lacp.side + ':' + lacp.aggregateState.name] : []));
@@ -1466,7 +1467,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           const time = evidence.at ? ' · ' + formatTime(evidence.at) : '';
           const proof = {current: ' · пара по свежему наблюдению',
                          verified_inventory: ' · пара по подтверждённой записи инвентаря'}[evidence.pairEvidence] ?? '';
-          li.append(make('small', ports + vlan + ' · ' + source + time + proof + (evidence.confirmed ? '' : ' · без подтверждения')));
+          const unverified = evidence.confirmed ? '' : ' · ' + pending.toLocaleLowerCase('ru-RU');
+          li.append(make('small', ports + vlan + ' · ' + source + time + proof + unverified));
           if (evidence.learnedEndpoint) {
             const {switchId, mac} = evidence.learnedEndpoint;
             const switchPort = edge.a === switchId ? evidence.a : evidence.b;

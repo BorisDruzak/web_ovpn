@@ -1437,8 +1437,9 @@ def _summarize_port_counters(nodes: dict) -> dict:
     return {"measuredPorts": measured, "affectedPorts": len(affected), "ports": affected[:64]}
 
 
-def summarize_topology(graph: dict) -> dict:
-    nodes = {node["id"]: node for node in graph["nodes"]}
+def _topology_port_pairs(nodes: dict, links: list[dict], host_ids: set[str] | None = None) -> tuple:
+    if host_ids is not None:
+        links = [link for link in links if link["a"] in host_ids or link["b"] in host_ids]
     port_aliases = {
         (node["id"], port_label_key(alias)): port_label_key(port["name"])
         for node in nodes.values()
@@ -1453,7 +1454,7 @@ def summarize_topology(graph: dict) -> dict:
         return port_aliases.get((node_id, key), key)
 
     paths = {}
-    for link in graph["links"]:
+    for link in links:
         if link["confirmed"] and link["kind"] in ("Путь по MAC-таблице", SHARED_LLDP_KIND):
             paths.setdefault(frozenset((link["a"], link["b"])), []).extend(
                 (link["a"], report) for report in link["portEvidence"] if report["confirmed"]
@@ -1463,7 +1464,7 @@ def summarize_topology(graph: dict) -> dict:
     pending = {}
     alerts = []
     inventory_pairs = []
-    for link in graph["links"]:
+    for link in links:
         if link["kind"] != "Сетевое соединение":
             continue
         a, b = link["a"], link["b"]
@@ -1524,6 +1525,12 @@ def summarize_topology(graph: dict) -> dict:
                 **({"lldpObservations": lldp} if lldp else {}),
                 **({"lldpPeers": declared["lldpPeers"]} if "lldpPeers" in declared else {}),
             }
+    return counts, inventory_pairs, alerts, [pending[key] for key in sorted(pending)]
+
+
+def summarize_topology(graph: dict) -> dict:
+    nodes = {node["id"]: node for node in graph["nodes"]}
+    counts, inventory_pairs, alerts, pending = _topology_port_pairs(nodes, graph["links"])
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
     stp = [{"id": node["id"], "name": node["name"], **node["stpRootPath"]}
            for node in nodes.values() if "stpRootPath" in node]
@@ -1544,7 +1551,7 @@ def summarize_topology(graph: dict) -> dict:
                                         "stpRootPaths": stp, "stpRoots": roots, "vlanAudits": vlan_audits[:64],
                                         "lacpHealth": lacp[:64],
                                         "downstreamSwitches": downstream[:MAX_DOWNSTREAM_SWITCHES],
-                                        "pending": [pending[key] for key in sorted(pending)[:64]]}}
+                                        "pending": pending[:64]}}
 
 
 def _attachment_node(node: dict) -> dict:
@@ -1691,7 +1698,15 @@ def _guest_attachments(nodes: dict, links: list[dict], guest_ids: list[str], now
 
 
 def _physical_attachments(nodes: dict, links: list[dict], host_ids: list[str]) -> list[dict]:
+    if not host_ids:
+        return []
     connections = {host_id: [] for host_id in host_ids}
+    pending_by_host = {host_id: [] for host_id in host_ids}
+    _, _, _, pending = _topology_port_pairs(nodes, links, set(host_ids))
+    for pair in pending:
+        for side in ("a", "b"):
+            if pair[side] in pending_by_host:
+                pending_by_host[pair[side]].append(pair)
     for edge in links:
         direct = edge["kind"] == "Сетевое соединение"
         if not direct and (edge["kind"] not in ("Путь по MAC-таблице", SHARED_LLDP_KIND) or not edge["confirmed"]):
@@ -1727,7 +1742,8 @@ def _physical_attachments(nodes: dict, links: list[dict], host_ids: list[str]) -
                                          "confirmed": edge["confirmed"], "ports": readings})
     for group in connections.values():
         group.sort(key=lambda row: (row["kind"] != "Сетевое соединение", not row["confirmed"], row["peer"]["id"]))
-    return [{"host": _attachment_node(nodes[host_id]), "connectionTotal": len(group), "connections": group[:24]}
+    return [{"host": _attachment_node(nodes[host_id]), "connectionTotal": len(group), "connections": group[:24],
+             "pendingPortPairTotal": len(pending_by_host[host_id]), "pendingPortPairs": pending_by_host[host_id][:24]}
             for host_id, group in connections.items()]
 
 
