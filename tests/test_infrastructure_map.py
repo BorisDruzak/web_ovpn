@@ -4527,6 +4527,45 @@ def test_asset_icmp_probes_resolve_expected_gateway_from_inventory():
     }
 
 
+def test_skipped_host_probe_reports_failed_local_arp_without_promoting_availability(monkeypatch):
+    from app.infrastructure_collect import _asset_icmp_probes
+    from app.infrastructure_map import _public_service_check
+    from app import infrastructure_service_probes as probes
+
+    address, source = "192.0.2.120", "192.0.2.30"
+    device = {"id": "server", "management_ip": address, "mac_addresses": ["02:00:00:00:00:20"]}
+    context = {"devices": [device]}
+    bindings = {"asset_ip_checks": {"server": address}, "asset_arp_diagnostics": ["server"]}
+    specs = _asset_icmp_probes(context, bindings)
+    route = {"dst": address, "dev": "ens18", "prefsrc": source}
+    calls = []
+
+    def kernel(args, **kwargs):
+        if "route" in args:
+            return json.dumps([route])
+        return json.dumps([{"dst": address, "state": ["FAILED"]}])
+
+    def ping(ip, **kwargs):
+        calls.append((ip, kwargs))
+        return probes.subprocess.CompletedProcess([], 1)
+
+    monkeypatch.setattr(probes.subprocess, "check_output", kernel)
+    monkeypatch.setattr(probes, "_ping", ping)
+    node = {"id": "server", "kind": "Сервер", "probeTargetIP": None}
+    probes.apply_service_probes([node], specs)
+    check = _public_service_check(node["serviceChecks"][0], datetime.now(timezone.utc))
+    assert calls == [(address, {"source_ip": source, "interface": "ens18"})]
+    assert check["state"] == "unknown" and check["skipped"] and not check["target"]
+    assert check["arpDiagnostic"] == {"state": "no_reply", "address": address,
+                                     "sourceIP": source, "interface": "ens18"}
+    assert "reachability" not in node
+    route["gateway"] = "192.0.2.1"
+    calls.clear()
+    node["serviceChecks"].clear()
+    probes.apply_service_probes([node], specs)
+    assert calls == [] and "arpDiagnostic" not in node["serviceChecks"][0]
+
+
 def test_icmp_via_expected_router_keeps_route_evidence_separate_from_echo(monkeypatch):
     from app import infrastructure_service_probes as probes
     from app.infrastructure_map import _public_service_check

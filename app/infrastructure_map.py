@@ -519,6 +519,19 @@ def _public_service_check(check: dict, now: datetime) -> dict:
             result["component"] = True
     if (check.get("skipped") is True and result["checkedAt"] and result["state"] == "unknown"
             and reason in ("probe_target_unconfirmed", "probe_target_mismatch", "probe_host_stopped")):
+        arp = check.get("arpDiagnostic")
+        interface = arp.get("interface") if isinstance(arp, dict) else None
+        if (not result["stale"] and result["source"] == "UI_VPN"
+                and result["method"] == "ICMP адреса из инвентаря" and reason == "probe_target_unconfirmed"
+                and isinstance(arp, dict) and arp.get("state") in ("no_reply", "matched", "different_mac", "unconfirmed")
+                and isinstance(interface, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", interface)):
+            try:
+                address, source = (str(ipaddress.IPv4Address(arp.get(key))) for key in ("address", "sourceIP"))
+            except ValueError:
+                pass
+            else:
+                result["arpDiagnostic"] = {"state": arp["state"], "address": address,
+                                           "sourceIP": source, "interface": interface}
         return {**result, "target": "", "skipped": True, "reason": reason}
     identified_icmp = result["method"] in ("ICMP · LLDP + ARP", "ICMP · ARP + FDB")
     if identified_icmp or (result["source"] == "UI_VPN" and "identityCheckedAt" in check):

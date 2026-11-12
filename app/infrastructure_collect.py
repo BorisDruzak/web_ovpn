@@ -1146,13 +1146,22 @@ def _add_guest_switch_uplinks(links, nodes: dict, pve: dict, now: datetime) -> N
 
 def _asset_icmp_probes(context: dict, bindings: dict) -> dict:
     gateways = bindings.get("asset_ip_check_gateways", {})
-    management = {device["id"]: device.get("management_ip") for device in context.get("devices", [])}
+    devices = {device["id"]: device for device in context.get("devices", [])}
+    management = {key: device.get("management_ip") for key, device in devices.items()}
+    arp_assets = bindings.get("asset_arp_diagnostics", [])
+    addresses = Counter(management.values())
+    macs = Counter(mac.lower() for device in devices.values() for mac in device.get("mac_addresses", []))
     probes = {}
     for asset, address in bindings.get("asset_ip_checks", {}).items():
         probe = {"type": "icmp", "ip": address}
         if isinstance(gateways, dict) and asset in gateways:
             gateway = gateways[asset]
             probe["route_via"] = management.get(gateway) if isinstance(gateway, str) else None
+        elif (isinstance(arp_assets, list) and asset in arp_assets and asset in devices
+              and management[asset] == address and addresses[address] == 1):
+            declared = devices[asset].get("mac_addresses", [])
+            if len(declared) == 1 and MAC.fullmatch(declared[0]) and macs[declared[0].lower()] == 1:
+                probe["arp_expected_mac"] = declared[0].lower()
         probes[asset] = [probe]
     return probes
 

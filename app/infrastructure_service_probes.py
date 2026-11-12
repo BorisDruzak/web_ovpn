@@ -950,23 +950,24 @@ def _icmp_check(ip: str, *, source_ip: str | None = None, interface: str | None 
     return {"state": "unknown", "reason": "icmp_probe_error"}
 
 
-def _local_vlan_peer(address: str, interface: str, expected_mac: str) -> str:
-    def read():
-        rows = json.loads(subprocess.check_output(
-            ["/usr/sbin/ip", "-j", "-4", "neigh", "show", "to", address, "dev", interface],
-            timeout=TIMEOUT, stderr=subprocess.DEVNULL,
-        ))
-        if isinstance(rows, list) and len(rows) == 1 and isinstance(rows[0], dict) and rows[0].get("dst") == address:
-            return rows[0]
-        return {}
+def _ipv4_neighbor(address: str, interface: str) -> dict:
+    rows = json.loads(subprocess.check_output(
+        ["/usr/sbin/ip", "-j", "-4", "neigh", "show", "to", address, "dev", interface],
+        timeout=TIMEOUT, stderr=subprocess.DEVNULL,
+    ))
+    if isinstance(rows, list) and len(rows) == 1 and isinstance(rows[0], dict) and rows[0].get("dst") == address:
+        return rows[0]
+    return {}
 
+
+def _local_vlan_peer(address: str, interface: str, expected_mac: str) -> str:
     try:
-        neighbor = read()
+        neighbor = _ipv4_neighbor(address, interface)
         states = neighbor.get("state")
         if isinstance(states, list) and any(state in ("DELAY", "PROBE") for state in states):
             # Linux revalidates a cached neighbor shortly after using it.
             sleep(6)
-            neighbor = read()
+            neighbor = _ipv4_neighbor(address, interface)
     except (OSError, ValueError, subprocess.SubprocessError):
         return "unconfirmed"
     mac = neighbor.get("lladdr")
@@ -1096,15 +1097,17 @@ def _wireguard_policy(spec: dict) -> dict:
     return {**result, "state": "reachable"}
 
 
-def _local_ipv4_route(ip: str, gateway: object) -> dict:
+def _local_ipv4_route(ip: str, gateway: object, *, on_link: bool = False) -> dict:
     route = {"state": "unknown"}
-    if not isinstance(ip, str) or not isinstance(gateway, str):
+    if not isinstance(ip, str) or (not on_link and not isinstance(gateway, str)):
         return route
     try:
-        address, expected = str(ipaddress.IPv4Address(ip)), str(ipaddress.IPv4Address(gateway))
+        address = str(ipaddress.IPv4Address(ip))
+        expected = "" if on_link else str(ipaddress.IPv4Address(gateway))
     except ValueError:
         return route
-    route["expectedGateway"] = expected
+    if not on_link:
+        route["expectedGateway"] = expected
     try:
         rows = json.loads(subprocess.check_output(
             ["/usr/sbin/ip", "-j", "-4", "route", "get", address], timeout=TIMEOUT, stderr=subprocess.DEVNULL,
@@ -1115,6 +1118,8 @@ def _local_ipv4_route(ip: str, gateway: object) -> dict:
         interface = row.get("dev")
         if row.get("dst") != address or not isinstance(interface, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", interface):
             return route
+        if on_link and (row.get("via") or interface == "lo" or row.get("type", "unicast") != "unicast"):
+            return route
         actual = str(ipaddress.IPv4Address(row["gateway"])) if row.get("gateway") else ""
         source = str(ipaddress.IPv4Address(row["prefsrc"]))
     except (KeyError, OSError, ValueError, subprocess.SubprocessError):
@@ -1122,6 +1127,29 @@ def _local_ipv4_route(ip: str, gateway: object) -> dict:
     route.update(state="reachable" if actual == expected else "unreachable",
                  gateway=actual, interface=interface, sourceIP=source)
     return route
+
+
+def _local_arp_diagnostic(address: str, expected_mac: str) -> dict:
+    route = _local_ipv4_route(address, None, on_link=True)
+    if route["state"] != "reachable":
+        return {}
+    interface, source = route["interface"], route["sourceIP"]
+    try:
+        if _ping(address, source_ip=source, interface=interface).returncode not in (0, 1):
+            return {}
+        neighbor = _ipv4_neighbor(address, interface)
+        if neighbor.get("state") == ["INCOMPLETE"]:
+            sleep(1.25)
+            neighbor = _ipv4_neighbor(address, interface)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return {}
+    state, mac = neighbor.get("state"), neighbor.get("lladdr")
+    result = "unconfirmed"
+    if state == ["FAILED"] and not mac:
+        result = "no_reply"
+    elif state == ["REACHABLE"] and isinstance(mac, str) and re.fullmatch(r"(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}", mac):
+        result = "matched" if mac.lower() == expected_mac else "different_mac"
+    return {"state": result, "address": address, "sourceIP": source, "interface": interface}
 
 
 def _icmp_via_router(ip: str, gateway: object) -> dict:
@@ -1304,6 +1332,10 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
             valid_port = port if type(port) is int and 1 <= port <= 65535 else None
             if skip_reason:
                 details = {"state": "unknown", "skipped": True, "reason": skip_reason}
+                if (not service and protocol == "icmp" and skip_reason == "probe_target_unconfirmed"
+                        and "arp_expected_mac" in spec
+                        and (arp := _local_arp_diagnostic(spec.get("ip"), spec["arp_expected_mac"]))):
+                    details["arpDiagnostic"] = arp
             elif protocol == "openvpn_management" and valid_port is not None:
                 details = {**_openvpn_management(), "configuredPort": valid_port}
                 valid_port = None

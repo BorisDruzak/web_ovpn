@@ -1260,6 +1260,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const certificate = check.tlsExpiresAt ? ' · ' + [check.tlsVersion,
           'Действует до ' + formatTime(check.tlsExpiresAt)].filter(Boolean).join(' · ') : '';
         const localRoute = check.localRoute;
+        const arp = check.arpDiagnostic;
+        const arpResult = arp && {no_reply: 'Нет ответа ARP', matched: 'MAC совпал с инвентарём',
+          different_mac: 'ARP показывает другой MAC', unconfirmed: 'Ответ ARP не подтверждён'}[arp.state];
         const vlanPeer = vlan?.peer;
         const peer = vlanPeer && ({matched: ' · Сосед ' + vlanPeer.guestPort + ' подтверждён',
           unconfirmed: ' · Сосед не подтверждён'}[vlanPeer.state] ?? '');
@@ -1284,6 +1287,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           title.addEventListener('click', () => select(guests[0].id));
         }
         row.append(title, make('small', result + http + rtsp + ftp + certificate + postgresql + smb + (reason ? ' · ' + reason + errorSource : '') + backup + policy + dns + rtt + attempts + gateway + egress + management + scope + source + time + identity + (check.stale ? ' · устарело' : '')));
+        if (arpResult) {
+          row.append(make('small', arpResult + ' · ' + arp.address + ' · из ' + arp.sourceIP + ' · ' + arp.interface));
+        }
         if (pppoe?.parentLink) {
           const {state, source, checkedAt} = pppoe.parentLink;
           const link = {up: 'Линк поднят', down: 'Линк опущен', disabled: 'Порт отключён'}[state];
