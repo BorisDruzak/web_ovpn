@@ -290,6 +290,8 @@
 
 Для `record: SRV` укажите `expected_srv_records` со списком пар `target` и `port`. Сборщик сверяет полный набор без учёта регистра и порядка имён. API и MCP публикуют `dns.srvRecords`. Для обнаружения контроллеров домена проверяется `_ldap._tcp.dc._msdcs` на обоих DNS Active Directory и на AdGuard. [Проверка записей SRV в Active Directory](https://learn.microsoft.com/en-us/troubleshoot/windows-server/networking/verify-srv-dns-records-have-been-created)
 
+Карточки `ad-main-kerberos-discovery` и `ad-directum-kerberos-discovery` сверяют `_kerberos._tcp.dc._msdcs.sosnadmin.local.` по UDP и TCP и `_kpasswd._tcp.sosnadmin.local.` по TCP на DNS обоих контроллеров. В ответах ожидаются AD-MAIN и DirectumServer с портами 88 и 464 соответственно. Путь в карточке относится к DNS на порту 53. Обмен с KDC и смена пароля требуют отдельных проверок. [Записи обнаружения контроллеров домена](https://learn.microsoft.com/en-us/troubleshoot/windows-server/active-directory/problems-with-dc-ad-integrated-dns-zones)
+
 Если API сообщает об отказе в JSON-ответе с HTTP 200, задайте `json_unavailable` вместе с `json_fields`. Совпадение всех полей `json_unavailable` означает недоступность и имеет приоритет над полями успешного ответа. Например, SonarQube сообщает `status: DOWN` в `/api/system/status`.
 
 Для HTTPS с внутренним CA укажите абсолютный путь `tls_ca_file`. Параметр `tls_server_name` задаёт имя для проверки сертификата и заголовка Host, а TCP-соединение по-прежнему открывается к проверенному `ip`. Эти параметры используются отдельно от `tls_sha256`. Обновлённый сертификат проходит проверку, если его имя совпадает и цепочка ведёт к доверенному CA.
