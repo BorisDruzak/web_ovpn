@@ -215,6 +215,25 @@ def test_gateway_arp_preserves_ping_and_uses_exact_interface(monkeypatch, reply,
                                "?address=192.0.2.50", "?interface=ether9", ""]
 
 
+def test_gateway_failure_checks_expected_address_and_dhcp(monkeypatch):
+    sock = fake_api(monkeypatch, [
+        "!re", "=sent=3", "=received=0", "", "!done", "",
+        "!re", "=address=192.0.2.50", "=interface=ether9", "=status=incomplete", "=complete=false", "",
+        "!done", "",
+        "!done", "",
+        "!re", "=interface=ether9", "=status=searching...", "=disabled=false", "", "!done", "",
+    ])
+    result = run_probe(
+        sources=[API_SOURCE], secrets=API_SECRETS, interface="ether9",
+        source_address="192.0.2.10", observe_neighbor=True,
+    )
+    assert result["status"] == "unreachable"
+    assert result["evidence"]["gateway_source"] == {"status": "missing", "dhcp": "searching"}
+    assert sock.words[-4:] == [
+        "/ip/dhcp-client/print", "=.proplist=interface,status,disabled", "?interface=ether9", "",
+    ]
+
+
 def test_router_api_reports_icmp_error_without_guessing_a_path(monkeypatch):
     fake_api(monkeypatch, [
         "!re", "=seq=0", "=host=192.0.2.5", "=size=576", "=ttl=63", "=time=893us",

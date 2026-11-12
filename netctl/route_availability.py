@@ -248,6 +248,42 @@ def _observe_gateway_arp(client: RouterOSApiClient, target: str, interface: str,
             "resolved": {"true": True, "false": False}.get(complete)}
 
 
+def _observe_gateway_source(client: RouterOSApiClient, address: str, interface: str, deadline: float) -> dict:
+    if client.sock is None or deadline <= monotonic():
+        return {"status": "unavailable"}
+    try:
+        client.sock.settimeout(min(2.0, deadline - monotonic()))
+        rows = client.call([
+            "/ip/address/print", "=.proplist=address,interface,disabled,invalid", f"?interface={interface}",
+        ])
+    except (OSError, RuntimeError, ValueError):
+        return {"status": "unavailable"}
+    if any(
+        row.get("interface") == interface and row.get("address", "").split("/", 1)[0] == address
+        and row.get("disabled") == "false" and row.get("invalid") != "true"
+        for row in rows
+    ):
+        return {"status": "assigned"}
+
+    result = {"status": "missing"}
+    timeout = min(2.0, deadline - monotonic())
+    if timeout <= 0:
+        return result
+    try:
+        client.sock.settimeout(timeout)
+        rows = client.call([
+            "/ip/dhcp-client/print", "=.proplist=interface,status,disabled", f"?interface={interface}",
+        ])
+    except (OSError, RuntimeError, ValueError):
+        return result
+    clients = [row for row in rows if row.get("interface") == interface and row.get("disabled") == "false"]
+    if len(clients) == 1:
+        status = clients[0].get("status", "").rstrip(".")
+        if status in {"searching", "requesting", "bound", "renewing", "rebinding", "stopped", "error"}:
+            result["dhcp"] = status
+    return result
+
+
 def _trace_reply(rows: list[dict[str, str]], target: str, ttl: int) -> dict:
     for row in rows:
         if row.get("seq", "0") != "0":
@@ -410,7 +446,12 @@ def probe_router_route(
                 client = client.__enter__()
                 metrics = _read_api_metrics(client.call(words), str(destination))
                 if observe_neighbor:
-                    evidence["gateway_arp"] = _observe_gateway_arp(client, str(destination), interface, deadline)
+                    arp = _observe_gateway_arp(client, str(destination), interface, deadline)
+                    evidence["gateway_arp"] = arp
+                    if origin is not None and metrics is not None and not metrics["received"] and (
+                        arp.get("resolved") is False or arp["status"] == "missing"
+                    ):
+                        evidence["gateway_source"] = _observe_gateway_source(client, str(origin), interface, deadline)
                 if metrics is not None and first_hop is not None:
                     hop_words = ["/ping", *(f"={argument}" for argument in hop_arguments[:-1])]
                     if trace_hops is None:

@@ -18,6 +18,10 @@
           <br>ARP шлюза · {{ {'observed': arp.state, 'missing': 'запись отсутствует', 'ambiguous': 'несколько записей', 'timeout': 'таймаут'}.get(arp.status, 'нет данных') }}
           {% if arp.resolved is sameas false %} · MAC не разрешён{% endif %}
           {% endif %}
+          {% if row.evidence.gateway_source is defined and row.evidence.gateway_source.status == 'missing' %}
+          <br>Исходный IPv4 не назначен на интерфейсе
+          {% if row.evidence.gateway_source.dhcp is defined %} · DHCP {{ row.evidence.gateway_source.dhcp }}{% endif %}
+          {% endif %}
           {% if row.evidence.duration_ms is defined %}<br>{{ row.evidence.duration_ms }} мс{% endif %}
           {% if row.evidence.http_status is defined %}<br>HTTP {{ row.evidence.http_status }}{% endif %}
           {% if row.evidence.dns_rcode is defined %}<br>DNS {{ row.evidence.dns_rcode }}{% endif %}
