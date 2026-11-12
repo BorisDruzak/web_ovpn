@@ -11,13 +11,16 @@
 
 - name: Check the protected staging configuration directories
   ansible.builtin.stat:
-    path: "{{ item }}"
+    path: "{{ item.path }}"
     follow: false
     get_checksum: false
   loop:
-    - /etc/endpoint-agent
-    - /etc/systemd/system/endpoint-agent.service.d
+    - path: /etc/endpoint-agent
+      modes: ["0755"]
+    - path: /etc/systemd/system/endpoint-agent.service.d
+      modes: ["0700", "0705", "0750", "0755"]
   register: endpoint_native_config_dirs
+  tags: [alt_setup_preflight]
 
 - name: Require root-owned staging configuration directories
   ansible.builtin.assert:
@@ -25,11 +28,12 @@
       - item.stat.isdir | default(false)
       - not (item.stat.islnk | default(false))
       - item.stat.uid == 0 and item.stat.gid == 0
-      - item.stat.mode is match('^07[05][05]$')
+      - item.stat.mode in item.item.modes
     fail_msg: ALT_PREFLIGHT_FAILURE:endpoint_native_staging_prerequisites_missing
   loop: "{{ endpoint_native_config_dirs.results }}"
   loop_control:
-    label: "{{ item.item }}"
+    label: "{{ item.item.path }}"
+  tags: [alt_setup_preflight]
 
 - name: Read protected native staging prerequisites
   ansible.builtin.stat:

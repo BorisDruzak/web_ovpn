@@ -177,6 +177,15 @@ def test_endpoint_agent_is_an_independent_native_component_with_functional_accep
         'endpoint-agent', 'endpoint-agent-user-sensor',
     ]
     tasks = yaml.safe_load((SOURCE / 'roles/software_endpoint_agent_native/tasks/main.yml').read_text(encoding='utf-8'))
+    directory_check = next(task for task in tasks
+                           if task['name'] == 'Check the protected staging configuration directories')
+    directory_assertion = next(task for task in tasks
+                               if task['name'] == 'Require root-owned staging configuration directories')
+    config_slot = next(item for item in directory_check['loop']
+                       if isinstance(item, dict) and item['path'] == '/etc/endpoint-agent')
+    assert config_slot['modes'] == ['0755']
+    assert 'item.stat.mode in item.item.modes' in directory_assertion['ansible.builtin.assert']['that']
+    assert 'alt_setup_preflight' in directory_check['tags'] and 'alt_setup_preflight' in directory_assertion['tags']
     native = next(task for section in tasks for task in section.get('block', [])
                   if task['name'] == 'Run the existing Endpoint native coordinator')
     argv = native['ansible.builtin.command']['argv']
