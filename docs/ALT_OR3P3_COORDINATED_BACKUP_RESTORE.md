@@ -42,8 +42,9 @@ sudo bash deploy/alt-linux/install-backup-tool.sh
 The public installer accepts no arguments. It installs only the independent
 backup utility, its Python package, the fail-closed systemd guard and private
 backup state. It does not stop or replace the provisioning control plane.
-Existing bundles, the fingerprint key, rollout state and the operation log are
-preserved.
+Existing bundles, the fingerprint key and rollout state are preserved. New audit
+records go to the private backup state directory. Previous audit records at
+`/var/log/alt-deploy-backup.log` stay at that path.
 
 Confirm the installed entry points without displaying secret material:
 
@@ -283,7 +284,7 @@ Relevant protected evidence is located at:
 ```text
 /var/backups/alt-deploy/.restore-transactions/<restore-id>/journal.json
 /var/backups/alt-deploy/pre-restore-*/<restore-id>/
-/var/log/alt-deploy-backup.log
+/var/lib/alt-deploy-backup/operation.log
 /var/lib/alt-deploy-backup/rollout.json
 /run/alt-deploy-backup/restore.permit
 ```
@@ -334,7 +335,7 @@ Production ownership and mode contract:
 | `/var/tmp/alt-deploy-restore-test` | `root:root` | `0700` | isolated rehearsal root |
 | `/run/alt-deploy-backup` | `root:root` | `0700` | ephemeral guard permits |
 | rollout and restore permits | `root:root` | `0600` | exact temporary authorization |
-| `/var/log/alt-deploy-backup.log` | `root:root` | `0600` | bounded JSONL audit |
+| `/var/lib/alt-deploy-backup/operation.log` | `root:root` | `0600` | bounded JSONL audit |
 | `/etc/systemd/system/alt-deploy-guard.service` | `root:root` | `0644` | fail-closed service gate |
 
 Bundle top-level contents are exactly:

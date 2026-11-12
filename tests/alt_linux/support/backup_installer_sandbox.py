@@ -212,12 +212,13 @@ class BackupInstallerSandbox:
             "/var/backups/alt-deploy/backup-20260722T120000Z-11111111/manifest.json": b"bundle-sentinel\n",
             "/var/lib/alt-deploy-backup/fingerprint.key": b"k" * 32,
             "/var/log/alt-deploy-backup.log": b"audit-sentinel\n",
+            "/var/lib/alt-deploy-backup/operation.log": b"current-audit-sentinel\n",
         }
         for absolute_path, raw in sentinels.items():
             path = self._write(absolute_path, raw)
             if absolute_path.endswith("fingerprint.key"):
                 path.chmod(0o600)
-            if absolute_path.endswith("alt-deploy-backup.log"):
+            if absolute_path.endswith(("alt-deploy-backup.log", "operation.log")):
                 path.chmod(0o600)
         self.destination("/var/backups/alt-deploy").chmod(0o700)
         self.destination("/var/lib/alt-deploy-backup").chmod(0o700)

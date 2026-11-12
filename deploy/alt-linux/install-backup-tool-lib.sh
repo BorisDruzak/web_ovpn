@@ -136,8 +136,7 @@ backup_validate_destination_layout() {
         /etc/systemd/system \
         /var \
         /var/lib \
-        /var/backups \
-        /var/log; do
+        /var/backups; do
         backup_validate_existing_directory \
             "${root_prefix}" \
             "${public_directory}" \
@@ -168,7 +167,7 @@ backup_validate_destination_layout() {
         /etc/systemd/system/alt-deploy-guard.service
     backup_validate_existing_regular \
         "${root_prefix}" \
-        /var/log/alt-deploy-backup.log \
+        /var/lib/alt-deploy-backup/operation.log \
         600
     backup_validate_existing_regular \
         "${root_prefix}" \
@@ -190,10 +189,6 @@ backup_ensure_public_directory() {
     if [[ ! -e "${directory}" ]]; then
         install -d -o root -g root -m 0755 "${directory}"
     fi
-}
-
-backup_validate_log_parent() {
-    backup_ensure_public_directory "$1" /var/log
 }
 
 backup_run_source_checks() {
@@ -253,10 +248,9 @@ backup_prepare_private_state() {
     local state_root backup_root log_file
     state_root=$(backup_install_destination "${root_prefix}" /var/lib/alt-deploy-backup)
     backup_root=$(backup_install_destination "${root_prefix}" /var/backups/alt-deploy)
-    log_file=$(backup_install_destination "${root_prefix}" /var/log/alt-deploy-backup.log)
+    log_file=$(backup_install_destination "${root_prefix}" /var/lib/alt-deploy-backup/operation.log)
 
     install -d -o root -g root -m 0700 "${state_root}" "${backup_root}"
-    backup_validate_log_parent "${root_prefix}"
     if [[ -L "${log_file}" || ( -e "${log_file}" && ! -f "${log_file}" ) ]]; then
         echo "Backup operation log is unsafe" >&2
         return 1

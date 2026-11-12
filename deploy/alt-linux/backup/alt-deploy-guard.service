@@ -18,4 +18,4 @@ ProtectHome=true
 ReadOnlyPaths=-/var/backups/alt-deploy
 ReadOnlyPaths=-/var/lib/alt-deploy-backup
 ReadOnlyPaths=-/run/alt-deploy-backup
-ReadWritePaths=/var/log/alt-deploy-backup.log
+ReadWritePaths=/var/lib/alt-deploy-backup/operation.log

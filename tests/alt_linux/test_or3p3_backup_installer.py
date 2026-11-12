@@ -109,7 +109,7 @@ def test_backup_installer_publishes_only_backup_assets(
     assert stat.S_IMODE(guard.stat().st_mode) == 0o644
     sandbox.assert_private_mode("/var/lib/alt-deploy-backup", 0o700)
     sandbox.assert_private_mode("/var/backups/alt-deploy", 0o700)
-    sandbox.assert_private_mode("/var/log/alt-deploy-backup.log", 0o600)
+    sandbox.assert_private_mode("/var/lib/alt-deploy-backup/operation.log", 0o600)
     fingerprint = sandbox.destination(
         "/var/lib/alt-deploy-backup/fingerprint.key"
     )
@@ -143,17 +143,22 @@ def test_backup_installer_preserves_bundles_log_and_fingerprint_key(
     assert sandbox.read_sentinels(sentinels) == sentinels
 
 
-def test_backup_installer_preserves_existing_log_parent_mode(
+def test_backup_installer_uses_private_log_with_shared_system_log_parent(
     tmp_path: Path,
 ) -> None:
     sandbox = BackupInstallerSandbox.create(tmp_path)
     log_parent = sandbox.destination("/var/log")
-    before = stat.S_IMODE(log_parent.stat().st_mode)
+    log_parent.chmod(0o775)
+    old_log = log_parent / "alt-deploy-backup.log"
+    old_log.write_bytes(b"previous audit records\n")
+    old_log.chmod(0o600)
 
     result = sandbox.run_library()
 
     assert result.returncode == 0, result.stderr
-    assert stat.S_IMODE(log_parent.stat().st_mode) == before == 0o755
+    assert stat.S_IMODE(log_parent.stat().st_mode) == 0o775
+    assert old_log.read_bytes() == b"previous audit records\n"
+    sandbox.assert_private_mode("/var/lib/alt-deploy-backup/operation.log", 0o600)
 
 
 def test_backup_installer_preserves_existing_public_parent_modes(
@@ -188,7 +193,7 @@ def test_backup_installer_preserves_existing_public_parent_modes(
         ("/opt/alt-deploy-backup", True),
         ("/usr/local/sbin", True),
         ("/etc/systemd/system", True),
-        ("/var/log/alt-deploy-backup.log", False),
+        ("/var/lib/alt-deploy-backup/operation.log", False),
     ],
 )
 def test_backup_installer_rejects_symlink_destinations_before_mutation(

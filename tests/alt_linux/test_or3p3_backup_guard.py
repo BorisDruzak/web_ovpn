@@ -334,7 +334,7 @@ def test_guard_systemd_unit_is_required_by_all_control_plane_units() -> None:
     assert "Type=oneshot" in guard_unit
     assert "ExecStart=/usr/local/sbin/alt-deploy-backup guard" in guard_unit
     assert "RemainAfterExit" not in guard_unit
-    assert "ReadWritePaths=/var/log/alt-deploy-backup.log" in guard_unit
+    assert "ReadWritePaths=/var/lib/alt-deploy-backup/operation.log" in guard_unit
 
     for name in (
         "alt-deploy-http.service",

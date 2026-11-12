@@ -148,7 +148,7 @@ class BackupSettings:
             lifecycle_lock=rooted(
                 "/var/lib/alt-deploy/workstationctl.lock"
             ),
-            log_file=rooted("/var/log/alt-deploy-backup.log"),
+            log_file=rooted("/var/lib/alt-deploy-backup/operation.log"),
             registration_root=rooted(
                 "/srv/alt-deploy/registration"
             ),

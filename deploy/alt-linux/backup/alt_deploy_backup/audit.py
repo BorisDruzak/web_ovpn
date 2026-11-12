@@ -77,7 +77,7 @@ class AuditLog:
             not stat.S_ISDIR(metadata.st_mode)
             or metadata.st_uid != self.settings.expected_root_uid
             or metadata.st_gid != self.settings.expected_root_gid
-            or stat.S_IMODE(metadata.st_mode) & 0o002
+            or stat.S_IMODE(metadata.st_mode) & 0o022
         ):
             raise _invalid("Backup audit parent metadata is unsafe")
 
