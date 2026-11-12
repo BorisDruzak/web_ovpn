@@ -18,6 +18,11 @@ from .oids import (
     IF_OPER_STATUS,
     IF_PHYS_ADDRESS,
     IF_SPEED,
+    LLDP_LOC_PORT_ID,
+    LLDP_LOC_PORT_ID_SUBTYPE,
+    LLDP_PORT_ADMIN_STATUS,
+    LLDP_PORT_RX_FRAMES,
+    LLDP_PORT_TX_FRAMES,
 )
 from .outcomes import SnmpOutcome
 
@@ -47,6 +52,7 @@ RX_ERROR_COLUMNS = {
     "symbolErrors": (*_DOT3_STATS_ENTRY, 18),
 }
 BRIDGE_STP_PORT_STATES = {1: "disabled", 2: "blocking", 3: "listening", 4: "learning", 5: "forwarding", 6: "broken"}
+LLDP_ADMIN_STATES = {1: "tx_only", 2: "rx_only", 3: "tx_rx", 4: "disabled"}
 
 
 async def _indexed_port_column(transport, oid: tuple[int, ...], capability: str) -> dict[int, SnmpVarBind]:
@@ -120,6 +126,37 @@ async def read_bridge_stp_ports(transport) -> dict[int, dict]:
         if config and config.value_type == "integer" and type(config.value) is int and config.value in (1, 2):
             ports[index]["enabled"] = config.value == 1
     return ports
+
+
+async def read_switch_lldp_port_state(transport, *, dgs: bool = False) -> dict[str, dict]:
+    admin = await _indexed_port_column(transport, LLDP_PORT_ADMIN_STATUS, "lldp_admin_status")
+    if not admin:
+        return {}
+    names = await _indexed_port_column(transport, LLDP_LOC_PORT_ID, "lldp_local_port_id")
+    subtypes = await _indexed_port_column(transport, LLDP_LOC_PORT_ID_SUBTYPE, "lldp_local_port_subtype")
+    rx = await _indexed_port_column(transport, LLDP_PORT_RX_FRAMES, "lldp_rx_frames")
+    tx = await _indexed_port_column(transport, LLDP_PORT_TX_FRAMES, "lldp_tx_frames")
+    ports: dict[str, list[dict]] = {}
+    for index, state in admin.items():
+        subtype = subtypes.get(index)
+        if (index not in names or subtype is None or subtype.value_type != "integer" or type(subtype.value) is not int
+                or state.value_type != "integer" or type(state.value) is not int or state.value not in LLDP_ADMIN_STATES):
+            continue
+        try:
+            name = _text(names[index], "LLDP port ID").strip().casefold()
+        except ValueError:
+            continue
+        if dgs and subtype.value == 1 and name == str(index):
+            name = f"slot0/{index}"
+        elif subtype.value != 5 or not re.fullmatch(r"[a-z0-9][a-z0-9 ._/-]{0,63}", name):
+            continue
+        readings = {"admin": LLDP_ADMIN_STATES[state.value]}
+        for field, column in (("rxFrames", rx), ("txFrames", tx)):
+            row = column.get(index)
+            if row and row.value_type in ("counter32", "integer") and type(row.value) is int and 0 <= row.value < 2**32:
+                readings[field] = row.value
+        ports.setdefault(name, []).append(readings)
+    return {name: rows[0] for name, rows in ports.items() if len(rows) == 1}
 
 
 async def read_snr_transceivers(transport) -> dict[int, dict]:

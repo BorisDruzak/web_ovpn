@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from netctl.snmp.interfaces import BRIDGE_STP_PORT_STATES, RX_ERROR_COLUMNS
+from netctl.snmp.interfaces import BRIDGE_STP_PORT_STATES, LLDP_ADMIN_STATES, RX_ERROR_COLUMNS
 from netctl.snmp.lldp import LLDP_PORT_ID_SUBTYPES
 
 from .endpoint_context_adapter import get_endpoint_context_adapter
@@ -308,6 +308,12 @@ def _public_port(row: dict, now: datetime) -> dict:
         result["stpPort"] = {"checkedAt": _time(stp["checkedAt"]).isoformat(), "state": stp["state"]}
         if type(stp.get("enabled")) is bool:
             result["stpPort"]["enabled"] = stp["enabled"]
+    lldp = row.get("lldpPort")
+    if (fresh and isinstance(lldp, dict) and lldp.get("admin") in LLDP_ADMIN_STATES.values()
+            and observation_is_fresh(lldp.get("checkedAt"), now, max_age=PORT_LINK_CHECK_MAX_AGE)):
+        result["lldpPort"] = {"checkedAt": _time(lldp["checkedAt"]).isoformat(), "admin": lldp["admin"],
+                              **{key: value for key in ("rxFrames", "txFrames")
+                                 if type(value := lldp.get(key)) is int and 0 <= value < 2**32}}
     neighbor_count = row.get("lldpNeighborCount")
     if result["state"] == "up" and type(neighbor_count) is int and 1 <= neighbor_count <= 65535:
         result["lldpNeighborCount"] = neighbor_count
@@ -1520,7 +1526,7 @@ def _topology_port_pairs(nodes: dict, links: list[dict], host_ids: set[str] | No
             observations = {
                 side: {key: port[key] for key in ("name", "state", "speedBps", "checkedAt", "source", "linkMode",
                                                   "stpPort", "telemetry", "rxErrorCounters", "rxSilence", "fdbLearned", "transceiver",
-                                                  "configuredLabel") if key in port}
+                                                  "configuredLabel", "lldpPort") if key in port}
                 for side, port in declared.get("portStates", {}).items() if port["state"] != "unknown"
             }
             pending[(a, b, declared["a"], declared["b"])] = {
@@ -1745,7 +1751,7 @@ def _physical_attachments(nodes: dict, links: list[dict], host_ids: list[str]) -
                     reading["portStates"] = {
                         sides[side]: {key: state[key] for key in ("name", "state", "speedBps", "checkedAt",
                                                                 "stale", "source", "configuredLabel", "linkMode", "rxSilence",
-                                                                "transceiver")
+                                                                "transceiver", "lldpPort")
                                       if key in state}
                         for side, state in port_states.items()
                     }

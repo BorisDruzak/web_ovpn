@@ -1791,13 +1791,20 @@ def test_lldp_neighbor_count_on_ports_and_declared_links_uses_current_poll(tmp_p
     hosts = [{"ip": "192.0.2.66", "mac": "00:11:22:33:44:66", "hostname": "workstation", "last_seen_at": stamp},
              {"ip": "192.0.2.66", "mac": "00:11:22:33:44:66", "hostname": "old-name",
               "last_seen_at": (now - timedelta(hours=1)).isoformat()}]
-    graph = build_graph(context, {"sources": sources, "ports": ports, "lldp": lldp, "hosts": hosts}, {}, {}, {}, now)
+    lldp_status = {"a": {"checkedAt": stamp, "ports": {"ge1": {"admin": "tx_rx", "rxFrames": 0, "txFrames": 21}}},
+                   "b": {"checkedAt": (now - timedelta(minutes=6)).isoformat(),
+                         "ports": {"ge1": {"admin": "rx_only", "rxFrames": 3}}}}
+    graph = build_graph(context, {"sources": sources, "ports": ports, "lldp": lldp, "hosts": hosts,
+                                  "lldp_port_status": lldp_status}, {}, {}, {}, now)
     path = tmp_path / "map.json"
     publish_snapshot(path, graph)
     public = load_infrastructure_map(path, now)
     nodes = {node["id"]: node for node in public["nodes"]}
     assert nodes["a"]["ports"][0]["lldpNeighborCount"] == 3
     assert nodes["a"]["ports"][0]["lldpChassisCount"] == 2
+    expected_status = {"checkedAt": stamp, "admin": "tx_rx", "rxFrames": 0, "txFrames": 21}
+    assert nodes["a"]["ports"][0]["lldpPort"] == expected_status
+    assert "lldpPort" not in nodes["b"]["ports"][0]
     assert "lldpNeighborCount" not in nodes["b"]["ports"][0]
     direct = next(edge for edge in public["links"] if edge["kind"] == "Сетевое соединение")
     assert not direct["confirmed"]
@@ -1813,10 +1820,11 @@ def test_lldp_neighbor_count_on_ports_and_declared_links_uses_current_poll(tmp_p
     assert "inventoryDeviceId" not in details[2]
     assert "private" not in json.dumps(details) and "192.0.2.90" not in json.dumps(details)
     pending, = summarize_topology(public)["topologyAudit"]["pending"]
+    assert pending["portObservations"]["a"]["lldpPort"] == expected_status
     assert pending["lldpObservations"] == {"a": {"checkedAt": stamp, "neighbors": details}}
     assert pending["missingPortSides"] == [] and pending["identifiedPeerSides"] == ["a"]
     aged = load_infrastructure_map(path, now + timedelta(hours=1))
-    assert all(not {"lldpNeighborCount", "lldpChassisCount", "lldpNeighbors"} & port.keys()
+    assert all(not {"lldpNeighborCount", "lldpChassisCount", "lldpNeighbors", "lldpPort"} & port.keys()
                for node in aged["nodes"] for port in node["ports"])
 
 
@@ -2451,6 +2459,37 @@ def test_snr_transceiver_inventory_uses_the_current_interface_identity(tmp_path)
     assert "transceiver" not in second
     expired, = load_infrastructure_map(path, now + timedelta(minutes=6))["nodes"]
     assert "transceiver" not in expired["ports"][0]
+
+
+def test_switch_lldp_port_state_checks_local_port_identity_and_preserves_zero():
+    import asyncio
+
+    from netctl.snmp.interfaces import read_switch_lldp_port_state
+    from netctl.snmp.models import CapabilityResult, SnmpVarBind
+    from netctl.snmp.outcomes import SnmpOutcome
+
+    class Transport:
+        async def walk(self, oid, *, capability):
+            readings = {
+                (1, 6, 1, 2): [("integer", 3), ("integer", 2), ("integer", 4), ("integer", 1)],
+                (3, 7, 1, 2): [("integer", 5), ("integer", 1), ("integer", 1), ("integer", 7)],
+                (3, 7, 1, 3): [("octet_string", b"xe1"), ("octet_string", b"2"),
+                               ("octet_string", b"99"), ("octet_string", b"unbound")],
+                (2, 7, 1, 4): [("integer", 0), ("counter32", 104), ("integer", 5), ("integer", 1)],
+                (2, 6, 1, 2): [("integer", 450), ("counter32", 2**32), ("integer", 5), ("integer", 1)],
+            }
+            assert oid[:7] == (1, 0, 8802, 1, 1, 2, 1)
+            rows = tuple(SnmpVarBind((*oid, i), value_type, value)
+                         for i, (value_type, value) in enumerate(readings[oid[7:]], 1))
+            return CapabilityResult(capability, SnmpOutcome.SUCCESS_WITH_ROWS, rows)
+
+    assert asyncio.run(read_switch_lldp_port_state(Transport())) == {
+        "xe1": {"admin": "tx_rx", "rxFrames": 0, "txFrames": 450},
+    }
+    assert asyncio.run(read_switch_lldp_port_state(Transport(), dgs=True)) == {
+        "xe1": {"admin": "tx_rx", "rxFrames": 0, "txFrames": 450},
+        "slot0/2": {"admin": "rx_only", "rxFrames": 104},
+    }
 
 
 def test_snr_transceiver_power_requires_ordered_alarm_limits():

@@ -1125,6 +1125,14 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           row.append(make('small', `Подпись на коммутаторе · ${text} · ${formatTime(checkedAt)}`));
         }
         if (selectedPort) for (const count of lldpCounts(port)) row.append(make('small', count));
+        if (selectedPort && port.lldpPort) {
+          const {admin, rxFrames, txFrames, checkedAt} = port.lldpPort;
+          const modes = {tx_rx: 'приём и передача', rx_only: 'только приём', tx_only: 'только передача', disabled: 'отключён'};
+          const counters = [['получено', rxFrames], ['отправлено', txFrames]]
+            .filter(([, value]) => value !== undefined)
+            .map(([direction, value]) => direction + ' кадров ' + value.toLocaleString('ru-RU'));
+          row.append(make('small', ['LLDP', modes[admin], ...counters, formatTime(checkedAt)].join(' · ')));
+        }
         if (selectedPort && port.lldpNeighbors?.length) {
           const observed = make('details');
           const count = port.lldpNeighbors.length;

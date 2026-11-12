@@ -31,7 +31,7 @@ from netctl.drivers import legacy_driver_for
 from netctl.snmp.fdb import read_learned_fdb_port
 from netctl.snmp.interfaces import (
     read_bridge_stp_ports, read_interface_link, read_interface_rx_error_counters,
-    read_snr_transceiver_power, read_snr_transceivers, read_switch_link_modes,
+    read_snr_transceiver_power, read_snr_transceivers, read_switch_link_modes, read_switch_lldp_port_state,
 )
 from netctl.snmp.lacp import read_lacp_members
 from netctl.snmp.stp import read_stp_designated_ports, read_stp_root_path
@@ -340,7 +340,7 @@ async def _collect_stp_observations(sources: list[dict], switches: list[dict], n
     return roots, designated
 
 
-async def _collect_switch_port_diagnostics(network: dict, now: datetime) -> tuple[dict, dict, dict]:
+async def _collect_switch_port_diagnostics(network: dict, now: datetime) -> tuple[dict, dict, dict, dict]:
     detected = {row["source"]: row["profile_id"] for row in network.get("switches", [])
                 if row.get("profile_id") in {"dgs", "snr", "tplink"}
                 and observation_is_fresh(row.get("last_success_at"), now)}
@@ -365,10 +365,23 @@ async def _collect_switch_port_diagnostics(network: dict, now: datetime) -> tupl
             pass
         return name, modes, modules, stp
 
-    results = await asyncio.gather(*(read(source) for source in targets))
+    async def read_lldp(source):
+        name = source["name"]
+        try:
+            async with asyncio.timeout(6), SnmpTransport.from_source(source) as transport:
+                ports = await read_switch_lldp_port_state(transport, dgs=detected[name] == "dgs")
+        except (TimeoutError, OSError, ValueError):
+            return name, {}
+        return name, {"ports": ports, "checkedAt": datetime.now(timezone.utc).isoformat()} if ports else {}
+
+    results, lldp = await asyncio.gather(
+        asyncio.gather(*(read(source) for source in targets)),
+        asyncio.gather(*(read_lldp(source) for source in targets)),
+    )
     return ({name: modes for name, modes, _, _ in results if modes},
             {name: modules for name, _, modules, _ in results if modules},
-            {name: stp for name, _, _, stp in results if stp})
+            {name: stp for name, _, _, stp in results if stp},
+            {name: observation for name, observation in lldp if observation})
 
 
 async def _check_declared_switch_ports(context: dict, network: dict, pve: dict, now: datetime) -> None:
@@ -1766,6 +1779,10 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             stp = network.get("stp_ports", {}).get(name, {})
             stp_current = row.get("enabled") and observation_is_fresh(
                 stp.get("checkedAt"), now, max_age=STP_ROOT_PATH_MAX_AGE)
+            lldp_status = network.get("lldp_port_status", {}).get(name, {})
+            lldp_current = row.get("enabled") and observation_is_fresh(
+                lldp_status.get("checkedAt"), now, max_age=PORT_LINK_CHECK_MAX_AGE)
+            port_name_counts = Counter(port["name"].casefold() for port in item["ports"] if port["name"])
             for port, raw_port in zip(item["ports"], current):
                 label = raw_port.get("alias")
                 if row.get("enabled") and isinstance(label, str) and 0 < len(label) <= 64:
@@ -1785,6 +1802,10 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                     sample = stp["ports"].get(index, {})
                     if sample.get("port") and port_label_key(sample["port"]) == port_label_key(port["name"]):
                         port["stpPort"] = {**sample, "checkedAt": stp["checkedAt"]}
+                port_name = (port["name"] or "").casefold()
+                if lldp_current and port_name_counts[port_name] == 1:
+                    if lldp_port := lldp_status["ports"].get(port_name):
+                        port["lldpPort"] = {**lldp_port, "checkedAt": lldp_status["checkedAt"]}
                 scope = (name, latest_run, port["checkedAt"])
                 neighbors = peers_by_sample.get((name, port["key"], latest_run, port["checkedAt"]))
                 if neighbors and port["state"] == "up":
@@ -3301,7 +3322,7 @@ def main() -> int:
             network["stp_root_paths"], network["stp_designated_ports"] = asyncio.run(
                 _collect_stp_observations(network["sources"], network.get("switches", []), datetime.now(timezone.utc))
             )
-            network["link_modes"], network["transceivers"], network["stp_ports"] = asyncio.run(
+            network["link_modes"], network["transceivers"], network["stp_ports"], network["lldp_port_status"] = asyncio.run(
                 _collect_switch_port_diagnostics(network, datetime.now(timezone.utc))
             )
             asyncio.run(_collect_switch_rx_errors(network, datetime.now(timezone.utc)))
