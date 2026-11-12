@@ -535,6 +535,11 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       row.append(make('strong', [iface.guestPort, iface.bridge, attachment.hypervisor.name].filter(Boolean).join(' → ')));
       const state = iface.linkDisabled ? 'Адаптер отключён' : iface.bridgeActive === false ? 'Мост неактивен' : '';
       if (state) row.append(make('small', state));
+      if (iface.localNeighbor) {
+        const {vlan, interface: localInterface, peerAddress, checkedAt} = iface.localNeighbor;
+        row.append(make('small', ['Соседство VLAN ' + vlan + ' подтверждено', localInterface + ' → ' + peerAddress,
+          formatTime(checkedAt)].join(' · ')));
+      }
       if (!iface.switchObservations.length) row.append(make('small', 'Порт коммутатора не подтверждён'));
       for (const observation of iface.switchObservations) {
         const {basis, physicalPair, switch: target, switchPort, checkedAt} = observation;
@@ -1086,6 +1091,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         vlan_link_down: 'Интерфейс VLAN не поднят',
         vlan_address_mismatch: 'Локальный адрес не совпал',
         vlan_route_mismatch: 'Маршрут к соседу проходит вне ожидаемого VLAN',
+        vlan_peer_identity_mismatch: 'MAC соседа отличается от MAC адаптера Proxmox',
         wireguard_route_unconfirmed: 'Маршрут ядра не подтверждён',
         wireguard_route_mismatch: 'Ядро выбрало другой маршрут',
         wireguard_evidence_unavailable: 'Нет свежего отчёта о маркировке и WireGuard',
@@ -1135,7 +1141,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           .filter(Boolean).map(value => ' · ' + value).join('');
         const http = check.httpStatus ? ' · HTTP ' + check.httpStatus : '';
         const localRoute = check.localRoute;
-        const egress = vlan ? ' · ' + vlan.interface + ' · ' + vlan.localAddress : localRoute?.interface
+        const vlanPeer = vlan?.peer;
+        const peer = vlanPeer && ({matched: ' · Сосед ' + vlanPeer.guestPort + ' подтверждён',
+          unconfirmed: ' · Сосед не подтверждён'}[vlanPeer.state] ?? '');
+        const egress = vlan ? ' · ' + vlan.interface + ' · ' + vlan.localAddress + (peer || '') : localRoute?.interface
           ? ' · Выход UI_VPN: ' + [localRoute.sourceIP, localRoute.interface,
             localRoute.gateway && 'через ' + localRoute.gateway,
             localRoute.state === 'unreachable' && 'ожидался ' + localRoute.expectedGateway].filter(Boolean).join(' · ')

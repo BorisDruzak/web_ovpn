@@ -15,7 +15,7 @@ import subprocess
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from time import monotonic
+from time import monotonic, sleep
 
 import dns.exception
 import dns.message
@@ -660,6 +660,31 @@ def _icmp_check(ip: str, *, source_ip: str | None = None, interface: str | None 
     return {"state": "unknown", "reason": "icmp_probe_error"}
 
 
+def _local_vlan_peer(address: str, interface: str, expected_mac: str) -> str:
+    def read():
+        rows = json.loads(subprocess.check_output(
+            ["/usr/sbin/ip", "-j", "-4", "neigh", "show", "to", address, "dev", interface],
+            timeout=TIMEOUT, stderr=subprocess.DEVNULL,
+        ))
+        if isinstance(rows, list) and len(rows) == 1 and isinstance(rows[0], dict) and rows[0].get("dst") == address:
+            return rows[0]
+        return {}
+
+    try:
+        neighbor = read()
+        states = neighbor.get("state")
+        if isinstance(states, list) and any(state in ("DELAY", "PROBE") for state in states):
+            # Linux revalidates a cached neighbor shortly after using it.
+            sleep(6)
+            neighbor = read()
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return "unconfirmed"
+    mac = neighbor.get("lladdr")
+    if neighbor.get("state") != ["REACHABLE"] or not isinstance(mac, str) or not re.fullmatch(r"(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}", mac):
+        return "unconfirmed"
+    return "matched" if mac.lower() == expected_mac else "mismatch"
+
+
 def _local_vlan_transit(spec: dict) -> dict:
     name, vlan = spec.get("interface"), spec.get("vlan")
     unknown = {"state": "unknown", "reason": "vlan_probe_error"}
@@ -708,7 +733,15 @@ def _local_vlan_transit(spec: dict) -> dict:
     row, = route
     if row.get("dev") != name or row.get("gateway") or row.get("dst") != address or row.get("from") != source:
         return {**target, "state": "unreachable", "reason": "vlan_route_mismatch"}
-    return {**target, **_icmp_check(address, source_ip=source, interface=name)}
+    result = _icmp_check(address, source_ip=source, interface=name)
+    guest_port, mac = spec.get("peerGuestPort"), spec.get("peerMac")
+    if (result["state"] == "reachable" and isinstance(guest_port, str) and re.fullmatch(r"net[0-9]{1,3}", guest_port)
+            and isinstance(mac, str) and re.fullmatch(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}", mac)):
+        state = _local_vlan_peer(address, name, mac)
+        target["vlanTransit"]["peer"] = {"asset": spec.get("peerAsset"), "guestPort": guest_port, "state": state}
+        if state == "mismatch":
+            result = {"state": "unknown", "reason": "vlan_peer_identity_mismatch"}
+    return {**target, **result}
 
 
 def _wireguard_policy(spec: dict) -> dict:

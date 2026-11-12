@@ -1073,6 +1073,34 @@ def _local_vlan_probe_specs(context: dict, configured: object) -> dict:
     return specs
 
 
+def _bind_vlan_probe_peers(specs: dict, pve: dict, bindings: dict, now: datetime) -> None:
+    ports = bindings.get("local_vlan_peer_adapters")
+    if not isinstance(ports, dict) or not observation_is_fresh(pve.get("at"), now):
+        return
+    configs = pve.get("configs", {})
+    guests = pve.get("guests", [])
+    counts = Counter(str(guest["vmid"]) for guest in guests)
+    running = {str(guest["vmid"]) for guest in guests if guest.get("status") == "running"
+               and not guest.get("template") and counts[str(guest["vmid"])] == 1}
+    mac_counts = Counter(mac for config in configs.values() for mac in _guest_macs(config))
+    for service_id, spec in specs.items():
+        port = ports.get(service_id.removeprefix("transit:"))
+        if not isinstance(port, str) or not re.fullmatch(r"net[0-9]{1,3}", port):
+            continue
+        candidates = [vmid for vmid, row in bindings.get("guests", {}).items()
+                      if row.get("asset") == spec["peerAsset"] and vmid in running
+                      and (identity := str(row.get("mac") or "").lower()) in _guest_macs(configs.get(vmid, {}))
+                      and mac_counts[identity] == 1]
+        if len(candidates) != 1:
+            continue
+        config = configs[candidates[0]]
+        interfaces = _guest_interfaces(config)
+        bridge, tag, disabled, mac = interfaces.get(port, ("", None, True, ""))
+        if (bridge and not disabled and mac and mac_counts[mac] == 1 and tag in (None, spec["vlan"])
+                and sum(nic_mac == mac for _, _, _, nic_mac in interfaces.values()) == 1):
+            spec.update(peerGuestPort=port, peerMac=mac)
+
+
 def _wireguard_probe_specs(context: dict, configured: object, vlans: dict) -> dict:
     if not isinstance(configured, list):
         return {}
@@ -2865,6 +2893,7 @@ def main() -> int:
         elif server.get("freshness") == "stale":
             collection_issues.append("server_observer_stale")
         local_vlan_probes = _local_vlan_probe_specs(context, bindings.get("local_vlan_transits"))
+        _bind_vlan_probe_peers(local_vlan_probes, pve, bindings, now)
         wireguard_probes = _wireguard_probe_specs(context, bindings.get("wireguard_policy_checks"), local_vlan_probes)
         graph = build_graph(context, network, server, pve, bindings, now,
                             local_vlan_probes=local_vlan_probes, wireguard_probes=wireguard_probes)

@@ -4062,9 +4062,11 @@ def test_local_vlan_probe_requires_expected_link_address_and_route(monkeypatch):
                 "linkinfo": {"info_kind": "vlan", "info_data": {"id": 50}},
                 "addr_info": [{"family": "inet", "local": "192.0.2.2", "prefixlen": 30}]}]
     route = [{"dst": "192.0.2.1", "from": "192.0.2.2", "dev": "ens18.50"}]
+    neighbors = [{"dst": "192.0.2.1", "lladdr": "02:00:00:00:00:11", "state": ["REACHABLE"]}]
     pings = []
-    monkeypatch.setattr(probes.subprocess, "check_output",
-                        lambda args, **kwargs: json.dumps(address if "address" in args else route).encode())
+    def ip_output(args, **kwargs):
+        return json.dumps(address if "address" in args else neighbors if "neigh" in args else route).encode()
+    monkeypatch.setattr(probes.subprocess, "check_output", ip_output)
 
     def ping(ip, *, source_ip=None, interface=None):
         pings.append((ip, source_ip, interface))
@@ -4083,15 +4085,24 @@ def test_local_vlan_probe_requires_expected_link_address_and_route(monkeypatch):
         "reachable", 0.3, {"interface": "ens18.50", "id": 50, "localAddress": "192.0.2.2/30"},
     )
     assert pings == [("192.0.2.1", "192.0.2.2", "ens18.50")]
+    spec.update(peerAsset="peer", peerGuestPort="net2", peerMac="02:00:00:00:00:11")
+    check = read()
+    assert check["vlanTransit"]["peer"] == {"asset": "peer", "guestPort": "net2", "state": "matched"}
+    assert spec["peerMac"] not in json.dumps(check)
+    neighbors[0]["lladdr"] = "02:00:00:00:00:99"
+    check = read()
+    assert (check["state"], check["reason"], check["vlanTransit"]["peer"]["state"]) == (
+        "unknown", "vlan_peer_identity_mismatch", "mismatch",
+    )
     route[0]["dev"] = "ens18"
     assert read()["reason"] == "vlan_route_mismatch"
     address[0]["linkinfo"]["info_data"]["id"] = 51
     assert read()["reason"] == "vlan_id_mismatch"
-    assert len(pings) == 1
+    assert len(pings) == 3
 
 
 def test_tagged_transit_is_excluded_from_physical_topology_and_uses_canonical_endpoints(tmp_path):
-    from app.infrastructure_collect import _local_vlan_probe_specs, build_graph
+    from app.infrastructure_collect import _bind_vlan_probe_peers, _local_vlan_probe_specs, build_graph
     from app.infrastructure_map import load_infrastructure_map, summarize_topology
 
     now = datetime.now(timezone.utc)
@@ -4103,6 +4114,17 @@ def test_tagged_transit_is_excluded_from_physical_topology_and_uses_canonical_en
                "links": [transit]}
     specs = _local_vlan_probe_specs(context, {"policy": "local"})
     assert specs["transit:policy"]["ip"] == "192.0.2.1"
+    bindings = {"local_vlan_peer_adapters": {"policy": "net2"},
+                "guests": {"110": {"asset": "remote", "mac": "02:00:00:00:00:10"}}}
+    pve = {"at": now.isoformat(), "guests": [{"vmid": 110, "status": "running"}],
+           "configs": {"110": {"net0": "virtio=02:00:00:00:00:10,bridge=vmbr0",
+                               "net2": "virtio=02:00:00:00:00:11,bridge=vmbr1"}}}
+    _bind_vlan_probe_peers(specs, pve, bindings, now)
+    assert (specs["transit:policy"]["peerGuestPort"], specs["transit:policy"]["peerMac"]) == ("net2", "02:00:00:00:00:11")
+    pve["configs"]["110"]["net2"] += ",link_down=1"
+    disabled = _local_vlan_probe_specs(context, {"policy": "local"})
+    _bind_vlan_probe_peers(disabled, pve, bindings, now)
+    assert "peerMac" not in disabled["transit:policy"]
     graph = build_graph(context, {}, {}, {}, {}, now, local_vlan_probes=specs)
     path = tmp_path / "map.json"
     path.write_text(json.dumps(graph), encoding="utf-8")
@@ -4422,6 +4444,22 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     virtual["switchUplink"], = virtual.pop("switchPorts")
     read()
     assert read_audit()["interfaceCounts"]["bridge_with_physical_pair"] == 1
+    raw["nodes"][0]["serviceChecks"] = [{
+        "method": "ICMP · VLAN", "state": "reachable", "source": "UI_VPN", "checkedAt": stamp,
+        "required": True, "target": "192.0.2.1",
+        "vlanTransit": {"interface": "ens18.50", "id": 50, "localAddress": "192.0.2.2/30",
+                        "peer": {"asset": "vm", "guestPort": "net0", "state": "matched"}},
+    }]
+    interface, = read()["guests"][0]["interfaces"]
+    assert interface["localNeighbor"] == {
+        "vlan": 50, "interface": "ens18.50", "peerAddress": "192.0.2.1", "checkedAt": stamp,
+    }
+    assert interface["switchObservations"][0]["basis"] == "bridge_uplink"
+    audit = read_audit()
+    assert audit["interfaceCounts"]["local_neighbor_with_physical_pair"] == 1 and audit["gapTotal"] == 0
+    raw["nodes"][0]["serviceChecks"][0]["vlanTransit"]["peer"]["state"] = "mismatch"
+    assert "localNeighbor" not in read()["guests"][0]["interfaces"][0]
+    raw["nodes"][0].pop("serviceChecks")
     virtual["switchPorts"] = [virtual.pop("switchUplink")]
     raw["links"][2]["portEvidence"][0]["source"] = "GitHub"
     match, = read()["guests"][0]["interfaces"][0]["switchObservations"]

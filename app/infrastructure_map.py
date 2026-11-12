@@ -478,8 +478,17 @@ def _public_service_check(check: dict, now: datetime) -> dict:
             if (isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", name)
                     and type(vlan_id) is int and 1 <= vlan_id <= 4094 and address):
                 result["vlanTransit"] = {"interface": name, "id": vlan_id, "localAddress": address}
+                peer = vlan.get("peer")
+                if isinstance(peer, dict) and not result["stale"]:
+                    asset = _text(peer.get("asset"), 160)
+                    port = _text(peer.get("guestPort"), 12)
+                    state = peer.get("state")
+                    if (re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_:.-]{0,159}", asset)
+                            and re.fullmatch(r"net[0-9]{1,3}", port)
+                            and state in ("matched", "mismatch", "unconfirmed")):
+                        result["vlanTransit"]["peer"] = {"asset": asset, "guestPort": port, "state": state}
         if reason in ("vlan_probe_error", "vlan_interface_missing", "vlan_id_mismatch",
-                      "vlan_link_down", "vlan_address_mismatch", "vlan_route_mismatch"):
+                      "vlan_link_down", "vlan_address_mismatch", "vlan_route_mismatch", "vlan_peer_identity_mismatch"):
             result["reason"] = reason
     if result["method"] == "Маршрут · WireGuard":
         policy = check.get("wireguardPolicy")
@@ -1250,6 +1259,7 @@ def _attachment_node(node: dict) -> dict:
 def _guest_attachments(nodes: dict, links: list[dict], guest_ids: list[str]) -> dict:
     placements = defaultdict(list)
     physical = defaultdict(list)
+    local_neighbors = defaultdict(list)
     selected_guests = set(guest_ids)
     for edge in links:
         if not edge["confirmed"]:
@@ -1257,6 +1267,16 @@ def _guest_attachments(nodes: dict, links: list[dict], guest_ids: list[str]) -> 
         a, b = edge["a"], edge["b"]
         if edge["kind"] == "Размещение ВМ" and b in selected_guests and nodes[a]["kind"] == "Гипервизор":
             placements[b].append(edge)
+        elif edge["kind"] == "Цель проверки" and a in selected_guests and nodes[b]["kind"] == "Сервис":
+            for check in nodes[b]["serviceChecks"]:
+                vlan = check.get("vlanTransit", {})
+                peer = vlan.get("peer", {})
+                if (check["source"] == "UI_VPN" and check["state"] == "reachable" and not check["stale"]
+                        and check.get("target") and peer.get("asset") == a and peer.get("state") == "matched"):
+                    local_neighbors[a, peer["guestPort"]].append({
+                        "vlan": vlan["id"], "interface": vlan["interface"],
+                        "peerAddress": check["target"], "checkedAt": check["checkedAt"],
+                    })
         elif edge["kind"] == "Сетевое соединение":
             if nodes[a]["kind"] == "Гипервизор" and nodes[b]["kind"] == NETWORK_KINDS[0]:
                 host_side, switch_side = "a", "b"
@@ -1292,6 +1312,9 @@ def _guest_attachments(nodes: dict, links: list[dict], guest_ids: list[str]) -> 
                          "uplinks": virtual["uplinks"], "switchObservations": []}
             if "vlan" in report:
                 interface["vlan"] = report["vlan"]
+            neighbors = local_neighbors[guest_id, interface["guestPort"]]
+            if len(neighbors) == 1 and not virtual["linkDisabled"] and virtual["bridgeActive"] is True:
+                interface["localNeighbor"], = neighbors
             guest["interfaces"].append(interface)
             matches = [("guest_mac", row) for row in virtual["switchPorts"]] if not virtual["linkDisabled"] else []
             uplink = virtual.get("switchUplink")
@@ -1347,7 +1370,8 @@ def summarize_guest_attachment_audit(graph: dict) -> dict:
         ("configured_bridge", False): "configured_bridge",
     }
     guest_counts = dict.fromkeys(("running", "stopped", "unknown"), 0)
-    interface_counts = dict.fromkeys((*evidence_order.values(), "unconfirmed", "inactive"), 0)
+    interface_counts = dict.fromkeys((*evidence_order.values(), "local_neighbor_with_physical_pair",
+                                      "local_neighbor", "unconfirmed", "inactive"), 0)
     gaps = []
     for guest_id, attachment in guests.items():
         node = nodes[guest_id]
@@ -1366,8 +1390,13 @@ def summarize_guest_attachment_audit(graph: dict) -> dict:
             else:
                 evidence = {(row["basis"], "physicalPair" in row) for row in interface["switchObservations"]}
                 state = next((label for key, label in evidence_order.items() if key in evidence), "unconfirmed")
+                if "localNeighbor" in interface:
+                    if state == "bridge_with_physical_pair":
+                        state = "local_neighbor_with_physical_pair"
+                    elif state in {"bridge_uplink", "unconfirmed"}:
+                        state = "local_neighbor"
             interface_counts[state] += 1
-            if state not in {"guest_mac_with_physical_pair", "inactive"}:
+            if state not in {"guest_mac_with_physical_pair", "local_neighbor_with_physical_pair", "inactive"}:
                 incomplete.append({"guestPort": interface["guestPort"], "bridge": interface["bridge"], "state": state})
         if power != "stopped" and (incomplete or not attachment["interfaces"]):
             gaps.append({"guest": attachment["guest"], "hypervisor": attachment["hypervisor"],
