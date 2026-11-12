@@ -1087,6 +1087,36 @@ def test_dns_probe_requires_an_answer_to_the_actual_query(monkeypatch):
     assert check(alias, ("host.example.", "A", ["192.0.2.10"])) == "unknown"
 
 
+def test_dns_srv_probe_matches_controller_targets_and_ports(monkeypatch):
+    import dns.message
+    import dns.rrset
+    from app import infrastructure_service_probes as probes
+    from app.infrastructure_map import _public_service_check
+
+    name = "_ldap._tcp.dc._msdcs.example.test."
+    spec = {"name": name, "record": "SRV", "ip": "192.0.2.53", "port": 53,
+            "expected_srv_records": [{"target": "DC1.example.test.", "port": 389},
+                                     {"target": "dc2.example.test.", "port": 389}]}
+    records = ["0 100 389 DC2.example.test.", "0 100 389 dc1.example.test."]
+
+    def respond(query, *_args, **_kwargs):
+        reply = dns.message.make_response(query)
+        reply.answer.append(dns.rrset.from_text(name, 60, "IN", "SRV", *records))
+        return dns.message.from_wire(reply.to_wire()), False
+
+    monkeypatch.setattr(probes.dns.query, "udp_with_fallback", respond)
+    result = probes._dns(spec)
+    assert result["state"] == "reachable"
+    now = datetime.now(timezone.utc)
+    public = _public_service_check({**result, "method": "DNS", "source": "UI_VPN", "checkedAt": now.isoformat()}, now)
+    assert public["dns"]["srvRecords"] == [{"target": "dc1.example.test.", "port": 389},
+                                           {"target": "dc2.example.test.", "port": 389}]
+    records[0] = "0 100 3268 dc2.example.test."
+    assert probes._dns(spec)["reason"] == "dns_srv_mismatch"
+    records[:] = ["0 0 0 ."]
+    assert probes._dns(spec)["reason"] == "dns_no_answer"
+
+
 def test_https_probe_checks_dns_name_against_ca_while_connecting_to_verified_ip(monkeypatch, tmp_path):
     from contextlib import nullcontext
     from types import SimpleNamespace

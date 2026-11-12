@@ -244,6 +244,8 @@
 
 Карточка DNS-проверки показывает имя и тип записи, код ответа, транспорт и до 16 фактических адресов A или AAAA. API и MCP возвращают эти сведения в `serviceChecks[].dns`. Отдельно отмечаются отсутствие записи требуемого типа и несовпадение с ожидаемым набором адресов.
 
+Для `record: SRV` укажите `expected_srv_records` со списком пар `target` и `port`. Сборщик сверяет полный набор без учёта регистра и порядка имён. API и MCP публикуют `dns.srvRecords`. Для обнаружения контроллеров домена проверяется `_ldap._tcp.dc._msdcs` на обоих DNS Active Directory и на AdGuard. [Проверка записей SRV в Active Directory](https://learn.microsoft.com/en-us/troubleshoot/windows-server/networking/verify-srv-dns-records-have-been-created)
+
 Если API сообщает об отказе в JSON-ответе с HTTP 200, задайте `json_unavailable` вместе с `json_fields`. Совпадение всех полей `json_unavailable` означает недоступность и имеет приоритет над полями успешного ответа. Например, SonarQube сообщает `status: DOWN` в `/api/system/status`.
 
 Для HTTPS с внутренним CA укажите абсолютный путь `tls_ca_file`. Параметр `tls_server_name` задаёт имя для проверки сертификата и заголовка Host, а TCP-соединение по-прежнему открывается к проверенному `ip`. Эти параметры используются отдельно от `tls_sha256`. Обновлённый сертификат проходит проверку, если его имя совпадает и цепочка ведёт к доверенному CA.

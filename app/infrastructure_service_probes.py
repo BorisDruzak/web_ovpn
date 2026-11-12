@@ -280,18 +280,35 @@ def _zabbix_api(ip: str, port: int, spec: dict) -> str:
 def _dns_query(spec: dict) -> tuple[dns.message.QueryMessage, set[ipaddress.IPv4Address | ipaddress.IPv6Address]]:
     record = spec.get("record")
     name = spec.get("name")
-    if record not in {"A", "AAAA", "SOA"} or not isinstance(name, str) or not name.endswith("."):
+    if record not in {"A", "AAAA", "SOA", "SRV"} or not isinstance(name, str) or not name.endswith("."):
         raise ValueError("invalid DNS probe contract")
     expected = spec.get("expected_addresses")
     expected_ips = set()
     if expected is not None:
-        if (record == "SOA" or not isinstance(expected, list) or not 1 <= len(expected) <= 16
+        if (record not in {"A", "AAAA"} or not isinstance(expected, list) or not 1 <= len(expected) <= 16
                 or not all(isinstance(value, str) for value in expected)):
             raise ValueError("invalid DNS address contract")
         expected_ips = {ipaddress.ip_address(value) for value in expected}
         if any(value.version != (4 if record == "A" else 6) for value in expected_ips):
             raise ValueError("DNS address family must match the record type")
     return dns.message.make_query(name, record), expected_ips
+
+
+def _expected_srv_records(spec: dict) -> set[tuple[str, int]]:
+    values = spec.get("expected_srv_records")
+    if values is None:
+        return set()
+    if spec.get("record") != "SRV" or not isinstance(values, list) or not 1 <= len(values) <= 16:
+        raise ValueError("invalid DNS SRV contract")
+    expected = set()
+    for value in values:
+        target = value.get("target") if isinstance(value, dict) else None
+        port = value.get("port") if isinstance(value, dict) else None
+        if (not isinstance(target, str) or not target.endswith(".") or not _valid_http_hostname(target[:-1])
+                or type(port) is not int or not 1 <= port <= 65535):
+            raise ValueError("invalid DNS SRV target or port")
+        expected.add((target.lower(), port))
+    return expected
 
 
 def _explicit_dns_udp(query: dns.message.QueryMessage, ip: str, port: int,
@@ -333,6 +350,7 @@ def _dns(spec: dict, *, source: str | None = None) -> dict:
             return {"state": "unknown"}
         ip = str(ipaddress.ip_address(spec["ip"]))
         query, expected = _dns_query(spec)
+        expected_srv = _expected_srv_records(spec)
     except (KeyError, TypeError, ValueError, dns.exception.DNSException):
         return {"state": "unknown"}
     record = spec["record"]
@@ -392,6 +410,13 @@ def _dns(spec: dict, *, source: str | None = None) -> dict:
             diagnostic["addresses"] = [str(address) for address in sorted(addresses)[:16]]
             if expected and addresses != expected:
                 return {**result, "state": "unreachable", "reason": "dns_address_mismatch"}
+        if record == "SRV":
+            endpoints = {(value.target.canonicalize().to_text(), value.port) for value in answer}
+            if any(target == "." or port == 0 for target, port in endpoints):
+                return {**result, "state": "unreachable", "reason": "dns_no_answer"}
+            diagnostic["srvRecords"] = [{"target": target, "port": port} for target, port in sorted(endpoints)[:16]]
+            if expected_srv and endpoints != expected_srv:
+                return {**result, "state": "unreachable", "reason": "dns_srv_mismatch"}
         return {**result, "state": "reachable"}
     except dns.query.UnexpectedSource:
         diagnostic["transport"] = "UDP"

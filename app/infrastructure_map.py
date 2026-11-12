@@ -516,7 +516,7 @@ def _public_dns_check(value: object) -> dict:
     if not isinstance(value, dict):
         return {}
     name, record = _text(value.get("name"), 255), value.get("record")
-    if record not in ("A", "AAAA", "SOA") or not re.fullmatch(r"\.|(?:[A-Za-z0-9_-]{1,63}\.){1,127}", name):
+    if record not in ("A", "AAAA", "SOA", "SRV") or not re.fullmatch(r"\.|(?:[A-Za-z0-9_-]{1,63}\.){1,127}", name):
         return {}
     result = {"name": name, "record": record}
     rcode, transport = value.get("rcode"), value.get("transport")
@@ -528,6 +528,13 @@ def _public_dns_check(value: object) -> dict:
         if record in ("A", "AAAA") and isinstance(addresses, list):
             result["addresses"] = [address for item in addresses[:16] if (address := _network_address(item))
                                    and "/" not in address and (":" in address) == (record == "AAAA")]
+        if record == "SRV":
+            records = [{"target": item["target"], "port": item["port"]} for item in _rows(value.get("srvRecords"), 16)
+                       if isinstance(item.get("target"), str) and len(item["target"]) <= 254
+                       and re.fullmatch(r"(?:[A-Za-z0-9-]{1,63}\.){1,127}", item["target"])
+                       and type(item.get("port")) is int and 1 <= item["port"] <= 65535]
+            if records:
+                result["srvRecords"] = records
     return result
 
 
@@ -714,7 +721,7 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         diagnostic = _public_dns_check(check.get("dns"))
         if diagnostic:
             result["dns"] = diagnostic
-            if reason in ("dns_no_answer", "dns_address_mismatch", "dns_unexpected_source",
+            if reason in ("dns_no_answer", "dns_address_mismatch", "dns_srv_mismatch", "dns_unexpected_source",
                           "dns_route_unconfirmed", "dns_route_mismatch", "dns_truncated"):
                 result["reason"] = reason
             if (reason == "dns_unexpected_source" and result["state"] == "unreachable"

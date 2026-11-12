@@ -1353,6 +1353,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         sip_route_unconfirmed: 'Маршрут UI_VPN не подтверждён, SIP-запрос не отправлен',
         sip_route_mismatch: 'Выбран другой маршрут UI_VPN, SIP-запрос не отправлен',
         dns_no_answer: 'Нет записи запрошенного типа', dns_address_mismatch: 'Адреса не совпадают с ожидаемыми',
+        dns_srv_mismatch: 'Имена или порты SRV не совпадают с ожидаемыми',
         dns_unexpected_source: 'DNS-ответ пришёл с другого адреса или порта',
         dns_truncated: 'UDP-ответ DNS усечён',
         dns_route_unconfirmed: 'Маршрут UI_VPN не подтверждён, DNS-запрос не отправлен',
@@ -1457,7 +1458,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const identity = check.identityCheckedAt ? ' · Адрес сверён ' + formatTime(check.identityCheckedAt) : '';
         const attempts = check.attempts ? ' · попыток: ' + check.attempts : '';
         const responder = check.dns?.unexpectedResponder;
-        const dns = [check.dns?.rcode, check.dns?.transport, check.dns?.addresses?.join(', '),
+        const srvRecords = check.dns?.srvRecords?.map(record => `${record.target}:${record.port}`).join(', ');
+        const dns = [check.dns?.rcode, check.dns?.transport, check.dns?.addresses?.join(', '), srvRecords,
           responder && `Ответ от ${responder.address} · порт ${responder.port}`,
           responder?.rcode, responder?.addresses?.join(', '),
           responder?.matchesExpectedAddresses === true && 'записи совпали с ожидаемыми']
