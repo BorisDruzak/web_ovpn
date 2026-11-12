@@ -909,6 +909,22 @@ def _wireguard_probe_specs(context: dict, configured: object, vlans: dict) -> di
     return specs
 
 
+def _downstream_links(context: dict, configured: object) -> dict:
+    if not isinstance(configured, list):
+        return {}
+    devices = {device["id"]: device for device in context.get("devices", []) if device.get("kind") == "switch"}
+    links = {}
+    for link in context.get("links", []):
+        if (link.get("id") not in configured[:8] or link.get("relation") != "connected_to"
+                or link.get("state", {}).get("verified") is not True or link["state"].get("intent") == "absent"):
+            continue
+        a, b = link["endpoint_a"], link["endpoint_b"]
+        address = devices.get(a["device"], {}).get("management_ip")
+        if address and b["device"] in devices and a.get("interface") and b.get("interface"):
+            links[link["id"]] = (address, a, b)
+    return links
+
+
 def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings: dict, now: datetime,
                 *, local_vlan_probes: dict | None = None, wireguard_probes: dict | None = None) -> dict:
     nodes = {}
@@ -1415,6 +1431,45 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         local, remote = source_nodes.get(a), source_nodes.get(b)
         if (local, port_label_key(port_a)) not in shared_ports and (remote, port_label_key(port_b)) not in shared_ports:
             edge(local, remote, "Сетевое соединение", "LLDP · двустороннее", ports=(port_a, port_b), at=at)
+
+    downstream_links = _downstream_links(context, bindings.get("downstream_mac_links"))
+    if downstream_links:
+        addresses_by_mac = {}
+        for address, (mac, stamp) in arp_mappings.items():
+            addresses_by_mac.setdefault(mac, []).append((address, stamp))
+        for link_id, (_, local, remote) in downstream_links.items():
+            sample = network.get("downstream_fdb", {}).get(link_id, {})
+            upstream, asset = local["device"], remote["device"]
+            if (source_nodes.get(sample.get("source")) != upstream
+                    or not observation_is_fresh(sample.get("at"), now)):
+                continue
+            own_macs = {mac for mac in declared_macs[asset] if declared_devices_by_mac[mac] == {asset}}
+            learned = {mac.lower() for mac in sample["macs"] if MAC.fullmatch(mac)}
+            if not own_macs.intersection(learned):
+                continue
+            physical = edges.get((tuple(sorted((upstream, asset))), "Сетевое соединение"), {})
+            side, peer = ("a", "b") if physical.get("a") == upstream else ("b", "a")
+            evidence = [row["at"] for row in physical.get("portEvidence", []) if row["confirmed"]
+                        and row["source"] in {"LLDP UI_VPN", "LLDP · двустороннее"}
+                        and port_label_key(row[side]) == port_label_key(local["interface"])
+                        and port_label_key(row[peer]) == port_label_key(remote["interface"])
+                        and observation_is_fresh(row["at"], now)]
+            if not evidence:
+                continue
+            devices = []
+            for mac in sorted(learned - own_macs):
+                device = {"mac": mac}
+                identities = addresses_by_mac.get(mac, [])
+                if len(identities) == 1:
+                    address, stamp = identities[0]
+                    device.update(ip=address, identityCheckedAt=stamp.isoformat())
+                    host = host_ips.get(address, {})
+                    if str(host.get("mac") or "").lower() == mac:
+                        device["reachability"] = _host_observation(host, now)
+                devices.append(device)
+            checked_at = min(datetime.fromisoformat(sample["at"]), max(map(datetime.fromisoformat, evidence)))
+            nodes[asset]["downstream"] = {"upstreamId": upstream, "port": local["interface"],
+                                          "checkedAt": checked_at.isoformat(), "devices": devices}
 
     for a, b, confirmed, ports, observed in fdb_reports:
         physical = edges.get((tuple(sorted((a, b))), "Сетевое соединение"))
@@ -2029,14 +2084,41 @@ def _switch_management_fdb(connection, sources: list[dict]) -> list[dict]:
             if row["source_id"] in enabled and row["source_id"] != unique[row["mac"].lower()]]
 
 
+def _read_downstream_fdb(connection, sources: list[dict], configured: dict) -> dict:
+    samples = {}
+    for link_id, (address, local, _) in configured.items():
+        eligible = [source for source in sources if source.get("host") == address
+                    and source.get("enabled") and source.get("driver") == "snmp_switch"]
+        if len(eligible) != 1:
+            continue
+        source, = eligible
+        rows = list(connection.execute(f"""
+            SELECT DISTINCT lower(f.mac) AS mac, p.port_key, p.last_seen_at
+            FROM current_switch_fdb AS f
+            JOIN switch_ports AS p ON {FDB_PORT_MATCH}
+            WHERE f.source_id = ? AND p.name = ? COLLATE NOCASE
+              AND p.oper_status = 'up' AND p.admin_status IS NOT 'down'
+              AND f.last_seen_at = p.last_seen_at AND lower(f.status) = 'learned'
+            LIMIT 257
+        """, (source["id"], local["interface"])))
+        readings = {(row["port_key"], row["last_seen_at"]) for row in rows}
+        if 1 <= len(rows) <= 256 and len(readings) == 1:
+            samples[link_id] = {"source": source["name"], "at": rows[0]["last_seen_at"],
+                                "macs": [row["mac"] for row in rows]}
+    return samples
+
+
 def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | None = None,
-                 transit_sources: set[str] | None = None, *, asset_fdb_ips: set[str] | None = None) -> dict:
+                 transit_sources: set[str] | None = None, *, asset_fdb_ips: set[str] | None = None,
+                 downstream_links: dict | None = None) -> dict:
     commands = {
         "switches": (["switches", "status"], "switches"),
         "links": (["topology", "links"], "links"),
     }
     with closing(connect_read_only(DEFAULT_DB_URL)) as connection:
         data = {"sources": list_sources(connection), "attachments": query_confirmed_attachment_ports(connection)}
+        if downstream_links:
+            data["downstream_fdb"] = _read_downstream_fdb(connection, data["sources"], downstream_links)
         data["port_telemetry"] = [dict(row) for row in connection.execute(
             """
             SELECT s.name AS source, t.port_key, t.collector_run_id, t.observed_at,
@@ -2282,7 +2364,8 @@ def main() -> int:
         asset_fdb_ips = {device["management_ip"] for device in context.get("devices", [])
                          if device["id"] in asset_fdb_paths and device.get("management_ip")}
         try:
-            network = read_network(guest_macs, route_sources | transit_sources, transit_sources, asset_fdb_ips=asset_fdb_ips)
+            network = read_network(guest_macs, route_sources | transit_sources, transit_sources, asset_fdb_ips=asset_fdb_ips,
+                                   downstream_links=_downstream_links(context, bindings.get("downstream_mac_links")))
         except (NetctlError, sqlite3.Error, OSError, ValueError) as exc:
             collection_issues.append("network_observer")
             print(f"Network Observer inventory unavailable ({type(exc).__name__})", file=sys.stderr)

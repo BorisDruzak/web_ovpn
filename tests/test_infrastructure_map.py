@@ -2366,6 +2366,54 @@ def test_lldp_management_address_requires_matching_inventory_and_host_mac(monkey
     assert not graph["links"][0]["confirmed"]
 
 
+def test_downstream_devices_require_the_expected_live_lldp_pair(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map, summarize_topology
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    switch_mac, endpoint_mac = "02:00:00:00:00:03", "02:00:00:00:00:04"
+    address = "192.0.2.111"
+    context = {"devices": [{"id": "core", "name": "Core", "kind": "switch", "management_ip": "192.0.2.1"},
+                           {"id": "poe", "name": "PoE", "kind": "switch", "mac_addresses": [switch_mac]}],
+               "links": [{"id": "core-to-poe", "relation": "connected_to", "state": {"verified": True},
+                          "endpoint_a": {"device": "core", "interface": "Slot0/51"},
+                          "endpoint_b": {"device": "poe", "interface": "Ge1"}}]}
+    lldp = {"source": "main", "local_port_key": "ifindex:51", "system_name": "PoE", "chassis_id": switch_mac,
+            "port_id": "Ge1", "port_id_subtype": "interface_name", "observed_at": at}
+    network = {"sources": [{"id": 1, "name": "main", "host": "192.0.2.1", "driver": "snmp_switch", "enabled": True}],
+               "ports": [{"source": "main", "port_key": "ifindex:51", "name": "Slot0/51", "oper_status": "up",
+                          "last_seen_at": at, "collector_run_id": 2}],
+               "lldp": [lldp], "downstream_fdb": {"core-to-poe": {"source": "main", "at": at,
+                                                                    "macs": [switch_mac, endpoint_mac]}},
+               "arp": [{"ip": address, "mac": endpoint_mac, "last_seen_at": at}],
+               "hosts": [{"ip": address, "mac": endpoint_mac, "last_seen_at": at, "availability": {
+                   "checked_at": at, "run_status": "success", "state": "online", "reason": "active_probe",
+                   "active_method": "icmp"}}]}
+    snapshot = tmp_path / "map.json"
+
+    def read(when=now):
+        graph = build_graph(context, network, {}, {}, {"downstream_mac_links": ["core-to-poe"]}, now)
+        snapshot.write_text(json.dumps(graph), encoding="utf-8")
+        result = load_infrastructure_map(snapshot, when)
+        return result, next(n for n in result["nodes"] if n["id"] == "poe")
+
+    graph, node = read()
+    downstream = node["downstream"]
+    assert downstream["upstreamId"] == "core" and downstream["port"] == "Slot0/51"
+    endpoint, = downstream["devices"]
+    assert endpoint["mac"] == endpoint_mac and endpoint["ip"] == address
+    assert endpoint["reachability"]["state"] == "reachable"
+    assert len(graph["nodes"]) == 2 and len(graph["links"]) == 1
+    assert summarize_topology(graph)["topologyAudit"]["downstreamSwitches"][0]["devices"] == downstream["devices"]
+    network["arp"].clear()
+    endpoint, = read()[1]["downstream"]["devices"]
+    assert "ip" not in endpoint and endpoint["reachability"]["state"] == "unknown"
+    assert "downstream" not in read(now + timedelta(minutes=26))[1]
+    lldp["port_id"] = "Ge2"
+    assert "downstream" not in read()[1]
+
+
 def test_openvpn_requires_connected_daemon_and_active_session(monkeypatch):
     from io import BytesIO
     from app import infrastructure_service_probes as probes
@@ -2949,6 +2997,7 @@ def test_transit_port_requires_direct_route_running_ethernet_and_neighbor_arp():
 def test_observed_fdb_resolves_ifindex_only_with_matching_live_port_collection():
     import sqlite3
     from contextlib import closing
+    from app.infrastructure_collect import _read_downstream_fdb
     from netctl.switch_queries import query_observed_mac_ports
 
     with closing(sqlite3.connect(":memory:")) as conn:
@@ -2967,18 +3016,30 @@ def test_observed_fdb_resolves_ifindex_only_with_matching_live_port_collection()
         report, = query_observed_mac_ports(conn, macs)
         assert report["port_key"] == "ifindex:49175"
         assert query_observed_mac_ports(conn, macs, learned_only=True) == [report]
+        conn.executescript("""
+            ALTER TABLE switch_ports ADD name TEXT DEFAULT 'Ge23';
+            ALTER TABLE switch_ports ADD last_seen_at TEXT DEFAULT '2026-11-11T18:36:04Z';
+            ALTER TABLE switch_ports ADD admin_status TEXT DEFAULT 'up';
+        """)
+        sources = [{"id": 1, "name": "core", "host": "192.0.2.1", "driver": "snmp_switch", "enabled": True}]
+        scopes = {"link": ("192.0.2.1", {"interface": "ge23"}, {})}
+        assert _read_downstream_fdb(conn, sources, scopes) == {"link": {
+            "source": "core", "at": "2026-11-11T18:36:04Z", "macs": ["02:00:00:00:00:23"],
+        }}
+        conn.execute("UPDATE switch_ports SET last_seen_at='2026-11-11T18:36:05Z'")
+        assert _read_downstream_fdb(conn, sources, scopes) == {}
         conn.execute("UPDATE current_switch_fdb SET status='static'")
         assert query_observed_mac_ports(conn, macs, learned_only=True) == []
         assert query_observed_mac_ports(conn, macs) == [report]
         conn.execute("UPDATE switch_ports SET collector_run_id=6")
         assert query_observed_mac_ports(conn, macs) == []
         conn.execute("UPDATE switch_ports SET collector_run_id=5")
-        conn.execute("INSERT INTO switch_ports VALUES (1, 'physical:23', 4, 'up')")
+        conn.execute("INSERT INTO switch_ports(source_id, port_key, collector_run_id, oper_status) VALUES (1, 'physical:23', 4, 'up')")
         assert query_observed_mac_ports(conn, macs) == [report]
         conn.execute("UPDATE switch_ports SET collector_run_id=5, oper_status='down' WHERE port_key='physical:23'")
         assert query_observed_mac_ports(conn, macs) == []
         conn.execute("UPDATE current_switch_fdb SET port_key='lag:po1', if_index=100001, status='learned'")
-        conn.execute("INSERT INTO switch_ports VALUES (1, 'ifindex:100001', 5, 'up')")
+        conn.execute("INSERT INTO switch_ports(source_id, port_key, collector_run_id, oper_status) VALUES (1, 'ifindex:100001', 5, 'up')")
         lag, = query_observed_mac_ports(conn, macs, learned_only=True)
         assert lag["port_key"] == "ifindex:100001"
 

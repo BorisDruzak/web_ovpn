@@ -665,6 +665,29 @@ def _public_guest_storage(row: object, now: datetime) -> dict:
     return {"checkedAt": _time(row["checkedAt"]).isoformat(), "disks": disks} if disks else {}
 
 
+def _public_downstream(row: object, now: datetime) -> dict:
+    if not isinstance(row, dict) or not observation_is_fresh(row.get("checkedAt"), now):
+        return {}
+    upstream, port = _text(row.get("upstreamId")), _text(row.get("port"), 64)
+    if not upstream or not port:
+        return {}
+    devices = {}
+    for entry in _rows(row.get("devices"), 256):
+        mac = _text(entry.get("mac"), 17)
+        if not re.fullmatch(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}", mac) or int(mac[:2], 16) & 1:
+            continue
+        ip = _network_address(entry.get("ip"))
+        identity_at = entry.get("identityCheckedAt")
+        if ip and "/" not in ip and observation_is_fresh(identity_at, now):
+            devices[mac] = {"mac": mac, "ip": ip, "identityCheckedAt": _time(identity_at).isoformat(),
+                            "reachability": _public_reachability(entry.get("reachability"), now)}
+        else:
+            devices[mac] = {"mac": mac, "reachability": _public_reachability(None, now)}
+    ordered = sorted(devices.values(), key=lambda item: (item.get("ip", "~"), item["mac"]))
+    return {"upstreamId": upstream, "port": port, "checkedAt": _time(row["checkedAt"]).isoformat(),
+            "deviceCount": len(ordered), "devices": ordered[:64]}
+
+
 def _public_node(row: dict, now: datetime) -> dict:
     sources = []
     for item in _rows(row.get("sources"), 12):
@@ -744,6 +767,7 @@ def _public_node(row: dict, now: datetime) -> dict:
     service_checks = [_public_service_check(check, now) for check in _rows(row.get("serviceChecks"), 16)]
     stp = row.get("stpRootPath")
     stp_path = {}
+    downstream = _public_downstream(row.get("downstream"), now) if row.get("kind") == NETWORK_KINDS[0] else {}
     if row.get("kind") == NETWORK_KINDS[0] and isinstance(stp, dict):
         local_port = _text(stp.get("localPort"), 64)
         bridge = _text(stp.get("designatedBridgeMac"), 17)
@@ -775,6 +799,7 @@ def _public_node(row: dict, now: datetime) -> dict:
         **({"guestNetwork": guest_network} if guest_network else {}),
         **({"backupCoverage": backup_coverage} if backup_coverage else {}),
         **({"stpRootPath": stp_path} if stp_path else {}),
+        **({"downstream": downstream} if downstream else {}),
         "ports": [port for port in ports if port["name"]],
         "serviceChecks": service_checks,
         "checks": [
@@ -1085,10 +1110,13 @@ def summarize_topology(graph: dict) -> dict:
            for node in nodes.values() if "stpRootPath" in node]
     lacp = [{"id": node["id"], "name": node["name"], **report}
             for node in nodes.values() for report in node.get("lacpHealth", [])]
+    downstream = [{"id": node["id"], "name": node["name"], **node["downstream"]}
+                  for node in nodes.values() if "downstream" in node]
     return {**metadata, "topologyAudit": {"directLinks": counts, "pendingTotal": len(pending),
                                         "portAlertTotal": len(alerts), "portAlerts": alerts[:64],
                                         "stpRootPaths": stp,
                                         "lacpHealth": lacp[:64],
+                                        "downstreamSwitches": downstream[:8],
                                         "pending": [pending[key] for key in sorted(pending)[:64]]}}
 
 
@@ -1187,6 +1215,10 @@ def load_infrastructure_map(
         bridge_id = stp.get("bridgeDeviceId")
         if bridge_id == node_id or nodes.get(bridge_id, {}).get("kind") not in NETWORK_KINDS[:2]:
             stp.pop("bridgeDeviceId", None)
+        if downstream := node.get("downstream"):
+            upstream_id = downstream["upstreamId"]
+            if upstream_id == node_id or nodes.get(upstream_id, {}).get("kind") != NETWORK_KINDS[0]:
+                node.pop("downstream")
     links = []
     for row in _rows(raw.get("links"), 2400):
         edge = {key: _text(row.get(key)) for key in ("a", "b", "kind", "source", "details")}

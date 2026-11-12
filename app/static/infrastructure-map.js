@@ -689,6 +689,22 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       }
       propertiesSection.append(make('h3', 'Резервирование LACP'), list);
     }
+    if (node.downstream) {
+      const {upstreamId, port, checkedAt, deviceCount, devices} = node.downstream;
+      const panel = make('details', null, 'map-port-panel');
+      const list = make('ul', null, 'map-detail-list');
+      const labels = {reachable: 'Доступен', unreachable: 'Недоступен', unknown: 'Нет подтверждения'};
+      for (const {mac, ip, reachability} of devices) {
+        const row = make('li');
+        row.append(make('strong', ip ?? mac), make('small', [ip && mac, labels[reachability.state],
+          reachability.method, reachability.checkedAt && formatTime(reachability.checkedAt)].filter(Boolean).join(' · ')));
+        list.append(row);
+      }
+      const source = `${byId.get(upstreamId).name} ${port} · ${formatTime(checkedAt)}`;
+      const count = devices.length === deviceCount ? deviceCount : `${devices.length} из ${deviceCount}`;
+      panel.append(make('summary', `Устройства за коммутатором (${count})`), make('small', source), list);
+      propertiesSection.append(panel);
+    }
     if (node.stpRootPath) {
       const {localPort, designatedBridgeMac, designatedPortId, checkedAt, bridgeDeviceId} = node.stpRootPath;
       const list = make('ul', null, 'map-detail-list');
