@@ -6093,6 +6093,47 @@ def test_auto_guest_arp_checks_use_unique_local_ip_and_prefer_the_newer_result(m
     assert calls == [(ip, mac)]
 
 
+def test_unanswered_guest_arp_is_visible_without_confirming_ip_or_reachability(tmp_path, monkeypatch):
+    from app import infrastructure_collect as collector
+    from app.infrastructure_map import load_infrastructure_map, summarize_guest_attachment_audit
+
+    now = datetime.now(timezone.utc)
+    stamp = now.isoformat()
+    ip, mac = "192.0.2.21", "02:00:00:00:00:03"
+    pve = {"at": stamp, "cluster": [], "nodes": [{"node": "pve1", "status": "online"}],
+           "guests": [{"vmid": 108, "node": "pve1", "type": "qemu", "status": "running"}],
+           "configs": {"108": {"net0": f"virtio={mac},bridge=vmbr0"}}}
+    network = {"arp": [{"ip": ip, "mac": mac, "last_seen_at": stamp}]}
+    monkeypatch.setattr(collector, "_probe_on_link_mac", lambda *_: False)
+    calls = []
+
+    def read_arp(address, expected_mac):
+        calls.append((address, expected_mac))
+        return {"state": "no_reply", "address": address, "sourceIP": "192.0.2.2", "interface": "ens18"}
+
+    monkeypatch.setattr(collector, "_local_arp_diagnostic", read_arp)
+    diagnostics = {}
+    assert collector._collect_guest_arp_probes(pve, network, {}, now, auto_on_link=True,
+                                               arp_diagnostics=diagnostics) == {}
+    assert calls == [(ip, mac)]
+    network["guest_arp_diagnostics"] = diagnostics
+    path = tmp_path / "graph.json"
+    collected = datetime.now(timezone.utc)
+    collector.publish_snapshot(path, collector.build_graph({}, network, {}, pve, {}, collected))
+    graph = load_infrastructure_map(path, collected, include_guest_attachments=True)
+    node = next(n for n in graph["nodes"] if n["vmid"] == 108)
+    interface, = graph["guestAttachments"][node["id"]]["interfaces"]
+    assert interface["arpDiagnostic"] == {"state": "no_reply", "address": ip, "sourceIP": "192.0.2.2",
+                                          "interface": "ens18", "identityCheckedAt": stamp,
+                                          "checkedAt": diagnostics[mac]["checkedAt"]}
+    assert node["reachability"]["state"] == "unknown" and "ipv4Observations" not in interface
+    assert mac not in json.dumps(graph)
+    gap, = summarize_guest_attachment_audit(graph)["attachmentAudit"]["gaps"]
+    assert gap["interfaces"][0]["arpDiagnostic"] == interface["arpDiagnostic"]
+    old = load_infrastructure_map(path, collected + timedelta(minutes=6), include_guest_attachments=True)
+    assert "arpDiagnostic" not in old["guestAttachments"][node["id"]]["interfaces"][0]
+
+
 def test_router_layer2_probe_requires_a_reply_from_the_expected_mac(monkeypatch):
     from contextlib import nullcontext
 

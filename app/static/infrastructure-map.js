@@ -633,6 +633,15 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       for (const {address, source, method, checkedAt} of iface.ipv4Observations ?? []) {
         row.append(make('small', [address, source, method, formatTime(checkedAt)].join(' · ')));
       }
+      if (iface.arpDiagnostic) {
+        const {address, interface: sourcePort, sourceIP, state, checkedAt, identityCheckedAt} = iface.arpDiagnostic;
+        const result = {no_reply: 'нет ответа', matched: 'MAC совпал', different_mac: 'ответил другой MAC',
+          unconfirmed: 'ответ не подтверждён'}[state];
+        row.append(make('small', [
+          `ARP к ${address}: ${result}`, `UI_VPN ${sourcePort} (${sourceIP})`, formatTime(checkedAt),
+          'IP из таблицы маршрутизатора · ' + formatTime(identityCheckedAt),
+        ].join(' · ')));
+      }
       if (iface.localNeighbor) {
         const {vlan, interface: localInterface, peerAddress, checkedAt} = iface.localNeighbor;
         row.append(make('small', ['Соседство VLAN ' + vlan + ' подтверждено', localInterface + ' → ' + peerAddress,

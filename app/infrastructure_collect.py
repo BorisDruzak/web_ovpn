@@ -606,7 +606,7 @@ def _collect_local_guest_ipv4(bindings: dict) -> dict:
 
 def _collect_guest_arp_probes(pve: dict, network: dict, configured: dict, now: datetime,
                               router_sources: dict | None = None, *, auto_on_link: bool = False,
-                              local_macs: dict | None = None) -> dict:
+                              local_macs: dict | None = None, arp_diagnostics: dict | None = None) -> dict:
     configs = pve.get("configs", {})
     counts = Counter(mac for config in configs.values() for mac in _guest_macs(config))
     arp_rows = network.get("arp", [])
@@ -673,11 +673,28 @@ def _collect_guest_arp_probes(pve: dict, network: dict, configured: dict, now: d
         return None
 
     checks = {}
+    selected = candidates + automatic[:48]
+
+    def diagnose(candidate):
+        _, address, mac, _ = candidate
+        reading = _local_arp_diagnostic(address, mac)
+        if reading.get("address") == address:
+            return mac, {**reading, "identityCheckedAt": arp[address][1].isoformat(),
+                         "checkedAt": datetime.now(timezone.utc).isoformat()}
+        return None
+
     with ThreadPoolExecutor(max_workers=6) as pool:
-        for result in pool.map(check, candidates + automatic[:48]):
+        for result in pool.map(check, selected):
             if result:
                 mac, address, observation = result
                 checks.setdefault(mac, []).append((address, observation))
+        if arp_diagnostics is not None:
+            learned_macs = {row["mac"].lower() for row in network.get("guest_fdb", [])
+                            if observation_is_fresh(row.get("observed_at"), now)}
+            unresolved = [row for row in selected if row[2] not in checks and row[1] in arp
+                          and guest_ids[row[0]] == 1 and not row[3]]
+            unresolved.sort(key=lambda row: row[2] in learned_macs)
+            arp_diagnostics.update(result for result in pool.map(diagnose, unresolved[:4]) if result)
     return checks
 
 
@@ -2347,12 +2364,14 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 active = observed_bridge.get("active")
                 switch_ports = []
                 ipv4_observations = {}
+                arp_diagnostic = None
                 if status == "ok" and not disabled and interface_mac_counts[mac] == 1 and mac_counts[mac] == 1:
                     switch_ports = [
                         report for report in guest_switch_ports.get(mac, [])
                         if (host, report["id"], report["port"].casefold()) in verified_host_ports
                     ]
                     if guest_ids[vmid] == 1 and observation_is_fresh(pve_at, now):
+                        arp_diagnostic = network.get("guest_arp_diagnostics", {}).get(mac)
                         for address, observation in arp_checks.get(mac, []):
                             stamp = observation["checkedAt"]
                             if ":" in address or not observation_is_fresh(stamp, now):
@@ -2380,6 +2399,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                     virtual["bridgeVlanMode"] = observed_bridge["bridgeVlanMode"]
                 if ipv4_observations:
                     virtual["ipv4Observations"] = list(ipv4_observations.values())[:8]
+                if arp_diagnostic and arp_diagnostic["address"] not in ipv4_observations:
+                    virtual["arpDiagnostic"] = arp_diagnostic
                 edge(host, key, "Размещение ВМ", "Proxmox", details=f"VM {vmid}", at=pve_at,
                      ports=(bridge, name), vlan=vlan, virtual=virtual)
         locations = Counter((host, uplink) for (host, _, _), ports in uplink_evidence.items() for uplink in ports)
@@ -3203,11 +3224,13 @@ def main() -> int:
             if bindings.get("ipsec_links"):
                 network["ipsec"] = _collect_ipsec_policies(network["sources"], bindings["ipsec_links"])
                 network["ipsec_connectivity"] = _collect_ipsec_connectivity(context, network["sources"], bindings["ipsec_links"])
+            network["guest_arp_diagnostics"] = {}
             network["guest_arp_probes"] = _collect_guest_arp_probes(
                 pve, network, bindings.get("guest_probe_ips", {}), datetime.now(timezone.utc),
                 bindings.get("guest_router_arp_sources"),
                 auto_on_link=bindings.get("guest_auto_arp_probes") is True,
                 local_macs=bindings.get("guest_local_arp_macs"),
+                arp_diagnostics=network["guest_arp_diagnostics"],
             )
             network.setdefault("guest_fdb", []).extend(asyncio.run(
                 _collect_guest_attachment_fdb(pve, network, bindings, datetime.now(timezone.utc))

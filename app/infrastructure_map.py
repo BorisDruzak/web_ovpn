@@ -484,6 +484,19 @@ def _public_dns_check(value: object) -> dict:
     return result
 
 
+def _public_arp_details(arp: object) -> dict:
+    if not isinstance(arp, dict) or arp.get("state") not in ("no_reply", "matched", "different_mac", "unconfirmed"):
+        return {}
+    interface = arp.get("interface")
+    if not isinstance(interface, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", interface):
+        return {}
+    try:
+        address, source = (str(ipaddress.IPv4Address(arp.get(key))) for key in ("address", "sourceIP"))
+    except ValueError:
+        return {}
+    return {"state": arp["state"], "address": address, "sourceIP": source, "interface": interface}
+
+
 def _public_service_check(check: dict, now: datetime) -> dict:
     path = _text(check.get("path"))
     port = check.get("port")
@@ -535,19 +548,10 @@ def _public_service_check(check: dict, now: datetime) -> dict:
             result["component"] = True
     if (check.get("skipped") is True and result["checkedAt"] and result["state"] == "unknown"
             and reason in ("probe_target_unconfirmed", "probe_target_mismatch", "probe_host_stopped")):
-        arp = check.get("arpDiagnostic")
-        interface = arp.get("interface") if isinstance(arp, dict) else None
         if (not result["stale"] and result["source"] == "UI_VPN"
                 and result["method"] == "ICMP адреса из инвентаря" and reason == "probe_target_unconfirmed"
-                and isinstance(arp, dict) and arp.get("state") in ("no_reply", "matched", "different_mac", "unconfirmed")
-                and isinstance(interface, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", interface)):
-            try:
-                address, source = (str(ipaddress.IPv4Address(arp.get(key))) for key in ("address", "sourceIP"))
-            except ValueError:
-                pass
-            else:
-                result["arpDiagnostic"] = {"state": arp["state"], "address": address,
-                                           "sourceIP": source, "interface": interface}
+                and (arp := _public_arp_details(check.get("arpDiagnostic")))):
+            result["arpDiagnostic"] = arp
         return {**result, "target": "", "skipped": True, "reason": reason}
     identified_icmp = result["method"] in ("ICMP · LLDP + ARP", "ICMP · ARP + FDB")
     if identified_icmp or (result["source"] == "UI_VPN" and "identityCheckedAt" in check):
@@ -1609,6 +1613,8 @@ def _guest_attachments(nodes: dict, links: list[dict], guest_ids: list[str], now
                 interface["vlan"] = report["vlan"]
             if "ipv4Observations" in virtual:
                 interface["ipv4Observations"] = virtual["ipv4Observations"]
+            if "arpDiagnostic" in virtual:
+                interface["arpDiagnostic"] = virtual["arpDiagnostic"]
             neighbors = local_neighbors[guest_id, interface["guestPort"]]
             if len(neighbors) == 1 and not virtual["linkDisabled"] and virtual["bridgeActive"] is True:
                 interface["localNeighbor"], = neighbors
@@ -1698,6 +1704,8 @@ def summarize_guest_attachment_audit(graph: dict) -> dict:
             interface_counts[state] += 1
             if state not in {"guest_mac_with_physical_pair", "local_neighbor_with_physical_pair", "inactive"}:
                 incomplete.append({"guestPort": interface["guestPort"], "bridge": interface["bridge"], "state": state})
+                if "arpDiagnostic" in interface:
+                    incomplete[-1]["arpDiagnostic"] = interface["arpDiagnostic"]
         if power != "stopped" and (incomplete or not attachment["interfaces"]):
             gaps.append({"guest": attachment["guest"], "hypervisor": attachment["hypervisor"],
                          "power": power, "placement": attachment["placement"], "interfaces": incomplete})
@@ -2130,6 +2138,15 @@ def load_infrastructure_map(
                     if (evidence[-1]["confirmed"] and not evidence[-1]["virtual"]["linkDisabled"]
                             and (ipv4_observations := _guest_ipv4_observations(virtual.get("ipv4Observations"), now))):
                         evidence[-1]["virtual"]["ipv4Observations"] = ipv4_observations
+                    if (evidence[-1]["confirmed"] and not evidence[-1]["virtual"]["linkDisabled"]
+                            and (reading := _public_arp_details(virtual.get("arpDiagnostic")))):
+                        arp = virtual["arpDiagnostic"]
+                        at, identity = _time(arp.get("checkedAt")), _time(arp.get("identityCheckedAt"))
+                        if (at and identity and observation_is_fresh(arp["checkedAt"], now, max_age=SERVICE_PROBE_MAX_AGE)
+                                and observation_is_fresh(arp["identityCheckedAt"], at)):
+                            evidence[-1]["virtual"]["arpDiagnostic"] = {
+                                **reading, "checkedAt": at.isoformat(), "identityCheckedAt": identity.isoformat(),
+                            }
                     switch_uplink = virtual.get("switchUplink")
                     if isinstance(switch_uplink, dict) and evidence[-1]["confirmed"]:
                         switch_id, port = _text(switch_uplink.get("id")), _text(switch_uplink.get("port"), 64)
