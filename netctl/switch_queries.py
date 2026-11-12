@@ -20,7 +20,8 @@ FDB_PORT_MATCH = """
     p.source_id = f.source_id AND p.collector_run_id = f.collector_run_id
     AND (
         p.port_key = f.port_key
-        OR (f.port_key LIKE 'physical:%' AND f.if_index > 0 AND p.port_key = 'ifindex:' || f.if_index
+        OR ((f.port_key LIKE 'physical:%' OR f.port_key LIKE 'lag:po%')
+            AND f.if_index > 0 AND p.port_key = 'ifindex:' || f.if_index
             AND NOT EXISTS (
                 SELECT 1 FROM switch_ports AS exact
                 WHERE exact.source_id = f.source_id AND exact.port_key = f.port_key

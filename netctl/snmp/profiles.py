@@ -31,6 +31,7 @@ class PortProfile:
     profile_id = "base"
     profile_fingerprint = "base:v1"
     qbridge_fid_mode = "mapped_only"
+    qbridge_fdb_port_aliases: Mapping[int, int] = {}
 
     def normalize_ports(
         self, ports: tuple[SwitchPort, ...]
@@ -245,6 +246,8 @@ class SnrProfile(GenericProfile):
     profile_id = "snr"
     profile_fingerprint = "snr:v1"
     qbridge_fid_mode = "mapped_only"
+    # The switch reports -31071 in Q-BRIDGE for MACs that BRIDGE-MIB lists on ifIndex 100001.
+    qbridge_fdb_port_aliases = {-31071: 31071}
 
     @staticmethod
     def matches(system: SwitchSystem) -> bool:
@@ -325,6 +328,9 @@ class SnrProfile(GenericProfile):
     ) -> PortResolution:
         if fdb_mode == "qbridge":
             if raw_fdb_port == 31071:
+                aggregate = ports_by_ifindex.get(100001)
+                if aggregate is None or aggregate.name.casefold() != "po1":
+                    raise ValueError("SNR aggregate port does not match po1")
                 return self._resolution_for_ifindex(
                     if_index=100001,
                     bridge_to_ifindex=bridge_to_ifindex,

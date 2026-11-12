@@ -2321,6 +2321,10 @@ def test_observed_fdb_resolves_ifindex_only_with_matching_live_port_collection()
         assert query_observed_mac_ports(conn, macs) == [report]
         conn.execute("UPDATE switch_ports SET collector_run_id=5, oper_status='down' WHERE port_key='physical:23'")
         assert query_observed_mac_ports(conn, macs) == []
+        conn.execute("UPDATE current_switch_fdb SET port_key='lag:po1', if_index=100001, status='learned'")
+        conn.execute("INSERT INTO switch_ports VALUES (1, 'ifindex:100001', 5, 'up')")
+        lag, = query_observed_mac_ports(conn, macs, learned_only=True)
+        assert lag["port_key"] == "ifindex:100001"
 
 
 def test_confirmed_attachment_requires_fdb_and_port_from_same_collection():

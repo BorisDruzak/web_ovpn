@@ -193,9 +193,12 @@ def _parse_qbridge_fdb(
                 port_rows[index],
                 "Q-BRIDGE FDB port",
                 value_type="integer",
-                minimum=1,
+                minimum=-2**31,
                 maximum=65_535,
             )
+            raw_port = profile.qbridge_fdb_port_aliases.get(raw_port, raw_port)
+            if raw_port < 1:
+                raise ValueError("Q-BRIDGE FDB port has invalid type")
             resolution = profile.resolve_fdb_port(
                 raw_fdb_port=raw_port,
                 fdb_mode="qbridge",

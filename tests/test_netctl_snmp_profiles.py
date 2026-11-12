@@ -879,8 +879,17 @@ def _snr_fixture_transport() -> _PagedFixtureTransport:
     return transport
 
 
-def test_snr_fixture_collects_fdb_vlan_pvid_and_stp_profile() -> None:
-    snapshot = asyncio.run(collect_switch_snapshot({}, _snr_fixture_transport()))
+@pytest.mark.parametrize("aggregate_port", [31071, -31071])
+def test_snr_fixture_collects_fdb_vlan_pvid_and_stp_profile(aggregate_port: int) -> None:
+    from netctl.snmp.oids import DOT1Q_FDB_PORT
+
+    transport = _snr_fixture_transport()
+    result = transport.results[DOT1Q_FDB_PORT]
+    transport.results[DOT1Q_FDB_PORT] = replace(
+        result, rows=tuple(replace(row, value=aggregate_port) if row.value == 31071 else row
+                           for row in result.rows),
+    )
+    snapshot = asyncio.run(collect_switch_snapshot({}, transport))
 
     assert (snapshot.profile_id, snapshot.profile_fingerprint) == ("snr", "snr:v1")
     assert len(snapshot.fdb) == 180
