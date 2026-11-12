@@ -1,0 +1,33 @@
+{% extends "workstations_base.html" %}
+{% block workstation_content %}
+<section class="panel" aria-labelledby="endpoint-install-heading">
+  <h2 id="endpoint-install-heading">Установка Endpoint Agent</h2>
+  <p><a href="/inventory/assets/{{ asset.id }}#endpoint-heading">{{ asset.custom_name or asset.inventory_number or 'Карточка ПК' }}</a> · {{ os_name or 'ОС не указана' }}</p>
+  {% if asset.inventory_number and asset.custom_name %}<p>Инв. № {{ asset.inventory_number }}</p>{% endif %}
+  {% if state == 'linked' %}
+    <p>Агент уже привязан. Текущее состояние доступно в карточке ПК.</p>
+  {% elif state == 'windows_setup' %}
+    <p>Скачайте проверенный EndpointAgentSetup в разделе «Установщик» консоли Endpoint. Запустите пакет на выбранном ПК от имени администратора и дождитесь подтверждения подключения.</p>
+    <a class="button primary" href="{{ console_url }}">Открыть установщик в Endpoint</a>
+  {% elif state == 'windows_unavailable' %}
+    <p>Консоль Endpoint для загрузки установщика недоступна.</p>
+  {% elif state == 'alt_ready' %}
+    <p>Способ установки: штатный компонент ALT через контроллер рабочих мест.</p>
+    <form data-endpoint-plan="{{ asset.id }}">
+      <button class="button primary" type="submit">Подготовить план установки</button>
+    </form>
+    <p role="status" data-endpoint-install-status></p>
+  {% elif state == 'alt_target_unconfirmed' %}
+    <p>Для установки нужна свежая сверка и однозначная связь с зарегистрированным ПК.</p>
+    {% if capabilities.read %}<a href="/workstations?inventory_asset_id={{ asset.id }}">Открыть рабочее место</a>{% endif %}
+  {% elif state == 'alt_component_missing' %}
+    <p>Компонент Endpoint Agent ещё не опубликован в каталоге контроллера.</p>
+  {% elif state == 'alt_controller_unavailable' %}
+    <p>Контроллер установки ALT временно недоступен.</p>
+  {% elif state == 'alt_unavailable' %}
+    <p>Для подготовки плана ALT требуется доступный контроллер и разрешение на подготовку планов.</p>
+  {% else %}
+    <p>Укажите ОС ПК в инвентаризации, чтобы подобрать способ установки.</p>
+  {% endif %}
+</section>
+{% endblock %}

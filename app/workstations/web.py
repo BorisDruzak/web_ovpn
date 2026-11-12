@@ -1,12 +1,18 @@
 """Session-only pages; all controller actions go through the scoped JSON API."""
+from urllib.parse import urlsplit
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..auth import require_user
+from ..config import get_settings
 from ..db import get_db
 from ..permissions import check_user_permission, user_has_permission
-from .api import DeviceKey, JobID
+from .api import (
+    DeviceKey, JobID, UUIDText, endpoint_component_published, endpoint_install_asset,
+    endpoint_install_platform, endpoint_install_target,
+)
 from .journal import public_payload
 from .models import WorkstationRequest
 
@@ -26,6 +32,48 @@ def page(request, db, template, view, **context):
 def workstations(request: Request, view: str = Query('devices', pattern='^(devices|jobs)$'),
                  inventory_asset_id: str = Query('', max_length=128), network_key: str = Query('', max_length=128), db: Session = Depends(get_db)):
     return page(request, db, 'workstations.html', view, inventory_asset_id=inventory_asset_id, network_key=network_key)
+
+
+def _enrollment_console():
+    settings = get_settings()
+    if not settings.endpoint_platform_enabled:
+        return None
+    try:
+        url = urlsplit(settings.endpoint_platform_base_url.strip())
+        if (url.scheme != 'https' or not url.hostname or url.username is not None or url.query or url.fragment
+                or url.path not in ('', '/') or '\\' in url.netloc or any(ch.isspace() for ch in url.netloc)):
+            return None
+        return f'https://{url.netloc}/admin/enrollment'
+    except ValueError:
+        return None
+
+
+@router.get('/workstations/inventory/{asset_id}/endpoint-agent')
+def workstation_endpoint_install(request: Request, asset_id: UUIDText, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    check_user_permission(user, 'inventory:read')
+    asset, os_name, linked = endpoint_install_asset(db, asset_id)
+    platform = endpoint_install_platform(os_name)
+    console_url = _enrollment_console() if platform == 'windows' and not linked else None
+    state = 'platform_unknown'
+    if linked:
+        state = 'linked'
+    elif platform == 'windows':
+        state = 'windows_setup' if console_url else 'windows_unavailable'
+    elif platform == 'alt':
+        state = 'alt_unavailable'
+        if get_settings().workstations_enabled and user_has_permission(user, 'workstations:plan'):
+            try:
+                endpoint_install_target(db, asset_id)
+            except HTTPException:
+                state = 'alt_target_unconfirmed'
+            else:
+                try:
+                    state = 'alt_ready' if endpoint_component_published() else 'alt_component_missing'
+                except Exception:
+                    state = 'alt_controller_unavailable'
+    return page(request, db, 'workstations_endpoint_install.html', 'endpoint_install', asset=asset,
+                os_name=os_name, state=state, console_url=console_url)
 
 
 @router.get('/workstations/devices/{device_key}')

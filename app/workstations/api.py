@@ -16,19 +16,23 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..audit import write_audit
-from ..auth import authorize_workstations
+from ..auth import authorize_workstations, current_user
 from ..config import get_settings
 from ..db import get_db, get_sessionmaker
-from ..permissions import required_permission
+from ..permissions import check_user_permission, required_permission
 from .client import WorkstationsClient
 from .journal import JournalService, error_details, public_payload, safe_code
-from .models import DirectoryLink, Finding, SourceRun, SourceSnapshot
+from .models import DirectoryLink, Finding, SourceRun, SourceSnapshot, WorkstationRequest
 from .service import WorkstationsService
 from .sources import MAX_AGE, SourceError, valid_uuid, coherence_reasons
 from .projection import relationship_revision, device_aliases
+from ..inventory.models import (
+    InventoryAsset, InventoryAssetType, InventoryExternalBinding, InventoryExternalBindingStatus, InventoryPCDetails,
+)
 from ..inventory.network_projection import projection_epoch
 
 controller_client = WorkstationsClient
+ENDPOINT_AGENT_COMPONENT = "software.endpoint_agent"
 UUIDText = Annotated[str, Field(pattern=r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')]
 SHA = Annotated[str, Field(pattern=r'^[0-9a-f]{64}$')]
 JobID = Annotated[str, Field(pattern=r'^job-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$')]
@@ -248,14 +252,98 @@ def plan(body: Plan, owner=Depends(actor)):
 
 @router.post('/component-plans')
 def component_plan(body: ComponentPlan, owner=Depends(actor)):
+    if body.component_id == ENDPOINT_AGENT_COMPONENT:
+        raise HTTPException(422, 'workstations_endpoint_asset_required')
     return start('component_plans.create', body, owner)
 
 
+def endpoint_install_asset(db, asset_id):
+    asset = db.get(InventoryAsset, asset_id)
+    if asset is None or asset.deleted_at is not None or asset.asset_type != InventoryAssetType.PC:
+        raise HTTPException(404, 'workstations_not_found')
+    details = db.get(InventoryPCDetails, asset_id)
+    os_name = details.os_name if details and details.os_name else ''
+    linked = db.scalar(select(InventoryExternalBinding.id).where(
+        InventoryExternalBinding.asset_id == asset_id, InventoryExternalBinding.source == 'endpoint_platform',
+        InventoryExternalBinding.status == InventoryExternalBindingStatus.CONFIRMED,
+        InventoryExternalBinding.ended_at.is_(None),
+    ))
+    return asset, os_name, bool(linked)
+
+
+def endpoint_install_platform(os_name):
+    if 'windows' in os_name.casefold():
+        return 'windows'
+    if re.search(r'\b(?:alt|альт)\b', os_name, re.IGNORECASE):
+        return 'alt'
+    return None
+
+
+def endpoint_install_target(db, asset_id):
+    asset, os_name, linked = endpoint_install_asset(db, asset_id)
+    if linked or endpoint_install_platform(os_name) != 'alt':
+        raise HTTPException(409, 'workstations_endpoint_asset_unavailable')
+    snapshot = db.get(SourceSnapshot, 'reconciliation')
+    if snapshot is None or snapshot_state(db, snapshot)['stale']:
+        raise HTTPException(409, 'workstations_endpoint_source_stale')
+    candidates = [row for row in snapshot.data_json['devices'] if row.get('inventory_asset_id') == asset.id]
+    if len(candidates) != 1:
+        raise HTTPException(409, 'workstations_endpoint_target_unconfirmed')
+    row = candidates[0]
+    if (row.get('registration_state') != 'ready' or row.get('identity_state') != 'observed'
+            or row.get('inventory_revision') != asset.manual_revision or not row.get('machine_uuid')):
+        raise HTTPException(409, 'workstations_endpoint_target_unconfirmed')
+    try:
+        return valid_uuid(row['machine_uuid'])
+    except SourceError:
+        raise HTTPException(409, 'workstations_endpoint_target_unconfirmed') from None
+
+
+def endpoint_component_published():
+    catalog = _call('catalog.list', {})
+    return any(row.get('id') == ENDPOINT_AGENT_COMPONENT for row in catalog.get('components', []))
+
+
+def require_endpoint_install_operator(request, db, owner):
+    user = current_user(request, db)
+    if user is None or not owner.startswith('user:'):
+        raise HTTPException(403, 'workstations_permission_denied')
+    check_user_permission(user, 'inventory:read')
+
+
+@router.post('/inventory/{asset_id}/endpoint-agent-plan')
+def endpoint_agent_plan(asset_id: UUIDText, body: RequestBody, request: Request,
+                        owner=Depends(actor), db: Session = Depends(get_db)):
+    require_endpoint_install_operator(request, db, owner)
+    if not get_settings().workstations_enabled:
+        raise HTTPException(409, 'workstations_endpoint_component_unavailable')
+    machine_uuid = endpoint_install_target(db, asset_id)
+    if not endpoint_component_published():
+        raise HTTPException(409, 'workstations_endpoint_component_unavailable')
+    return start('component_plans.create', body, owner, machine_uuid=machine_uuid,
+                 component_id=ENDPOINT_AGENT_COMPONENT, _inventory_asset_id=asset_id)
+
+
 @router.post('/plans/{plan_id}/apply')
-def apply(plan_id: Annotated[str, Field(pattern=r'^setup-(?:component-)?[0-9a-f]{64}$')], body: Apply, owner=Depends(actor)):
+def apply(plan_id: Annotated[str, Field(pattern=r'^setup-(?:component-)?[0-9a-f]{64}$')], body: Apply,
+          request: Request, owner=Depends(actor), db: Session = Depends(get_db)):
     prefix = 'setup-' if body.kind == 'full_setup' else 'setup-component-'
     if plan_id != prefix + body.sha256:
         raise HTTPException(422, 'workstations_confirmation_mismatch')
+    if body.kind == 'component':
+        scoped = list(db.scalars(select(WorkstationRequest).where(
+            WorkstationRequest.action == 'component_plans.create', WorkstationRequest.status == 'succeeded',
+            WorkstationRequest.data_json['plan_id'].as_string() == plan_id,
+            WorkstationRequest.parameters_json['_inventory_asset_id'].as_string().is_not(None),
+        )))
+        if scoped:
+            plan_record = next((record for record in scoped if record.actor == owner), None)
+            if plan_record is None:
+                raise HTTPException(403, 'workstations_permission_denied')
+            require_endpoint_install_operator(request, db, owner)
+            params = plan_record.parameters_json
+            if endpoint_install_target(db, params['_inventory_asset_id']) != params['machine_uuid']:
+                raise HTTPException(409, 'workstations_endpoint_target_unconfirmed')
     return start('plans.apply', body, owner, plan_id=plan_id)
 
 

@@ -90,11 +90,11 @@ def test_unbound_pc_has_local_candidate_lookup_and_non_pc_has_no_agent(web):
         pc_id = pc.id
     page = web.get(f"/inventory/assets/{pc_id}")
     assert "Агент не привязан" in page.text
-    assert "Найти агент" in page.text
+    assert "Привязать Endpoint Agent" in page.text
     assert "endpoint-refresh" not in page.text
     monitor, _ = seed(asset_type=InventoryAssetType.MONITOR)
     other = web.get(f"/inventory/assets/{monitor}")
-    assert "Найти агент" not in other.text
+    assert "Привязать Endpoint Agent" not in other.text
     assert "data-endpoint-card" not in other.text
 
 

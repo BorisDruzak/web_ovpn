@@ -119,6 +119,8 @@ class WorkstationsService:
                 if data['status'] != 'success':
                     status, code = 'failed', 'workstations_reconciliation_incomplete'
             else:
+                if action == 'component_plans.create':
+                    params.pop('_inventory_asset_id', None)
                 data = self.client.call(action, params, request_id=request_id, scope='execute')
             data = public_payload(data)
         except Exception as exc:

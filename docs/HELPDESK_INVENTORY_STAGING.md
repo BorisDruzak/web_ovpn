@@ -63,13 +63,28 @@ initialization. There is no automatic employee import or migration from legacy
 text. Verify with synthetic people and a separate SQLite database; the
 production web installer is not the staging procedure.
 
-Next integration steps:
-1. Confirm a stable ID against a signed-in Helpdesk account with an explicit
-   administrator action or an expiring, one-time invitation. Reuse the
-   existing requester registration and its normal fallback.
-2. Project assignments and freshness into the requester profile. Retain the
-   last confirmed display data during provider outages and check conflicts
-   before creating any effective device permissions.
-3. Expose existing Endpoint assignment and installation workflows from the
-   employee card. Verify a genuine Endpoint
-   registration and heartbeat before reporting an installation complete.
+## Endpoint Agent installation and linking
+
+Open **Привязать Endpoint Agent** from the assigned PC on the employee card.
+The inventory card shows saved candidates, their exact evidence and the
+existing confirm/reject workflow. Its server endpoint still checks current
+card revision and rejects conflicting links.
+
+Open **Установить Endpoint Agent** from the PC card. For Windows, the action
+opens the Enrollment console at the configured HTTPS Endpoint origin. Use
+the existing verified Setup package that embeds the MSI. The handoff carries
+no enrollment credentials and the browser sends no remote command.
+
+For ALT, the page offers **Подготовить план установки** when the controller
+publishes `software.endpoint_agent` and the PC has one ready, unambiguous
+machine in a fresh reconciliation. The request sends the inventory asset
+UUID in the path. The server resolves the machine UUID, confirms the
+published component and prepares the existing component plan. Before
+applying, the server checks the same asset-to-machine identity again. Apply
+uses the existing exact plan SHA, permission, queue and job status.
+
+Publishing the ALT component against a verified staging artifact and issuing
+a one-time installation assignment tied to the asset remain staging work.
+An install plan or successful local package exit provides no proof of
+registration or heartbeat. Verify both through Endpoint before treating an
+installation as complete.

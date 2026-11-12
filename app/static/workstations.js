@@ -233,6 +233,16 @@
       button.disabled=true;button.textContent='Проверяем состояние ПК…';chooseStep('plan');one('[data-plan-result]').replaceChildren(el('p','Готовим защищённый план. Установка ещё не выполняется.'));
       try{const result=await action(component?'/component-plans':'/plans',payload);const target=one('[data-plan-result]');target.replaceChildren(anchor('Открыть готовый план и проверить изменения','/workstations/plans/'+encodeURIComponent(result.plan_id)));chooseStep('confirm');}finally{button.disabled=false;button.textContent='Подготовить план';}
     });
+    const endpointPlan=one('[data-endpoint-plan]');
+    on(endpointPlan,'submit',async evt=>{
+      const button=endpointPlan.querySelector('button');
+      button.disabled=true;
+      notice('[data-endpoint-install-status]','Подготовка плана. Установка начнётся после подтверждения.');
+      try{
+        const result=await action('/inventory/'+encodeURIComponent(endpointPlan.dataset.endpointPlan)+'/endpoint-agent-plan',{});
+        window.location.assign('/workstations/plans/'+encodeURIComponent(result.plan_id));
+      }finally{button.disabled=false;}
+    });
     const planNode=one('[data-plan]');if(planNode){
       const plan=JSON.parse(planNode.textContent),form=one('[data-apply-plan]'),button=form.querySelector('button');let submitted=root.dataset.submitted==='true';
       const update=()=>{button.disabled=!canApply(plan,{confirmed:form.elements.confirmed.checked,allowed:permissions.apply,submitted});notice('[data-plan-expiry]',Date.parse(plan.expires_at)<=Date.now()?'Срок плана истёк. Подготовьте новый план.':'');};

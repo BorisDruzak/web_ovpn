@@ -120,3 +120,26 @@ def test_blocked_component_plan_shows_reason_and_disables_confirmation(tmp_path,
     assert 'component_package_source_unverified' in page.text and 'unknown' in page.text and 'pending' in page.text
     assert re.search(r'<input[^>]*name="confirmed"[^>]*disabled', page.text)
     assert re.search(r'<button[^>]*type="submit"[^>]*disabled', page.text)
+
+
+def test_windows_inventory_install_view_hands_off_to_the_enrollment_console(tmp_path, monkeypatch):
+    from app.db import session_scope
+    from app.inventory.models import InventoryAsset, InventoryAssetType, InventoryPCDetails
+
+    monkeypatch.setenv("ENDPOINT_PLATFORM_ENABLED", "true")
+    monkeypatch.setenv("ENDPOINT_PLATFORM_BASE_URL", "https://endpoint.fixture.invalid")
+    client, _csrf = _client(tmp_path, monkeypatch)
+    asset_id = str(uuid.uuid4())
+    with session_scope() as db:
+        db.add(InventoryAsset(id=asset_id, asset_type=InventoryAssetType.PC, custom_name="Fixture Windows PC"))
+        db.flush()
+        db.add(InventoryPCDetails(asset_id=asset_id, os_name="Windows 11"))
+
+    route = f"/workstations/inventory/{asset_id}/endpoint-agent"
+    card = client.get(f"/inventory/assets/{asset_id}")
+    assert card.status_code == 200 and route in card.text
+    response = client.get(route)
+    assert response.status_code == 200
+    assert "Fixture Windows PC" in response.text
+    assert "https://endpoint.fixture.invalid/admin/enrollment" in response.text
+    assert "data-endpoint-plan=" not in response.text

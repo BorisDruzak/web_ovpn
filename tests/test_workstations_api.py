@@ -224,3 +224,73 @@ def test_running_operation_publishes_its_current_phase_before_remote_reply(datab
 
 
 from test_workstations_reconcile import database
+
+
+def test_inventory_endpoint_plan_uses_only_the_fresh_exact_workstation(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+
+    from app.db import session_scope
+    from app.inventory.models import InventoryAsset, InventoryAssetType, InventoryPCDetails
+    from app.models import WebUser
+    from app.workstations import api
+    from app.workstations.models import SourceSnapshot, WorkstationRequest
+
+    monkeypatch.setenv("WORKSTATIONS_ENABLED", "true")
+    client, csrf = _client(tmp_path, monkeypatch)
+    asset_id, machine, unrelated = (str(uuid.uuid4()) for _ in range(3))
+    with session_scope() as db:
+        db.add(InventoryAsset(id=asset_id, asset_type=InventoryAssetType.PC, custom_name="Synthetic ALT PC"))
+        db.flush()
+        db.add(InventoryPCDetails(asset_id=asset_id, os_name="ALT Workstation K 11"))
+        db.flush()
+        revision = db.get(InventoryAsset, asset_id, populate_existing=True).manual_revision
+        db.add(SourceSnapshot(source="reconciliation", generation="fixture", batch_id=str(uuid.uuid4()), observed_at=datetime.now(timezone.utc),
+            inventory_revision=0, data_json={"devices": [
+                {"inventory_asset_id": asset_id, "inventory_revision": revision, "machine_uuid": machine,
+                 "registration_state": "ready", "identity_state": "observed"},
+                {"inventory_asset_id": str(uuid.uuid4()), "inventory_revision": 1, "machine_uuid": unrelated,
+                 "registration_state": "ready", "identity_state": "observed"},
+            ]}))
+    stale = False
+    published = True
+    calls = []
+    monkeypatch.setattr(api, "snapshot_state", lambda *_: {"stale": stale})
+    monkeypatch.setattr(api, "_call", lambda *_: {"components": [{"id": "software.endpoint_agent"}] if published else []})
+
+    def start(action, body, owner, **extra):
+        calls.append((action, extra))
+        return api.response({"status": "accepted"})
+
+    monkeypatch.setattr(api, "start", start)
+    route = f"/api/v1/workstations/inventory/{asset_id}/endpoint-agent-plan"
+    headers = {"X-CSRF-Token": csrf}
+    payload = {"request_id": str(uuid.uuid4())}
+    assert client.post(route, json=payload).status_code == 400
+    assert client.post(route, json={**payload, "machine_uuid": unrelated}, headers=headers).status_code == 422
+    response = client.post(route, json=payload, headers=headers)
+    assert response.status_code == 200, response.text
+    assert calls == [("component_plans.create", {"machine_uuid": machine, "component_id": "software.endpoint_agent", "_inventory_asset_id": asset_id})]
+    view = client.get(f"/workstations/inventory/{asset_id}/endpoint-agent")
+    assert 'data-endpoint-plan=' in view.text and 'Synthetic ALT PC' in view.text
+    published = False
+    view = client.get(f"/workstations/inventory/{asset_id}/endpoint-agent")
+    assert 'ещё не опубликован' in view.text and 'data-endpoint-plan=' not in view.text
+    assert client.post(route, json=payload, headers=headers).status_code == 409
+    assert len(calls) == 1
+
+    sha = "a" * 64
+    plan_id = f"setup-component-{sha}"
+    with session_scope() as db:
+        user = db.scalar(select(WebUser).where(WebUser.username == "admin"))
+        db.add(WorkstationRequest(actor=f"user:{user.id}", action="component_plans.create",
+            permission="workstations:plan", intent_sha256="b" * 64, status="succeeded",
+            parameters_json=calls[0][1], data_json={"plan_id": plan_id}))
+    apply_url = f"/api/v1/workstations/plans/{plan_id}/apply"
+    apply_body = {"request_id": str(uuid.uuid4()), "sha256": sha, "kind": "component"}
+    stale = True
+    assert client.post(apply_url, json=apply_body, headers=headers).status_code == 409
+    assert client.post(route, json=payload, headers=headers).status_code == 409
+    assert len(calls) == 1
+    stale = False
+    assert client.post(apply_url, json=apply_body, headers=headers).status_code == 200
+    assert calls[-1] == ("plans.apply", {"plan_id": plan_id})

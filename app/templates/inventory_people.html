@@ -31,6 +31,16 @@
     {% if row.os_name or row.agent_version %}<p>{{ row.os_name or '' }}{% if row.agent_version %} · Версия агента {{ row.agent_version }}{% endif %}</p>{% endif %}
     {% if row.last_seen_at %}<p>Последняя связь (UTC) <time datetime="{{ row.last_seen_at.isoformat() }}">{{ row.last_seen_at.strftime('%d.%m.%Y %H:%M') }}</time></p>{% endif %}
     {% if row.endpoint_binding_state == 'review' %}<p>Привязка Endpoint требует проверки.</p>{% endif %}
+    <div class="inventory-search-controls">
+      {% if row.endpoint_binding_state == 'confirmed' %}
+        <a class="button secondary" href="/inventory/assets/{{ row.inventory_asset_id }}#endpoint-heading">Обновить состояние агента</a>
+      {% else %}
+        <a class="button secondary" href="/inventory/assets/{{ row.inventory_asset_id }}#endpoint-heading">Привязать Endpoint Agent</a>
+        {% if row.endpoint_binding_state == 'unbound' %}
+          <a class="button secondary" href="/workstations/inventory/{{ row.inventory_asset_id }}/endpoint-agent">Установить Endpoint Agent</a>
+        {% endif %}
+      {% endif %}
+    </div>
     <details>
       <summary>Завершить назначение</summary>
       <form method="post" action="/inventory/people/{{ person.inventory_person_id }}/assignments/{{ row.assignment_id }}/end">

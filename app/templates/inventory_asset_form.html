@@ -48,12 +48,13 @@
     </div>
     {% else %}
     <strong>Агент не привязан</strong>
+    {% if not asset.deleted_at %}<a class="button secondary" href="/workstations/inventory/{{ asset.id }}/endpoint-agent">Установить Endpoint Agent</a>{% endif %}
     {% for detached in context.detached_bindings %}
     <p>Ранее отвязанный Endpoint Device: {{ detached.external_id }}</p>
     {{ endpoint_action('endpoint-bindings/' ~ detached.id ~ '/reconnect', 'Восстановить привязку', confirm='Восстановить связь этого Endpoint Device с данным ПК? Данные обновятся при плановой синхронизации.') }}
     {% endfor %}
     <p>Кандидаты обновляются при плановой синхронизации. Поиск показывает сохранённые совпадения.</p>
-    <button type="button" class="button secondary" data-endpoint-read="{{ api_root }}/endpoint-candidates">Найти агент</button>
+    <button type="button" class="button secondary" data-endpoint-read="{{ api_root }}/endpoint-candidates">Привязать Endpoint Agent</button>
     {% endif %}
     {% for candidate in endpoint_candidates %}
     <section class="inventory-endpoint-candidate">
