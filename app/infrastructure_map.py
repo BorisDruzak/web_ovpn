@@ -21,6 +21,7 @@ MAX_SNAPSHOT_BYTES = 1_000_000
 MAX_AGE = timedelta(minutes=25)
 SERVICE_PROBE_MAX_AGE = timedelta(minutes=5)
 STP_ROOT_PATH_MAX_AGE = timedelta(minutes=5)
+PORT_LINK_CHECK_MAX_AGE = timedelta(minutes=5)
 STATES = ("critical", "warn", "ok", "unknown")
 NETWORK_KINDS = ("Коммутатор", "Маршрутизатор", "Точка доступа", "Сетевое устройство")
 INTERFACE_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}")
@@ -204,6 +205,23 @@ def _physical_port_alias(row: dict) -> str:
     return f"Port{slot[1]}" if slot and key == f"ifindex:{slot[1]}" else ""
 
 
+def _apply_port_link_check(port: dict, row: dict, now: datetime) -> None:
+    sample = row.get("linkCheck")
+    if not isinstance(sample, dict) or not observation_is_fresh(sample.get("checkedAt"), now, max_age=PORT_LINK_CHECK_MAX_AGE):
+        return
+    stamp = _time(sample["checkedAt"])
+    previous = _time(port["checkedAt"])
+    state = sample.get("state")
+    if (previous and stamp <= previous) or state not in ("up", "down", "disabled"):
+        return
+    speed = sample.get("speedBps")
+    port.update(state=state, source="SNMP", checkedAt=stamp.isoformat(), stale=False,
+                speedBps=speed if state == "up" and type(speed) is int and 0 < speed <= 10**15 else None)
+    if state != "up":
+        for key in ("lldpChassisCount", "lldpNeighborCount", "fdbLearned", "fdbVlans", "telemetry"):
+            port.pop(key, None)
+
+
 def _public_port_telemetry(sample: object, port: dict, now: datetime) -> dict:
     if port["state"] != "up" or not isinstance(sample, dict):
         return {}
@@ -265,6 +283,7 @@ def index_port_states(rows: list[dict], now: datetime) -> dict:
     by_label = {}
     for row in rows:
         port = _public_port(row, now)
+        _apply_port_link_check(port, row, now)
         label = port_label_key(port["name"])
         if not label:
             continue
@@ -586,6 +605,7 @@ def _public_node(row: dict, now: datetime) -> dict:
         fdb_vlans = _public_port_fdb_vlans(raw_port.get("fdbVlans"), port)
         if fdb_vlans:
             port["fdbVlans"] = fdb_vlans
+        _apply_port_link_check(port, raw_port, now)
     observer = next((source for source in sources if source["name"] == "Server Observer"), None)
     aliases = row.get("aliases")
     resources = {}

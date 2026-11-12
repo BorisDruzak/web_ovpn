@@ -15,6 +15,7 @@ from .oids import (
     IF_PHYS_ADDRESS,
     IF_SPEED,
 )
+from .outcomes import SnmpOutcome
 
 
 _INTERFACE_COLUMNS = (
@@ -28,6 +29,39 @@ _INTERFACE_COLUMNS = (
     IF_HIGH_SPEED,
     IF_ALIAS,
 )
+
+
+async def read_interface_link(transport, if_index: int, expected_name: str) -> dict:
+    async def scalar(column):
+        oid = (*column, if_index)
+        result = await transport.get(oid)
+        if (result.outcome is SnmpOutcome.SUCCESS_WITH_ROWS and len(result.rows) == 1
+                and result.rows[0].oid == oid):
+            return result.rows[0]
+        return None
+
+    name = await scalar(IF_NAME)
+    if name is None or _text(name, "ifName").strip().casefold() != expected_name.strip().casefold():
+        return {}
+    admin = await scalar(IF_ADMIN_STATUS)
+    if admin is None:
+        return {}
+    status = _integer(admin, "ifAdminStatus", value_type="integer")
+    if status == 2:
+        return {"state": "disabled"}
+    if status != 1:
+        return {}
+    oper = await scalar(IF_OPER_STATUS)
+    if oper is None:
+        return {}
+    status = _integer(oper, "ifOperStatus", value_type="integer")
+    if status in (2, 7):
+        return {"state": "down"}
+    if status != 1:
+        return {}
+    speed = await scalar(IF_HIGH_SPEED)
+    mbps = _integer(speed, "ifHighSpeed", value_type="gauge32") if speed else 0
+    return {"state": "up", "speedBps": mbps * 1_000_000 if 0 < mbps <= 1_000_000 else None}
 
 
 def _rows(values: Iterable[SnmpVarBind | CapabilityResult]) -> Iterable[SnmpVarBind]:

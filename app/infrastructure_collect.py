@@ -28,6 +28,7 @@ from netctl.config import DEFAULT_DB_URL, load_secrets
 from netctl.context import load_context_bytes, load_schema, validate_context
 from netctl.db import connect_read_only, list_sources
 from netctl.drivers import legacy_driver_for
+from netctl.snmp.interfaces import read_interface_link
 from netctl.snmp.lacp import read_lacp_members
 from netctl.snmp.stp import read_stp_root_path
 from netctl.snmp.transport import SnmpTransport
@@ -300,6 +301,52 @@ async def _collect_stp_root_paths(sources: list[dict]) -> dict:
 
     observations = await asyncio.gather(*(read(source) for source in eligible))
     return {source["name"]: observation for source, observation in zip(eligible, observations) if observation}
+
+
+async def _check_switch_ends_of_proxmox_links(context: dict, network: dict, pve: dict, now: datetime) -> None:
+    host_ports = {(host, port["name"]) for host, ports in pve.get("physicalPorts", {}).items()
+                  for port in ports if port.get("source") == "Proxmox · sysfs"}
+    switches = {row["id"]: row.get("management_ip") for row in context.get("devices", []) if row["kind"] == "switch"}
+    names = {}
+    for link in context.get("links", []):
+        if (link.get("relation") != "connected_to" or link.get("state", {}).get("verified") is not True
+                or link.get("state", {}).get("intent") == "absent"):
+            continue
+        for local, peer in ((link["endpoint_a"], link["endpoint_b"]), (link["endpoint_b"], link["endpoint_a"])):
+            address = switches.get(local["device"])
+            if address and local.get("interface") and (peer["device"], peer.get("interface")) in host_ports:
+                names.setdefault(address, set()).add(port_label_key(local["interface"]))
+    sources = [row for row in network.get("sources", []) if row.get("enabled") and row.get("driver") == "snmp_switch"]
+    address_counts = Counter(row.get("host") for row in sources)
+
+    async def check(source):
+        ports = [row for row in network.get("ports", []) if row["source"] == source["name"]]
+        latest = max((row["collector_run_id"] for row in ports if type(row.get("collector_run_id")) is int), default=None)
+        if latest is None:
+            return
+        current = [row for row in ports if row.get("collector_run_id") == latest]
+        indexes = Counter(row.get("if_index") for row in current)
+        labels = Counter(port_label_key(row.get("name") or "") for row in current)
+        wanted = names[source["host"]]
+        try:
+            async with asyncio.timeout(6), SnmpTransport.from_source(source) as transport:
+                for row in current:
+                    name, index = row.get("name") or "", row.get("if_index")
+                    label = port_label_key(name)
+                    if (label not in wanted or labels[label] != 1 or type(index) is not int
+                            or not 1 <= index <= 2_147_483_647 or indexes[index] != 1
+                            or not observation_is_fresh(row.get("last_seen_at"), now)):
+                        continue
+                    try:
+                        observation = await read_interface_link(transport, index, name)
+                    except ValueError:
+                        continue
+                    if observation:
+                        row["linkCheck"] = {**observation, "checkedAt": datetime.now(timezone.utc).isoformat()}
+        except (TimeoutError, OSError, ValueError):
+            pass
+
+    await asyncio.gather(*(check(row) for row in sources if row.get("host") in names and address_counts[row["host"]] == 1))
 
 
 def _probe_on_link_guest(address: str, mac: str) -> bool:
@@ -1005,6 +1052,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 for port in current
             ]
             for port, raw_port in zip(item["ports"], current):
+                if raw_port.get("linkCheck"):
+                    port["linkCheck"] = raw_port["linkCheck"]
                 scope = (name, latest_run, port["checkedAt"])
                 neighbors = peers_by_sample.get((name, port["key"], latest_run, port["checkedAt"]))
                 if neighbors and port["state"] == "up":
@@ -2036,6 +2085,8 @@ def main() -> int:
             print(f"Network Observer inventory unavailable ({type(exc).__name__})", file=sys.stderr)
             network = {}
         else:
+            if bindings.get("proxmox_port_observer") is True:
+                asyncio.run(_check_switch_ends_of_proxmox_links(context, network, pve, datetime.now(timezone.utc)))
             if lacp_links:
                 network["lacp"] = asyncio.run(_collect_lacp(network, lacp_links, datetime.now(timezone.utc)))
             network["stp_root_paths"] = asyncio.run(_collect_stp_root_paths(network["sources"]))

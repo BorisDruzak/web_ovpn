@@ -1180,6 +1180,95 @@ def test_direct_link_compares_contemporaneous_port_samples(tmp_path):
     assert comparison() is None
 
 
+def test_live_snmp_sample_compares_ports_without_redating_inventory(tmp_path):
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    stamp = now.isoformat()
+    previous = (now - timedelta(minutes=4)).isoformat()
+    switch = {"id": "switch", "name": "Switch", "kind": "Коммутатор", "ports": [
+        {"name": "xe1", "state": "up", "speedBps": 10**9, "checkedAt": previous,
+         "fdbLearned": {"checkedAt": previous, "learnedMacCount": 3, "partial": False},
+         "telemetry": {"checkedAt": previous, "intervalSeconds": 300, "rxBps": 100},
+         "linkCheck": {"state": "up", "speedBps": 10**10, "checkedAt": stamp}},
+    ]}
+    host = {"id": "host", "name": "Host", "kind": "Гипервизор", "ports": [
+        {"name": "eth0", "source": "Proxmox · sysfs", "state": "up", "speedBps": 10**10, "checkedAt": stamp},
+    ]}
+    evidence = {"a": "xe1", "b": "eth0", "source": "GitHub", "confirmed": True}
+    edge = {"a": "switch", "b": "host", "kind": "Сетевое соединение", "confirmed": True,
+            "portEvidence": [evidence]}
+    path = tmp_path / "map.json"
+
+    def read(at):
+        path.write_text(json.dumps({"schema": 1, "snapshotAt": stamp, "nodes": [switch, host], "links": [edge]}),
+                        encoding="utf-8")
+        graph = load_infrastructure_map(path, at)
+        return graph["nodes"][0]["ports"][0], graph["links"][0]["portEvidence"][0]
+
+    port, pair = read(now)
+    assert (port["checkedAt"], port["speedBps"]) == (stamp, 10**10)
+    assert port["fdbLearned"]["checkedAt"] == previous
+    assert port["telemetry"]["checkedAt"] == previous
+    assert pair["portComparison"] == {"state": "both_up", "checkedAt": stamp}
+    switch["ports"][0]["linkCheck"]["state"] = "down"
+    port, pair = read(now)
+    assert port["state"] == "down" and port["speedBps"] is None and "telemetry" not in port
+    assert pair["portComparison"]["state"] == "one_down"
+    port, pair = read(now + timedelta(minutes=6))
+    assert port["checkedAt"] == previous and "portComparison" not in pair
+
+
+def test_live_snmp_poll_uses_confirmed_pairs_and_rechecks_ifindex_name(monkeypatch):
+    import asyncio
+
+    from app import infrastructure_collect as collector
+    from netctl.snmp.models import CapabilityResult, SnmpVarBind
+    from netctl.snmp.oids import IF_ADMIN_STATUS, IF_HIGH_SPEED, IF_NAME, IF_OPER_STATUS
+    from netctl.snmp.outcomes import SnmpOutcome
+
+    now = datetime.now(timezone.utc)
+    names = {5: b"xe1", 6: b"reused-index"}
+    calls = []
+
+    class Transport:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def get(self, oid):
+            calls.append(oid)
+            column, index = oid[:-1], oid[-1]
+            kind, value = {
+                IF_NAME: ("octet_string", names[index]), IF_ADMIN_STATUS: ("integer", 1),
+                IF_OPER_STATUS: ("integer", 1), IF_HIGH_SPEED: ("gauge32", 10_000),
+            }[column]
+            return CapabilityResult("", SnmpOutcome.SUCCESS_WITH_ROWS, (SnmpVarBind(oid, kind, value),))
+
+    monkeypatch.setattr(collector.SnmpTransport, "from_source", lambda _: Transport())
+    links = [
+        {"endpoint_a": {"device": "switch", "interface": f"xe{i}"},
+         "endpoint_b": {"device": "host", "interface": f"eth{i}"},
+         "relation": "connected_to", "state": {"verified": i < 3}}
+        for i in (1, 2, 3)
+    ]
+    context = {"devices": [{"id": "switch", "kind": "switch", "management_ip": "192.0.2.1"}], "links": links}
+    network = {
+        "sources": [{"name": "observer", "host": "192.0.2.1", "driver": "snmp_switch", "enabled": True}],
+        "ports": [{"source": "observer", "name": f"xe{i}", "if_index": i + 4, "collector_run_id": 1,
+                   "last_seen_at": now.isoformat()} for i in (1, 2, 3)],
+    }
+    pve = {"physicalPorts": {"host": [{"name": f"eth{i}", "source": "Proxmox · sysfs"}
+                                    for i in (1, 2, 3)]}}
+    asyncio.run(collector._check_switch_ends_of_proxmox_links(context, network, pve, now))
+    first, second, third = network["ports"]
+    assert first["linkCheck"]["state"] == "up" and first["linkCheck"]["speedBps"] == 10**10
+    assert "linkCheck" not in second and "linkCheck" not in third
+    assert calls == [(*column, 5) for column in (IF_NAME, IF_ADMIN_STATUS, IF_OPER_STATUS, IF_HIGH_SPEED)] + [(*IF_NAME, 6)]
+
+
 def test_proxmox_port_observer_verifies_target_and_only_updates_inventory_ports(tmp_path, monkeypatch):
     from app import infrastructure_port_ssh as observer
     from app.infrastructure_map import _public_port
