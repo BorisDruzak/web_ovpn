@@ -1205,6 +1205,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         vlan_address_mismatch: 'Локальный адрес не совпал',
         vlan_route_mismatch: 'Маршрут к соседу проходит вне ожидаемого VLAN',
         vlan_peer_identity_mismatch: 'MAC соседа отличается от MAC адаптера Proxmox',
+        vlan_peer_identity_unconfirmed: 'MAC соседа по VLAN не подтверждён',
         wireguard_route_unconfirmed: 'Маршрут ядра не подтверждён',
         wireguard_route_mismatch: 'Ядро выбрало другой маршрут',
         wireguard_evidence_unavailable: 'Нет свежего отчёта о маркировке и WireGuard',

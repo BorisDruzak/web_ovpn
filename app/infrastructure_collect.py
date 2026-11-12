@@ -1447,11 +1447,21 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
     intents = {item["id"]: item for item in context.get("routing_intent", []) if "id" in item}
     identity_services = {}
     asset_services = bindings.get("asset_services", {})
+
+    def bind_asset_vlan(item, asset, spec):
+        if "local_vlan_transit" not in spec:
+            return False
+        item["probeTargetIP"] = None
+        transit = (local_vlan_probes or {}).get(f"transit:{spec['local_vlan_transit']}", {})
+        if spec.get("asset") == asset and transit.get("peerAsset") == asset and transit.get("peerMac"):
+            item.update(probeTargetIP=transit["ip"], probeTargetVlan=transit)
+        return True
+
     for service in context.get("services", []):
         host = service.get("device")
         item = node(service["id"], service["name"], "Сервис", nodes.get(host, {}).get("site", ""))
         spec = asset_services.get(service["id"], {})
-        if spec.get("require_network_identity") is True:
+        if not bind_asset_vlan(item, host, spec) and spec.get("require_network_identity") is True:
             item["probeTargetIP"] = None
             if spec.get("asset") == host and host in address_by_asset and "gateway_segment" not in spec:
                 identity_services.setdefault(host, []).append(item)
@@ -1465,6 +1475,9 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         asset = spec["asset"]
         if asset in address_by_asset and service_id not in nodes:
             item = node(service_id, spec["label"], "Сервис", nodes[asset]["site"], "UI_VPN")
+            edge(asset, service_id, "Размещение", "Настройки карты")
+            if bind_asset_vlan(item, asset, spec):
+                continue
             if "gateway_segment" in spec:
                 gateways = [segment["gateway"] for segment in context.get("segments", [])
                             if segment["id"] == spec["gateway_segment"] and segment.get("gateway_device") == asset
@@ -1475,7 +1488,6 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 identity_services.setdefault(asset, []).append(item)
             else:
                 item["probeTargetIP"] = address_by_asset[asset]
-            edge(asset, service_id, "Размещение", "Настройки карты")
     backup = bindings.get("proxmox_backup_monitor")
     backup_observation = pve.get("backup", {})
     guest_backup_checks = {}

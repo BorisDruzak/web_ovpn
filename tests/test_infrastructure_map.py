@@ -1474,6 +1474,45 @@ def test_guest_service_uses_fresh_explicit_local_arp_without_router_entry(monkey
     assert calls == []
 
 
+def test_dns_service_requires_verified_vlan_peer_and_uses_local_address(monkeypatch):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import _public_service_check
+    from app import infrastructure_service_probes as probes
+
+    now = datetime.now(timezone.utc)
+    address = "192.0.2.1"
+    transit = {"ip": address, "peerAsset": "gateway", "localAsset": "observer", "peerMac": "02:00:00:00:00:01",
+               "interface": "eth0.50", "vlan": 50, "address": "192.0.2.2/30"}
+    context = {"devices": [{"id": "gateway", "name": "Gateway", "kind": "firewall_dns_host",
+                            "management_ip": "198.51.100.1"}]}
+    bindings = {"asset_services": {"dns50": {"asset": "gateway", "label": "DNS", "local_vlan_transit": "link"}}}
+    config = {"dns50": [{"type": "dns", "ip": address, "port": 53, "transport": "udp"}]}
+    vlan = {"interface": "eth0.50", "id": 50, "localAddress": "192.0.2.2/30",
+            "peer": {"asset": "gateway", "guestPort": "net2", "state": "matched"}}
+    calls = []
+
+    def dns_probe(spec, *, source=None):
+        calls.append((spec["ip"], source))
+        return {"state": "reachable", "dns": {"name": "example.test.", "record": "A", "transport": "UDP"}}
+
+    monkeypatch.setattr(probes, "_local_vlan_transit", lambda spec: {"state": "reachable", "vlanTransit": vlan})
+    monkeypatch.setattr(probes, "_dns", dns_probe)
+
+    def check(transits):
+        graph = build_graph(context, {}, {}, {}, bindings, now, local_vlan_probes=transits)
+        probes.apply_service_probes(graph["nodes"], config)
+        service = next(row for row in graph["nodes"] if row["id"] == "dns50")
+        return _public_service_check(service["serviceChecks"][0], datetime.now(timezone.utc))
+
+    result = check({"transit:link": transit})
+    assert result["state"] == "reachable" and result["vlanTransit"] == vlan
+    assert calls == [(address, "192.0.2.2")]
+    vlan["peer"]["state"] = "unconfirmed"
+    assert check({"transit:link": transit})["reason"] == "vlan_peer_identity_unconfirmed"
+    assert check({})["skipped"]
+    assert calls == [(address, "192.0.2.2")]
+
+
 def test_port_evidence_keeps_direction_and_parallel_links(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map

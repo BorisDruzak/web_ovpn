@@ -563,7 +563,7 @@ def _public_service_check(check: dict, now: datetime) -> dict:
             if isinstance(interface, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", interface):
                 details["interface"] = interface
             result["localRoute"] = details
-    if result["method"] == "ICMP · VLAN":
+    if result["method"] in ("ICMP · VLAN", "DNS") and result["source"] == "UI_VPN":
         vlan = check.get("vlanTransit")
         if isinstance(vlan, dict):
             name, vlan_id = vlan.get("interface"), vlan.get("id")
@@ -584,7 +584,8 @@ def _public_service_check(check: dict, now: datetime) -> dict:
                             and state in ("matched", "mismatch", "unconfirmed")):
                         result["vlanTransit"]["peer"] = {"asset": asset, "guestPort": port, "state": state}
         if reason in ("vlan_probe_error", "vlan_interface_missing", "vlan_id_mismatch",
-                      "vlan_link_down", "vlan_address_mismatch", "vlan_route_mismatch", "vlan_peer_identity_mismatch"):
+                      "vlan_link_down", "vlan_address_mismatch", "vlan_route_mismatch",
+                      "vlan_peer_identity_mismatch", "vlan_peer_identity_unconfirmed"):
             result["reason"] = reason
     if result["method"] == "Маршрут · WireGuard":
         policy = check.get("wireguardPolicy")
@@ -1670,7 +1671,8 @@ def summarize_services(graph: dict) -> dict:
              "required": check.get("required") is True,
              **{key: check[key] for key in ("source", "checkedAt", "stale", "reason", "path", "port", "target",
                                             "pppoe", "rtspStatus", "ftpReply", "tlsExpiresAt", "tlsVersion",
-                                            "dns", "localRoute", "identityCheckedAt", "errorSource", "responseCode", "attempts")
+                                            "dns", "localRoute", "vlanTransit", "identityCheckedAt", "errorSource",
+                                            "responseCode", "attempts")
                 if key in check and check[key] is not None and check[key] != ""}}
             for check in node["serviceChecks"] if check.get("required") or (
                 state == "unknown" and check.get("supplemental") and check["state"] != "reachable"

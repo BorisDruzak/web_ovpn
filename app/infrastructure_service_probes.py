@@ -274,7 +274,7 @@ def _explicit_dns_udp(query: dns.message.QueryMessage, ip: str, port: int,
     return None, unexpected
 
 
-def _dns(spec: dict) -> dict:
+def _dns(spec: dict, *, source: str | None = None) -> dict:
     transport = spec.get("transport", "auto")
     if transport not in ("auto", "udp", "tcp"):
         return {"state": "unknown"}
@@ -292,6 +292,8 @@ def _dns(spec: dict) -> dict:
         diagnostic["transport"] = transport.upper()
     result = {"state": "unknown", "dns": diagnostic}
     options = {"timeout": TIMEOUT, "port": port}
+    if source is not None:
+        options["source"] = source
     if "route_via" in spec:
         route = _local_ipv4_route(ip, spec["route_via"])
         result["localRoute"] = route
@@ -1035,6 +1037,19 @@ def _local_vlan_transit(spec: dict) -> dict:
     return {**target, **result}
 
 
+def _dns_over_vlan(spec: dict, transit: dict) -> dict:
+    if "route_via" in spec:
+        return {"state": "unknown", "reason": "vlan_probe_error"}
+    observation = _local_vlan_transit(transit)
+    vlan = observation.get("vlanTransit", {})
+    if observation["state"] != "reachable" or vlan.get("peer", {}).get("state") != "matched":
+        reason = observation.get("reason", "")
+        return {"state": "unknown", "reason": reason if reason.startswith("vlan_") else "vlan_peer_identity_unconfirmed",
+                "vlanTransit": vlan}
+    source = str(ipaddress.IPv4Interface(vlan["localAddress"]).ip)
+    return {**_dns(spec, source=source), "vlanTransit": vlan}
+
+
 def _wireguard_policy(spec: dict) -> dict:
     ingress, interface = spec.get("ingress"), spec.get("interface")
     mark, table = spec.get("mark"), spec.get("table")
@@ -1327,6 +1342,7 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
         identity_at = node.get("probeTargetIdentityAt") if service or identity_method else None
         for spec in specs:
             protocol = spec["type"]
+            vlan = node.get("probeTargetVlan")
             method = PROBE_METHODS[protocol]
             supplemental = not service or spec.get("supplemental") is True
             component = not supplemental and spec.get("component") is True
@@ -1340,6 +1356,9 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                         and "arp_expected_mac" in spec
                         and (arp := _local_arp_diagnostic(spec.get("ip"), spec["arp_expected_mac"]))):
                     details["arpDiagnostic"] = arp
+            elif vlan:
+                details = (_dns_over_vlan(spec, vlan) if protocol == "dns"
+                           else {"state": "unknown", "reason": "vlan_probe_error"})
             elif protocol == "openvpn_management" and valid_port is not None:
                 details = {**_openvpn_management(), "configuredPort": valid_port}
                 valid_port = None
