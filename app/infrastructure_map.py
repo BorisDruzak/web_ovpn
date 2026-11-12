@@ -1444,7 +1444,25 @@ def load_infrastructure_agent_audit(path: Path) -> dict:
             "agentAudit": graph.get("agentAudit", {"sourceState": "unavailable"})}
 
 
-def _summarize_guest_agents(nodes: dict, keys: dict, conflicts: set[str], identities: list[dict], now: datetime) -> dict:
+def _guest_agent_exclusion(node: dict, snapshot_fresh: bool) -> str:
+    proxmox = next((source for source in node["sources"] if source["name"] == "Proxmox"), None)
+    if not snapshot_fresh or (proxmox and proxmox["stale"]):
+        return "proxmox_stale"
+    if not proxmox or proxmox["label"] != "Запущена":
+        return {
+            "Выключена": "guest_stopped",
+            "Приостановлена": "guest_paused",
+            "Гостевая ОС ещё не запущена": "guest_not_started",
+            "Шаблон": "guest_template",
+        }.get(proxmox["label"] if proxmox else "", "proxmox_unconfirmed")
+    network = node.get("guestNetwork")
+    if not network or network["configured"] > network["enabled"] + network["disabled"]:
+        return "network_config_unconfirmed"
+    return "no_enabled_network_adapter" if network["enabled"] == 0 else "no_unique_network_identity"
+
+
+def _summarize_guest_agents(nodes: dict, keys: dict, conflicts: set[str], identities: list[dict], now: datetime,
+                            *, snapshot_fresh: bool) -> dict:
     from .inventory.endpoint import CANDIDATE_MAX_AGE, STATE_MAX_AGE
 
     by_id = {row["id"]: row for row in identities if isinstance(row, dict)
@@ -1465,14 +1483,19 @@ def _summarize_guest_agents(nodes: dict, keys: dict, conflicts: set[str], identi
         matches.setdefault(node_id, set())
     guests_by_identity = Counter(identity_id for values in matches.values() for identity_id in values)
     guests = []
-    for node_id, candidates in matches.items():
-        if not candidates and node_id not in conflicts:
+    for node_id, node in nodes.items():
+        if not node["guest"] or node["vmid"] is None:
             continue
-        node = nodes[node_id]
         entry = {key: node[key] for key in ("id", "name", "vmid")}
+        candidates = matches.get(node_id)
+        if candidates is None:
+            guests.append({**entry, "state": "not_eligible", "reason": _guest_agent_exclusion(node, snapshot_fresh)})
+            continue
         entry.update(state="ambiguous", registrations=len(candidates))
         if node_id in conflicts:
             entry["reason"] = "duplicate_guest_mac"
+        elif not candidates:
+            entry.update(state="unmatched", reason="no_matching_registration")
         elif len(candidates) > 1:
             entry["reason"] = "multiple_registrations"
         else:
@@ -1489,10 +1512,10 @@ def _summarize_guest_agents(nodes: dict, keys: dict, conflicts: set[str], identi
                 if entry["presence"] == "online":
                     entry["lastSeenAt"] = last_seen.isoformat()
         guests.append(entry)
-    return {"sourceState": "ready", "eligible": len(matches),
-            "matched": sum(row["state"] == "matched" for row in guests),
-            "ambiguous": sum(row["state"] == "ambiguous" for row in guests),
-            "guests": sorted(guests, key=lambda row: row["vmid"])[:64]}
+    counts = Counter(row["state"] for row in guests)
+    return {"sourceState": "ready", "total": len(guests), "eligible": len(matches),
+            "matched": counts["matched"], "ambiguous": counts["ambiguous"], "unmatched": counts["unmatched"],
+            "notEligible": counts["not_eligible"], "guests": sorted(guests, key=lambda row: (row["vmid"], row["id"]))}
 
 
 def load_infrastructure_map(
@@ -1686,7 +1709,9 @@ def load_infrastructure_map(
         "overviewGuests": node_ids("overviewGuests"),
         "git": revision if re.fullmatch(r"[0-9a-f]{40}", revision) else "",
         **({"collectionIssues": issues} if issues else {}),
-        **({"agentAudit": _summarize_guest_agents(nodes, agent_keys, agent_conflicts, agent_identities, now)}
+        **({"agentAudit": _summarize_guest_agents(
+            nodes, agent_keys, agent_conflicts, agent_identities, now, snapshot_fresh=now - stamp <= MAX_AGE,
+        )}
            if agent_identities is not None else {}),
         **({"guestAttachments": _guest_attachments(nodes, links, [key for key, node in nodes.items() if node["guest"]])}
            if include_guest_attachments else {}),

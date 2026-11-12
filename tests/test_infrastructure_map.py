@@ -4581,13 +4581,23 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
     path = tmp_path / "infrastructure.json"
     monkeypatch.setenv("INFRASTRUCTURE_MAP_SNAPSHOT_PATH", str(path))
     at = datetime.now(timezone.utc).isoformat()
-    keys = ("mac-020000000001", "mac-020000000002")
-    path.write_text(json.dumps({"schema": 1, "snapshotAt": at, "nodes": [
+    keys = ("mac-020000000001", "mac-020000000002", "mac-020000000003")
+    guests = [
         {"id": f"vm:{index}", "name": f"VM {index}", "guest": True, "vmid": index,
          "kind": "Виртуальная машина", "agentMatchKeys": [key],
          "sources": [{"name": "Proxmox", "status": "ok", "at": at, "label": "Запущена"}]}
         for index, key in enumerate(keys, 1)
-    ]}), encoding="utf-8")
+    ]
+    guests.extend([
+        {"id": "vm:4", "name": "VM 4", "guest": True, "vmid": 4, "kind": "Виртуальная машина",
+         "sources": [{"name": "Proxmox", "status": "warn", "at": at, "label": "Выключена"}]},
+        {"id": "vm:5", "name": "VM 5", "guest": True, "vmid": 5, "kind": "Виртуальная машина",
+         "sources": [{"name": "Proxmox", "status": "ok", "at": at, "label": "Запущена"}],
+         "guestNetwork": {"checkedAt": at, "configured": 1, "enabled": 0, "disabled": 1}},
+        {"id": "vm:6", "name": "VM 6", "guest": True, "vmid": 6, "kind": "Виртуальная машина",
+         "sources": [{"name": "Proxmox", "status": "ok", "at": at, "label": "Запущена"}]},
+    ])
+    path.write_text(json.dumps({"schema": 1, "snapshotAt": at, "nodes": guests}), encoding="utf-8")
 
     class Adapter:
         unavailable = False
@@ -4610,12 +4620,20 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
     assert response.status_code == 200
     assert all(key not in response.text for key in keys)
     result = response.json()["infrastructure"]["agentAudit"]
-    assert (result["eligible"], result["matched"], result["ambiguous"]) == (2, 1, 1)
-    matched, ambiguous = result["guests"]
+    assert (result["eligible"], result["matched"], result["ambiguous"]) == (3, 1, 1)
+    assert (result["total"], result["unmatched"], result["notEligible"]) == (6, 1, 3)
+    matched, ambiguous, unmatched, stopped, disabled, unknown_network = result["guests"]
     assert matched == {"id": "vm:1", "name": "VM 1", "vmid": 1, "state": "matched",
                        "registrations": 1, "presence": "online", "lastSeenAt": at}
     assert ambiguous["state"] == "ambiguous" and "lastSeenAt" not in ambiguous
     assert ambiguous["reason"] == "multiple_registrations"
+    assert (unmatched["state"], unmatched["reason"], unmatched["registrations"]) == (
+        "unmatched", "no_matching_registration", 0,
+    )
+    assert (stopped["state"], stopped["reason"]) == ("not_eligible", "guest_stopped")
+    assert disabled["reason"] == "no_enabled_network_adapter"
+    assert unknown_network["reason"] == "network_config_unconfirmed"
+    assert all("presence" not in row for row in [unmatched, stopped, disabled, unknown_network])
 
     browser_url = "/network/infrastructure/agents"
     assert client.get(browser_url, follow_redirects=False).status_code == 303
@@ -4658,7 +4676,8 @@ def test_agent_audit_reports_duplicate_guest_macs_without_using_them_for_presenc
     assert all("presence" not in entry and "lastSeenAt" not in entry for entry in audit["guests"])
     assert mac not in json.dumps(graph) and "agentMatchConflict" not in json.dumps(graph)
     stale = load_infrastructure_map(path, now + timedelta(hours=1), agent_identities=identities)
-    assert stale["agentAudit"]["guests"] == []
+    assert stale["agentAudit"]["eligible"] == 0
+    assert [row["reason"] for row in stale["agentAudit"]["guests"]] == ["proxmox_stale", "proxmox_stale"]
 
     pve["configs"]["101"]["net0"] = "virtio=02:00:00:00:00:02,bridge=vmbr0"
     raw = build_graph({}, {}, {}, pve, {}, now)

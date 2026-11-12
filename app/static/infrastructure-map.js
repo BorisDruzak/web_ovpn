@@ -495,21 +495,28 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       label.textContent = 'Источник недоступен';
       return;
     }
-    const guests = agentAudit.guests ?? [];
-    const guest = guests.find(item => item.id === label.dataset.agentStatus);
-    if (guest?.state === 'ambiguous') {
-      label.textContent = {
-        duplicate_guest_mac: 'Повторяющийся MAC в Proxmox',
-        multiple_registrations: 'Несколько регистраций Endpoint',
-        registration_matches_multiple_guests: 'Регистрация совпадает с несколькими ВМ',
-      }[guest.reason] ?? 'Неоднозначное совпадение';
-    } else if (guest?.presence === 'online') {
+    const guest = agentAudit.guests?.find(item => item.id === label.dataset.agentStatus);
+    if (guest?.presence === 'online') {
       label.textContent = 'На связи · ' + formatTime(guest.lastSeenAt);
-    } else if (!guest && agentAudit.matched + agentAudit.ambiguous > guests.length) {
-      label.textContent = 'Нет данных в сводке';
-    } else {
-      label.textContent = guest ? 'Связь не подтверждена' : 'Привязка не подтверждена';
+      return;
     }
+    const reasons = {
+      duplicate_guest_mac: 'Повторяющийся MAC в Proxmox',
+      multiple_registrations: 'Несколько регистраций Endpoint',
+      registration_matches_multiple_guests: 'Регистрация совпадает с несколькими ВМ',
+      no_matching_registration: 'Совпадений в Endpoint нет',
+      guest_stopped: 'Гость выключен',
+      guest_paused: 'Гость приостановлен',
+      guest_not_started: 'Гостевая ОС ещё не запущена',
+      guest_template: 'Шаблон Proxmox',
+      proxmox_stale: 'Данные Proxmox устарели',
+      proxmox_unconfirmed: 'Состояние гостя не подтверждено',
+      network_config_unconfirmed: 'Настройки сети гостя не подтверждены',
+      no_enabled_network_adapter: 'Нет включённого сетевого адаптера',
+      no_unique_network_identity: 'Нет однозначного MAC для сопоставления',
+    };
+    label.textContent = reasons[guest?.reason] ?? (guest?.state === 'matched'
+      ? 'Связь не подтверждена' : 'Привязка не подтверждена');
   }
 
   function renderGuestAttachment(attachment) {
