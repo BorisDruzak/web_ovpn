@@ -525,6 +525,7 @@ def test_mcp_infrastructure_returns_one_node_and_its_linked_peers(monkeypatch):
     def audit_api(method, path):
         assert method == "GET" and path in ("/api/v1/network/infrastructure?view=topology",
                                             "/api/v1/network/infrastructure?view=agents",
+                                            "/api/v1/network/infrastructure?view=agents&node_id=vm%3A103",
                                             "/api/v1/network/infrastructure?view=services",
                                             "/api/v1/network/infrastructure?view=attachment",
                                             "/api/v1/network/infrastructure?view=attachment&node_id=role%3Adirectum")
@@ -534,6 +535,9 @@ def test_mcp_infrastructure_returns_one_node_and_its_linked_peers(monkeypatch):
         audit.setattr(server, "api_request", audit_api)
         assert server.call_tool("openvpn_network_infrastructure", {"view": "topology"})["infrastructure"] == summary
         assert server.call_tool("openvpn_network_infrastructure", {"view": "agents"})["infrastructure"] == summary
+        assert server.call_tool("openvpn_network_infrastructure", {
+            "view": "agents", "node_id": "vm:103",
+        })["infrastructure"] == summary
         assert server.call_tool("openvpn_network_infrastructure", {"view": "services"})["infrastructure"] == summary
         assert server.call_tool("openvpn_network_infrastructure", {
             "view": "attachment", "node_id": "role:directum",

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -1707,9 +1707,10 @@ def network_infrastructure_snapshot(request: Request, db: Session = Depends(get_
 
 
 @app.get("/network/infrastructure/agents")
-def network_infrastructure_agents(request: Request, db: Session = Depends(get_db)):
+def network_infrastructure_agents(request: Request, db: Session = Depends(get_db),
+                                  node_id: str | None = Query(default=None, min_length=1, max_length=160)):
     require_user(request, db)
-    graph = load_infrastructure_agent_audit(get_settings().infrastructure_map_snapshot_path)
+    graph = load_infrastructure_agent_audit(get_settings().infrastructure_map_snapshot_path, node_id=node_id)
     return JSONResponse({"infrastructure": graph}, headers={"Cache-Control": "no-store"})
 
 

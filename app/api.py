@@ -1051,11 +1051,11 @@ def api_network_infrastructure(
     actor: str = Depends(require_api_actor),
     db: Session = Depends(get_db),
 ):
-    if view != "attachment" and node_id is not None:
-        raise HTTPException(status_code=422, detail="node_id is supported only for view=attachment")
+    if view not in ("attachment", "agents") and node_id is not None:
+        raise HTTPException(status_code=422, detail="node_id is supported only for view=attachment or view=agents")
     path = get_settings().infrastructure_map_snapshot_path
     if view == "agents":
-        graph = load_infrastructure_agent_audit(path)
+        graph = load_infrastructure_agent_audit(path, node_id=node_id)
     else:
         graph = load_infrastructure_map(path, db=db)
         if view == "services":

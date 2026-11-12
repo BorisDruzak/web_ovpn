@@ -34,6 +34,7 @@ TRANSCEIVER_MAX_AGE = timedelta(minutes=5)
 PORT_LINK_CHECK_MAX_AGE = timedelta(minutes=5)
 PORT_COUNTER_KEYS = ("rxErrors", "txErrors", "rxDiscards", "txDiscards")
 GUEST_AGENT_PROFILES = ("health_v1", "network_v1", "inventory_v1")
+GUEST_AGENT_HEALTH_MAX_AGE = timedelta(minutes=6)
 GUEST_ENROLLMENT_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
 VLAN_AUDIT_MAX_AGE = timedelta(minutes=10)
 ROUTER_NEIGHBOR_MAX_AGE = timedelta(minutes=10)
@@ -1693,7 +1694,7 @@ def summarize_services(graph: dict) -> dict:
     return {**metadata, "serviceAudit": {"total": len(services), "counts": counts, "services": services[:128]}}
 
 
-def load_infrastructure_agent_audit(path: Path) -> dict:
+def load_infrastructure_agent_audit(path: Path, *, node_id: str | None = None) -> dict:
     adapter = None
     identities = None
     try:
@@ -1705,8 +1706,9 @@ def load_infrastructure_agent_audit(path: Path) -> dict:
         graph = load_infrastructure_map(
             path, agent_identities=identities,
             load_agent_presence=(lambda: adapter.list_device_presences()) if adapter is not None else None,
-            load_agent_profiles=(lambda device_id: adapter.read_profiles(device_id, GUEST_AGENT_PROFILES))
+            load_agent_profiles=(lambda device_id, profiles: adapter.read_profiles(device_id, profiles))
             if adapter is not None else None,
+            agent_node_id=node_id,
         )
     finally:
         if adapter is not None:
@@ -1732,9 +1734,25 @@ def _guest_agent_exclusion(node: dict, snapshot_fresh: bool) -> str:
     return "no_enabled_network_adapter" if network["enabled"] == 0 else "no_unique_network_identity"
 
 
+def _guest_agent_health(snapshot: object, now: datetime) -> dict:
+    if not isinstance(snapshot, dict) or snapshot.get("profile") != "health_v1":
+        return {}
+    checked_at = snapshot.get("collected_at")
+    if not observation_is_fresh(checked_at, now, max_age=GUEST_AGENT_HEALTH_MAX_AGE):
+        return {}
+    sections = snapshot.get("sections")
+    resources = sections.get("resources") if isinstance(sections, dict) else None
+    if not isinstance(resources, dict):
+        return {}
+    metrics = {label: value for key, label in (("free_bytes", "memoryAvailableBytes"), ("uptime_seconds", "uptimeSeconds"))
+               if type(value := resources.get(key)) is int and 0 < value < 2**53}
+    return {"checkedAt": _time(checked_at).isoformat(), **metrics} if metrics else {}
+
+
 def _summarize_guest_agents(nodes: dict, keys: dict, conflicts: set[str], identities: list[dict], now: datetime,
                             *, snapshot_fresh: bool, enrollments: dict[str, str], device_presences: list[dict],
-                            load_agent_profiles: Callable[[UUID], dict] | None = None) -> dict:
+                            load_agent_profiles: Callable[[UUID, tuple[str, ...]], dict] | None = None,
+                            selected_node: str | None = None) -> dict:
     from .inventory.endpoint import CANDIDATE_MAX_AGE, STATE_MAX_AGE
 
     by_id = {row["id"]: row for row in identities if isinstance(row, dict)
@@ -1798,9 +1816,11 @@ def _summarize_guest_agents(nodes: dict, keys: dict, conflicts: set[str], identi
                 if entry["presence"] == "online":
                     entry["lastSeenAt"] = last_seen.isoformat()
                 profile_rows = _rows(identity.get("profiles"), 5)
-                if explicit and identity_id not in by_id and load_agent_profiles is not None:
+                snapshots = {}
+                if (explicit and identity_id not in by_id and load_agent_profiles is not None
+                        and (selected_node is None or node_id == selected_node)):
                     try:
-                        snapshots = load_agent_profiles(UUID(identity_id))
+                        snapshots = load_agent_profiles(UUID(identity_id), GUEST_AGENT_PROFILES)
                     except EndpointPlatformServiceError:
                         snapshots = {}
                     profile_rows = [{"profile": name, "collected_at": snapshot.get("collected_at")}
@@ -1815,18 +1835,29 @@ def _summarize_guest_agents(nodes: dict, keys: dict, conflicts: set[str], identi
                             for name in GUEST_AGENT_PROFILES if len(reports[name]) == 1]
                 if profiles:
                     entry["contextProfiles"] = profiles
+                if node_id == selected_node and entry["presence"] == "online" and load_agent_profiles is not None:
+                    try:
+                        if "health_v1" not in snapshots:
+                            snapshots = load_agent_profiles(UUID(identity_id), ("health_v1",))
+                    except (EndpointPlatformServiceError, ValueError):
+                        snapshots = {}
+                    if health := _guest_agent_health(snapshots.get("health_v1"), now):
+                        entry["health"] = health
         guests.append(entry)
     counts = Counter(row["state"] for row in guests)
     return {"sourceState": "ready", "total": len(guests), "eligible": len(matches),
             "matched": counts["matched"], "ambiguous": counts["ambiguous"], "unmatched": counts["unmatched"],
-            "notEligible": counts["not_eligible"], "guests": sorted(guests, key=lambda row: (row["vmid"], row["id"]))}
+            "notEligible": counts["not_eligible"],
+            "guests": sorted((row for row in guests if selected_node is None or row["id"] == selected_node),
+                             key=lambda row: (row["vmid"], row["id"]))}
 
 
 def load_infrastructure_map(
     path: Path, now: datetime | None = None, *, db: Session | None = None,
     agent_identities: list[dict] | None = None, include_guest_attachments: bool = False,
     load_agent_presence: Callable[[], list[dict]] | None = None,
-    load_agent_profiles: Callable[[UUID], dict] | None = None,
+    load_agent_profiles: Callable[[UUID, tuple[str, ...]], dict] | None = None,
+    agent_node_id: str | None = None,
 ) -> dict:
     now = now or datetime.now(timezone.utc)
     empty = {
@@ -2052,6 +2083,7 @@ def load_infrastructure_map(
         **({"agentAudit": _summarize_guest_agents(
             nodes, agent_keys, agent_conflicts, agent_identities, now, snapshot_fresh=now - stamp <= MAX_AGE,
             enrollments=agent_enrollments, device_presences=device_presences, load_agent_profiles=load_agent_profiles,
+            selected_node=agent_node_id,
         )}
            if agent_identities is not None else {}),
         **({"guestAttachments": _guest_attachments(nodes, links, [key for key, node in nodes.items() if node["guest"]])}

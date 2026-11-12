@@ -5605,6 +5605,8 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
 
     class Adapter:
         unavailable = False
+        reads = []
+        health_at = at
 
         def list_agent_network_identities(self):
             if self.unavailable:
@@ -5613,9 +5615,15 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
                         {"profile": "network_v1", "collected_at": at},
                         {"profile": "session_v1", "collected_at": at},
                         {"profile": "inventory_v1", "collected_at": "2099-01-01T00:00:00Z"}]
-            return [{"id": str(index), "baseline_mac_keys": [key], "online": True,
+            return [{"id": f"00000000-0000-4000-8000-{index:012d}", "baseline_mac_keys": [key], "online": True,
                      "last_seen_at": at, "baseline_collected_at": at, "profiles": profiles}
                     for index, key in enumerate([keys[0], keys[1], keys[1]])]
+
+        def read_profiles(self, device_id, profiles):
+            self.reads.append((str(device_id), tuple(profiles)))
+            return {"health_v1": {"profile": "health_v1", "collected_at": self.health_at,
+                                  "sections": {"resources": {"uptime_seconds": 7200, "free_bytes": 2**31,
+                                                             "load_1m": 0.0, "private": "excluded"}}}}
 
         def close(self):
             pass
@@ -5645,6 +5653,20 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
     assert unknown_network["reason"] == "network_config_unconfirmed"
     assert all("presence" not in row for row in [unmatched, stopped, disabled, unknown_network])
     assert all("contextProfiles" not in row for row in [ambiguous, unmatched, stopped, disabled, unknown_network])
+    assert Adapter.reads == []
+    selected = client.get("/api/v1/network/infrastructure?view=agents&node_id=vm:1", headers=headers)
+    assert selected.status_code == 200
+    detail, = selected.json()["infrastructure"]["agentAudit"]["guests"]
+    assert detail == {**matched, "health": {"checkedAt": at, "uptimeSeconds": 7200,
+                                             "memoryAvailableBytes": 2**31}}
+    assert Adapter.reads == [("00000000-0000-4000-8000-000000000000", ("health_v1",))]
+    selected = client.get("/api/v1/network/infrastructure?view=agents&node_id=vm:2", headers=headers)
+    assert selected.json()["infrastructure"]["agentAudit"]["guests"] == [ambiguous]
+    assert len(Adapter.reads) == 1
+    Adapter.health_at = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+    stale = client.get("/api/v1/network/infrastructure?view=agents&node_id=vm:1", headers=headers)
+    assert stale.json()["infrastructure"]["agentAudit"]["guests"] == [matched]
+    Adapter.health_at = at
 
     browser_url = "/network/infrastructure/agents"
     assert client.get(browser_url, follow_redirects=False).status_code == 303
@@ -5657,6 +5679,8 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
     assert response.json()["infrastructure"]["agentAudit"] == result
     assert all(key not in response.text for key in keys)
     assert "nodes" not in response.json()["infrastructure"]
+    response = client.get(browser_url + "?node_id=vm:1")
+    assert response.json()["infrastructure"]["agentAudit"]["guests"] == [detail]
     Adapter.unavailable = True
     assert client.get(browser_url).json()["infrastructure"]["agentAudit"] == {"sourceState": "unavailable"}
 

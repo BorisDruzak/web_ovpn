@@ -43,6 +43,12 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   };
   const formatTime = value => new Intl.DateTimeFormat('ru-RU', { timeZone:'Asia/Yekaterinburg', dateStyle:'short', timeStyle:'short' }).format(new Date(value));
   const formatPortSpeed = bps => bps ? (bps / 1e6).toLocaleString('ru-RU') + ' Мбит/с' : '';
+  const formatUptime = seconds => {
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor(seconds / 3600) % 24;
+    const minutes = Math.floor(seconds / 60) % 60;
+    return [days && `${days} д.`, hours && `${hours} ч.`, `${minutes} мин.`].filter(Boolean).join(' ');
+  };
   const formatEndpointMac = ({deviceId, mac, checkedAt}) =>
     [byId.get(deviceId)?.name, mac, 'MAC-таблица SNMP', formatTime(checkedAt)].filter(Boolean).join(' · ');
   const formatStpPort = ({state, enabled, checkedAt}) => {
@@ -498,29 +504,32 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     control?.focus();
   }
 
-  let agentAuditRequest = null;
-  let agentAudit = null;
-  let agentAuditExpires = 0;
+  const agentAudits = new Map();
 
   async function refreshGuestAgentStatus(label) {
     if (!label || !root.dataset.agentsUrl) return;
-    if (Date.now() >= agentAuditExpires && !agentAuditRequest) {
-      agentAuditRequest = (async () => {
+    const nodeId = label.dataset.agentStatus;
+    let cached = agentAudits.get(nodeId);
+    if (!cached || Date.now() >= cached.expires) {
+      const url = new URL(root.dataset.agentsUrl, window.location.origin);
+      url.searchParams.set('node_id', nodeId);
+      cached = {expires: Infinity};
+      cached.promise = (async () => {
         try {
-          const response = await fetch(root.dataset.agentsUrl, {
+          const response = await fetch(url, {
             cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(8_000),
           });
           if (!response.ok) throw new Error('Agent audit request failed');
-          agentAudit = (await response.json()).infrastructure?.agentAudit;
+          return (await response.json()).infrastructure?.agentAudit;
         } catch {
-          agentAudit = null;
+          return null;
         } finally {
-          agentAuditExpires = Date.now() + 30_000;
-          agentAuditRequest = null;
+          cached.expires = Date.now() + 30_000;
         }
       })();
+      agentAudits.set(nodeId, cached);
     }
-    await agentAuditRequest;
+    const agentAudit = await cached.promise;
     if (!label.isConnected) return;
     if (agentAudit?.sourceState !== 'ready') {
       label.textContent = 'Источник недоступен';
@@ -551,6 +560,18 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       const proof = make('div');
       proof.append(make('small', 'Регистрация сверена на ВМ'));
       label.append(proof);
+    }
+    const health = guest?.health;
+    if (health) {
+      const row = make('div');
+      const metrics = [];
+      if (health.memoryAvailableBytes !== undefined) {
+        const memory = (health.memoryAvailableBytes / 2**30).toLocaleString('ru-RU', {maximumFractionDigits: 2});
+        metrics.push(`Доступно в ОС ${memory} ГиБ`);
+      }
+      if (health.uptimeSeconds !== undefined) metrics.push('Время работы ОС ' + formatUptime(health.uptimeSeconds));
+      row.append(make('small', [...metrics, formatTime(health.checkedAt)].join(' · ')));
+      label.append(row);
     }
     const profileLabels = {health_v1: 'Состояние', network_v1: 'Сеть', inventory_v1: 'Инвентарь'};
     for (const {profile, collectedAt} of guest?.contextProfiles ?? []) {
@@ -747,11 +768,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       if (memoryTotalBytes !== undefined) list.append(make('dt', 'Память'), make('dd', usage(memoryUsedBytes, memoryTotalBytes)));
       if (rootTotalBytes !== undefined) list.append(make('dt', 'Корневой раздел /'), make('dd', usage(rootUsedBytes, rootTotalBytes)));
       if (uptimeSeconds !== undefined) {
-        const days = Math.floor(uptimeSeconds / 86400);
-        const hours = Math.floor(uptimeSeconds / 3600) % 24;
-        const minutes = Math.floor(uptimeSeconds / 60) % 60;
-        const uptime = [days ? `${days} д.` : '', hours ? `${hours} ч.` : '', `${minutes} мин.`].filter(Boolean).join(' ');
-        list.append(make('dt', 'Время работы'), make('dd', uptime));
+        list.append(make('dt', 'Время работы'), make('dd', formatUptime(uptimeSeconds)));
       }
       if (resourceHost.guestIo) {
         const {networkInBytesPerSecond, networkOutBytesPerSecond, diskReadBytesPerSecond,
