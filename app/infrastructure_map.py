@@ -27,6 +27,7 @@ SERVICE_PROBE_MAX_AGE = timedelta(minutes=5)
 STP_ROOT_PATH_MAX_AGE = timedelta(minutes=5)
 TRANSCEIVER_MAX_AGE = timedelta(minutes=5)
 PORT_LINK_CHECK_MAX_AGE = timedelta(minutes=5)
+PORT_COUNTER_KEYS = ("rxErrors", "txErrors", "rxDiscards", "txDiscards")
 VLAN_AUDIT_MAX_AGE = timedelta(minutes=10)
 ROUTER_NEIGHBOR_MAX_AGE = timedelta(minutes=10)
 MAX_ROUTER_NEIGHBORS = 16
@@ -338,7 +339,7 @@ def _public_port_telemetry(sample: object, port: dict, now: datetime) -> dict:
         value = _number(sample.get(key))
         if value is not None and 0 <= value <= 10**15:
             metrics[key] = value
-    for key in ("rxErrors", "txErrors", "rxDiscards", "txDiscards"):
+    for key in PORT_COUNTER_KEYS:
         value = sample.get(key)
         if type(value) is int and 0 <= value < 2**53:
             metrics[key] = value
@@ -1246,6 +1247,32 @@ def _link_port_alerts(evidence: list[dict]) -> list[dict]:
     return list(alerts.values())
 
 
+def _summarize_port_counters(nodes: dict) -> dict:
+    measured = 0
+    affected = []
+    for node in nodes.values():
+        for port in node["ports"]:
+            telemetry = port.get("telemetry", {})
+            if not any(key in telemetry for key in PORT_COUNTER_KEYS):
+                continue
+            measured += 1
+            if any(telemetry.get(key, 0) for key in PORT_COUNTER_KEYS):
+                row = {"deviceId": node["id"], "deviceName": node["name"], "port": port["name"],
+                       "telemetry": telemetry}
+                if "configuredLabel" in port:
+                    row["configuredLabel"] = port["configuredLabel"]
+                affected.append(row)
+
+    def severity(row):
+        counters = row["telemetry"]
+        errors = counters.get("rxErrors", 0) + counters.get("txErrors", 0)
+        discards = counters.get("rxDiscards", 0) + counters.get("txDiscards", 0)
+        return -errors, -discards, row["deviceId"], row["port"]
+
+    affected.sort(key=severity)
+    return {"measuredPorts": measured, "affectedPorts": len(affected), "ports": affected[:64]}
+
+
 def summarize_topology(graph: dict) -> dict:
     nodes = {node["id"]: node for node in graph["nodes"]}
     port_aliases = {
@@ -1336,6 +1363,7 @@ def summarize_topology(graph: dict) -> dict:
                   for node in nodes.values() if "downstream" in node]
     return {**metadata, "topologyAudit": {"directLinks": counts, "pendingTotal": len(pending),
                                         "portAlertTotal": len(alerts), "portAlerts": alerts[:64],
+                                        "portCounterAudit": _summarize_port_counters(nodes),
                                         "stpRootPaths": stp, "stpRoots": roots, "vlanAudits": vlan_audits[:64],
                                         "lacpHealth": lacp[:64],
                                         "downstreamSwitches": downstream[:MAX_DOWNSTREAM_SWITCHES],

@@ -3370,7 +3370,7 @@ def test_switch_vlans_join_current_port_by_unique_ifindex(tmp_path):
 
 def test_switch_port_telemetry_requires_matching_current_collection(tmp_path):
     from app.infrastructure_collect import build_graph
-    from app.infrastructure_map import load_infrastructure_map
+    from app.infrastructure_map import load_infrastructure_map, summarize_topology
 
     now = datetime.now(timezone.utc)
     at = now.isoformat()
@@ -3386,13 +3386,22 @@ def test_switch_port_telemetry_requires_matching_current_collection(tmp_path):
 
     def read(when=now):
         path.write_text(json.dumps(build_graph(context, network, {}, {}, {}, now)), encoding="utf-8")
-        return load_infrastructure_map(path, when)["nodes"][0]["ports"][0]
+        graph = load_infrastructure_map(path, when)
+        return graph["nodes"][0]["ports"][0], summarize_topology(graph)["topologyAudit"]["portCounterAudit"]
 
-    assert read()["telemetry"] == {"checkedAt": at, "intervalSeconds": 300,
-                                    "rxBps": 250000, "txBps": 0, "rxErrors": 2}
-    assert "telemetry" not in read(now + timedelta(minutes=21))
+    port, audit = read()
+    assert port["telemetry"] == {"checkedAt": at, "intervalSeconds": 300,
+                                 "rxBps": 250000, "txBps": 0, "rxErrors": 2}
+    assert audit == {"measuredPorts": 1, "affectedPorts": 1, "ports": [
+        {"deviceId": "sw", "deviceName": "Switch", "port": "Port7", "telemetry": port["telemetry"]},
+    ]}
+    assert read(now + timedelta(minutes=21))[1] == {"measuredPorts": 0, "affectedPorts": 0, "ports": []}
+    sample["in_errors_delta"] = 0
+    assert read()[1] == {"measuredPorts": 1, "affectedPorts": 0, "ports": []}
+    sample["in_errors_delta"] = 2
     sample["collector_run_id"] = 10
-    assert "telemetry" not in read()
+    assert "telemetry" not in read()[0]
+    assert read()[1]["measuredPorts"] == 0
 
 
 def test_collection_reads_source_registry_without_syncing_config(monkeypatch):
