@@ -6866,7 +6866,7 @@ def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_pa
                               "rxErrorCounters": {"checkedAt": now, "ifInErrors": 44, "fcsErrors": 0},
                               "transceiver": {"checkedAt": now, "formFactor": "SFP+",
                                               "nominalBps": 10**10, "serialNumber": "excluded"}},
-                             {"name": "xe3", "state": "up", "checkedAt": "2026-01-01T00:00:00Z",
+                             {"name": "xe3", "key": "physical:3", "state": "up", "checkedAt": "2026-01-01T00:00:00Z",
                               "ifAlias": "Expired"}]},
                   {"id": "recorder", "name": "Recorder", "kind": "Сервер"},
                   {"id": "pve", "name": "pve1", "kind": "Гипервизор", "ports": [{"name": "enp2s0"}]}],
@@ -6874,6 +6874,10 @@ def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_pa
             {"a": "snr", "b": "pve", "kind": "Сетевое соединение", "confirmed": True, "portEvidence": [
                 {"a": "xe3", "b": "vm_net_10g", "source": "GitHub", "confirmed": True},
                 {"a": "xe3", "b": "ens7f1", "source": "netctl FDB + Proxmox", "confirmed": True, "at": now},
+                {"a": "Port3", "b": "ens7f1", "source": "LLDP · двустороннее", "confirmed": True, "at": now},
+                {"a": "ge99", "b": "eno99", "source": "LLDP · двустороннее", "confirmed": True,
+                 "at": (datetime.fromisoformat(now) - timedelta(hours=1)).isoformat()},
+                {"a": "po1 / ge6", "b": "LACP 1", "source": "SNMP LACP + ARP", "confirmed": True, "at": now},
                 {"a": "ge12", "b": "management_1g", "source": "GitHub", "confirmed": False},
                 {"a": "xe3", "b": "enp2s0", "source": "GitHub", "confirmed": False},
             ]},
@@ -6897,6 +6901,12 @@ def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_pa
     assert "nodes" not in graph and "links" not in graph
     audit = graph["topologyAudit"]
     assert audit["directLinks"] == {"current": 1, "verifiedInventory": 0, "unconfirmed": 1}
+    assert audit["currentPairTotal"] == 1
+    assert audit["currentPairs"] == [{"a": "snr", "b": "pve", "nameA": "SNR", "nameB": "pve1",
+                                     "portA": "xe3", "portB": "ens7f1", "evidence": [
+                                         {"source": "LLDP · двустороннее", "checkedAt": now},
+                                         {"source": "netctl FDB + Proxmox", "checkedAt": now},
+                                     ]}]
     assert audit["pendingTotal"] == 3
     pending, mismatch, recorder = audit["pending"]
     assert (pending["a"], pending["b"], pending["portA"], pending["portB"]) == ("snr", "pve", "ge12", "management_1g")

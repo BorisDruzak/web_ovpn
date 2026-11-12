@@ -1573,6 +1573,8 @@ def _topology_port_pairs(nodes: dict, links: list[dict], host_ids: set[str] | No
         for alias in port.get("aliases", [])
     }
     port_names = {node_id: {port_label_key(port["name"]) for port in node["ports"]} for node_id, node in nodes.items()}
+    canonical_ports = {(node["id"], port_label_key(port["name"])): port["name"]
+                       for node in nodes.values() for port in node["ports"]}
     unnamed = {"", "-", "unknown", "неизвестно"}
 
     def port_key(node_id, label):
@@ -1591,6 +1593,7 @@ def _topology_port_pairs(nodes: dict, links: list[dict], host_ids: set[str] | No
     known_ports = set()
     alerts = []
     inventory_pairs = []
+    current_pairs = {}
 
     def remember_ports(a, b, port_a, port_b):
         for device, peer, label in ((a, b, port_a), (b, a, port_b)):
@@ -1614,6 +1617,17 @@ def _topology_port_pairs(nodes: dict, links: list[dict], host_ids: set[str] | No
         reports = link["portEvidence"]
         current = [r for r in reports if link["confirmed"] and r.get("pairEvidence") == "current"]
         inventory = [r for r in reports if r.get("pairEvidence") == "verified_inventory"]
+        for report in current:
+            if report["source"] == "SNMP LACP + ARP" or not report["at"]:
+                continue
+            ends = (a, port_key(a, report["a"])), (b, port_key(b, report["b"]))
+            pair, sources = current_pairs.setdefault(tuple(sorted(ends)), (
+                {"a": a, "b": b, "nameA": nodes[a]["name"], "nameB": nodes[b]["name"],
+                 "portA": canonical_ports.get(ends[0], report["a"]),
+                 "portB": canonical_ports.get(ends[1], report["b"])}, {},
+            ))
+            source, at = report["source"], report["at"]
+            sources[source] = max(at, sources.get(source, at))
         for report in current + inventory:
             remember_ports(a, b, report["a"], report["b"])
             if lacp := report.get("lacp"):
@@ -1737,7 +1751,11 @@ def _topology_port_pairs(nodes: dict, links: list[dict], host_ids: set[str] | No
             }
     for row in discovered.values():
         pending[row["a"], row["b"], row["portA"], ""] = row
-    return counts, inventory_pairs, alerts, [pending[key] for key in sorted(pending)]
+    verified_pairs = [
+        {**pair, "evidence": [{"source": source, "checkedAt": at} for source, at in sorted(sources.items())]}
+        for _, (pair, sources) in sorted(current_pairs.items())
+    ]
+    return counts, inventory_pairs, alerts, [pending[key] for key in sorted(pending)], verified_pairs
 
 
 def _lacp_partner_interface_gaps(nodes: dict) -> list[dict]:
@@ -1752,7 +1770,7 @@ def _lacp_partner_interface_gaps(nodes: dict) -> list[dict]:
 
 def summarize_topology(graph: dict) -> dict:
     nodes = {node["id"]: node for node in graph["nodes"]}
-    counts, inventory_pairs, alerts, pending = _topology_port_pairs(nodes, graph["links"])
+    counts, inventory_pairs, alerts, pending, current_pairs = _topology_port_pairs(nodes, graph["links"])
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
     stp = [{"id": node["id"], "name": node["name"], **node["stpRootPath"]}
            for node in nodes.values() if "stpRootPath" in node]
@@ -1775,6 +1793,7 @@ def summarize_topology(graph: dict) -> dict:
         for check in node["serviceChecks"] if check["method"] == SNMP_COLLECTION_METHOD and check["state"] != "reachable"
     ]
     return {**metadata, "topologyAudit": {"directLinks": counts, "pendingTotal": len(pending),
+                                        "currentPairTotal": len(current_pairs), "currentPairs": current_pairs[:64],
                                         "inventoryPairs": inventory_pairs[:64],
                                         "portAlertTotal": len(alerts), "portAlerts": alerts[:64],
                                         "portCounterAudit": graph.get("portCounterAudit") or _summarize_port_counters(nodes),
@@ -1970,7 +1989,7 @@ def _physical_attachments(nodes: dict, links: list[dict], host_ids: list[str]) -
         return []
     connections = {host_id: [] for host_id in host_ids}
     pending_by_host = {host_id: [] for host_id in host_ids}
-    _, _, _, pending = _topology_port_pairs(nodes, links, set(host_ids))
+    _, _, _, pending, _ = _topology_port_pairs(nodes, links, set(host_ids))
     for pair in pending:
         for side in ("a", "b"):
             if pair[side] in pending_by_host:
@@ -2985,7 +3004,7 @@ def load_infrastructure_map(
     attachments = {}
     if include_guest_attachments:
         attachments = _map_attachments(nodes, links, now)
-        _, _, _, pending = _topology_port_pairs(nodes, links)
+        _, _, _, pending, _ = _topology_port_pairs(nodes, links)
         lacp_gaps = _lacp_partner_interface_gaps(nodes)
         attachments.update(
             pendingPortPairTotal=len(pending),
