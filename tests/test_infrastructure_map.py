@@ -1180,6 +1180,52 @@ def test_direct_link_compares_contemporaneous_port_samples(tmp_path):
     assert comparison() is None
 
 
+def test_topology_port_alerts_require_confirmed_pairs_and_fresh_states(tmp_path):
+    from app.infrastructure_map import load_infrastructure_map, summarize_topology
+
+    now = datetime.now(timezone.utc)
+    stamp = now.isoformat()
+    old = (now - timedelta(minutes=26)).isoformat()
+    a = {"id": "a", "name": "Switch A", "kind": "Коммутатор", "ports": [
+        {"name": "ge1", "state": "up", "speedBps": 10**9, "checkedAt": stamp},
+    ]}
+    b = {"id": "b", "name": "Switch B", "kind": "Коммутатор", "ports": [
+        {"name": "ge2", "state": "up", "speedBps": 10**8, "checkedAt": stamp},
+    ]}
+    inventory = {"a": "ge1", "b": "ge2", "source": "GitHub", "confirmed": True}
+    observed = {**inventory, "source": "LLDP · двустороннее", "at": stamp}
+    edge = {"a": "a", "b": "b", "kind": "Сетевое соединение", "confirmed": True,
+            "portEvidence": [inventory, observed]}
+    path = tmp_path / "map.json"
+
+    def read():
+        path.write_text(json.dumps({"schema": 1, "snapshotAt": stamp, "nodes": [a, b], "links": [edge]}),
+                        encoding="utf-8")
+        graph = load_infrastructure_map(path, now)
+        audit = summarize_topology(graph)["topologyAudit"]
+        alerts = graph["links"][0].get("portAlerts", [])
+        assert audit["portAlertTotal"] == len(alerts)
+        assert audit["portAlerts"] == [
+            {"a": "a", "b": "b", "nameA": "Switch A", "nameB": "Switch B", **alert} for alert in alerts
+        ]
+        return alerts
+
+    assert read() == [{"portA": "ge1", "portB": "ge2", "state": "speed_mismatch", "checkedAt": stamp}]
+    b["ports"][0].update(state="down")
+    assert read() == [{"portA": "ge1", "portB": "ge2", "state": "one_down", "checkedAt": stamp}]
+    a["ports"][0].update(checkedAt=old)
+    assert read() == [{"portA": "ge1", "portB": "ge2", "state": "port_down",
+                       "downSides": ["b"], "checkedAt": stamp}]
+    b["ports"][0].update(checkedAt=old)
+    assert read() == []
+    b["ports"][0].update(checkedAt=stamp)
+    edge["kind"] = "Путь по MAC-таблице"
+    assert read() == []
+    edge["kind"] = "Сетевое соединение"
+    inventory["confirmed"] = observed["confirmed"] = False
+    assert read() == []
+
+
 def test_slot_port_alias_requires_matching_snmp_ifindex():
     from app.infrastructure_map import _public_node, index_port_states
 

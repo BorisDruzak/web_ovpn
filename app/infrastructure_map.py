@@ -786,6 +786,28 @@ def _compare_link_ports(ports: dict) -> dict:
     return {"state": state, "checkedAt": first.isoformat()}
 
 
+def _link_port_alerts(evidence: list[dict]) -> list[dict]:
+    alerts = {}
+    for report in evidence:
+        if not report.get("pairEvidence"):
+            continue
+        ports = report.get("portStates", {})
+        comparison = report.get("portComparison")
+        if comparison:
+            if comparison["state"] == "both_up":
+                continue
+            alert = comparison
+        else:
+            down = [side for side, port in ports.items() if port["state"] in {"down", "disabled"}]
+            if not down:
+                continue
+            alert = {"state": "port_down", "downSides": sorted(down),
+                     "checkedAt": min(ports[side]["checkedAt"] for side in down)}
+        a, b = (ports.get(side, {}).get("name", report[side]) for side in ("a", "b"))
+        alerts[(port_label_key(a), port_label_key(b))] = {"portA": a, "portB": b, **alert}
+    return list(alerts.values())
+
+
 def summarize_topology(graph: dict) -> dict:
     nodes = {node["id"]: node for node in graph["nodes"]}
     port_aliases = {
@@ -810,10 +832,13 @@ def summarize_topology(graph: dict) -> dict:
 
     counts = {"current": 0, "verifiedInventory": 0, "unconfirmed": 0}
     pending = {}
+    alerts = []
     for link in graph["links"]:
         if link["kind"] != "Сетевое соединение":
             continue
         a, b = link["a"], link["b"]
+        alerts.extend({"a": a, "b": b, "nameA": nodes[a]["name"], "nameB": nodes[b]["name"], **alert}
+                      for alert in link.get("portAlerts", []))
         reports = link["portEvidence"]
         current = [r for r in reports if link["confirmed"] and r.get("pairEvidence") == "current"]
         inventory = any(r.get("pairEvidence") == "verified_inventory" for r in reports)
@@ -850,6 +875,7 @@ def summarize_topology(graph: dict) -> dict:
             }
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
     return {**metadata, "topologyAudit": {"directLinks": counts, "pendingTotal": len(pending),
+                                        "portAlertTotal": len(alerts), "portAlerts": alerts[:64],
                                         "pending": [pending[key] for key in sorted(pending)[:64]]}}
 
 
@@ -1011,13 +1037,16 @@ def load_infrastructure_map(
                                   "netctl FDB + Proxmox", "Proxmox", "SNMP LACP + ARP", "MikroTik · ARP",
                                   "MikroTik · ARP + FDB", RECIPROCAL_MAC_SOURCE, SHARED_LLDP_SOURCE} and row.get("observedAt"):
                 confirmed = confirmed and observation_is_fresh(row["observedAt"], now)
+            alerts = []
             if confirmed and edge["kind"] == "Сетевое соединение":
                 for report in evidence:
                     if report["confirmed"]:
                         comparison = _compare_link_ports(report.get("portStates", {}))
                         if comparison:
                             report["portComparison"] = comparison
-            links.append({**edge, "confirmed": confirmed, "portEvidence": evidence})
+                alerts = _link_port_alerts(evidence)
+            links.append({**edge, "confirmed": confirmed, "portEvidence": evidence,
+                          **({"portAlerts": alerts} if alerts else {})})
     if db is not None and endpoint_keys and now - stamp <= MAX_AGE:
         _attach_endpoint_presence(db, endpoint_keys, nodes, now)
     _map_statuses(nodes, links)

@@ -71,6 +71,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       source.append(' · ', canonical);
     }
     showAvailability();
+    root.querySelector('#map-port-alert-legend').hidden = !data.links.some(edge => edge.portAlerts?.length);
     for (const section of ['.map-views', '.map-legend', '#map-search']) {
       root.querySelector(section).hidden = !data.nodes.length;
     }
@@ -260,6 +261,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   }
   function draw() {
     for (const {graph, svg, edges, components} of graphs) {
+      const affectedPairs = new Set(edges.filter(edge => edge.portAlerts?.length).map(edge => edgeKey(edge.a, edge.b)));
       const ranks = Number(graph.style.getPropertyValue('--ranks'));
       graph.classList.toggle('vertical', graph.clientWidth / ranks < 113);
       const vertical = graph.classList.contains('vertical');
@@ -314,7 +316,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         }
         const path = document.createElementNS('http://www.w3.org/2000/svg','path');
         path.setAttribute('d',d);
-        if (pathKinds.has(edge.kind)) path.setAttribute('stroke-dasharray', '5 4');
+        if (affectedPairs.has(pair)) path.classList.add('port-alert');
+        else if (pathKinds.has(edge.kind)) path.setAttribute('stroke-dasharray', '5 4');
         if (active.has(pair)) path.classList.add('active');
         svg.append(path);
       }
