@@ -1993,6 +1993,10 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime) -> dict:
                 service_paths[service] = paths
     port_services = defaultdict(lambda: defaultdict(lambda: defaultdict(set)))
     port_names = {}
+    path_checks = defaultdict(set)
+
+    def check_key(check):
+        return check.get("target"), check.get("port"), check["method"], check["checkedAt"]
 
     def record(switch, port, service, basis):
         key = port_label_key(port)
@@ -2007,17 +2011,40 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime) -> dict:
                 basis = "guest_gateway"
             else:
                 basis = "guest_path"
-            record(path["switchId"], path["physicalPair"]["switchPort"], service, basis)
+            switch, port = path["switchId"], path["physicalPair"]["switchPort"]
+            record(switch, port, service, basis)
+            path_checks[switch, port_label_key(port), service].add(check_key(path))
     evidence = _physical_service_port_evidence(nodes, links)
     for service, hosts in service_hosts.items():
         if len(hosts) == 1:
             host, = hosts
             for switch, port, basis in sorted(evidence.get(host, ())):
                 record(switch, port, service, basis)
+
+    def service_row(switch, port, key, bases):
+        node = nodes[key]
+        selected = path_checks.get((switch, port, key), set())
+        physical = bool(bases & {"host_mac", "host_lacp"})
+        probes = {}
+        for check in node["serviceChecks"]:
+            target, number, method, checked_at = check_key(check)
+            if (not target or number is None or not method or not checked_at or check["stale"] or check.get("skipped")
+                    or check["source"] != "UI_VPN" or not (physical or check_key(check) in selected)):
+                continue
+            transport = check.get("dns", {}).get("transport", "")
+            probe = probes.setdefault((target, number, method, transport), {
+                "target": target, "port": number, "method": method,
+                **({"transport": transport} if transport else {}),
+                "passed": 0, "failed": 0, "unconfirmed": 0,
+            })
+            count = {"reachable": "passed", "unreachable": "failed"}.get(check["state"], "unconfirmed")
+            probe[count] += 1
+        return {**_attachment_node(node), "basis": sorted(bases),
+                **({"probeEndpoints": [probes[entry] for entry in sorted(probes)[:8]]} if probes else {})}
+
     service_ports = {
         switch: [{"port": port_names[switch, port], "total": len(ids),
-                  "services": [{**_attachment_node(nodes[key]), "basis": sorted(ids[key])}
-                               for key in sorted(ids)[:64]]}
+                  "services": [service_row(switch, port, key, ids[key]) for key in sorted(ids)[:64]]}
                  for port, ids in sorted(ports.items())]
         for switch, ports in port_services.items()
     }

@@ -5787,10 +5787,16 @@ def test_infrastructure_map_serves_only_public_snapshot(tmp_path, monkeypatch):
 
 def test_attachment_view_includes_physical_service_hosts_and_distinguishes_port_evidence(tmp_path, monkeypatch):
     stamp = datetime.now(timezone.utc).isoformat()
+    expired = (datetime.fromisoformat(stamp) - timedelta(minutes=8)).isoformat()
+    checks = [
+        {"method": "TCP", "source": "UI_VPN", "state": state, "target": "192.0.2.10",
+         "port": port, "checkedAt": checked, "required": True}
+        for state, port, checked in (("reachable", 8000, stamp), ("unreachable", 8000, stamp), ("reachable", 22, expired))
+    ]
     path = tmp_path / "map.json"
     monkeypatch.setenv("INFRASTRUCTURE_MAP_SNAPSHOT_PATH", str(path))
     raw = {"schema": 1, "snapshotAt": stamp, "nodes": [
-        {"id": "web", "name": "Web", "kind": "Сервис"},
+        {"id": "web", "name": "Web", "kind": "Сервис", "serviceChecks": checks},
         {"id": "server", "name": "Server", "kind": "Сервер"},
         {"id": "sw", "name": "Switch", "kind": "Коммутатор", "ports": [
             {"name": "xe1", "state": "up", "checkedAt": stamp, "speedBps": 10**10,
@@ -5853,6 +5859,10 @@ def test_attachment_view_includes_physical_service_hosts_and_distinguishes_port_
     service_port, = switch_attachment["servicePorts"]
     assert service_port["port"] == "ge1" and service_port["total"] == 1
     assert [(service["id"], service["basis"]) for service in service_port["services"]] == [("web", ["host_mac"])]
+    assert service_port["services"][0]["probeEndpoints"] == [{
+        "method": "TCP", "target": "192.0.2.10", "port": 8000,
+        "passed": 1, "failed": 1, "unconfirmed": 0,
+    }]
     assert switch["pendingPortPairs"] == [pending]
     inverse = switch["connections"][0]["ports"][0]
     assert (inverse["hostPort"], inverse["peerPort"]) == ("ge1", "eth0")
@@ -5991,13 +6001,16 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     raw["nodes"][0]["serviceChecks"] = [check]
     adapter["virtual"]["ipv4Observations"] = [address]
     assert read()["servicePaths"] == [service_path]
-    raw["nodes"][0]["serviceChecks"].append({**check, "port": 3268})
+    raw["nodes"][0]["serviceChecks"].extend([{**check, "port": 3268}, {**check, "target": "192.0.2.90"}])
     assert len(read()["servicePaths"]) == 2
     browser = client.get(browser_endpoint).json()["infrastructure"]
     assert browser["servicePaths"] == {"directum": [service_path, {**service_path, "port": 3268}]}
     switch_ports = browser["servicePorts"]["snr"]
     assert len(switch_ports) == 1 and switch_ports[0]["port"] == "xe3" and switch_ports[0]["total"] == 1
     assert [service["id"] for service in switch_ports[0]["services"]] == ["directum"]
+    assert [(probe["target"], probe["port"]) for probe in switch_ports[0]["services"][0]["probeEndpoints"]] == [
+        ("192.0.2.11", 389), ("192.0.2.11", 3268),
+    ]
     switch = client.get(url + "&node_id=snr", headers=headers).json()["infrastructure"]["attachment"]
     assert switch["servicePorts"] == switch_ports
     route = {"state": "reachable", "gateway": address["address"], "expectedGateway": address["address"],

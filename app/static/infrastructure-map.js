@@ -1750,6 +1750,17 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           row.append(open);
           const observed = (service.basis ?? []).map(basis => bases[basis]).filter(Boolean);
           if (observed.length) row.append(make('small', observed.join(' · ')));
+          for (const probe of service.probeEndpoints ?? []) {
+            const address = probe.target.includes(':') ? `[${probe.target}]` : probe.target;
+            const count = probe.passed + probe.failed + probe.unconfirmed;
+            const states = count === 1
+              ? [probe.passed ? 'Отвечает' : probe.failed ? 'Сбой' : 'Нет подтверждения']
+              : [probe.passed && `прошли: ${probe.passed}`, probe.failed && `сбои: ${probe.failed}`,
+                probe.unconfirmed && `без подтверждения: ${probe.unconfirmed}`];
+            row.append(make('small', [
+              [probe.method, probe.transport].filter(Boolean).join(' '), `${address}:${probe.port}`, ...states,
+            ].filter(Boolean).join(' · ')));
+          }
           services.append(row);
         }
         panel.append(make('summary', `Сервисы на порту (${serviceGroup.total})`), services);
