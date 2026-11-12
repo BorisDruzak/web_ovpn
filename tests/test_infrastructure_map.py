@@ -956,7 +956,8 @@ def test_dns_probe_requires_udp_reply_from_the_queried_endpoint(monkeypatch, cor
         expected.settimeout(2)
         port = expected.getsockname()[1]
         unexpected_port = unexpected.getsockname()[1]
-        spec = {"type": "dns", "ip": ip, "port": port, "name": "service.example.", "record": "A"}
+        spec = {"type": "dns", "ip": ip, "port": port, "name": "service.example.", "record": "A",
+                "expected_addresses": ["192.0.2.10"]}
 
         def reply():
             request, client = expected.recvfrom(4096)
@@ -983,7 +984,10 @@ def test_dns_probe_requires_udp_reply_from_the_queried_endpoint(monkeypatch, cor
         assert (udp["state"], udp["reason"], public["mapStatus"]) == (
             "unreachable", "dns_unexpected_source", "warn",
         )
-        assert udp["dns"]["unexpectedResponder"] == {"address": ip, "port": unexpected_port}
+        assert udp["dns"]["unexpectedResponder"] == {
+            "address": ip, "port": unexpected_port, "rcode": "NOERROR",
+            "addresses": ["192.0.2.10"], "matchesExpectedAddresses": True,
+        }
         assert "addresses" not in udp["dns"]
 
 

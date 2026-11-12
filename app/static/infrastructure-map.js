@@ -1370,7 +1370,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const attempts = check.attempts ? ' · попыток: ' + check.attempts : '';
         const responder = check.dns?.unexpectedResponder;
         const dns = [check.dns?.rcode, check.dns?.transport, check.dns?.addresses?.join(', '),
-          responder && `Ответ от ${responder.address} · порт ${responder.port}`]
+          responder && `Ответ от ${responder.address} · порт ${responder.port}`,
+          responder?.rcode, responder?.addresses?.join(', '),
+          responder?.matchesExpectedAddresses === true && 'записи совпали с ожидаемыми']
           .filter(Boolean).map(value => ' · ' + value).join('');
         const http = (check.httpStatus ? ' · HTTP ' + check.httpStatus : '')
           + (check.redfishVersion ? ' · Redfish ' + check.redfishVersion : '');

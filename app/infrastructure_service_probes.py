@@ -286,6 +286,7 @@ def _explicit_dns_udp(query: dns.message.QueryMessage, ip: str, port: int,
     family = socket.AF_INET6 if ":" in ip else socket.AF_INET
     expiration = time() + TIMEOUT
     unexpected = None
+    unexpected_response = None
     with socket.socket(family, socket.SOCK_DGRAM) as connection:
         connection.setblocking(False)
         if source is not None:
@@ -305,7 +306,8 @@ def _explicit_dns_udp(query: dns.message.QueryMessage, ip: str, port: int,
                 return response, None
             if response.question == query.question and unexpected is None:
                 unexpected = {"address": address, "port": sender[1]}
-    return None, unexpected
+                unexpected_response = response
+    return unexpected_response, unexpected
 
 
 def _dns(spec: dict, *, source: str | None = None) -> dict:
@@ -342,6 +344,19 @@ def _dns(spec: dict, *, source: str | None = None) -> dict:
         elif transport == "udp":
             response, unexpected = _explicit_dns_udp(query, ip, port, options.get("source"))
             if unexpected:
+                if response is not None:
+                    rcode = response.rcode()
+                    unexpected["rcode"] = dns.rcode.to_text(rcode)
+                    if rcode == dns.rcode.NOERROR and record in ("A", "AAAA") and not (response.flags & dns.flags.TC):
+                        try:
+                            answer = response.resolve_chaining().answer
+                            if answer:
+                                addresses = {ipaddress.ip_address(value.address) for value in answer}
+                                unexpected["addresses"] = [str(address) for address in sorted(addresses)[:16]]
+                                if expected:
+                                    unexpected["matchesExpectedAddresses"] = addresses == expected
+                        except (ValueError, dns.exception.DNSException):
+                            pass
                 diagnostic["unexpectedResponder"] = unexpected
                 return {**result, "state": "unreachable", "reason": "dns_unexpected_source"}
             if response is None:

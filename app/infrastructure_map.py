@@ -723,7 +723,14 @@ def _public_service_check(check: dict, now: datetime) -> dict:
                 address = _network_address(responder.get("address"))
                 responder_port = responder.get("port")
                 if address and "/" not in address and type(responder_port) is int and 1 <= responder_port <= 65535:
-                    diagnostic["unexpectedResponder"] = {"address": address, "port": responder_port}
+                    reply = _public_dns_check({
+                        "name": diagnostic["name"], "record": diagnostic["record"], "transport": "UDP",
+                        "rcode": responder.get("rcode"), "addresses": responder.get("addresses"),
+                    })
+                    details = {key: reply[key] for key in ("rcode", "addresses") if key in reply}
+                    if details.get("addresses") and type(responder.get("matchesExpectedAddresses")) is bool:
+                        details["matchesExpectedAddresses"] = responder["matchesExpectedAddresses"]
+                    diagnostic["unexpectedResponder"] = {"address": address, "port": responder_port, **details}
     if check.get("method") == "OpenVPN Management":
         configured_port = check.get("configuredPort")
         sessions = check.get("sessionCount")
