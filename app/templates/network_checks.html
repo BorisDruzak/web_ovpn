@@ -1,4 +1,11 @@
 {% extends "base.html" %}
+{% macro route_status(status, probes, labels) -%}
+  {%- if status == 'partial' and probes -%}
+    Прошли {{ probes | selectattr('status', 'equalto', 'reachable') | list | length }} из {{ probes | length }} проб
+  {%- else -%}
+    {{ labels.get(status, status) }}
+  {%- endif -%}
+{%- endmacro %}
 {% macro wan_result(observation) -%}
   {%- if observation.status == 'confirmed' and observation.nat_interface -%}
     {{ observation.nat_interface }}
@@ -25,7 +32,7 @@
 {% if error %}<div class="alert bad" role="alert">{{ error }}</div>{% endif %}
 {% if result %}
 <section class="card" aria-labelledby="network-check-result">
-  <h2 id="network-check-result">{{ 'Результаты по маршрутам различаются' if result.check == 'route_availability' and result.status == 'partial' else status_labels.get(result.status, result.status) }}</h2>
+  <h2 id="network-check-result">{{ route_status(result.status, result.result.probes, status_labels) if result.check == 'route_availability' else status_labels.get(result.status, result.status) }}</h2>
   <p>{{ result.target }} · <time datetime="{{ result.checked_at }}">{{ result.checked_at }}</time></p>
   {% if result.check == 'route_availability' and result.result %}
   <p>{{ result.result.label }}</p>
@@ -238,7 +245,7 @@
   <h2>История доступности по маршрутам</h2>
   {% for run in route_runs %}
   <details>
-    <summary>{{ run.result.label }} · {{ 'Разные результаты' if run.status == 'partial' else status_labels.get(run.status, run.status) }} · {{ 'По расписанию' if run.trigger == 'scheduled' else 'Вручную' }}{% if run.result.path_changes %} · Сменился первый узел{% endif %}{% if run.result.probe_changes %} · Изменились статусы проб{% endif %} · <time datetime="{{ run.checked_at }}">{{ run.checked_at }}</time></summary>
+    <summary>{{ run.result.label }} · {{ route_status(run.status, run.result.probes, status_labels) }} · {{ 'По расписанию' if run.trigger == 'scheduled' else 'Вручную' }}{% if run.result.path_changes %} · Сменился первый узел{% endif %}{% if run.result.probe_changes %} · Изменились статусы проб{% endif %} · <time datetime="{{ run.checked_at }}">{{ run.checked_at }}</time></summary>
     {% for change in run.result.path_changes %}
     <p>{{ change.probe_id }} · первый узел {{ change.from }} → {{ change.to }}</p>
     {% endfor %}

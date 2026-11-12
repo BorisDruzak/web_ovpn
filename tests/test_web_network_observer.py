@@ -2473,7 +2473,10 @@ def test_route_availability_exposes_linux_neighbor_in_api_and_ui(tmp_path, monke
     assert "ARP 192.0.2.1 · разрешение не удалось" in page.text
 
 
-def test_route_ipsec_phase_and_unavailable_reason_in_history_and_ui(tmp_path, monkeypatch):
+@pytest.mark.parametrize("central_status, passed_probes", [("unreachable", 0), ("reachable", 1)])
+def test_route_ipsec_phase_and_unavailable_reason_in_history_and_ui(
+    tmp_path, monkeypatch, central_status, passed_probes,
+):
     client, headers = make_client(tmp_path, monkeypatch)
     from app import network_checks, network_probe_profiles, network_route_matrix
 
@@ -2490,7 +2493,7 @@ def test_route_ipsec_phase_and_unavailable_reason_in_history_and_ui(tmp_path, mo
 
     def netctl(args, **kwargs):
         if args[:2] == ["path", "probe"]:
-            return {"probe": {"status": "timeout"}}
+            return {"probe": {"status": central_status if "--probe=central" in args else "timeout"}}
         if args[-1] == "--source=archive-router":
             return {"sources": [{"source": "archive-router", "status": "error"}]}
         return {"sources": [{"source": "central-router", "status": "warn", "policies": [{
@@ -2503,15 +2506,23 @@ def test_route_ipsec_phase_and_unavailable_reason_in_history_and_ui(tmp_path, mo
     endpoint = "/api/v1/network/diagnostics"
     run = client.post(f"{endpoint}/checks", headers=headers, json=payload)
     assert run.status_code == 200
+    assert run.json()["data"]["status"] == "partial"
     history = client.get(f"{endpoint}/route-runs", headers=headers, params={"profile": "archive"})
-    central, archive = history.json()["data"]["runs"][0]["result"]["probes"]
+    stored_run = history.json()["data"]["runs"][0]
+    central, archive = stored_run["result"]["probes"]
     assert central["ipsec"]["phase2_count"] == 0
     assert central["ipsec"]["local_sa_address_status"] == "missing"
     assert archive["ipsec"]["reason"] == "source_error"
 
+    from app import main
+
+    monkeypatch.setattr(main, "list_route_runs", lambda *args, **kwargs: [{**stored_run, "trigger": "scheduled"}])
     csrf = login(client)
     page = client.post("/network/diagnostics/checks", data={"csrf_token": csrf, **payload})
     assert page.status_code == 200
+    label = f"Прошли {passed_probes} из 2 проб"
+    assert f'id="network-check-result">{label}</h2>' in page.text
+    assert f"<summary>Archive · {label} · По расписанию" in page.text
     assert "IPsec не активен" in page.text and "Phase 2: 0" in page.text
     assert "Локальный IPv4 для SA не назначен" in page.text
     assert "источник вернул ошибку опроса" in page.text
