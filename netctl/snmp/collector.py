@@ -27,6 +27,9 @@ from .oids import (
     DOT1Q_VLAN_FDB_ID,
     DOT1Q_VLAN_CURRENT_EGRESS,
     DOT1Q_VLAN_CURRENT_UNTAGGED,
+    TPLINK_VLAN_PVID,
+    TPLINK_VLAN_TAGGED,
+    TPLINK_VLAN_UNTAGGED,
     DOT1D_STP_DESIGNATED_ROOT,
     DOT1D_STP_PROTOCOL,
     DOT1D_STP_ROOT_COST,
@@ -71,7 +74,7 @@ from .outcomes import SnmpOutcome
 from .profiles import PortProfile, detect_profile
 from .stp import parse_stp
 from .system import parse_system
-from .vlan import parse_vlan_memberships
+from .vlan import parse_tplink_vlan_memberships, parse_vlan_memberships
 
 
 class CollectorTransport(Protocol):
@@ -475,6 +478,14 @@ async def collect_switch_snapshot(
             ),
             await transport.walk(DOT1Q_PVID, capability="pvid"),
         )
+        parse_memberships = parse_vlan_memberships
+        if profile.profile_id == "tplink" and all(result.outcome is SnmpOutcome.SUCCESS_EMPTY for result in vlan_results):
+            vlan_results = (
+                await transport.walk(TPLINK_VLAN_TAGGED, capability="vlan_current_egress"),
+                await transport.walk(TPLINK_VLAN_UNTAGGED, capability="vlan_current_untagged"),
+                await transport.walk(TPLINK_VLAN_PVID, capability="pvid"),
+            )
+            parse_memberships = parse_tplink_vlan_memberships
         capabilities.extend(vlan_results)
         if all(
             result.outcome
@@ -482,7 +493,7 @@ async def collect_switch_snapshot(
             for result in vlan_results
         ):
             try:
-                vlan_memberships = parse_vlan_memberships(
+                vlan_memberships = parse_memberships(
                     *vlan_results,
                     profile=profile,
                     ports=ports,

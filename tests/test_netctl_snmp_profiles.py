@@ -421,6 +421,41 @@ def test_tplink_fixture_normalizes_qbridge_fdb_ports() -> None:
     }
 
 
+def test_tplink_vendor_vlan_membership_is_used_when_standard_tables_are_empty():
+    from netctl.snmp.oids import (
+        DOT1Q_PVID, DOT1Q_VLAN_CURRENT_EGRESS, DOT1Q_VLAN_CURRENT_UNTAGGED,
+        TPLINK_VLAN_PVID, TPLINK_VLAN_TAGGED, TPLINK_VLAN_UNTAGGED,
+    )
+
+    transport = _tplink_fixture_transport()
+    for oid, capability in ((DOT1Q_VLAN_CURRENT_EGRESS, "vlan_current_egress"),
+                            (DOT1Q_VLAN_CURRENT_UNTAGGED, "vlan_current_untagged"), (DOT1Q_PVID, "pvid")):
+        transport.results[oid] = CapabilityResult(capability, SnmpOutcome.SUCCESS_EMPTY)
+    for oid, capability, kind, data in (
+        (TPLINK_VLAN_TAGGED, "vlan_current_egress", "octet_string", {1: b"", 20: b"1/0/18"}),
+        (TPLINK_VLAN_UNTAGGED, "vlan_current_untagged", "octet_string", {1: b"1/0/18-18, 22, 31, 48", 20: b"1/0/48"}),
+        (TPLINK_VLAN_PVID, "pvid", "integer", {49170: 1, 49200: 20}),
+    ):
+        transport.results[oid] = CapabilityResult(capability, SnmpOutcome.SUCCESS_WITH_ROWS, tuple(
+            SnmpVarBind((*oid, index), kind, value) for index, value in data.items()
+        ))
+    snapshot = asyncio.run(collect_switch_snapshot({}, transport))
+    rows = {(row["vlan_id"], row["if_index"]): (row["egress"], row["untagged"], row["pvid"])
+            for row in snapshot.vlan_memberships}
+    assert rows[(1, 49170)] == (True, True, True)
+    assert rows[(20, 49170)] == (True, False, False)
+    assert rows[(20, 49200)] == (True, True, True)
+    assert len(snapshot.fdb) == 4
+
+    transport.results[TPLINK_VLAN_TAGGED] = CapabilityResult("vlan_current_egress", SnmpOutcome.SUCCESS_WITH_ROWS, (
+        SnmpVarBind((*TPLINK_VLAN_TAGGED, 1), "octet_string", b""),
+        SnmpVarBind((*TPLINK_VLAN_TAGGED, 20), "octet_string", b"1/0/48"),
+    ))
+    inconsistent = asyncio.run(collect_switch_snapshot({}, transport))
+    assert not inconsistent.vlan_memberships and len(inconsistent.fdb) == 4
+    assert next(c for c in inconsistent.capabilities if c.capability == "vlan_current_egress").outcome is SnmpOutcome.PARSE_ERROR
+
+
 def test_tplink_unsupported_optional_groups_preserve_seeded_state(
     tmp_path: Path,
 ) -> None:
