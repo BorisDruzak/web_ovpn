@@ -83,6 +83,44 @@ def test_switch_history_derives_errors_and_records_only_stp_changes(tmp_path):
     assert result["stp_events"][0]["changes_delta"] == 2
 
 
+def test_switch_history_merges_old_port_keys_with_same_name_and_ifindex(tmp_path):
+    with closing(connect(f"sqlite:///{(tmp_path / 'runtime.sqlite').as_posix()}")) as conn:
+        seed_source(conn, 1, "switch", "snmp_switch")
+        for run, minute, key, index, octets in [
+            (1, 0, "physical:21", 5021, 1000),
+            (2, 5, "physical:21", 5021, 1100),
+            (3, 5, "ifindex:5021", 5021, 4000),
+            (4, 10, "ifindex:5021", 5021, 7000),
+            (5, 12, "ifindex:7021", 7021, 8000),
+        ]:
+            at = f"2026-11-12T12:{minute:02}:00Z"
+            conn.execute(
+                """INSERT INTO switch_collection_runs (id, source_id, started_at, status)
+                   VALUES (?, 1, ?, 'success')""", (run, at),
+            )
+            conn.execute(
+                """INSERT INTO switch_ports (source_id, port_key, if_index, name, last_seen_at, collector_run_id)
+                   VALUES (1, ?, ?, 'ge21', ?, ?)
+                   ON CONFLICT(source_id, port_key) DO UPDATE SET last_seen_at=excluded.last_seen_at,
+                   collector_run_id=excluded.collector_run_id""", (key, index, at, run),
+            )
+            conn.execute(
+                """INSERT INTO switch_port_counter_samples
+                   (source_id, collector_run_id, port_key, if_index, observed_at,
+                    sys_uptime_ticks, octet_counter_bits, in_octets, out_octets)
+                   VALUES (1, ?, ?, ?, ?, ?, 64, ?, ?)""",
+                (run, key, index, at, 100000 + minute * 6000, str(octets), str(octets)),
+            )
+        now = datetime(2026, 11, 12, 12, 13, tzinfo=UTC)
+        result = read_diagnostics(conn, "switch", "physical:21", now=now)
+        other = read_diagnostics(conn, "switch", "ifindex:7021", now=now)
+
+    assert [port["key"] for port in result["interfaces"]] == ["ifindex:5021", "ifindex:7021"]
+    assert result["selected"]["key"] == "ifindex:5021"
+    assert [point["rx_bps"] for point in result["points"]] == [None, 80, 80]
+    assert len(other["points"]) == 1
+
+
 def test_routeros_ssh_reads_structured_counters_with_full_interface_name(monkeypatch):
     from netctl.drivers import mikrotik_ssh
 

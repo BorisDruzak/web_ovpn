@@ -117,6 +117,46 @@ def _broadcast_coverage(rows: list[sqlite3.Row], points: list[dict]) -> dict:
     return {"status": status, "valid_intervals": 0}
 
 
+def _switch_interface_choices(
+    conn: sqlite3.Connection, source_id: int,
+) -> tuple[list[dict], dict[str, sqlite3.Row]]:
+    rows = conn.execute("""
+        SELECT port_key AS key, name, alias AS description, speed_bps, if_index
+        FROM switch_ports WHERE source_id = ?
+        ORDER BY if_index, name, last_seen_at DESC, collector_run_id DESC, port_key
+    """, (source_id,))
+    current = {}
+    aliases = {}
+    for row in rows:
+        if_index = row["if_index"]
+        identity = (if_index, row["name"]) if if_index is not None and row["name"] else row["key"]
+        aliases[row["key"]] = current.setdefault(identity, row)
+    interfaces = [
+        {key: row[key] for key in ("key", "name", "description", "speed_bps")}
+        for row in current.values()
+    ]
+    return interfaces, aliases
+
+
+def _merged_switch_samples(
+    conn: sqlite3.Connection, source_id: int, port: sqlite3.Row, cutoff: str,
+) -> list[sqlite3.Row]:
+    return conn.execute("""
+        SELECT * FROM (
+            SELECT sample.*, ROW_NUMBER() OVER (
+                PARTITION BY sample.observed_at
+                ORDER BY (sample.port_key = ?) DESC, sample.id DESC
+            ) AS sample_rank
+            FROM switch_ports AS alias
+            JOIN switch_port_counter_samples AS sample
+              ON sample.source_id = alias.source_id AND sample.port_key = alias.port_key
+            WHERE alias.source_id = ? AND alias.if_index = ? AND alias.name = ?
+              AND sample.if_index = alias.if_index AND sample.observed_at >= ?
+        )
+        WHERE sample_rank = 1 ORDER BY observed_at DESC LIMIT ?
+    """, (port["key"], source_id, port["if_index"], port["name"], cutoff, MAX_POINTS)).fetchall()
+
+
 def read_diagnostics(
     conn: sqlite3.Connection, source: str, interface: str, *, now: datetime | None = None,
 ) -> dict:
@@ -133,11 +173,9 @@ def read_diagnostics(
     source_id = device["id"]
     switch = device["driver"] == "snmp_switch"
     result["source"] = dict(device)
+    aliases = {}
     if switch:
-        result["interfaces"] = [dict(row) for row in conn.execute("""
-            SELECT port_key AS key, name, alias AS description, speed_bps
-            FROM switch_ports WHERE source_id = ? ORDER BY if_index, port_key
-        """, (source_id,))]
+        result["interfaces"], aliases = _switch_interface_choices(conn, source_id)
         stp = conn.execute("SELECT * FROM current_switch_stp_state WHERE source_id = ?", (source_id,)).fetchone()
         result["stp"] = dict(stp) if stp else None
         events = conn.execute("""
@@ -155,12 +193,17 @@ def read_diagnostics(
         """, (source_id,))]
         samples = """SELECT * FROM router_interface_counter_samples
                      WHERE source_id = ? AND interface_name = ? AND observed_at >= ?"""
-    selected = next((port for port in result["interfaces"] if port["key"] == interface), None)
+    canonical = aliases.get(interface)
+    key = canonical["key"] if canonical is not None else interface
+    selected = next((port for port in result["interfaces"] if port["key"] == key), None)
     if selected is not None:
-        rows = conn.execute(
-            samples + " ORDER BY observed_at DESC, id DESC LIMIT ?",
-            (source_id, interface, cutoff, MAX_POINTS),
-        ).fetchall()
+        if canonical is not None and sum(row["key"] == key for row in aliases.values()) > 1:
+            rows = _merged_switch_samples(conn, source_id, canonical, cutoff)
+        else:
+            rows = conn.execute(
+                samples + " ORDER BY observed_at DESC, id DESC LIMIT ?",
+                (source_id, key, cutoff, MAX_POINTS),
+            ).fetchall()
         result["selected"] = selected
         result["points"] = _traffic_points(rows, switch=switch)
         if switch:
