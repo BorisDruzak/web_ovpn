@@ -1180,6 +1180,58 @@ def test_direct_link_compares_contemporaneous_port_samples(tmp_path):
     assert comparison() is None
 
 
+def test_css_root_port_stp_projects_only_fresh_unambiguous_observations():
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import _public_node
+
+    now = datetime.now(timezone.utc)
+    stamp = now.isoformat()
+    network = {
+        "sources": [{"name": "css", "driver": "snmp_switch", "host": "192.0.2.2", "enabled": True}],
+        "ports": [{"source": "css", "name": "Port13", "bridge_port": 13, "port_key": "physical:13",
+                   "collector_run_id": 1, "last_seen_at": stamp, "oper_status": "up"}],
+        "stp_root_paths": {"css": {"rootPortNumber": 13, "designatedBridgeMac": "2c:c8:1b:9c:31:ea",
+                                    "designatedPortId": "80:03", "checkedAt": stamp}},
+    }
+
+    def read():
+        graph = build_graph({}, network, {}, {}, {}, now)
+        assert graph["links"] == []
+        return _public_node(graph["nodes"][0], now)
+
+    assert read()["stpRootPath"] == {
+        "localPort": "Port13", "designatedBridgeMac": "2c:c8:1b:9c:31:ea",
+        "designatedPortId": "80:03", "checkedAt": stamp,
+    }
+    network["ports"].append({**network["ports"][0], "name": "Port14"})
+    assert "stpRootPath" not in read()
+    network["ports"].pop()
+    network["stp_root_paths"]["css"]["checkedAt"] = (now - timedelta(minutes=6)).isoformat()
+    assert "stpRootPath" not in read()
+
+
+def test_css_root_port_stp_rejects_root_port_change_during_poll():
+    import asyncio
+
+    from netctl.snmp.models import CapabilityResult, SnmpVarBind
+    from netctl.snmp.outcomes import SnmpOutcome
+    from netctl.snmp.stp import read_stp_root_path
+
+    class Transport:
+        def __init__(self, last_port):
+            self.values = iter([13, bytes.fromhex("80002cc81b9c31ea"), bytes.fromhex("8003"), last_port])
+
+        async def get(self, oid):
+            value = next(self.values)
+            kind = "octet_string" if isinstance(value, bytes) else "integer"
+            return CapabilityResult("", SnmpOutcome.SUCCESS_WITH_ROWS, (SnmpVarBind(oid, kind, value),))
+
+    assert asyncio.run(read_stp_root_path(Transport(13))) == {
+        "rootPortNumber": 13, "designatedBridgeMac": "2c:c8:1b:9c:31:ea", "designatedPortId": "80:03",
+    }
+    assert asyncio.run(read_stp_root_path(Transport(5))) == {}
+
+
 def test_topology_port_alerts_require_confirmed_pairs_and_fresh_states(tmp_path):
     from app.infrastructure_map import load_infrastructure_map, summarize_topology
 

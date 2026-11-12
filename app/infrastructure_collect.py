@@ -29,6 +29,7 @@ from netctl.context import load_context_bytes, load_schema, validate_context
 from netctl.db import connect_read_only, list_sources
 from netctl.drivers import legacy_driver_for
 from netctl.snmp.lacp import read_lacp_members
+from netctl.snmp.stp import read_stp_root_path
 from netctl.snmp.transport import SnmpTransport
 from netctl.source_identity import list_source_identities
 from netctl.switch_queries import FDB_PORT_MATCH, query_confirmed_attachment_ports, query_observed_mac_ports
@@ -282,6 +283,22 @@ async def _collect_lacp(network: dict, configured: list[dict], now: datetime) ->
             observations.append({"source": source, "asset": spec["asset"], "aggregate": aggregate,
                                  "expected": len(names), "at": datetime.now(timezone.utc).isoformat(), "members": live})
     return observations
+
+
+async def _collect_stp_root_paths(sources: list[dict]) -> dict:
+    eligible = [source for source in sources if source.get("enabled") and source.get("driver") == "snmp_switch"
+                and (source.get("driver_options") or {}).get("profile_hint") == "css326"]
+
+    async def read(source):
+        try:
+            async with asyncio.timeout(5), SnmpTransport.from_source(source) as transport:
+                observation = await read_stp_root_path(transport)
+        except (TimeoutError, OSError, ValueError):
+            return {}
+        return {**observation, "checkedAt": datetime.now(timezone.utc).isoformat()} if observation else {}
+
+    observations = await asyncio.gather(*(read(source) for source in eligible))
+    return {source["name"]: observation for source, observation in zip(eligible, observations) if observation}
 
 
 def _probe_on_link_guest(address: str, mac: str) -> bool:
@@ -970,6 +987,14 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             latest_run = max((port["collector_run_id"] for port in ports
                               if type(port.get("collector_run_id")) is int), default=None)
             current = [port for port in ports if port.get("collector_run_id") == latest_run]
+            stp = network.get("stp_root_paths", {}).get(name)
+            if stp and row.get("enabled"):
+                matches = [port for port in current if port.get("bridge_port") == stp["rootPortNumber"]]
+                if len(matches) == 1:
+                    root_port = matches[0]
+                    if (root_port.get("oper_status") == "up" and root_port.get("admin_status") != "down"
+                            and observation_is_fresh(root_port.get("last_seen_at"), now)):
+                        item["stpRootPath"] = {**stp, "localPort": root_port["name"]}
             index_counts = Counter(port.get("if_index") for port in current)
             item["ports"] = [
                 {"name": port.get("name") or port.get("port_key"),
@@ -2009,6 +2034,7 @@ def main() -> int:
         else:
             if lacp_links:
                 network["lacp"] = asyncio.run(_collect_lacp(network, lacp_links, datetime.now(timezone.utc)))
+            network["stp_root_paths"] = asyncio.run(_collect_stp_root_paths(network["sources"]))
             if bindings.get("ipsec_links"):
                 network["ipsec"] = _collect_ipsec_policies(network["sources"], bindings["ipsec_links"])
                 network["ipsec_connectivity"] = _collect_ipsec_connectivity(context, network["sources"], bindings["ipsec_links"])

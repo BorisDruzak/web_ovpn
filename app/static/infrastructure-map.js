@@ -627,6 +627,19 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       list.append(make('dt', 'Конфигурация прочитана'), make('dd', formatTime(node.guestStorage.checkedAt)));
       propertiesSection.append(make('h3', 'Диски по конфигурации Proxmox'), list);
     }
+    if (node.stpRootPath) {
+      const {localPort, designatedBridgeMac, designatedPortId, checkedAt} = node.stpRootPath;
+      const list = make('ul', null, 'map-detail-list');
+      const row = make('li');
+      const port = make('button', localPort);
+      port.type = 'button';
+      port.addEventListener('click', () => selectPort(id, localPort));
+      row.append(port, make('small', 'Назначенный мост · ' + designatedBridgeMac),
+        make('small', 'Идентификатор порта STP · ' + designatedPortId),
+        make('small', 'SNMP · ' + formatTime(checkedAt)));
+      list.append(row);
+      propertiesSection.append(make('h3', 'Корневой порт STP'), list);
+    }
     if (node.ports?.length) {
       const panel = make('details', null, 'map-port-panel');
       panel.dataset.section = 'ports';

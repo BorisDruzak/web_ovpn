@@ -7,6 +7,8 @@ from .interfaces import normalize_mac
 from .models import CapabilityResult, SnmpVarBind, SwitchPort
 from .oids import (
     DOT1D_STP_DESIGNATED_ROOT,
+    DOT1D_STP_PORT_DESIGNATED_BRIDGE,
+    DOT1D_STP_PORT_DESIGNATED_PORT,
     DOT1D_STP_PROTOCOL,
     DOT1D_STP_ROOT_COST,
     DOT1D_STP_ROOT_PORT,
@@ -14,6 +16,7 @@ from .oids import (
 )
 from .outcomes import SnmpOutcome
 from .profiles import PortProfile
+from .transport import SnmpTransport
 
 
 _PROTOCOLS = {1: "unknown", 2: "dec_lb100", 3: "ieee8021d", 4: "ieee8021q", 5: "rstp"}
@@ -38,6 +41,27 @@ def _integer(row: SnmpVarBind, field: str, *, value_type: str) -> int:
     ):
         raise ValueError(f"{field} has invalid type")
     return row.value
+
+
+async def read_stp_root_path(transport: SnmpTransport) -> dict:
+    async def root_port() -> int:
+        row = _scalar(await transport.get(DOT1D_STP_ROOT_PORT), DOT1D_STP_ROOT_PORT)
+        return _integer(row, "STP root port", value_type="integer")
+
+    port = await root_port()
+    if not 1 <= port <= 65535:
+        return {}
+    bridge_oid = (*DOT1D_STP_PORT_DESIGNATED_BRIDGE, port)
+    port_oid = (*DOT1D_STP_PORT_DESIGNATED_PORT, port)
+    bridge = _scalar(await transport.get(bridge_oid), bridge_oid)
+    designated = _scalar(await transport.get(port_oid), port_oid)
+    if (bridge.value_type != "octet_string" or not isinstance(bridge.value, bytes) or len(bridge.value) != 8
+            or designated.value_type != "octet_string" or not isinstance(designated.value, bytes)
+            or len(designated.value) != 2 or not any(bridge.value[-6:]) or not any(designated.value)
+            or await root_port() != port):
+        return {}
+    return {"rootPortNumber": port, "designatedBridgeMac": bridge.value[-6:].hex(":"),
+            "designatedPortId": designated.value.hex(":")}
 
 
 def parse_stp(

@@ -20,6 +20,7 @@ LOGGER = logging.getLogger(__name__)
 MAX_SNAPSHOT_BYTES = 1_000_000
 MAX_AGE = timedelta(minutes=25)
 SERVICE_PROBE_MAX_AGE = timedelta(minutes=5)
+STP_ROOT_PATH_MAX_AGE = timedelta(minutes=5)
 STATES = ("critical", "warn", "ok", "unknown")
 NETWORK_KINDS = ("Коммутатор", "Маршрутизатор", "Точка доступа", "Сетевое устройство")
 INTERFACE_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}")
@@ -606,6 +607,18 @@ def _public_node(row: dict, now: datetime) -> dict:
     check_counts = Counter(_text(check.get("name"), 64) for check in checks)
     checks.extend({"name": name} for name in required_names if not check_counts[name])
     service_checks = [_public_service_check(check, now) for check in _rows(row.get("serviceChecks"), 16)]
+    stp = row.get("stpRootPath")
+    stp_path = {}
+    if row.get("kind") == NETWORK_KINDS[0] and isinstance(stp, dict):
+        local_port = _text(stp.get("localPort"), 64)
+        bridge = _text(stp.get("designatedBridgeMac"), 17)
+        port_id = _text(stp.get("designatedPortId"), 5)
+        if (observation_is_fresh(stp.get("checkedAt"), now, max_age=STP_ROOT_PATH_MAX_AGE)
+                and re.fullmatch(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}", bridge)
+                and re.fullmatch(r"[0-9a-f]{2}:[0-9a-f]{2}", port_id)
+                and sum(port["name"] == local_port and port["state"] == "up" for port in ports) == 1):
+            stp_path = {"localPort": local_port, "designatedBridgeMac": bridge, "designatedPortId": port_id,
+                        "checkedAt": _time(stp["checkedAt"]).isoformat()}
     return {
         **{key: _text(row.get(key)) for key in ("id", "name", "kind", "site", "origin", "pveHost")},
         "guest": row.get("guest") is True,
@@ -621,6 +634,7 @@ def _public_node(row: dict, now: datetime) -> dict:
         **({"lvmThinPools": lvm_thin_pools} if lvm_thin_pools else {}),
         **({"guestStorage": guest_storage} if guest_storage else {}),
         **({"guestNetwork": guest_network} if guest_network else {}),
+        **({"stpRootPath": stp_path} if stp_path else {}),
         "ports": [port for port in ports if port["name"]],
         "serviceChecks": service_checks,
         "checks": [
@@ -874,8 +888,11 @@ def summarize_topology(graph: dict) -> dict:
                 "portA": declared["a"], "portB": declared["b"], "observedPaths": related[:8],
             }
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
+    stp = [{"id": node["id"], "name": node["name"], **node["stpRootPath"]}
+           for node in nodes.values() if "stpRootPath" in node]
     return {**metadata, "topologyAudit": {"directLinks": counts, "pendingTotal": len(pending),
                                         "portAlertTotal": len(alerts), "portAlerts": alerts[:64],
+                                        "stpRootPaths": stp,
                                         "pending": [pending[key] for key in sorted(pending)[:64]]}}
 
 

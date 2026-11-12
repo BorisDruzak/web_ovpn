@@ -85,6 +85,8 @@ DOT1D_STP_TOPOLOGY_CHANGES = numeric_oid("1.3.6.1.2.1.17.2.4.0")
 DOT1D_STP_DESIGNATED_ROOT = numeric_oid("1.3.6.1.2.1.17.2.5.0")
 DOT1D_STP_ROOT_COST = numeric_oid("1.3.6.1.2.1.17.2.6.0")
 DOT1D_STP_ROOT_PORT = numeric_oid("1.3.6.1.2.1.17.2.7.0")
+DOT1D_STP_PORT_DESIGNATED_BRIDGE = numeric_oid("1.3.6.1.2.1.17.2.15.1.8")
+DOT1D_STP_PORT_DESIGNATED_PORT = numeric_oid("1.3.6.1.2.1.17.2.15.1.9")
 
 LLDP_LOC_PORT_ID_SUBTYPE = numeric_oid("1.0.8802.1.1.2.1.3.7.1.2")
 LLDP_LOC_PORT_ID = numeric_oid("1.0.8802.1.1.2.1.3.7.1.3")
