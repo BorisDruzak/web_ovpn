@@ -2376,6 +2376,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                         ports[uplink] = max(ports.get(uplink, checked), checked)
                 virtual = {"linkDisabled": disabled, "bridgeActive": bool(active) if active in (0, 1) else None,
                            "uplinks": uplinks, "switchPorts": switch_ports}
+                if "bridgeVlanMode" in observed_bridge:
+                    virtual["bridgeVlanMode"] = observed_bridge["bridgeVlanMode"]
                 if ipv4_observations:
                     virtual["ipv4Observations"] = list(ipv4_observations.values())[:8]
                 edge(host, key, "Размещение ВМ", "Proxmox", details=f"VM {vmid}", at=pve_at,
@@ -2709,7 +2711,14 @@ def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: set[s
         data = read_interface(node, bridge)
         if data.get("type") not in ("bridge", "OVSBridge"):
             return node, bridge, {}
-        return node, bridge, {key: data.get(key) for key in ("active", "bridge_ports", "address")}
+        result = {key: data.get(key) for key in ("active", "bridge_ports", "address")}
+        if data["type"] == "bridge":
+            value = data.get("bridge_vlan_aware")
+            if "bridge_vlan_aware" not in data:
+                result["bridgeVlanMode"] = "not_reported"
+            elif type(value) in (bool, int) and value in (0, 1):
+                result["bridgeVlanMode"] = "enabled" if value else "disabled"
+        return node, bridge, result
 
     def read_physical_port(pair):
         node, port = pair

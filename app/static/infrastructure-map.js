@@ -614,11 +614,22 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       bridge_uplink: 'Аплинк моста наблюдался',
       configured_bridge: 'Привязка по конфигурации',
     };
+    const bridgeModes = {
+      enabled: 'VLAN-aware включён в конфигурации моста',
+      disabled: 'VLAN-aware выключен в конфигурации моста',
+      not_reported: 'VLAN-aware в конфигурации моста не указан',
+    };
     for (const iface of attachment.interfaces) {
       const row = make('li');
       row.append(make('strong', [iface.guestPort, iface.bridge, attachment.hypervisor.name].filter(Boolean).join(' → ')));
       const state = iface.linkDisabled ? 'Адаптер отключён' : iface.bridgeActive === false ? 'Мост неактивен' : '';
       if (state) row.append(make('small', state));
+      if (iface.bridgeVlanConfig) {
+        const {mode, source, checkedAt} = iface.bridgeVlanConfig;
+        if (Object.hasOwn(bridgeModes, mode)) {
+          row.append(make('small', [bridgeModes[mode], source, formatTime(checkedAt)].join(' · ')));
+        }
+      }
       for (const {address, source, method, checkedAt} of iface.ipv4Observations ?? []) {
         row.append(make('small', [address, source, method, formatTime(checkedAt)].join(' · ')));
       }
@@ -653,6 +664,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
               reading.source, formatTime(reading.checkedAt),
             ].filter(Boolean).join(' · ')));
           }
+        }
+        if (physicalPair && iface.localNeighbor && vlanMemberships?.id !== iface.localNeighbor.vlan) {
+          row.append(make('small', `VLAN ${iface.localNeighbor.vlan} на этой физической паре пока без наблюдений`));
         }
       }
       list.append(row);

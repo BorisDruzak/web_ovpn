@@ -3065,6 +3065,9 @@ def test_proxmox_physical_port_inventory_preserves_admin_state_without_carrier(t
         "cluster/status": [],
         "cluster/resources?type=node": [{"node": "pve1", "status": "online"}, {"node": "pve2", "status": "online"}],
         "cluster/resources?type=vm": [],
+        "nodes/pve1/network/vmbr0": {"type": "bridge", "active": 1, "bridge_ports": "eno1",
+                                      "bridge_vlan_aware": 1, "bridge_vids": "2-4094"},
+        "nodes/pve2/network/vmbr1": {"type": "bridge", "active": 1, "bridge_ports": "eno3"},
         "nodes/pve1/status": {"rootfs": {"avail": 900, "total": 1000}, "swap": {"used": 0, "total": 100},
                               "memory": {"free": 70, "available": 200, "total": 1000}, "private": "ignore"},
         "nodes/pve1/network?type=eth": [
@@ -3083,7 +3086,11 @@ def test_proxmox_physical_port_inventory_preserves_admin_state_without_carrier(t
             return BytesIO(json.dumps({"data": responses.get(path, [])}).encode())
 
     monkeypatch.setattr(collector, "build_opener", lambda *args: Opener())
-    pve = collector.read_proxmox("https://pve.example", token, None, set())
+    pve = collector.read_proxmox("https://pve.example", token, None, set(),
+                                 {"pve1": "vmbr0", "pve2": "vmbr1"})
+    assert pve["bridges"]["pve1"]["vmbr0"]["bridgeVlanMode"] == "enabled"
+    assert pve["bridges"]["pve2"]["vmbr1"]["bridgeVlanMode"] == "not_reported"
+    assert "bridge_vids" not in json.dumps(pve["bridges"])
     context = {"devices": [{"id": "switch", "name": "Switch", "kind": "switch"},
                            {"id": "pve1", "name": "pve1", "kind": "hypervisor"}], "links": [{
         "endpoint_a": {"device": "switch", "interface": "ge1"},
@@ -3640,7 +3647,8 @@ def test_guest_placement_includes_current_bridge_and_configured_members(tmp_path
         "guests": [{"vmid": 103, "node": "pve1", "type": "qemu", "status": "running"}],
         "configs": {"103": {"net0": "virtio=02:00:00:00:00:03,bridge=vmbr1,tag=100,link_down=1",
                             "net1": "virtio=02:00:00:00:00:04", "net2": "bridge=bad/path"}},
-        "bridges": {"pve1": {"vmbr1": {"type": "bridge", "bridge_ports": "bond0 eno2", "active": 1}}},
+        "bridges": {"pve1": {"vmbr1": {"type": "bridge", "bridge_ports": "bond0 eno2", "active": 1,
+                                       "bridgeVlanMode": "enabled"}}},
     }
     graph = build_graph({}, {}, {}, pve, {}, now)
     path = tmp_path / "graph.json"
@@ -3650,12 +3658,14 @@ def test_guest_placement_includes_current_bridge_and_configured_members(tmp_path
     assert link["portEvidence"] == [{
         "a": "vmbr1", "b": "net0", "source": "Proxmox · конфигурация ВМ", "at": at,
         "confirmed": True, "vlan": 100,
-        "virtual": {"linkDisabled": True, "bridgeActive": True, "uplinks": ["bond0", "eno2"], "switchPorts": []},
+        "virtual": {"linkDisabled": True, "bridgeActive": True, "bridgeVlanMode": "enabled",
+                    "uplinks": ["bond0", "eno2"], "switchPorts": []},
     }]
     stale_link = next(link for link in load_infrastructure_map(path, now + timedelta(hours=1))["links"]
                       if link["b"] == "pve-guest:103")
     assert not stale_link["confirmed"]
     assert not stale_link["portEvidence"][0]["confirmed"]
+    assert "bridgeVlanMode" not in stale_link["portEvidence"][0]["virtual"]
 
 
 def test_running_vm_is_unreachable_when_every_configured_adapter_is_disconnected(tmp_path):
@@ -5364,7 +5374,8 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
             {"a": "vm", "b": "directum", "kind": "Цель проверки", "confirmed": True},
             {"a": "pve", "b": "vm", "kind": "Размещение ВМ", "source": "Proxmox", "confirmed": True,
              "observedAt": stamp, "portEvidence": [{"a": "vmbr1", "b": "net0", "source": "Proxmox · конфигурация ВМ",
-                 "confirmed": True, "at": stamp, "virtual": {"bridgeActive": True, "uplinks": ["ens7"],
+                 "confirmed": True, "at": stamp, "virtual": {"bridgeActive": True, "bridgeVlanMode": "enabled",
+                                                              "uplinks": ["ens7"],
                      "switchPorts": [{"id": "snr", "port": "xe3", "at": stamp, "vlan": 1}]}}]},
             {"a": "snr", "b": "pve", "kind": "Сетевое соединение", "confirmed": True, "portEvidence": [
                 {"a": "xe3", "b": "ens7", "source": "netctl FDB + Proxmox", "confirmed": True, "at": stamp},
@@ -5388,6 +5399,7 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     assert guest["guest"]["vmid"] == 103 and guest["hypervisor"]["id"] == "pve"
     interface, = guest["interfaces"]
     assert (interface["guestPort"], interface["bridge"]) == ("net0", "vmbr1")
+    assert interface["bridgeVlanConfig"] == {"mode": "enabled", "source": "Proxmox API", "checkedAt": stamp}
     match, = interface["switchObservations"]
     assert match["basis"] == "guest_mac" and match["switchPort"] == "xe3"
     assert match["physicalPair"] == {"hostPort": "ens7", "switchPort": "xe3",

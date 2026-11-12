@@ -40,6 +40,7 @@ GUEST_AGENT_PROFILES = ("health_v1", "network_v1", "inventory_v1")
 GUEST_AGENT_HEALTH_MAX_AGE = timedelta(minutes=6)
 GUEST_ENROLLMENT_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
 VLAN_AUDIT_MAX_AGE = timedelta(minutes=10)
+BRIDGE_VLAN_CONFIG_MODES = ("enabled", "disabled", "not_reported")
 ROUTER_NEIGHBOR_MAX_AGE = timedelta(minutes=10)
 MAX_ROUTER_NEIGHBORS = 16
 PPPOE_METHOD = "Сессия PPPoE"
@@ -1601,6 +1602,9 @@ def _guest_attachments(nodes: dict, links: list[dict], guest_ids: list[str], now
             interface = {"guestPort": report["b"], "bridge": report["a"], "checkedAt": report["at"],
                          "bridgeActive": virtual["bridgeActive"], "linkDisabled": virtual["linkDisabled"],
                          "uplinks": virtual["uplinks"], "switchObservations": []}
+            if "bridgeVlanMode" in virtual:
+                interface["bridgeVlanConfig"] = {"mode": virtual["bridgeVlanMode"],
+                                                 "source": "Proxmox API", "checkedAt": report["at"]}
             if "vlan" in report:
                 interface["vlan"] = report["vlan"]
             if "ipv4Observations" in virtual:
@@ -2120,6 +2124,9 @@ def load_infrastructure_map(
                             and observation_is_fresh(match.get("at"), now)
                         ],
                     }
+                    if (evidence[-1]["confirmed"] and evidence[-1]["a"]
+                            and virtual.get("bridgeVlanMode") in BRIDGE_VLAN_CONFIG_MODES):
+                        evidence[-1]["virtual"]["bridgeVlanMode"] = virtual["bridgeVlanMode"]
                     if (evidence[-1]["confirmed"] and not evidence[-1]["virtual"]["linkDisabled"]
                             and (ipv4_observations := _guest_ipv4_observations(virtual.get("ipv4Observations"), now))):
                         evidence[-1]["virtual"]["ipv4Observations"] = ipv4_observations
