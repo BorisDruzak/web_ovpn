@@ -1018,6 +1018,18 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         make('small', 'Proxmox · ' + formatTime(checkedAt)), list);
       propertiesSection.append(panel);
     }
+    if (node.backupScope) {
+      const {storage, total, scheduled, notScheduled, unknown} = node.backupScope;
+      const list = make('dl');
+      list.append(make('dt', 'Хранилище'), make('dd', storage),
+        make('dt', 'В расписании'), make('dd', `${scheduled} из ${total}`),
+        make('dt', 'Вне расписания'), make('dd', String(notScheduled)),
+        make('dt', 'Без подтверждения'), make('dd', String(unknown)));
+      const panel = make('section');
+      panel.dataset.section = 'backup-scope';
+      panel.append(make('h3', 'Расписание копирования ВМ и контейнеров'), list);
+      propertiesSection.append(panel);
+    }
     if (node.backupCoverage) {
       const {storage, serviceId, state, checkedAt, stale} = node.backupCoverage;
       const labels = {

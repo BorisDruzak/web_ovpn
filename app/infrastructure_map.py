@@ -1190,6 +1190,20 @@ def _attach_acti_backup_job(nodes: dict, links: list[dict]) -> None:
         backup_checks.append({**jobs[0], "required": False, "sourceNodeId": app_id})
 
 
+def _attach_backup_scope(nodes: dict) -> None:
+    service = nodes.get(BACKUP_SERVICE_ID)
+    if not service or service["kind"] != "Сервис":
+        return
+    coverage = [node["backupCoverage"] for node in nodes.values() if "backupCoverage" in node]
+    storages = {row["storage"] for row in coverage}
+    if len(storages) != 1:
+        return
+    storage, = storages
+    counts = Counter(row["state"] for row in coverage)
+    service["backupScope"] = {"storage": storage, "total": len(coverage), "scheduled": counts["scheduled"],
+                              "notScheduled": counts["not_scheduled"], "unknown": counts["unknown"]}
+
+
 def _map_statuses(nodes: dict, links: list[dict]) -> None:
     services = {key: set() for key in nodes}
     consumers = {key: set() for key in nodes}
@@ -1960,6 +1974,7 @@ def summarize_services(graph: dict) -> dict:
             "requiredChecks": {"passed": totals["ok"], "failed": totals["critical"] + totals["warn"],
                                "unconfirmed": totals["unknown"]},
             "issueTotal": len(issues), "issues": issues[:6],
+            **({"backupScope": node["backupScope"]} if "backupScope" in node else {}),
         })
     services.sort(key=lambda node: (priority[node["status"]], node["name"].casefold(), node["id"]))
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
@@ -2389,6 +2404,7 @@ def load_infrastructure_map(
     if lacp_expectations:
         _attach_lacp_health(nodes, lacp_expectations, links, port_states, now)
     _attach_acti_backup_job(nodes, links)
+    _attach_backup_scope(nodes)
     _map_statuses(nodes, links)
     cluster_id = _text(raw.get("clusterId"))
     _attach_storage_assignments(nodes, links, cluster_id)

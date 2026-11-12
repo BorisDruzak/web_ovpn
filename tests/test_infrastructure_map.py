@@ -2138,9 +2138,9 @@ def test_proxmox_backup_checks_match_storage_and_guest_and_expire():
     assert check()[102]["reason"] == "backup_no_result"
 
 
-def test_guest_backup_coverage_is_scoped_and_failures_apply_to_the_right_guest():
+def test_guest_backup_coverage_is_scoped_and_failures_apply_to_the_right_guest(tmp_path):
     from app.infrastructure_collect import build_graph
-    from app.infrastructure_map import _map_statuses, _public_node
+    from app.infrastructure_map import _map_statuses, _public_node, load_infrastructure_map, summarize_services
 
     now = datetime.now(timezone.utc)
     stamp = now.isoformat()
@@ -2174,6 +2174,24 @@ def test_guest_backup_coverage_is_scoped_and_failures_apply_to_the_right_guest()
     expired = read(now + timedelta(minutes=6))[0]
     assert expired["backupCoverage"]["stale"] and expired["backupCoverage"]["state"] == "unknown"
     assert expired["mapStatus"] == "unknown"
+
+    path = tmp_path / "infrastructure.json"
+
+    def read_scope():
+        snapshot = build_graph(context, {}, {}, pve, bindings, now)
+        path.write_text(json.dumps(snapshot), encoding="utf-8")
+        graph = load_infrastructure_map(path)
+        node = next(node for node in graph["nodes"] if node["id"] == "proxmox-pbs-backups")
+        audit = next(row for row in summarize_services(graph)["serviceAudit"]["services"] if row["id"] == node["id"])
+        assert audit["backupScope"] == node["backupScope"]
+        return node["backupScope"]
+
+    pve["backup"].pop("incomplete")
+    assert read_scope() == {"storage": "pbs", "total": 3, "scheduled": 2, "notScheduled": 1, "unknown": 0}
+    pve["backup"]["incomplete"] = True
+    assert read_scope() == {"storage": "pbs", "total": 3, "scheduled": 2, "notScheduled": 0, "unknown": 1}
+    pve["backup"]["checkedAt"] = (now - timedelta(minutes=6)).isoformat()
+    assert read_scope() == {"storage": "pbs", "total": 3, "scheduled": 0, "notScheduled": 0, "unknown": 3}
 
 
 def test_proxmox_port_observer_verifies_target_and_only_updates_inventory_ports(tmp_path, monkeypatch):
