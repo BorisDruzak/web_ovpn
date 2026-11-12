@@ -50,7 +50,7 @@
             <thead>
               <tr><th>Время</th><th>Интервал, с</th><th>RX, Мбит/с</th><th>TX, Мбит/с</th>
                 {% if diagnostics.source.driver == 'snmp_switch' %}
-                <th>Ошибки RX / TX</th><th>Отброшено RX / TX</th>
+                <th>Ошибки RX / TX</th><th>Отброшено RX / TX</th><th>Широковещание RX / TX, пакетов/с</th>
                 {% endif %}
               </tr>
             </thead>
@@ -64,6 +64,8 @@
                 {% if diagnostics.source.driver == 'snmp_switch' %}
                 <td>{{ point.in_errors_delta if point.in_errors_delta is not none else '—' }} / {{ point.out_errors_delta if point.out_errors_delta is not none else '—' }}</td>
                 <td>{{ point.in_discards_delta if point.in_discards_delta is not none else '—' }} / {{ point.out_discards_delta if point.out_discards_delta is not none else '—' }}</td>
+                <td>{{ '%.2f' | format(point.in_broadcast_pps) if point.in_broadcast_pps is defined and point.in_broadcast_pps is not none else '—' }} /
+                    {{ '%.2f' | format(point.out_broadcast_pps) if point.out_broadcast_pps is defined and point.out_broadcast_pps is not none else '—' }}</td>
                 {% endif %}
               </tr>
               {% endfor %}

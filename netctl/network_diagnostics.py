@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import UTC, datetime, timedelta
 
-from .switch_telemetry import counter_sample_from_row, derive_port_telemetry
+from .switch_telemetry import counter_sample_from_row, derive_broadcast_rates, derive_port_telemetry
 
 HISTORY_HOURS = 24
 MAX_POINTS = 1440
@@ -74,16 +74,22 @@ def _traffic_points(rows: list[sqlite3.Row], *, switch: bool) -> list[dict]:
         observed = datetime.fromisoformat(row["observed_at"])
         elapsed = (observed - previous[0]).total_seconds() if previous is not None else None
         metrics = {}
+        broadcast = {}
         if elapsed is not None and 0 < elapsed <= MAX_INTERVAL_SECONDS:
             metrics = (_switch_rates(row, previous[1], elapsed) if switch
                        else _router_rates(row, previous[1], elapsed))
-        points.append({
+            if switch:
+                broadcast = derive_broadcast_rates(row, previous[1], elapsed)
+        point = {
             "observed_at": row["observed_at"],
             "interval_seconds": elapsed,
             "rx_bps": metrics.get("rx_bps"),
             "tx_bps": metrics.get("tx_bps"),
             **{f"{key}_delta": metrics.get(f"{key}_delta") for key in PORT_COUNTERS},
-        })
+        }
+        if switch:
+            point.update(in_broadcast_pps=broadcast.get("in_pps"), out_broadcast_pps=broadcast.get("out_pps"))
+        points.append(point)
         previous = observed, row
     return points
 

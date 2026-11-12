@@ -5,6 +5,42 @@ import sqlite3
 from .snmp.models import SwitchCounterSample
 
 
+def _broadcast_delta(current: str | None, previous: str | None) -> int | None:
+    if current is None or previous is None:
+        return None
+    try:
+        after, before = int(current), int(previous)
+    except ValueError:
+        return None
+    if not (0 <= after < 2**64 and 0 <= before < 2**64):
+        return None
+    return after - before
+
+
+def derive_broadcast_rates(current: sqlite3.Row, previous: sqlite3.Row, elapsed: float) -> dict:
+    if (
+        not 0 < elapsed <= 900
+        or "counter_discontinuity_ticks" not in current.keys()
+        or current["if_index"] is None or current["if_index"] != previous["if_index"]
+        or current["sys_uptime_ticks"] is None or previous["sys_uptime_ticks"] is None
+        or current["sys_uptime_ticks"] <= previous["sys_uptime_ticks"]
+        or current["counter_discontinuity_ticks"] is None
+        or current["counter_discontinuity_ticks"] != previous["counter_discontinuity_ticks"]
+    ):
+        return {}
+    in_delta, out_delta = (
+        _broadcast_delta(current[key], previous[key])
+        for key in ("in_broadcast_packets", "out_broadcast_packets")
+    )
+    deltas = [delta for delta in (in_delta, out_delta) if delta is not None]
+    if not deltas or min(deltas) < 0:
+        return {}
+    return {
+        "in_pps": in_delta / elapsed if in_delta is not None else None,
+        "out_pps": out_delta / elapsed if out_delta is not None else None,
+    }
+
+
 def _empty_metrics(
     state: str, elapsed_seconds: float | None
 ) -> dict[str, object]:

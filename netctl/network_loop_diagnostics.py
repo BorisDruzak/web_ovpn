@@ -3,10 +3,11 @@ from __future__ import annotations
 import sqlite3
 from datetime import UTC, datetime, timedelta
 
+from .switch_telemetry import derive_broadcast_rates
+
 WINDOW = timedelta(hours=1)
 MAX_REVERSAL_GAP = timedelta(minutes=15)
 STP_CORRELATION_MARGIN = timedelta(minutes=10)
-MAX_BROADCAST_INTERVAL = timedelta(minutes=15)
 MAX_SOURCES = 50
 MAX_FDB_EVENTS = 2_000
 MAX_STP_EVENTS = 100
@@ -112,18 +113,6 @@ def _find_reversals(
     return [finding for _, finding in sorted(findings.values(), key=lambda entry: entry[0], reverse=True)]
 
 
-def _broadcast_delta(current: str | None, previous: str | None) -> int | None:
-    if current is None or previous is None:
-        return None
-    try:
-        after, before = int(current), int(previous)
-    except ValueError:
-        return None
-    if not (0 <= after < 2**64 and 0 <= before < 2**64):
-        return None
-    return after - before
-
-
 def _broadcast_rates(
     samples: list[tuple[datetime, sqlite3.Row]],
 ) -> list[tuple[datetime, datetime, dict]]:
@@ -136,32 +125,17 @@ def _broadcast_rates(
         if prior is None:
             continue
         prior_at, previous = prior
-        elapsed = at - prior_at
-        if (
-            not timedelta(0) < elapsed <= MAX_BROADCAST_INTERVAL
-            or current["if_index"] is None or current["if_index"] != previous["if_index"]
-            or current["sys_uptime_ticks"] is None or previous["sys_uptime_ticks"] is None
-            or current["sys_uptime_ticks"] <= previous["sys_uptime_ticks"]
-            or current["counter_discontinuity_ticks"] is None
-            or current["counter_discontinuity_ticks"] != previous["counter_discontinuity_ticks"]
-        ):
+        seconds = (at - prior_at).total_seconds()
+        rates = derive_broadcast_rates(current, previous, seconds)
+        if not rates:
             continue
-        in_delta, out_delta = (
-            _broadcast_delta(current[key], previous[key])
-            for key in ("in_broadcast_packets", "out_broadcast_packets")
-        )
-        deltas = [delta for delta in (in_delta, out_delta) if delta is not None]
-        if not deltas or min(deltas) < 0:
-            continue
-        seconds = elapsed.total_seconds()
         intervals.append((prior_at, at, {
             "port_key": port,
             "if_index": current["if_index"],
             "since": previous["observed_at"],
             "until": current["observed_at"],
             "interval_seconds": seconds,
-            "in_pps": in_delta / seconds if in_delta is not None else None,
-            "out_pps": out_delta / seconds if out_delta is not None else None,
+            **rates,
         }))
     return intervals
 

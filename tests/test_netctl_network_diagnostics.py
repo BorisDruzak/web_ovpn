@@ -50,10 +50,12 @@ def test_switch_history_derives_errors_and_records_only_stp_changes(tmp_path):
             conn.execute(
                 """INSERT INTO switch_port_counter_samples
                    (source_id, collector_run_id, port_key, if_index, observed_at,
-                    sys_uptime_ticks, octet_counter_bits, in_octets, out_octets, in_errors, speed_bps)
-                   VALUES (1, ?, 'ifindex:2', 2, ?, ?, 64, ?, ?, ?, ?)""",
+                    sys_uptime_ticks, octet_counter_bits, in_octets, out_octets, in_errors, speed_bps,
+                    in_broadcast_packets, out_broadcast_packets, counter_discontinuity_ticks)
+                   VALUES (1, ?, 'ifindex:2', 2, ?, ?, 64, ?, ?, ?, ?, ?, ?, ?)""",
                 (run, at, 100_000 + minute * 6000, str(minute * 3_750_000_000),
-                 str(minute * 750_000_000), errors, 1_000_000_000 if run < 3 else 100_000_000),
+                 str(minute * 750_000_000), errors, 1_000_000_000 if run < 3 else 100_000_000,
+                 str(600 * run), str(300 * run), 0 if run < 3 else 60),
             )
             conn.execute(
                 """INSERT INTO current_switch_stp_state VALUES
@@ -69,6 +71,9 @@ def test_switch_history_derives_errors_and_records_only_stp_changes(tmp_path):
 
     assert result["points"][1]["in_errors_delta"] == 2
     assert result["points"][1]["rx_bps"] == 500_000_000
+    assert [(p["in_broadcast_pps"], p["out_broadcast_pps"]) for p in result["points"]] == [
+        (None, None), (2.0, 1.0), (None, None),
+    ]
     assert [event["event_type"] for event in result["stp_events"]] == ["changed", "observed"]
     assert result["stp_events"][0]["changes_delta"] == 2
 
