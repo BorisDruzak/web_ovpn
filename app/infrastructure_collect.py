@@ -334,15 +334,32 @@ def _collect_asset_mac_probes(context: dict, sources: list[dict], configured: di
 
 
 def _collect_guest_arp_probes(pve: dict, network: dict, configured: dict, now: datetime,
-                              router_sources: dict | None = None) -> dict:
+                              router_sources: dict | None = None, *, auto_on_link: bool = False) -> dict:
     configs = pve.get("configs", {})
     counts = Counter(mac for config in configs.values() for mac in _guest_macs(config))
     arp_rows = network.get("arp", [])
     arp = _arp_mappings(arp_rows, now)
     candidates = []
+    automatic = []
+    addresses_by_mac = {}
+    if auto_on_link and observation_is_fresh(pve.get("at"), now):
+        for address, (mac, _) in arp.items():
+            try:
+                address = str(ipaddress.IPv4Address(address))
+            except ValueError:
+                continue
+            addresses_by_mac.setdefault(mac, set()).add(address)
     for guest in pve.get("guests", []):
         vmid = str(guest["vmid"])
-        if guest.get("status") != "running" or guest.get("template") or vmid not in configured:
+        if guest.get("status") != "running" or guest.get("template"):
+            continue
+        interfaces = _guest_interfaces(configs.get(vmid, {}))
+        usable = {mac for _, _, disabled, mac in interfaces.values() if not disabled and counts[mac] == 1}
+        if vmid not in configured:
+            matches = {(address, mac) for mac in usable for address in addresses_by_mac.get(mac, ())}
+            if len(matches) == 1:
+                address, mac = matches.pop()
+                automatic.append((vmid, address, mac))
             continue
         try:
             address = str(ipaddress.IPv4Address(configured[vmid]))
@@ -351,15 +368,14 @@ def _collect_guest_arp_probes(pve: dict, network: dict, configured: dict, now: d
         if address not in arp:
             continue
         mac, _ = arp[address]
-        interfaces = _guest_interfaces(configs.get(vmid, {}))
-        if counts[mac] == 1 and any(nic_mac == mac and not disabled for _, _, disabled, nic_mac in interfaces.values()):
+        if mac in usable:
             candidates.append((vmid, address, mac))
 
     def check(candidate):
         vmid, address, mac = candidate
         if _probe_on_link_guest(address, mac):
             return mac, address, _observation("reachable", "UI_VPN", "ICMP · ARP", datetime.now(timezone.utc).isoformat())
-        name = (router_sources or {}).get(vmid)
+        name = (router_sources or {}).get(vmid) if vmid in configured else None
         if not name:
             return None
         interfaces = {row["interface"] for row in arp_rows if row.get("ip") == address and row.get("source") == name
@@ -373,7 +389,7 @@ def _collect_guest_arp_probes(pve: dict, network: dict, configured: dict, now: d
 
     checks = {}
     with ThreadPoolExecutor(max_workers=6) as pool:
-        for result in pool.map(check, candidates):
+        for result in pool.map(check, candidates + automatic[:48]):
             if result:
                 mac, address, observation = result
                 checks.setdefault(mac, []).append((address, observation))
@@ -1361,12 +1377,14 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 disabled_macs = {mac for _, _, disabled, mac in interfaces.values() if disabled}
                 usable_macs = guest_macs.get(str(vmid), set()) - disabled_macs
                 observation = _guest_observation(usable_macs, host_macs, mac_counts, now)
-                if not observation or observation["state"] != "reachable":
-                    verified = [check for _, _, disabled, mac in interfaces.values()
-                                if not disabled and mac in usable_macs and mac_counts[mac] == 1
-                                for check in arp_checks.get(mac, [])]
-                    if verified:
-                        address, observation = max(verified, key=lambda pair: datetime.fromisoformat(pair[1]["checkedAt"]))
+                verified = [check for _, _, disabled, mac in interfaces.values()
+                            if not disabled and mac in usable_macs and mac_counts[mac] == 1
+                            for check in arp_checks.get(mac, [])]
+                if verified:
+                    address, checked = max(verified, key=lambda pair: datetime.fromisoformat(pair[1]["checkedAt"]))
+                    if (not observation or observation["state"] != "reachable"
+                            or datetime.fromisoformat(checked["checkedAt"]) >= datetime.fromisoformat(observation["checkedAt"])):
+                        observation = checked
                         item["properties"]["IP проверки по ARP"] = address
                 configured_nics = {name for name in config if re.fullmatch(r"net[0-9]+", name)}
                 if (guest.get("type") == "qemu" and config.get("directNetworkOnly") is True
@@ -1953,6 +1971,7 @@ def main() -> int:
             network["guest_arp_probes"] = _collect_guest_arp_probes(
                 pve, network, bindings.get("guest_probe_ips", {}), datetime.now(timezone.utc),
                 bindings.get("guest_router_arp_sources"),
+                auto_on_link=bindings.get("guest_auto_arp_probes") is True,
             )
             network["asset_mac_checks"] = _collect_asset_mac_probes(
                 context, network["sources"], bindings.get("asset_mac_probes", {}),

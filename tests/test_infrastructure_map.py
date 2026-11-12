@@ -2819,6 +2819,41 @@ def test_guest_arp_probe_requires_on_link_identity_and_current_proxmox_interface
     assert pings == [ip, ip]
 
 
+def test_auto_guest_arp_checks_use_unique_local_ip_and_prefer_the_newer_result(monkeypatch):
+    from app import infrastructure_collect as collector
+
+    now = datetime.now(timezone.utc)
+    earlier = (now - timedelta(minutes=1)).isoformat()
+    ip, mac = "192.0.2.21", "02:00:00:00:00:03"
+    pve = {"at": earlier, "cluster": [], "nodes": [],
+           "guests": [{"vmid": 108, "node": "pve1", "type": "qemu", "status": "running"}],
+           "configs": {"108": {"net0": f"virtio={mac},bridge=vmbr0"}}}
+    arp = {"ip": ip, "mac": mac, "last_seen_at": earlier}
+    host = {"ip": ip, "mac": mac, "availability": {"state": "online", "reason": "active_probe",
+            "active_method": "icmp", "checked_at": earlier, "run_status": "success"}}
+    network = {"arp": [arp], "hosts": [host]}
+    calls = []
+    monkeypatch.setattr(collector, "_probe_on_link_guest", lambda address, mac: calls.append((address, mac)) or True)
+
+    def collect(configured=None):
+        return collector._collect_guest_arp_probes(pve, network, configured or {}, now, auto_on_link=True)
+
+    assert collector._collect_guest_arp_probes(pve, network, {}, now) == {}
+    network["guest_arp_probes"] = collect()
+    graph = collector.build_graph({}, network, {}, pve, {}, datetime.now(timezone.utc))
+    node = next(row for row in graph["nodes"] if row.get("vmid") == 108)
+    assert node["reachability"]["source"] == "UI_VPN"
+    assert node["properties"]["IP проверки по ARP"] == ip
+    assert calls == [(ip, mac)]
+    assert collect({"108": "192.0.2.99"}) == {}
+    network["arp"].append({**arp, "ip": "192.0.2.22"})
+    assert collect() == {}
+    network["arp"].pop()
+    pve["at"] = (now - timedelta(hours=1)).isoformat()
+    assert collect() == {}
+    assert calls == [(ip, mac)]
+
+
 def test_router_layer2_probe_requires_a_reply_from_the_expected_mac(monkeypatch):
     from contextlib import nullcontext
 
