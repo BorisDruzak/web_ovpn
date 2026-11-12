@@ -44,7 +44,10 @@ backup utility, its Python package, the fail-closed systemd guard and private
 backup state. It does not stop or replace the provisioning control plane.
 Existing bundles, the fingerprint key and rollout state are preserved. New audit
 records go to the private backup state directory. Previous audit records at
-`/var/log/alt-deploy-backup.log` stay at that path.
+`/var/log/alt-deploy-backup.log` stay at that path. On hosts with a sticky
+`/run/lock` (`1777`), a new installation uses a root-only
+`/var/lib/alt-deploy-backup/operation.lock` if the legacy lock is absent.
+An existing lock path is retained on reinstall.
 
 Confirm the installed entry points without displaying secret material:
 

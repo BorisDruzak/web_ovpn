@@ -19,6 +19,7 @@ def _lock_error(code: str, message: str) -> BackupError:
 
 def _ensure_operation_parent(settings: BackupSettings) -> None:
     parent = settings.operation_lock.parent
+    private = parent == settings.private_state_root
     assert_safe_parents(parent)
     if not parent.exists() and not parent.is_symlink():
         if not settings.test_mode:
@@ -40,6 +41,7 @@ def _ensure_operation_parent(settings: BackupSettings) -> None:
         or metadata.st_uid != settings.expected_root_uid
         or metadata.st_gid != settings.expected_root_gid
         or stat.S_IMODE(metadata.st_mode) & 0o002
+        or (private and stat.S_IMODE(metadata.st_mode) != 0o700)
     ):
         raise _lock_error(
             "backup_source_unsafe",
@@ -73,7 +75,7 @@ def _flock(
 
     try:
         metadata = os.fstat(descriptor)
-        if not stat.S_ISREG(metadata.st_mode):
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
             raise _lock_error(
                 error_code,
                 "Backup lock is not a regular file",
@@ -129,14 +131,15 @@ def exclusive_operation_lock(
     settings: BackupSettings,
 ) -> Iterator[None]:
     _ensure_operation_parent(settings)
+    legacy_lock = settings.operation_lock.parent != settings.private_state_root
     with _flock(
         settings.operation_lock,
         non_blocking=True,
         error_code="backup_lock_busy",
         expected_uid=settings.expected_root_uid,
         expected_gid=settings.expected_root_gid,
-        create=True,
-        enforce_metadata=True,
+        create=legacy_lock,
+        enforce_metadata=legacy_lock,
     ):
         yield
 

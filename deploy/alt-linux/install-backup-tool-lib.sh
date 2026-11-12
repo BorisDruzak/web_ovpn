@@ -171,6 +171,10 @@ backup_validate_destination_layout() {
         600
     backup_validate_existing_regular \
         "${root_prefix}" \
+        /var/lib/alt-deploy-backup/operation.lock \
+        600
+    backup_validate_existing_regular \
+        "${root_prefix}" \
         /var/lib/alt-deploy-backup/fingerprint.key \
         600 \
         32
@@ -241,6 +245,25 @@ backup_install_package() {
     install -o root -g root -m 0644 \
         "${ALT_ROOT}/backup/alt-deploy-guard.service" \
         "${systemd_root}/alt-deploy-guard.service"
+}
+
+backup_prepare_operation_lock() {
+    local root_prefix=$1
+    local shared_lock_root private_lock old_lock uid gid
+    shared_lock_root=$(backup_install_destination "${root_prefix}" /run/lock)
+    private_lock=$(backup_install_destination "${root_prefix}" /var/lib/alt-deploy-backup/operation.lock)
+    old_lock="${shared_lock_root}/alt-deploy-backup.lock"
+    if [[ -e "${private_lock}" || -L "${private_lock}" || -e "${old_lock}" || -L "${old_lock}" ]]; then
+        return 0
+    fi
+    if [[ ! -d "${shared_lock_root}" || -L "${shared_lock_root}" ]]; then
+        return 0
+    fi
+    read -r uid gid < <(backup_expected_root_identity "${root_prefix}")
+    if [[ "$(stat -c '%u %g %a' "${shared_lock_root}")" == "${uid} ${gid} 1777" ]]; then
+        backup_validate_existing_directory "${root_prefix}" /run public
+        install -o root -g root -m 0600 /dev/null "${private_lock}"
+    fi
 }
 
 backup_prepare_private_state() {
@@ -323,6 +346,7 @@ install_backup_tool_main() {
     backup_run_source_checks
     backup_validate_destination_layout "${root_prefix}"
     backup_prepare_private_state "${root_prefix}"
+    backup_prepare_operation_lock "${root_prefix}"
     backup_install_package "${root_prefix}"
     backup_initialize_fingerprint_key "${root_prefix}"
     echo "ALT OR-3P3 backup tool installed successfully"

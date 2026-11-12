@@ -136,15 +136,18 @@ class BackupSettings:
                 return absolute
             return root / path.lstrip("/")
 
+        private_lock = rooted("/var/lib/alt-deploy-backup/operation.lock")
+        operation_lock = (
+            private_lock if os.path.lexists(private_lock)
+            else rooted("/run/lock/alt-deploy-backup.lock")
+        )
         return cls(
             backup_root=rooted("/var/backups/alt-deploy"),
             private_state_root=rooted("/var/lib/alt-deploy-backup"),
             rehearsal_root=rooted(
                 "/var/tmp/alt-deploy-restore-test"
             ),
-            operation_lock=rooted(
-                "/run/lock/alt-deploy-backup.lock"
-            ),
+            operation_lock=operation_lock,
             lifecycle_lock=rooted(
                 "/var/lib/alt-deploy/workstationctl.lock"
             ),

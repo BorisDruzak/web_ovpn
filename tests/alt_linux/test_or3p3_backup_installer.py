@@ -161,6 +161,54 @@ def test_backup_installer_uses_private_log_with_shared_system_log_parent(
     sandbox.assert_private_mode("/var/lib/alt-deploy-backup/operation.log", 0o600)
 
 
+def test_backup_installer_uses_private_operation_lock_on_sticky_run_lock(
+    tmp_path: Path,
+) -> None:
+    from alt_deploy_backup.locks import exclusive_operation_lock
+    from alt_deploy_backup.settings import BackupSettings
+
+    sandbox = BackupInstallerSandbox.create(tmp_path)
+    shared = sandbox.destination("/run/lock")
+    shared.mkdir(parents=True)
+    shared.chmod(0o1777)
+
+    result = sandbox.run_library()
+
+    assert result.returncode == 0, result.stderr
+    private_path = "/var/lib/alt-deploy-backup/operation.lock"
+    sandbox.assert_private_mode(private_path, 0o600)
+    settings = BackupSettings.from_env(sandbox.environment(
+        ALT_DEPLOY_BACKUP_TEST_MODE="1", ALT_DEPLOY_BACKUP_TEST_ROOT=str(sandbox.root),
+    ))
+    assert settings.operation_lock == sandbox.destination(private_path)
+    with exclusive_operation_lock(settings):
+        assert stat.S_IMODE(shared.stat().st_mode) == 0o1777
+        assert not (shared / "alt-deploy-backup.lock").exists()
+
+
+def test_backup_installer_preserves_legacy_operation_lock(
+    tmp_path: Path,
+) -> None:
+    from alt_deploy_backup.settings import BackupSettings
+
+    sandbox = BackupInstallerSandbox.create(tmp_path)
+    legacy = sandbox.destination("/run/lock/alt-deploy-backup.lock")
+    legacy.parent.mkdir(parents=True)
+    legacy.parent.chmod(0o1777)
+    legacy.touch(mode=0o600)
+    previous_inode = legacy.stat().st_ino
+
+    result = sandbox.run_library()
+
+    assert result.returncode == 0, result.stderr
+    settings = BackupSettings.from_env(sandbox.environment(
+        ALT_DEPLOY_BACKUP_TEST_MODE="1", ALT_DEPLOY_BACKUP_TEST_ROOT=str(sandbox.root),
+    ))
+    assert settings.operation_lock == legacy
+    assert legacy.stat().st_ino == previous_inode
+    assert not sandbox.destination("/var/lib/alt-deploy-backup/operation.lock").exists()
+
+
 def test_backup_installer_preserves_existing_public_parent_modes(
     tmp_path: Path,
 ) -> None:
