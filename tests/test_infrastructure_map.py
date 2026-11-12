@@ -1459,6 +1459,12 @@ def test_guest_service_uses_fresh_explicit_local_arp_without_router_entry(monkey
     assert service["probeTargetIdentityAt"] == now.isoformat()
     assert calls == [(address, mac)]
 
+    network["arp"] = [{"ip": address, "mac": mac, "last_seen_at": now.isoformat()}]
+    monkeypatch.setattr(collector, "_probe_on_link_mac", lambda *_: False)
+    assert collect()["probeTargetIP"] == address
+    assert calls == [(address, mac), (address, mac)]
+    network["arp"] = []
+
     answers.append("no_reply")
     assert collect()["probeTargetIP"] is None
 
@@ -1472,6 +1478,41 @@ def test_guest_service_uses_fresh_explicit_local_arp_without_router_entry(monkey
     pve["configs"]["108"]["net0"] += ",link_down=1"
     assert collect()["probeTargetIP"] is None
     assert calls == []
+
+
+def test_collector_vm_uses_its_local_interface_address_only_for_matching_adapter(tmp_path, monkeypatch):
+    from app import infrastructure_collect as collector
+    from app.infrastructure_map import load_infrastructure_map, summarize_guest_attachment
+
+    now = datetime.now(timezone.utc)
+    address, mac = "192.0.2.30", "02:00:00:00:00:03"
+    bindings = {"guest_probe_ips": {"109": address}, "guest_local_interfaces": {"109": "ens18"}}
+    rows = [{"ifname": "ens18", "link_type": "ether", "address": mac, "flags": ["UP", "LOWER_UP"],
+             "addr_info": [{"family": "inet", "local": address, "scope": "global"}]}]
+    monkeypatch.setattr(collector.subprocess, "check_output", lambda *args, **kwargs: json.dumps(rows))
+    pve = {"at": now.isoformat(), "cluster": [], "nodes": [{"node": "pve1", "status": "online"}],
+           "guests": [{"vmid": 109, "node": "pve1", "type": "qemu", "status": "running"}],
+           "configs": {"109": {"net0": f"virtio={mac},bridge=vmbr0"}}}
+    path = tmp_path / "infrastructure.json"
+
+    def build():
+        network = {"guest_local_ipv4": collector._collect_local_guest_ipv4(bindings)}
+        raw = collector.build_graph({}, network, {}, pve, bindings, datetime.now(timezone.utc))
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        graph = load_infrastructure_map(path)
+        guest, = summarize_guest_attachment(graph, "pve-guest:109")["attachment"]["guests"]
+        node = next(row for row in graph["nodes"] if row["id"] == "pve-guest:109")
+        return guest["interfaces"][0], node["reachability"]
+
+    interface, reachability = build()
+    observed, = interface["ipv4Observations"]
+    assert (observed["address"], observed["method"]) == (address, "Локальный интерфейс ens18")
+    assert reachability["state"] == "unknown"
+    rows[0]["address"] = "02:00:00:00:00:04"
+    assert "ipv4Observations" not in build()[0]
+    rows[0]["address"] = mac
+    rows[0]["flags"].remove("LOWER_UP")
+    assert "ipv4Observations" not in build()[0]
 
 
 def test_dns_service_requires_verified_vlan_peer_and_uses_local_address(monkeypatch):

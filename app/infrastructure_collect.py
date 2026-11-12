@@ -562,6 +562,48 @@ def _collect_asset_mac_probes(context: dict, sources: list[dict], configured: di
 LOCAL_GUEST_ARP_METHOD = "Локальный ARP"
 
 
+def _collect_local_guest_ipv4(bindings: dict) -> dict:
+    interfaces = bindings.get("guest_local_interfaces")
+    if not isinstance(interfaces, dict) or not interfaces:
+        return {}
+    try:
+        rows = json.loads(subprocess.check_output(
+            ["/usr/sbin/ip", "-j", "address", "show", "up"], timeout=3, stderr=subprocess.DEVNULL,
+        ))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return {}
+    if not isinstance(rows, list):
+        return {}
+    addresses = bindings.get("guest_probe_ips", {})
+    checked_at = datetime.now(timezone.utc).isoformat()
+    result = {}
+    for vmid, name in interfaces.items():
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", name):
+            continue
+        address = addresses.get(vmid)
+        if not isinstance(address, str):
+            continue
+        try:
+            address = str(ipaddress.IPv4Address(address))
+        except ValueError:
+            continue
+        matches = [row for row in rows if isinstance(row, dict) and row.get("ifname") == name]
+        if len(matches) != 1:
+            continue
+        row, = matches
+        flags, readings = row.get("flags"), row.get("addr_info")
+        mac = str(row.get("address", "")).lower()
+        if (row.get("link_type") == "ether" and MAC.fullmatch(mac)
+                and isinstance(flags, list) and "UP" in flags and "LOWER_UP" in flags
+                and isinstance(readings, list) and any(
+                    isinstance(item, dict) and item.get("family") == "inet" and item.get("scope") == "global"
+                    and item.get("local") == address for item in readings
+                )):
+            result[vmid] = {"address": address, "mac": mac, "source": "UI_VPN",
+                            "method": f"Локальный интерфейс {name}", "checkedAt": checked_at}
+    return result
+
+
 def _collect_guest_arp_probes(pve: dict, network: dict, configured: dict, now: datetime,
                               router_sources: dict | None = None, *, auto_on_link: bool = False,
                               local_macs: dict | None = None) -> dict:
@@ -601,25 +643,23 @@ def _collect_guest_arp_probes(pve: dict, network: dict, configured: dict, now: d
             address = str(ipaddress.IPv4Address(configured[vmid]))
         except (TypeError, ValueError):
             continue
-        if address not in arp:
-            local_mac = (local_macs or {}).get(vmid)
-            if (pve_fresh and guest_ids[vmid] == 1 and address not in fresh_arp_ips
-                    and configured_ips[address] == 1 and isinstance(local_mac, str) and local_mac.lower() in usable):
-                candidates.append((vmid, address, local_mac.lower(), True))
-            continue
-        mac, _ = arp[address]
-        if mac in usable:
-            candidates.append((vmid, address, mac, False))
+        mac, _ = arp.get(address, ("", None))
+        local_mac = (local_macs or {}).get(vmid)
+        local_mac = local_mac.lower() if isinstance(local_mac, str) else ""
+        local = (pve_fresh and guest_ids[vmid] == 1 and configured_ips[address] == 1 and local_mac in usable
+                 and (address not in fresh_arp_ips or mac == local_mac))
+        if mac in usable or local:
+            candidates.append((vmid, address, mac or local_mac, local))
 
     def check(candidate):
         vmid, address, mac, local = candidate
-        if local:
-            if _local_arp_diagnostic(address, mac).get("state") == "matched":
-                return mac, address, _observation("reachable", "UI_VPN", LOCAL_GUEST_ARP_METHOD,
-                                                  datetime.now(timezone.utc).isoformat())
-            return None
-        if _probe_on_link_mac(address, mac):
+        if address in arp and _probe_on_link_mac(address, mac):
             return mac, address, _observation("reachable", "UI_VPN", "ICMP · ARP", datetime.now(timezone.utc).isoformat())
+        if local and _local_arp_diagnostic(address, mac).get("state") == "matched":
+            return mac, address, _observation("reachable", "UI_VPN", LOCAL_GUEST_ARP_METHOD,
+                                              datetime.now(timezone.utc).isoformat())
+        if address not in arp:
+            return None
         name = (router_sources or {}).get(vmid) if vmid in configured else None
         if not name:
             return None
@@ -2319,6 +2359,11 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                                 ipv4_observations[address] = {"address": address, "checkedAt": stamp,
                                                                "source": observation["source"],
                                                                "method": observation["method"]}
+                        local = network.get("guest_local_ipv4", {}).get(str(vmid), {})
+                        if local.get("mac") == mac and observation_is_fresh(local.get("checkedAt"), now):
+                            ipv4_observations[local["address"]] = {
+                                key: local[key] for key in ("address", "checkedAt", "source", "method")
+                            }
                 uplink = observed_bridge.get("bridge_ports")
                 if (host in online_hypervisors and active == 1 and observation_is_fresh(pve_at, now)
                         and uplink in pve.get("activePorts", {}).get(host, [])):
@@ -3158,6 +3203,7 @@ def main() -> int:
             network["asset_mac_checks"] = _collect_asset_mac_probes(
                 context, network["sources"], bindings.get("asset_mac_probes", {}),
             )
+        network["guest_local_ipv4"] = _collect_local_guest_ipv4(bindings)
         now = datetime.now(timezone.utc)
         server = build_server_health_view(args.server_health, now)
         if server.get("freshness") in ("missing", "invalid") or server.get("collector", {}).get("status") == "error":
