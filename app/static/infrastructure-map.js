@@ -1508,6 +1508,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         wireguard_mark_mismatch: 'Фактическая метка отличается',
         wireguard_handshake_unconfirmed: 'Нет свежего handshake с однозначно определённым пиром',
       };
+      const listenerPorts = new Set(node.serviceChecks.filter(check => check.method === 'OpenVPN UDP-сокет')
+        .map(check => check.configuredPort));
       for (const check of node.serviceChecks) {
         const row = make('li');
         const backup = [check.backupCompletedAt && 'Завершено ' + formatTime(check.backupCompletedAt),
@@ -1523,7 +1525,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const endpoint = [check.method, wireguard?.interface, vlan?.id, check.backupVmid && 'ВМ ' + check.backupVmid,
           check.target, check.ipsecPolicy && '↔ ' + check.ipsecPolicy.remoteNetwork, check.httpHost, check.port, check.path, check.dns?.name,
           check.dns?.record, check.tunnelInterface, check.tunnelAddress, check.smbShare].filter(Boolean).join(' ');
-        const confirmed = ['Маршрут', 'Маршрут · WireGuard', 'OpenVPN TUN', 'SMB Mount', 'Копия Proxmox', 'IPsec фаза 2']
+        const confirmed = ['Маршрут', 'Маршрут · WireGuard', 'OpenVPN TUN', 'OpenVPN UDP-сокет', 'SMB Mount', 'Копия Proxmox', 'IPsec фаза 2']
           .includes(check.method) ? 'Подтверждён' :
           node.id === data.clusterId ? 'В норме' : 'Отвечает';
         const sessionState = pppoe && {
@@ -1538,11 +1540,12 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         if (check.observedVia) gateway = ' ' + check.observedVia + gateway;
         if (pppoe?.parent) gateway += ' · Интерфейс ' + pppoe.parent;
         const management = [
-          check.configuredPort && 'настроен UDP/' + check.configuredPort,
+          check.method === 'OpenVPN Management' && check.configuredPort && 'настроен UDP/' + check.configuredPort,
           check.daemonReady === true && 'демон CONNECTED',
           check.sessionCount !== undefined && 'клиентских сессий: ' + check.sessionCount,
         ].filter(Boolean).map(value => ' · ' + value).join('');
-        const udp = check.localUdpSocket;
+        const udp = check.method === 'OpenVPN Management' && listenerPorts.has(check.configuredPort)
+          ? null : check.localUdpSocket;
         const source = check.source ? ' · ' + check.source : '';
         const time = check.checkedAt ? ' · ' + formatTime(check.checkedAt) : '';
         const identity = check.identityCheckedAt ? ' · Адрес сверён ' + formatTime(check.identityCheckedAt) : '';

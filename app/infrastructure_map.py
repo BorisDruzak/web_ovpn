@@ -779,7 +779,7 @@ def _public_service_check(check: dict, now: datetime) -> dict:
                     if details.get("addresses") and type(responder.get("matchesExpectedAddresses")) is bool:
                         details["matchesExpectedAddresses"] = responder["matchesExpectedAddresses"]
                     diagnostic["unexpectedResponder"] = {"address": address, "port": responder_port, **details}
-    if check.get("method") == "OpenVPN Management":
+    if result["method"] in ("OpenVPN Management", "OpenVPN UDP-сокет"):
         configured_port = check.get("configuredPort")
         sessions = check.get("sessionCount")
         if type(configured_port) is int and 1 <= configured_port <= 65535:
@@ -793,7 +793,8 @@ def _public_service_check(check: dict, now: datetime) -> dict:
                 clean = ["*" if address == "*" else _network_address(address) for address in addresses]
                 if all(address and "/" not in address for address in clean):
                     result["localUdpSocket"] = {"state": state, "addresses": clean}
-        if (result["checkedAt"] and type(sessions) is int and 0 <= sessions <= 4096
+        if (result["method"] == "OpenVPN Management" and result["checkedAt"]
+                and type(sessions) is int and 0 <= sessions <= 4096
                 and type(check.get("daemonReady")) is bool):
             result.update(sessionCount=sessions, daemonReady=check["daemonReady"])
     if result["method"] == "OpenVPN TUN":

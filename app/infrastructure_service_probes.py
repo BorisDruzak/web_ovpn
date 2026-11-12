@@ -1548,6 +1548,14 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                     management_observation = {"state": "reachable", "source": "UI_VPN", "method": method,
                                               "checkedAt": identity_at}
             checks.append(observation)
+            if service and protocol == "openvpn_management" and "localUdpSocket" in details:
+                binding = details["localUdpSocket"]
+                checks.append({
+                    "state": {"bound": "reachable", "unbound": "unreachable", "unknown": "unknown"}[binding["state"]],
+                    "source": "UI_VPN", "method": "OpenVPN UDP-сокет", "checkedAt": observation["checkedAt"],
+                    "configuredPort": details["configuredPort"], "localUdpSocket": binding,
+                    **({"supplemental": True} if supplemental else {"required": True, "component": True}),
+                })
             if not supplemental and not component and not skip_reason:
                 primary.append(observation)
         node.setdefault("serviceChecks", []).extend(checks)

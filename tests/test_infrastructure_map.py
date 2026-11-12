@@ -3875,26 +3875,34 @@ def test_openvpn_requires_connected_daemon_and_active_session(monkeypatch):
         connection.response = response
         assert probes._probe(spec) == "unknown"
 
-    def check(response):
+    def check(response, expected_socket):
         connection.response = response
         node = {"id": "vpn", "kind": "Сервис"}
         probes.apply_service_probes([node], {"vpn": [spec]})
-        raw, = node["serviceChecks"]
-        return _public_service_check(raw, datetime.now(timezone.utc))
+        raw, listener = node["serviceChecks"]
+        now = datetime.now(timezone.utc)
+        listener = _public_service_check(listener, now)
+        assert listener["method"] == "OpenVPN UDP-сокет"
+        assert listener["required"] and listener["component"]
+        assert listener["state"] == expected_socket
+        assert listener["configuredPort"] == 1194
+        assert listener["localUdpSocket"] == raw["localUdpSocket"]
+        assert node["reachability"]["state"] == raw["state"]
+        return _public_service_check(raw, now)
 
-    observed = check(ready + header + client + b"CLIENT_LIST\tprivate-second\nEND\n")
+    observed = check(ready + header + client + b"CLIENT_LIST\tprivate-second\nEND\n", "reachable")
     assert observed["method"] == "OpenVPN Management"
     assert observed["port"] is None and observed["configuredPort"] == 1194
     assert observed["localUdpSocket"] == {"state": "bound", "addresses": ["192.0.2.30", "::"]}
     assert observed["sessionCount"] == 2 and observed["daemonReady"] is True
     assert "sample" not in json.dumps(observed) and "private-second" not in json.dumps(observed)
-    empty = check(ready + header + b"END\n")
+    empty = check(ready + header + b"END\n", "reachable")
     assert empty["state"] == "unknown" and empty["sessionCount"] == 0 and empty["daemonReady"] is True
-    assert "sessionCount" not in check(ready + header + client)
+    assert "sessionCount" not in check(ready + header + client, "reachable")
     socket_listing = b""
-    assert check(ready + header + b"END\n")["localUdpSocket"] == {"state": "unbound"}
+    assert check(ready + header + b"END\n", "unreachable")["localUdpSocket"] == {"state": "unbound"}
     socket_listing = b"UNCONN 0 0 192.0.2.30:1195 0.0.0.0:*\n"
-    assert check(ready + header + b"END\n")["localUdpSocket"] == {"state": "unknown"}
+    assert check(ready + header + b"END\n", "unknown")["localUdpSocket"] == {"state": "unknown"}
 
 
 def test_smb_mount_checks_the_configured_live_share_without_local_fallback(monkeypatch):
@@ -3953,7 +3961,7 @@ def test_openvpn_tunnel_checks_kernel_link_and_address_as_required_component(mon
 
     def output(command, *, timeout):
         if command[0] == "/usr/bin/ss":
-            return b""
+            return b"UNCONN 0 0 192.0.2.30:1194 0.0.0.0:*\n"
         assert command == ["/usr/sbin/ip", "-j", "-d", "address", "show"]
         assert timeout == probes.TIMEOUT
         return json.dumps(kernel).encode()
@@ -3967,7 +3975,8 @@ def test_openvpn_tunnel_checks_kernel_link_and_address_as_required_component(mon
         probes.apply_service_probes([node], {"vpn": [{"type": "openvpn_management", "port": 1194}, spec]})
         public = _public_node(node, datetime.now(timezone.utc))
         _map_statuses({"vpn": public}, [])
-        return public["mapStatus"], public["serviceChecks"][1]
+        tunnel = next(check for check in public["serviceChecks"] if check["method"] == "OpenVPN TUN")
+        return public["mapStatus"], tunnel
 
     status, result = check()
     assert status == "ok" and result["state"] == "reachable" and result["component"]
