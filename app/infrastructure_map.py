@@ -2125,8 +2125,30 @@ def _management_port_paths(nodes: dict, links: list[dict]) -> dict:
     return confirmed
 
 
+def _current_physical_port_pairs(links: list[dict]) -> dict:
+    peers = defaultdict(dict)
+    for edge in links:
+        if edge["kind"] != "Сетевое соединение" or not edge["confirmed"]:
+            continue
+        for report in edge["portEvidence"]:
+            if (not report["confirmed"] or report.get("pairEvidence") != "current" or report["source"] == "SNMP LACP + ARP"
+                    or any(port["state"] in {"down", "disabled"} for port in report.get("portStates", {}).values())):
+                continue
+            for local, remote in (("a", "b"), ("b", "a")):
+                endpoint = (edge[local], port_label_key(report[local]))
+                peer = (edge[remote], port_label_key(report[remote]))
+                previous = peers[endpoint].get(peer)
+                if previous is None or report["at"] > previous["checkedAt"]:
+                    peers[endpoint][peer] = {"hostId": edge[remote], "hostPort": report[remote],
+                                             "switchPort": report[local], "source": report["source"],
+                                             "checkedAt": report["at"]}
+    return {endpoint: next(iter(choices.values())) for endpoint, choices in peers.items()
+            if len(choices) == 1 and len(peers[next(iter(choices))]) == 1}
+
+
 def _observed_management_ports(links: list[dict]) -> dict:
     candidates = defaultdict(dict)
+    physical = _current_physical_port_pairs(links)
     for edge in links:
         if edge["kind"] != "Путь по MAC-таблице" or not edge["confirmed"]:
             continue
@@ -2144,10 +2166,15 @@ def _observed_management_ports(links: list[dict]) -> dict:
             if report.get("portStates", {}).get(side, {}).get("state") != "up":
                 continue
             device, port = edge[side], report[side]
-            ports = candidates[edge["b" if side == "a" else "a"], address]
+            host = edge["b" if side == "a" else "a"]
+            ports = candidates[host, address]
             key = (device, port_label_key(port))
             if key not in ports or ports[key][field]["checkedAt"] < report["at"]:
-                ports[key] = {field: {id_key: device, "port": port, "source": report["source"], "checkedAt": report["at"]}}
+                attachment = {id_key: device, "port": port, "source": report["source"], "checkedAt": report["at"]}
+                pair = physical.get(key)
+                if field == "switchAttachment" and pair and pair["hostId"] == host:
+                    attachment["physicalPair"] = pair
+                ports[key] = {field: attachment}
     return {key: next(iter(ports.values())) for key, ports in candidates.items() if len(ports) == 1}
 
 

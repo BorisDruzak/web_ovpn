@@ -710,12 +710,20 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       if (resources.size) row.append(make('small', [...resources].join(' · ')));
       const attachment = path.routerAttachment ?? path.switchAttachment;
       if (attachment) {
-        const {routerId, switchId, port, source, checkedAt} = attachment;
+        const {routerId, switchId, port, source, checkedAt, physicalPair} = attachment;
         const deviceId = routerId ?? switchId;
         const device = byId.get(deviceId)?.name ?? deviceId;
         const evidence = switchId ? 'ARP + FDB коммутатора' : source;
         row.append(make('small', [evidence, formatTime(checkedAt)].join(' · ')),
           switchPortButton(deviceId, device, port));
+        if (physicalPair) {
+          const {hostId, hostPort, source: pairSource, checkedAt: pairAt} = physicalPair;
+          const host = byId.get(hostId);
+          const name = host?.name ?? hostId;
+          const hasPort = host?.ports?.some(item => portKeys(item).includes(portKey(hostPort)));
+          row.append(hasPort ? switchPortButton(hostId, name, hostPort) : make('small', `${name} ${hostPort}`),
+            make('small', ['Физическая пара подтверждена', pairSource, formatTime(pairAt)].join(' · ')));
+        }
         list.append(row);
         continue;
       }

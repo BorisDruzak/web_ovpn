@@ -4984,6 +4984,53 @@ def test_asset_service_can_require_current_fdb_and_arp_identity(monkeypatch, tmp
     assert node["mapStatus"] == "unknown" and node["serviceChecks"][0]["reason"] == "probe_target_unconfirmed"
 
 
+def test_management_path_includes_both_ports_only_for_unique_current_cable(tmp_path):
+    from app.infrastructure_map import load_infrastructure_map, summarize_guest_attachment
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    address = "192.0.2.14"
+    nodes = [
+        {"id": "upstream", "name": "Upstream", "kind": "Коммутатор",
+         "ports": [{"name": "gigabitEthernet 1/0/31", "state": "up", "checkedAt": at}]},
+        {"id": "host", "name": "Host", "kind": "Коммутатор"},
+        {"id": "other", "name": "Other switch", "kind": "Коммутатор"},
+        {"id": "web", "name": "Web", "kind": "Сервис", "serviceChecks": [
+            {"method": "HTTP", "state": "reachable", "source": "UI_VPN", "required": True,
+             "checkedAt": at, "target": address, "port": 80},
+        ]},
+    ]
+    observed = {"a": "upstream", "b": "host", "kind": "Путь по MAC-таблице", "confirmed": True,
+                "portEvidence": [{"a": "gigabitEthernet 1/0/31", "b": "", "source": "netctl FDB",
+                    "at": at, "confirmed": True, "managementAddress": address,
+                    "learnedEndpoint": {"switchId": "upstream", "deviceId": "host", "mac": "02:00:00:00:00:14"}}]}
+    hosted = {"a": "host", "b": "web", "kind": "Размещение", "confirmed": True}
+
+    def cable(remote, source, **fields):
+        return {"a": remote, "b": "upstream", "kind": "Сетевое соединение", "confirmed": True,
+                "portEvidence": [{"a": "Gi1/0/47", "b": "Gi1/0/31", "source": source, "at": at,
+                                  "confirmed": True, **fields}]}
+
+    snapshot = tmp_path / "map.json"
+
+    def read(*cables):
+        raw = {"schema": 1, "snapshotAt": at, "nodes": nodes, "links": [observed, hosted, *cables]}
+        snapshot.write_text(json.dumps(raw), encoding="utf-8")
+        graph = load_infrastructure_map(snapshot, now, include_guest_attachments=True)
+        service, = summarize_guest_attachment(graph, "web")["attachment"]["servicePaths"]
+        assert graph["servicePaths"]["web"] == [service]
+        return service["switchAttachment"]
+
+    direct = cable("host", "LLDP · двустороннее")
+    assert read(direct)["physicalPair"] == {"hostId": "host", "hostPort": "Gi1/0/47", "switchPort": "Gi1/0/31",
+                                            "source": "LLDP · двустороннее", "checkedAt": at}
+    assert "physicalPair" not in read(cable("host", "GitHub"))
+    assert "physicalPair" not in read(direct, cable("other", "LLDP · двустороннее"))
+    assert "physicalPair" not in read(cable("host", "LLDP · двустороннее", at=(now - timedelta(hours=1)).isoformat()))
+    nodes[1]["ports"] = [{"name": "Gi1/0/47", "state": "down", "checkedAt": at}]
+    assert "physicalPair" not in read(direct)
+
+
 def test_hypervisor_fdb_path_reports_management_interface_without_claiming_direct_cable(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map
