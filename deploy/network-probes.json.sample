@@ -5,7 +5,9 @@
       "peer": "192.0.2.20",
       "port": 5201,
       "duration_seconds": 4,
-      "bitrate_mbps": 5
+      "bitrate_mbps": 5,
+      "source_address": "192.0.2.10",
+      "bind_interface": "ens18"
     }
   },
   "routes": {

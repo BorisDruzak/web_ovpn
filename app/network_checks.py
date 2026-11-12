@@ -109,6 +109,7 @@ NETWORK_CHECK_INPUT = TypeAdapter(NetworkCheck)
 
 CHECK_STATUS_LABELS = {
     "route_found": "Маршрут найден",
+    "route_mismatch": "Интерфейс маршрута отличается от заданного в профиле",
     "no_route": "Маршрут не найден",
     "allowed": "Политика разрешает маршрут",
     "blocked": "Политика блокирует маршрут",
@@ -136,13 +137,26 @@ CHECK_STATUS_LABELS = {
 }
 
 
-def lookup_linux_route(destination: ipaddress.IPv4Address | ipaddress.IPv6Address) -> dict:
+def lookup_linux_route(
+    destination: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    *,
+    source: ipaddress.IPv4Address | ipaddress.IPv6Address | None = None,
+    interface: str | None = None,
+    tcp_port: int | None = None,
+) -> dict:
     address = str(destination)
     if "%" in address:
         return {"status": "unavailable", "result": {}}
+    argv = [IP_ROUTE_PATH, "-j", f"-{destination.version}", "route", "get", address]
+    if source is not None:
+        argv.extend(("from", str(source)))
+    if interface is not None:
+        argv.extend(("oif", interface))
+    if tcp_port is not None:
+        argv.extend(("ipproto", "tcp", "dport", str(tcp_port)))
     try:
         completed = subprocess.run(
-            [IP_ROUTE_PATH, "-j", f"-{destination.version}", "route", "get", address],
+            argv,
             capture_output=True, text=True, timeout=5, check=False,
             env={**os.environ, "LC_ALL": "C"},
         )
@@ -276,17 +290,28 @@ def _iperf_check(check: IperfCheck) -> dict:
     if not _throughput_lock.acquire(blocking=False):
         return {"status": "busy", "result": {}}
     try:
+        result = {"point": "vpn_server", **profile.model_dump(exclude_none=True), "direction": check.direction}
+        binding = {}
+        if profile.source_address is not None:
+            route = lookup_linux_route(
+                ipaddress.ip_address(profile.peer), source=ipaddress.ip_address(profile.source_address),
+                interface=profile.bind_interface, tcp_port=profile.port,
+            )
+            result["kernel_route"] = route
+            if route["status"] != "route_found":
+                return {"status": route["status"], "result": result}
+            if profile.bind_interface and route["result"].get("dev") != profile.bind_interface:
+                return {"status": "route_mismatch", "result": result}
+            binding = {"source_address": profile.source_address, "bind_interface": profile.bind_interface}
         reading = run_throughput(
             profile.peer, profile.port, check.direction,
             duration_seconds=profile.duration_seconds, bitrate_mbps=profile.bitrate_mbps,
+            **binding,
         )
         status = "measured" if reading["status"] == "ok" else reading["status"]
-        result = {
-            "point": "vpn_server",
-            **profile.model_dump(),
-            "direction": check.direction,
-            **(reading.get("result") or {}),
-        }
+        result.update(reading.get("result") or {})
+        if "connection" in reading:
+            result["connection"] = reading["connection"]
         return {"status": status, "result": result}
     finally:
         _throughput_lock.release()

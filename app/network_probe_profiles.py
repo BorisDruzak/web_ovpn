@@ -11,6 +11,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, field_validator, model_validator
 
+from .network_throughput import validate_throughput_profile
+
 PROFILE_PATH = Path("/etc/openvpn-web/network-probes.json")
 PROFILE_ID_PATTERN = r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$"
 ProfileId = Annotated[str, StringConstraints(pattern=PROFILE_ID_PATTERN)]
@@ -38,6 +40,18 @@ class ProbeProfile(BaseModel):
 class ThroughputProfile(ProbeProfile):
     duration_seconds: int = Field(ge=1, le=10)
     bitrate_mbps: int = Field(ge=1, le=50)
+    source_address: str | None = None
+    bind_interface: str | None = None
+
+    @model_validator(mode="after")
+    def validate_binding(self):
+        if self.source_address is not None or self.bind_interface is not None:
+            validate_throughput_profile(
+                self.peer, self.port, duration_seconds=self.duration_seconds,
+                bitrate_mbps=self.bitrate_mbps, source_address=self.source_address,
+                bind_interface=self.bind_interface,
+            )
+        return self
 
 
 class CaptureProfile(ProbeProfile):
@@ -194,7 +208,7 @@ def load_probe_profiles() -> ProbeProfiles:
 def probe_catalog() -> dict:
     profiles = load_probe_profiles()
     return {
-        "throughput": [{"id": key, **profile.model_dump()} for key, profile in profiles.throughput.items()],
+        "throughput": [{"id": key, **profile.model_dump(exclude_none=True)} for key, profile in profiles.throughput.items()],
         "capture": [{"id": key, **profile.model_dump()} for key, profile in profiles.capture.items()],
         "routes": [
             {"id": key, **profile.model_dump(exclude_none=True, exclude={"probes": {"__all__": {"tls_ca_file"}}})}

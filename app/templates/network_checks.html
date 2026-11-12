@@ -42,13 +42,24 @@
       </tbody>
     </table>
   </div>
-  {% elif result.check == 'iperf3' and result.result.sender_mbps is defined %}
+  {% elif result.check == 'iperf3' and result.result %}
   <dl>
     <dt>Точка измерения</dt><dd>VPN-сервер ↔ {{ result.result.label }} ({{ result.result.peer }})</dd>
     <dt>Направление</dt><dd>{{ 'С VPN-сервера' if result.result.direction == 'send' else 'К VPN-серверу' }}</dd>
+    {% if result.result.sender_mbps is defined %}
     <dt>Отправитель / получатель, Мбит/с</dt>
     <dd>{{ '%.2f' | format(result.result.sender_mbps) }} / {{ '%.2f' | format(result.result.receiver_mbps) }}</dd>
     <dt>Повторные передачи TCP</dt><dd>{{ result.result.retransmits if result.result.retransmits is not none else '—' }}</dd>
+    {% endif %}
+    {% if result.result.source_address is defined %}
+    <dt>Заданный источник</dt><dd>{{ result.result.source_address }}{% if result.result.bind_interface is defined %} · {{ result.result.bind_interface }}{% endif %}</dd>
+    {% endif %}
+    {% if result.result.kernel_route is defined and result.result.kernel_route.status == 'route_found' %}
+    <dt>Выбор ядра</dt><dd>{{ [result.result.kernel_route.result.dev, result.result.kernel_route.result.gateway] | select | join(' · ') }}</dd>
+    {% endif %}
+    {% if result.result.connection is defined %}
+    <dt>Соединение iperf3</dt><dd>{{ result.result.connection.source_address }} ↔ {{ result.result.connection.peer_address }} · TCP {{ result.result.connection.peer_port }}</dd>
+    {% endif %}
     <dt>Профиль замера</dt><dd>{{ result.result.duration_seconds }} с · цель {{ result.result.bitrate_mbps }} Мбит/с</dd>
   </dl>
   {% elif result.check == 'pcap_capture' and result.result.capture_id is defined %}

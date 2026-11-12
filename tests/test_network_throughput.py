@@ -86,6 +86,12 @@ def test_uses_one_paced_tcp_stream_and_reports_both_endpoints(
         ("bitrate_mbps", 0),
         ("bitrate_mbps", 51),
         ("bitrate_mbps", 5.5),
+        ("source_address", "2001:db8::1"),
+        ("source_address", "192.000.2.20"),
+        ("source_address", "239.0.0.1"),
+        ("source_address", "0.0.0.0"),
+        ("source_address", "192.0.2.20%eth0"),
+        ("bind_interface", "eth0"),
     ],
 )
 def test_rejects_invalid_profile_before_starting_process(monkeypatch, field, value):
@@ -103,6 +109,132 @@ def test_rejects_invalid_profile_before_starting_process(monkeypatch, field, val
 
     with pytest.raises(ValueError):
         run_throughput(**profile)
+
+
+@pytest.mark.parametrize(
+    "interface", ["-eth0", "eth0;id", "eth0 eth1", "eth0\n", "x" * 16, "", True]
+)
+def test_rejects_invalid_interface_with_valid_source(monkeypatch, interface):
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **kw: pytest.fail("unexpected traffic")
+    )
+
+    with pytest.raises(ValueError):
+        run_throughput(
+            "192.0.2.10",
+            5201,
+            "send",
+            duration_seconds=5,
+            bitrate_mbps=10,
+            source_address="192.0.2.20",
+            bind_interface=interface,
+        )
+
+
+def _connected_output(connected):
+    report = json.loads(_iperf_output())
+    report["start"] = {"connected": connected}
+    return json.dumps(report).encode()
+
+
+@pytest.mark.parametrize(
+    "direction, source, peer, reported_source, interface",
+    [
+        ("send", "192.0.2.20", "192.0.2.10", "192.0.2.20", "vlan20.3"),
+        ("receive", "192.0.2.20", "192.0.2.10", "192.0.2.20", "vlan20.3"),
+        ("receive", "2001:db8::2", "2001:db8::1", "2001:0db8:0:0:0:0:0:2", None),
+    ],
+)
+def test_reports_confirmed_socket_endpoints_for_source_bound_traffic(
+    monkeypatch,
+    direction,
+    source,
+    peer,
+    reported_source,
+    interface,
+):
+    def run(argv, **kwargs):
+        assert argv[2] == peer
+        assert ("--reverse" in argv) == (direction == "receive")
+        flags = ["--bind", source] + (["--bind-dev", interface] if interface else [])
+        assert argv[-len(flags) :] == flags
+        assert ("--bind-dev" in argv) == (interface is not None)
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=_connected_output(
+                [
+                    {
+                        "socket": 5,
+                        "local_host": reported_source,
+                        "local_port": 49152,
+                        "remote_host": peer,
+                        "remote_port": 5201,
+                    }
+                ]
+            ),
+        )
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    assert run_throughput(
+        peer,
+        5201,
+        direction,
+        duration_seconds=5,
+        bitrate_mbps=10,
+        source_address=source,
+        bind_interface=interface,
+    ) == {
+        "status": "ok",
+        "result": {"sender_mbps": 9.25, "receiver_mbps": 8.75, "retransmits": 4},
+        "connection": {
+            "source_address": source,
+            "peer_address": peer,
+            "peer_port": 5201,
+        },
+    }
+
+
+_VALID_SOCKET = {
+    "local_host": "192.0.2.20",
+    "remote_host": "192.0.2.10",
+    "remote_port": 5201,
+}
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        _iperf_output(),
+        _connected_output([]),
+        _connected_output([_VALID_SOCKET, _VALID_SOCKET]),
+        _connected_output(_VALID_SOCKET),
+        _connected_output([{"remote_host": "192.0.2.10", "remote_port": 5201}]),
+        _connected_output([dict(_VALID_SOCKET, local_host="192.0.2.30")]),
+        _connected_output([dict(_VALID_SOCKET, remote_host="192.0.2.30")]),
+        _connected_output([dict(_VALID_SOCKET, remote_port=5202)]),
+        _connected_output([dict(_VALID_SOCKET, remote_port="5201")]),
+        _connected_output([dict(_VALID_SOCKET, remote_port=5201.0)]),
+    ],
+)
+def test_source_bound_measurement_requires_exactly_one_matching_socket(
+    monkeypatch, stdout
+):
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda argv, **kw: subprocess.CompletedProcess(argv, 0, stdout=stdout),
+    )
+
+    assert run_throughput(
+        "192.0.2.10",
+        5201,
+        "send",
+        duration_seconds=5,
+        bitrate_mbps=10,
+        source_address="192.0.2.20",
+    ) == {"status": "failed", "result": None}
 
 
 def test_allows_canonical_ipv6_and_preserves_missing_retransmits(monkeypatch):

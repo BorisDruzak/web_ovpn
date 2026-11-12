@@ -1,8 +1,46 @@
+import ipaddress
 import json
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from app import network_capture_store, network_probe_profiles
+
+
+def test_throughput_profile_uses_kernel_route_and_pinned_stream(monkeypatch):
+    from app import network_checks
+
+    profiles = network_probe_profiles.ProbeProfiles.model_validate({"throughput": {"site": {
+        "label": "Site", "peer": "192.0.2.12", "port": 5201, "duration_seconds": 5,
+        "bitrate_mbps": 10, "source_address": "192.0.2.4", "bind_interface": "tun0",
+    }}})
+    monkeypatch.setattr(network_checks, "load_probe_profiles", lambda: profiles)
+    planned = {"status": "route_found", "result": {"dev": "ens18"}}
+    calls = []
+
+    def route(destination, *, source, interface, tcp_port):
+        assert destination == ipaddress.ip_address("192.0.2.12")
+        assert (str(source), interface, tcp_port) == ("192.0.2.4", "tun0", 5201)
+        return planned
+
+    def measure(peer, port, direction, **kwargs):
+        calls.append((peer, port, direction, kwargs))
+        return {"status": "ok", "result": {"sender_mbps": 10, "receiver_mbps": 9.8},
+                "connection": {"source_address": "192.0.2.4", "peer_address": peer, "peer_port": port}}
+
+    monkeypatch.setattr(network_checks, "lookup_linux_route", route)
+    monkeypatch.setattr(network_checks, "run_throughput", measure)
+    check = network_checks.IperfCheck(check="iperf3", profile="site", direction="receive")
+    blocked = network_checks.execute_network_check(check)
+    assert blocked["status"] == "route_mismatch" and calls == []
+    assert blocked["result"]["kernel_route"]["result"]["dev"] == "ens18"
+    planned = {"status": "route_found", "result": {"dev": "tun0"}}
+    result = network_checks.execute_network_check(check)
+    assert calls == [("192.0.2.12", 5201, "receive", {
+        "duration_seconds": 5, "bitrate_mbps": 10, "source_address": "192.0.2.4", "bind_interface": "tun0",
+    })]
+    assert result["status"] == "measured"
+    assert result["result"]["kernel_route"]["result"]["dev"] == "tun0"
+    assert result["result"]["connection"]["source_address"] == "192.0.2.4"
 
 
 def test_profile_catalog_exposes_ids_and_limits(tmp_path, monkeypatch):
