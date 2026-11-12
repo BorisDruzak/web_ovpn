@@ -2515,7 +2515,13 @@ def test_route_ipsec_phase_and_unavailable_reason_in_history_and_ui(tmp_path, mo
     assert "источник вернул ошибку опроса" in page.text
 
 
-def test_https_speed_uses_profile_and_records_result_in_api_and_ui(tmp_path, monkeypatch):
+@pytest.mark.parametrize("observation, wan_label", [
+    ({"status": "confirmed", "nat_interface": "wan1"}, "wan1"),
+    ({"status": "unconfirmed", "reason": "no_unique_connection"},
+     "WAN не подтверждён · соединение не найдено или неоднозначно"),
+    ({"status": "unavailable"}, "Нет данных о WAN"),
+])
+def test_https_speed_uses_profile_and_records_result_in_api_and_ui(tmp_path, monkeypatch, observation, wan_label):
     client, headers = make_client(tmp_path, monkeypatch)
     from app import network_checks, network_probe_profiles
 
@@ -2545,7 +2551,7 @@ def test_https_speed_uses_profile_and_records_result_in_api_and_ui(tmp_path, mon
     def observe(args, **kwargs):
         assert args[:4] == ["path", "https-egress", "--profile=internet", "--source-port=42013"]
         assert args[4] == f"--expected-config={profiles.https_speed['internet'].config_digest()}"
-        return {"egress": {"status": "confirmed", "nat_interface": "wan1"}}
+        return {"egress": observation}
 
     monkeypatch.setattr(network_checks, "run_netctl", observe)
     base = "/api/v1/network/diagnostics"
@@ -2557,20 +2563,23 @@ def test_https_speed_uses_profile_and_records_result_in_api_and_ui(tmp_path, mon
     result = client.post(endpoint, headers=headers, json=payload).json()["data"]
     assert result["status"] == "measured"
     assert result["result"]["kernel_route"]["result"]["dev"] == "eth0"
-    assert result["result"]["wan_observation"]["nat_interface"] == "wan1"
+    assert result["result"]["wan_observation"] == {"source": "mikrotik-main", **observation}
     assert client.post(endpoint, headers=headers, json=payload).json()["data"]["status"] == "rate_limited"
     runs = client.get(base + "/runs", headers=headers).json()["data"]["runs"]
     measured = next(row for row in runs if row["status"] == "measured")
     assert measured["target"] == "internet · receive"
     assert measured["result"]["mbps"] == 8.0
-    assert measured["result"]["wan_observation"]["status"] == "confirmed"
+    assert measured["result"]["wan_observation"] == result["result"]["wan_observation"]
     csrf = login(client)
     page = client.post("/network/diagnostics/checks", data={
         "csrf_token": csrf, **payload, "direction": "send",
     })
     assert page.status_code == 200
     assert "Запустить HTTPS-замер" in page.text and "8.00 Мбит/с" in page.text
-    assert "Интерфейс по адресу NAT" in page.text and "wan1" in page.text
+    assert "Интерфейс по адресу NAT" in page.text and wan_label in page.text
+    history_page = client.get("/network/diagnostics")
+    assert history_page.status_code == 200 and "8.00 Мбит/с" in history_page.text
+    assert wan_label in history_page.text
     assert calls == [(peer, "receive", 1_000_000), (peer, "send", 500_000)]
 
 
