@@ -651,6 +651,17 @@ def _public_service_check(check: dict, now: datetime) -> dict:
             result["rtspStatus"] = rtsp
         if reason == "rtsp_connection_refused" or (rtsp == 401 and reason == "rtsp_auth_required"):
             result["reason"] = reason
+    if result["method"] == "Сертификат TLS":
+        expires = _time(check.get("tlsExpiresAt"))
+        version = check.get("tlsVersion")
+        if expires:
+            result["tlsExpiresAt"] = expires.isoformat()
+        if version in ("TLSv1.2", "TLSv1.3"):
+            result["tlsVersion"] = version
+        if reason in {"probe_configuration", "tls_certificate_pin", "tls_certificate_expired",
+                      "tls_certificate_not_yet_valid", "tls_certificate_unconfirmed", "tls_connection_refused",
+                      "timeout", "transport_error"}:
+            result["reason"] = reason
     if result["method"] == "FTP FEAT":
         reply = check.get("ftpReply")
         if type(reply) is int and 100 <= reply <= 599:
@@ -1588,7 +1599,8 @@ def summarize_services(graph: dict) -> dict:
             {"check": check["method"], "status": check_status.get(check["state"], "unknown"),
              "required": check.get("required") is True,
              **{key: check[key] for key in ("source", "checkedAt", "stale", "reason", "path", "port", "target",
-                                            "pppoe", "rtspStatus", "ftpReply", "dns", "localRoute")
+                                            "pppoe", "rtspStatus", "ftpReply", "tlsExpiresAt", "tlsVersion",
+                                            "dns", "localRoute")
                 if key in check and check[key] is not None and check[key] != ""}}
             for check in node["serviceChecks"] if check.get("required") or (
                 state == "unknown" and check.get("supplemental") and check["state"] != "reachable"

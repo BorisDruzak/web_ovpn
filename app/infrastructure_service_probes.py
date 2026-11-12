@@ -24,6 +24,7 @@ import dns.exception
 import dns.message
 import dns.query
 import dns.rcode
+from cryptography import x509
 
 TIMEOUT = 3
 HTTP_BODY_LIMIT = 32 * 1024
@@ -36,7 +37,7 @@ PROBE_METHODS = {
     "openvpn_management": "OpenVPN Management", "openvpn_tunnel": "OpenVPN TUN",
     "sip_options": "SIP OPTIONS (UDP)", "icmp": "ICMP", "vlan_transit": "ICMP · VLAN",
     "wireguard_policy": "Маршрут · WireGuard", "ipmi_lan": "IPMI LAN (UDP)", "rtsp_options": "RTSP OPTIONS",
-    "ssh_identification": "SSH", "ftp_features": "FTP FEAT",
+    "ssh_identification": "SSH", "ftp_features": "FTP FEAT", "tls_certificate": "Сертификат TLS",
 }
 
 
@@ -550,6 +551,47 @@ def _udp_failure(connection: socket.socket, option: tuple[int, int] | None,
             return {"state": "unreachable", "reason": "icmp_port_unreachable", "errorSource": offender}
         return {"state": "unknown", "reason": "icmp_rejected", "errorSource": offender}
     return fallback
+
+
+def _tls_certificate(spec: dict) -> dict:
+    pin, port = spec.get("tls_sha256"), spec.get("port")
+    if (not isinstance(pin, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", pin)
+            or type(port) is not int or not 1 <= port <= 65535):
+        return {"state": "unknown", "reason": "probe_configuration"}
+    try:
+        address = str(ipaddress.ip_address(spec.get("ip")))
+    except ValueError:
+        return {"state": "unknown", "reason": "probe_configuration"}
+
+    # Read the leaf certificate even after expiry, then verify its configured fingerprint.
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    try:
+        with socket.create_connection((address, port), timeout=TIMEOUT) as tcp:
+            with context.wrap_socket(tcp, server_hostname=address) as tls:
+                certificate = tls.getpeercert(binary_form=True)
+                if not certificate or hashlib.sha256(certificate).hexdigest() != pin.lower():
+                    return {"state": "unknown", "reason": "tls_certificate_pin"}
+                peer = x509.load_der_x509_certificate(certificate)
+                starts, expires = peer.not_valid_before_utc, peer.not_valid_after_utc
+                version = tls.version()
+    except ConnectionRefusedError:
+        return {"state": "unreachable", "reason": "tls_connection_refused"}
+    except TimeoutError:
+        return {"state": "unknown", "reason": "timeout"}
+    except (ssl.SSLError, ValueError):
+        return {"state": "unknown", "reason": "tls_certificate_unconfirmed"}
+    except OSError:
+        return {"state": "unknown", "reason": "transport_error"}
+
+    observed = {"tlsExpiresAt": expires.isoformat(), "tlsVersion": version}
+    now = datetime.now(timezone.utc)
+    if now > expires:
+        return {**observed, "state": "unreachable", "reason": "tls_certificate_expired"}
+    if now < starts:
+        return {**observed, "state": "unreachable", "reason": "tls_certificate_not_yet_valid"}
+    return {**observed, "state": "reachable"}
 
 
 def _read_ftp_reply(connection: socket.socket, deadline: float) -> int | None:
@@ -1162,6 +1204,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 details = _rtsp_options(spec)
             elif protocol == "ftp_features":
                 details = _ftp_features(spec)
+            elif protocol == "tls_certificate":
+                details = _tls_certificate(spec)
             elif protocol == "ssh_identification":
                 details = _ssh_identification(spec)
             elif protocol == "dns":
@@ -1194,7 +1238,7 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 "path": spec.get("path") if protocol in {"http", "https", "zabbix_api", "rtsp_options"} else None,
                 "target": spec.get("ip") if not skip_reason and (
                     protocol in {"icmp", "vlan_transit", "sip_options", "ipmi_lan", "rtsp_options", "ssh_identification", "ftp_features",
-                                 "zabbix_api", "postgresql", "dns", "smb"}
+                                 "zabbix_api", "postgresql", "dns", "smb", "tls_certificate"}
                     or "probeTargetIP" in node
                 ) else None,
                 "checkedAt": datetime.now(timezone.utc).isoformat(),

@@ -4456,6 +4456,48 @@ def test_icmp_diagnostics_distinguish_echo_silence_and_probe_error(monkeypatch):
     assert "raw output" not in json.dumps(checks)
 
 
+def test_pinned_tls_certificate_distinguishes_expiry_from_changed_identity(monkeypatch):
+    import hashlib
+    from unittest.mock import MagicMock
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.serialization import Encoding
+
+    from app import infrastructure_service_probes as probes
+    from app.infrastructure_map import _public_service_check
+
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    expired = now - timedelta(days=1)
+    key = Ed25519PrivateKey.generate()
+    subject = x509.Name([x509.NameAttribute(x509.NameOID.COMMON_NAME, "test")])
+    certificate = (x509.CertificateBuilder().subject_name(subject).issuer_name(subject)
+                   .public_key(key.public_key()).serial_number(1)
+                   .not_valid_before(now - timedelta(days=2)).not_valid_after(expired)
+                   .sign(key, None).public_bytes(Encoding.DER))
+    context, tcp = MagicMock(), MagicMock()
+    tls = context.wrap_socket.return_value.__enter__.return_value
+    tls.getpeercert.return_value = certificate
+    tls.version.return_value = "TLSv1.2"
+    monkeypatch.setattr(probes.ssl, "SSLContext", lambda _: context)
+    monkeypatch.setattr(probes.socket, "create_connection", lambda *args, **kwargs: tcp)
+
+    def check(pin):
+        node = {"id": "certificate", "kind": "Сервис", "probeTargetIP": "192.0.2.4"}
+        probes.apply_service_probes([node], {"certificate": [{"type": "tls_certificate", "ip": "192.0.2.4",
+                                                                 "port": 5061, "tls_sha256": pin}]})
+        result, = node["serviceChecks"]
+        return _public_service_check(result, datetime.now(timezone.utc))
+
+    result = check(hashlib.sha256(certificate).hexdigest())
+    assert (result["state"], result["reason"], result["tlsExpiresAt"], result["tlsVersion"]) == (
+        "unreachable", "tls_certificate_expired", expired.isoformat(), "TLSv1.2",
+    )
+    changed = check("0" * 64)
+    assert (changed["state"], changed["reason"]) == ("unknown", "tls_certificate_pin")
+    assert "tlsExpiresAt" not in changed
+
+
 def test_ftp_probe_requires_complete_feature_reply(monkeypatch):
     from app import infrastructure_service_probes as probes
     from app.infrastructure_map import _public_service_check
