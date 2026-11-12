@@ -19,6 +19,8 @@ HTTPS Endpoint origin, which requires its own authenticated session.
 The directory counts employees in each filter across the search results before
 pagination. Use the filters to find employees without assigned PCs, missing agents,
 offline agents, unavailable presence data, or bindings that require review.
+Current Endpoint presence is shown even before the first baseline context snapshot.
+When a presence refresh fails, the employee card reports unknown status.
 The connected filter requires every assigned PC to have a confirmed online agent.
 Page access uses `workstations:link`, and writes require the session CSRF token.
 

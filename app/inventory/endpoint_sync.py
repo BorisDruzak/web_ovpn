@@ -492,6 +492,7 @@ def _failure(owner, now, code):
         ):
             state.last_checked_at = now
             state.unavailable_since = state.unavailable_since or now
+            state.online = None
         mark_endpoint_agent_refresh_failed(db, code)
 
 

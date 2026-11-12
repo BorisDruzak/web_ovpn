@@ -226,8 +226,9 @@ def end_assignment(person_id: UUID, assignment_id: UUID, payload: EndInput, requ
 
 
 def _endpoint_status(state: InventoryEndpointState | None, now) -> str:
-    if not get_settings().endpoint_platform_enabled or not state or state.unavailable_since:
+    if not get_settings().endpoint_platform_enabled or not state:
         return "unknown"
+    # The baseline profile can be unavailable while Endpoint presence is current.
     checked_at = _parsed(state.safe_context_json.get("identity_checked_at"))
     if (state.safe_context_json.get("identity_status") != "available" or checked_at is None
             or checked_at > now or now - checked_at > STATE_MAX_AGE or state.online is None):

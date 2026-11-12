@@ -161,6 +161,7 @@ def test_assignments_are_idempotent_allow_shared_use_and_preserve_history(stagin
 
 def test_projection_distinguishes_unlinked_offline_and_unavailable(staging):
     from app.db import session_scope
+    from app.inventory.endpoint_sync import _control, _failure
     from app.inventory.models import InventoryEndpointState, InventoryExternalBinding, InventoryExternalBindingStatus
     from app.models import utcnow
 
@@ -177,10 +178,15 @@ def test_projection_distinguishes_unlinked_offline_and_unavailable(staging):
                 status=InventoryExternalBindingStatus.CONFIRMED, binding_method="manual", confidence=100, created_by="test")
             db.add(row)
             db.flush()
+            observed_at = utcnow()
             db.add(InventoryEndpointState(binding_id=row.id, asset_id=assets[key], endpoint_device_id=row.external_id,
-                online=key == "online", last_seen_at=utcnow(), last_success_at=utcnow(),
-                safe_context_json={"identity_status": "available", "identity_checked_at": utcnow().isoformat()},
-                unavailable_since=utcnow() - timedelta(seconds=1) if key == "unknown" else None))
+                online=key == "online", last_seen_at=observed_at, last_checked_at=observed_at,
+                safe_context_json={
+                    "identity_status": "unavailable" if key == "unknown" else "available",
+                    "identity_checked_at": observed_at.isoformat(),
+                    "profile_status": {"baseline_v1": "unavailable"},
+                },
+                unavailable_since=observed_at))
     asset_path = f"/api/v1/inventory/assets/{assets['deleted']}"
     operator_api = {**csrf, "Authorization": "Bearer fixture-general-api"}
     revision = client.get(asset_path, headers=operator_api).json()["data"]["manual_revision"]
@@ -196,6 +202,11 @@ def test_projection_distinguishes_unlinked_offline_and_unavailable(staging):
     assert states["unlinked"]["endpoint_device_id"] is None
     assert states["unknown"]["endpoint_device_id"] == device_ids["unknown"]
     assert states["offline"]["endpoint_device_id"] == device_ids["offline"]
+    with session_scope() as db:
+        _control(db).lease_owner = "fixture-sync"
+    _failure("fixture-sync", utcnow(), "endpoint_platform_unavailable")
+    after_failure = client.get(f"{INTERNAL}/{person}", headers=service).json()["assignments"]
+    assert {row["endpoint_status"] for row in after_failure if row["endpoint_device_id"]} == {"unknown"}
     restore = client.post(f"{asset_path}/restore", headers=operator_api, json={
         "expected_revision": deleted.json()["data"]["manual_revision"],
     })
