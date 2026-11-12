@@ -690,6 +690,11 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           check.required && 'обязательная проверка', check.checkedAt && formatTime(check.checkedAt),
           check.stale && 'устарело'];
         row.append(make('strong', check.label || check.name), make('small', notes.filter(Boolean).join(' · ')));
+        if (check.sourceNodeId && byId.has(check.sourceNodeId)) {
+          const link = make('a', 'Источник · ' + byId.get(check.sourceNodeId).name);
+          link.href = '?' + new URLSearchParams({node: check.sourceNodeId});
+          row.append(link);
+        }
         list.append(row);
       }
       panel.append(make('summary', 'Проверки Server Observer'), list);

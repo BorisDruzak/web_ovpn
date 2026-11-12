@@ -602,18 +602,28 @@ def test_acti_service_reflects_backup_dependency_on_inventory_host(tmp_path):
     assert job["status"] == "critical"
     assert job["backupJob"] == {"state": "failed", "completedAt": "2026-11-11T22:26:07+00:00",
                                 "exitCode": 1, "timerActive": True}
+    backup_job, = [check for check in nodes["role:acti_backup"]["checks"] if check["name"] == "backup_job"]
+    assert backup_job == {**job, "required": False, "sourceNodeId": "role:acti"}
     audit = summarize_services(load_infrastructure_map(path, now))["serviceAudit"]["services"]
     acti, = [service for service in audit if service["id"] == "role:acti"]
     issue, = [issue for issue in acti["issues"] if issue["check"] == "backup_job"]
     assert issue["backupJob"] == job["backupJob"]
+    backup = next(service for service in audit if service["id"] == "role:acti_backup")
+    assert next(issue for issue in backup["issues"] if issue["check"] == "backup_job")["sourceNodeId"] == "role:acti"
     assert nodes["role:acti"]["mapStatus"] == nodes["acti-vm"]["mapStatus"] == "warn"
     assert nodes["role:acti"]["serviceAvailability"]["unavailable"] == ["role:acti_backup"]
     report["targets"][0]["checks"][1]["status"] = "ok"
     assert read()[0]["acti-vm"]["mapStatus"] == "ok"
     report["targets"][0]["checks"][0]["status"] = "critical"
-    assert read()[0]["acti-vm"]["mapStatus"] == "unknown"
+    report["targets"][0]["observed_at"] = (now - timedelta(minutes=25)).isoformat()
+    nodes, _ = read()
+    assert nodes["acti-vm"]["mapStatus"] == "unknown"
+    backup_job, = [check for check in nodes["role:acti_backup"]["checks"] if check["name"] == "backup_job"]
+    assert backup_job["checkedAt"] == stamp and backup_job["stale"] is False
     context["devices"].pop(0)
-    assert read()[0]["acti-vm"]["mapStatus"] == "ok"
+    nodes, _ = read()
+    assert nodes["acti-vm"]["mapStatus"] == "ok"
+    assert not any(check["name"] == "backup_job" for check in nodes["role:acti_backup"]["checks"])
 
 
 def test_service_distinguishes_partial_failure_and_unconfirmed_http_responses(monkeypatch):

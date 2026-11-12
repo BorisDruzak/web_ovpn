@@ -1061,6 +1061,17 @@ def _public_node(row: dict, now: datetime) -> dict:
     }
 
 
+def _attach_acti_backup_job(nodes: dict, links: list[dict]) -> None:
+    app_id, backup_id = "role:acti", "role:acti_backup"
+    if not any(link["a"] == app_id and link["b"] == backup_id and link["confirmed"]
+               and link["kind"] == "Зависимость сервиса" for link in links):
+        return
+    jobs = [check for check in nodes[app_id]["checks"] if check["name"] == "backup_job"]
+    backup_checks = nodes[backup_id]["checks"]
+    if len(jobs) == 1 and "backupJob" in jobs[0] and not any(check["name"] == "backup_job" for check in backup_checks):
+        backup_checks.append({**jobs[0], "required": False, "sourceNodeId": app_id})
+
+
 def _map_statuses(nodes: dict, links: list[dict]) -> None:
     services = {key: set() for key in nodes}
     consumers = {key: set() for key in nodes}
@@ -1624,7 +1635,7 @@ def summarize_services(graph: dict) -> dict:
             {"check": check["name"], "label": check.get("label", check["name"]),
              "required": check.get("required") is True,
              "status": check["status"], "source": "Server Observer",
-             **{key: check[key] for key in ("checkedAt", "stale", "error", "unit", "observed", "warningThreshold", "backupJob")
+             **{key: check[key] for key in ("checkedAt", "stale", "error", "unit", "observed", "warningThreshold", "backupJob", "sourceNodeId")
                 if key in check}}
             for check in node["checks"] if check.get("required") or check["status"] in ("critical", "warn")
         ]
@@ -1965,6 +1976,7 @@ def load_infrastructure_map(
         _attach_endpoint_presence(db, endpoint_keys, nodes, now)
     if lacp_expectations:
         _attach_lacp_health(nodes, lacp_expectations, links, port_states, now)
+    _attach_acti_backup_job(nodes, links)
     _map_statuses(nodes, links)
     cluster_id = _text(raw.get("clusterId"))
     _attach_storage_assignments(nodes, links, cluster_id)
