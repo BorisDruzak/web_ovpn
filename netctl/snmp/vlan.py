@@ -6,6 +6,7 @@ from typing import Any
 
 from .models import CapabilityResult, PortResolution, SnmpVarBind, SwitchPort
 from .oids import (
+    DGS_VLAN_EGRESS, DGS_VLAN_UNTAGGED,
     DOT1Q_PVID, DOT1Q_VLAN_CURRENT_EGRESS, DOT1Q_VLAN_CURRENT_UNTAGGED,
     TPLINK_VLAN_PVID, TPLINK_VLAN_TAGGED, TPLINK_VLAN_UNTAGGED,
 )
@@ -24,9 +25,12 @@ def _rows(result: CapabilityResult) -> tuple[SnmpVarBind, ...]:
 
 
 def _vlan_index(row: SnmpVarBind, base: tuple[int, ...]) -> int:
-    if row.oid[: len(base)] != base or len(row.oid) != len(base) + 2:
+    # The DGS-1210-52 firmware returns private membership rows indexed by VID.
+    index_size = 1 if base in {DGS_VLAN_EGRESS, DGS_VLAN_UNTAGGED} else 2
+    if row.oid[: len(base)] != base or len(row.oid) != len(base) + index_size:
         raise ValueError("VLAN row has unexpected numeric OID")
-    time_mark, vlan_id = row.oid[-2:]
+    time_mark = row.oid[-2] if index_size == 2 else 0
+    vlan_id = row.oid[-1]
     if not 0 <= time_mark <= 4_294_967_295 or not 1 <= vlan_id <= 4094:
         raise ValueError("VLAN OID index is invalid")
     if row.value_type != "octet_string" or not isinstance(row.value, bytes):
@@ -75,7 +79,11 @@ def parse_vlan_memberships(
     profile: PortProfile,
     ports: Iterable[SwitchPort],
     bridge_to_ifindex: Mapping[int, int],
+    oids: tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...]] = (
+        DOT1Q_VLAN_CURRENT_EGRESS, DOT1Q_VLAN_CURRENT_UNTAGGED, DOT1Q_PVID,
+    ),
 ) -> tuple[dict[str, Any], ...]:
+    egress_oid, untagged_oid, pvid_oid = oids
     ports_by_ifindex = {
         port.if_index: port for port in ports if port.if_index is not None
     }
@@ -90,15 +98,15 @@ def parse_vlan_memberships(
         _membership(values, vlan_id, resolution)[field] = True
 
     for result, base, field in (
-        (egress_result, DOT1Q_VLAN_CURRENT_EGRESS, "egress"),
-        (untagged_result, DOT1Q_VLAN_CURRENT_UNTAGGED, "untagged"),
+        (egress_result, egress_oid, "egress"),
+        (untagged_result, untagged_oid, "untagged"),
     ):
         for row in _rows(result):
             vlan_id = _vlan_index(row, base)
             for bridge_port in _bitmap_bridge_ports(row.value):
                 add(vlan_id, bridge_port, field)
     for row in _rows(pvid_result):
-        bridge_port, vlan_id = _pvid(row)
+        bridge_port, vlan_id = _pvid(row, pvid_oid)
         add(vlan_id, bridge_port, "pvid")
     return tuple(values[key] for key in sorted(values))
 

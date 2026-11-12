@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping
 from dataclasses import replace
+from functools import partial
 from typing import Protocol
 
 from .counters import parse_broadcast_column, parse_counter_samples
@@ -19,6 +20,9 @@ from .models import (
     SwitchSnapshot,
 )
 from .oids import (
+    DGS_VLAN_EGRESS,
+    DGS_VLAN_PVID,
+    DGS_VLAN_UNTAGGED,
     DOT1D_BASE_PORT_IFINDEX,
     DOT1D_FDB_ADDRESS,
     DOT1D_FDB_PORT,
@@ -480,17 +484,19 @@ async def collect_switch_snapshot(
     capabilities.append(final_fdb)
     vlan_memberships: tuple[dict[str, object], ...] = ()
     stp: dict[str, object] | None = None
-    if profile.profile_id in {"snr", "tplink", "css326"}:
-        vlan_results = (
-            await transport.walk(
-                DOT1Q_VLAN_CURRENT_EGRESS, capability="vlan_current_egress"
-            ),
-            await transport.walk(
-                DOT1Q_VLAN_CURRENT_UNTAGGED, capability="vlan_current_untagged"
-            ),
-            await transport.walk(DOT1Q_PVID, capability="pvid"),
+    if profile.profile_id in {"snr", "tplink", "css326", "dgs"}:
+        vlan_oids = (
+            (DGS_VLAN_EGRESS, DGS_VLAN_UNTAGGED, DGS_VLAN_PVID)
+            if profile.profile_id == "dgs"
+            else (DOT1Q_VLAN_CURRENT_EGRESS, DOT1Q_VLAN_CURRENT_UNTAGGED, DOT1Q_PVID)
         )
-        parse_memberships = parse_vlan_memberships
+        egress_oid, untagged_oid, pvid_oid = vlan_oids
+        vlan_results = (
+            await transport.walk(egress_oid, capability="vlan_current_egress"),
+            await transport.walk(untagged_oid, capability="vlan_current_untagged"),
+            await transport.walk(pvid_oid, capability="pvid"),
+        )
+        parse_memberships = partial(parse_vlan_memberships, oids=vlan_oids)
         if profile.profile_id == "tplink" and all(result.outcome is SnmpOutcome.SUCCESS_EMPTY for result in vlan_results):
             vlan_results = (
                 await transport.walk(TPLINK_VLAN_TAGGED, capability="vlan_current_egress"),

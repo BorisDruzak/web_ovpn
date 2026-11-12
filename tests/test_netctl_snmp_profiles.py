@@ -1226,6 +1226,33 @@ def test_dgs_fixture_selects_profile_and_normalizes_paginated_qbridge_fdb() -> N
     }
 
 
+@pytest.mark.parametrize("vlan_index", [(20,), (0, 20)])
+def test_dgs_reads_private_vlan_tables_with_numeric_vid(vlan_index: tuple[int, ...]) -> None:
+    transport = _dgs_fixture_transport()
+    prefix = (1, 3, 6, 1, 4, 1, 171, 11, 153, 1000, 7)
+    egress = prefix + (6, 1, 2)
+    untagged = prefix + (6, 1, 4)
+    pvid = prefix + (7, 1, 1)
+    port_52 = bytes.fromhex("000000000000100000000000")
+    for oid, rows in (
+        (egress, (SnmpVarBind(egress + vlan_index, "octet_string", port_52),)),
+        (untagged, (SnmpVarBind(untagged + vlan_index, "octet_string", bytes(12)),)),
+        (pvid, (SnmpVarBind(pvid + (52,), "gauge32", 1),)),
+    ):
+        transport.results[oid] = CapabilityResult("", SnmpOutcome.SUCCESS_WITH_ROWS, rows)
+
+    snapshot = asyncio.run(collect_switch_snapshot({}, transport))
+
+    if vlan_index == (0, 20):
+        assert snapshot.vlan_memberships == ()
+        assert any(row.error_code == "malformed_vlan" for row in snapshot.capabilities)
+    else:
+        assert [
+            (row["vlan_id"], row["port_key"], row["egress"], row["untagged"], row["pvid"])
+            for row in snapshot.vlan_memberships
+        ] == [(1, "physical:52", False, False, True), (20, "physical:52", True, False, False)]
+
+
 def test_dgs_fid_equals_vid_and_port_normalization_cannot_leak_to_generic() -> None:
     from netctl.snmp.models import SwitchPort, SwitchSystem
     from netctl.snmp.profiles import DgsProfile, GenericProfile, detect_profile
