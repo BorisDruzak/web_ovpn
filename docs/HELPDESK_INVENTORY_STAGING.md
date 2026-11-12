@@ -35,6 +35,18 @@ Configure trusted HTTPS for remote traffic. The service credential cannot
 search the directory, create people, assign devices or authorize diagnostics.
 There is no anonymous employee search.
 
+For the reverse, read-only account status lookup, configure
+`HELPDESK_INVENTORY_STATUS_BASE_URL` with the Helpdesk HTTPS origin,
+`HELPDESK_INVENTORY_STATUS_TOKEN_FILE` with a restricted file containing a
+separate bearer secret, and optionally `HELPDESK_INVENTORY_STATUS_CA_FILE`.
+Helpdesk receives only the digest through `HELPDESK_INVENTORY_STATUS_TOKEN_HASH`.
+The client sends at most 250 exact inventory employee UUIDs per
+`POST /api/internal/inventory/v1/helpdesk-account-status`. The list and
+no-account filter count the search results before pagination. A failed lookup
+shows unknown status and cannot place a person in the no-account filter.
+The employee card shows the verified Helpdesk login and opens its admin
+profile, which still requires the operator's own Helpdesk session and rights.
+
 The response contains employee UUID, name and department, profile timestamp,
 observation timestamp, and active assignments. Each assignment includes its
 UUID and creation time, the inventory asset UUID, role, display name, OS,
@@ -58,6 +70,6 @@ Next integration steps:
 2. Project assignments and freshness into the requester profile. Retain the
    last confirmed display data during provider outages and check conflicts
    before creating any effective device permissions.
-3. Show Helpdesk account linkage in the directory and expose existing Endpoint
-   assignment and installation workflows from the employee card. Verify a genuine Endpoint
+3. Expose existing Endpoint assignment and installation workflows from the
+   employee card. Verify a genuine Endpoint
    registration and heartbeat before reporting an installation complete.

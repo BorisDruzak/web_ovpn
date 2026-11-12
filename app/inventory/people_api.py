@@ -23,6 +23,7 @@ from ..config import get_settings
 from ..db import get_db
 from ..models import utcnow
 from ..permissions import check_user_permission
+from . import helpdesk_status
 from .endpoint import SOURCE, STATE_MAX_AGE, _parsed
 from .lifecycle import lock_active_asset
 from .revision import InventoryRevisionConflict
@@ -269,7 +270,7 @@ def _assignment_views(db: Session, person_filter: ColumnElement[bool], now: date
         }
 
 
-DirectoryState = Literal["all", "no_pcs", "not_detected", "offline", "unknown", "review", "online"]
+DirectoryState = Literal["all", "no_helpdesk", "no_pcs", "not_detected", "offline", "unknown", "review", "online"]
 
 
 def operator_directory(db: Session, q: str, page: int, state: DirectoryState) -> dict:
@@ -286,13 +287,20 @@ def operator_directory(db: Session, q: str, page: int, state: DirectoryState) ->
     rows = []
     totals = Counter()
     matched = 0
-    for person in db.scalars(people.order_by(InventoryPerson.search_key, InventoryPerson.id)):
+    ordered_people = list(db.scalars(people.order_by(InventoryPerson.search_key, InventoryPerson.id)))
+    helpdesk_links = helpdesk_status.read_links([person.id for person in ordered_people])
+    for person in ordered_people:
         devices = assigned.get(person.id, ())
         statuses = Counter(
             "review" if device["endpoint_binding_state"] == "review" else device["endpoint_status"]
             for device in devices
         )
         filters = {"all"}
+        account_status = "unknown"
+        if helpdesk_links is not None:
+            account_status = "linked" if person.id in helpdesk_links else "unlinked"
+            if account_status == "unlinked":
+                filters.add("no_helpdesk")
         if not devices:
             filters.add("no_pcs")
         filters.update(status for status in statuses if status != "online")
@@ -307,9 +315,11 @@ def operator_directory(db: Session, q: str, page: int, state: DirectoryState) ->
             rows.append({
                 **_person_view(person), "pc_count": len(devices),
                 "agent_count": sum(device["endpoint_device_id"] is not None for device in devices),
+                "helpdesk_status": account_status,
                 "endpoint_counts": dict(statuses), "last_seen_at": max(seen, default=None),
             })
-    return {"people": rows, "page": page, "has_more": matched > offset + size, "totals": dict(totals)}
+    return {"people": rows, "page": page, "has_more": matched > offset + size, "totals": dict(totals),
+            "helpdesk_status_available": helpdesk_links is not None}
 
 
 @operator_router.get("/{person_id}", dependencies=[Depends(_operator_read)])

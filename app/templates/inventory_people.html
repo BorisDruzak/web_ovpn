@@ -6,6 +6,11 @@
 {% if person %}
   <p><a href="/inventory/people">Все сотрудники</a></p>
   <p>{{ person.department }} · ID сотрудника <code>{{ person.inventory_person_id }}</code></p>
+  <p>Профиль обновлён <time datetime="{{ person.profile_updated_at.isoformat() }}">{{ person.profile_updated_at.strftime('%d.%m.%Y %H:%M') }} UTC</time></p>
+  {% if helpdesk_account %}
+    <p>Helpdesk связан · {{ helpdesk_account.user_login }}{% if helpdesk_profile_url %} · <a href="{{ helpdesk_profile_url }}">Открыть профиль в Helpdesk</a>{% endif %}</p>
+  {% elif helpdesk_status_available %}<p>Нет аккаунта Helpdesk</p>
+  {% else %}<p>Статус Helpdesk неизвестен</p>{% endif %}
   <details class="inventory-card">
     <summary>Изменить данные сотрудника</summary>
     <form method="post" action="/inventory/people/{{ person.inventory_person_id }}/edit" class="inventory-search">
@@ -79,7 +84,7 @@
     </details>
   {% endif %}
 {% else %}
-  {% set filters = {'all': 'Все сотрудники', 'no_pcs': 'Без компьютеров', 'not_detected': 'Агент не обнаружен',
+  {% set filters = {'all': 'Все сотрудники', 'no_helpdesk': 'Нет аккаунта Helpdesk', 'no_pcs': 'Без компьютеров', 'not_detected': 'Агент не обнаружен',
     'offline': 'Агент не в сети', 'unknown': 'Состояние неизвестно', 'review': 'Проверить привязку',
     'online': 'Все агенты в сети'} %}
   {% set presence = {'online': 'В сети', 'offline': 'Не в сети', 'unknown': 'Неизвестно',
@@ -93,7 +98,7 @@
       <label for="employee-state">Состояние рабочих мест</label>
       <select id="employee-state" name="state">
         {% for key, label in filters.items() %}
-          <option value="{{ key }}"{% if state == key %} selected{% endif %}>{{ label }} ({{ totals.get(key, 0) }})</option>
+          <option value="{{ key }}"{% if state == key %} selected{% endif %}{% if key == 'no_helpdesk' and not helpdesk_status_available and state != key %} disabled{% endif %}>{{ label }}{% if key == 'no_helpdesk' and not helpdesk_status_available %} (статус неизвестен){% else %} ({{ totals.get(key, 0) }}){% endif %}</option>
         {% endfor %}
       </select>
       <button class="button" type="submit">Найти сотрудника</button>
@@ -109,10 +114,12 @@
       <button class="button" type="submit">Добавить</button>
     </form>
   </details>
+  {% if not helpdesk_status_available %}<p>Статус Helpdesk неизвестен.</p>{% endif %}
   {% for employee in people %}
     <article class="inventory-card">
       <strong><a href="/inventory/people/{{ employee.inventory_person_id }}{% if chosen_pc %}?asset_id={{ chosen_pc.id }}{% endif %}">{{ employee.full_name }}</a></strong>
       <p>{{ employee.department }} · ПК {{ employee.pc_count }} · Найдено агентов {{ employee.agent_count }}</p>
+      <p>{{ {'linked': 'Helpdesk связан', 'unlinked': 'Нет аккаунта Helpdesk', 'unknown': 'Статус Helpdesk неизвестен'}[employee.helpdesk_status] }}</p>
       {% if employee.endpoint_counts %}
       <ul>
         {% for key, label in presence.items() if employee.endpoint_counts.get(key) %}

@@ -276,3 +276,82 @@ def test_operator_directory_filters_presence_before_pagination(staging):
     filtered = client.get("/inventory/people", params={"q": "fixtures", "state": "online"})
     assert labels["online"] in filtered.text
     assert "A fixture 00" not in filtered.text
+
+
+def test_directory_shows_helpdesk_status_and_filters_only_confirmed_absence(staging, monkeypatch):
+    from app.config import get_settings
+    from app.inventory import helpdesk_status
+
+    client, csrf, service = staging
+    linked = _create_person(client, csrf)
+    unlinked = client.post(OPERATOR, headers=csrf, json={"full_name": "Без Helpdesk", "department": "Отдел"}).json()["inventory_person_id"]
+    helpdesk_person = str(uuid4())
+    state = {linked: helpdesk_status.AccountLink(helpdesk_person, "fixture-account")}
+    monkeypatch.setattr(helpdesk_status, "read_links", lambda ids: {key: state[key] for key in ids if key in state})
+    monkeypatch.setenv("HELPDESK_INVENTORY_STATUS_BASE_URL", "https://helpdesk.fixture.invalid")
+    get_settings.cache_clear()
+
+    directory = client.get("/inventory/people")
+    assert "Helpdesk связан" in directory.text and "Нет аккаунта Helpdesk" in directory.text
+    filtered = client.get("/inventory/people", params={"state": "no_helpdesk"})
+    assert f"/inventory/people/{unlinked}" in filtered.text
+    assert f"/inventory/people/{linked}" not in filtered.text
+    detail = client.get(f"/inventory/people/{linked}")
+    assert "fixture-account" in detail.text
+    assert f"https://helpdesk.fixture.invalid/app/admin/users?person={helpdesk_person}" in detail.text
+    assert "fixture-account" not in client.get(f"{INTERNAL}/{linked}", headers=service).text
+
+    monkeypatch.setattr(helpdesk_status, "read_links", lambda ids: None)
+    unavailable = client.get("/inventory/people")
+    assert "Статус Helpdesk неизвестен" in unavailable.text
+    assert f"/inventory/people/{unlinked}" not in client.get("/inventory/people", params={"state": "no_helpdesk"}).text
+
+
+def test_helpdesk_status_client_bounds_batches_and_rejects_invalid_responses(tmp_path, monkeypatch):
+    import json
+
+    import httpx
+
+    from app.config import get_settings
+    from app.inventory import helpdesk_status
+
+    key = "inventory-status-fixture-key-with-32-bytes"
+    token = tmp_path / "fixture-key"
+    token.write_text(key, encoding="ascii")
+    monkeypatch.setenv("HELPDESK_INVENTORY_STATUS_BASE_URL", "https://helpdesk.fixture.invalid")
+    monkeypatch.setenv("HELPDESK_INVENTORY_STATUS_TOKEN_FILE", str(token))
+    get_settings.cache_clear()
+    ids = [str(uuid4()) for _ in range(251)]
+    helpdesk_person = str(uuid4())
+    calls = []
+    mode = "available"
+
+    def respond(request):
+        assert request.url == "https://helpdesk.fixture.invalid/api/internal/inventory/v1/helpdesk-account-status"
+        assert request.headers["Authorization"] == f"Bearer {key}"
+        batch = json.loads(request.content)["inventory_person_ids"]
+        calls.append(batch)
+        if mode == "redirect":
+            return httpx.Response(307, headers={"Location": "https://untrusted.invalid"})
+        row = {"inventory_person_id": batch[0], "person_id": helpdesk_person, "user_login": "fixture-login"}
+        if mode == "bad_second_batch" and len(batch) == 1:
+            row["inventory_person_id"] = ids[0]
+        return httpx.Response(200, json={"linked": [row]})
+
+    original = httpx.Client
+
+    def client(**kwargs):
+        assert kwargs["follow_redirects"] is False and kwargs["trust_env"] is False
+        return original(transport=httpx.MockTransport(respond), **kwargs)
+
+    monkeypatch.setattr(helpdesk_status.httpx, "Client", client)
+    assert helpdesk_status.read_links(ids) == {
+        key: helpdesk_status.AccountLink(helpdesk_person, "fixture-login") for key in (ids[0], ids[-1])
+    }
+    assert [len(batch) for batch in calls] == [250, 1]
+    mode = "bad_second_batch"
+    assert helpdesk_status.read_links(ids) is None
+    mode = "redirect"
+    calls.clear()
+    assert helpdesk_status.read_links(ids) is None
+    assert len(calls) == 1

@@ -45,7 +45,7 @@ from .models import (
 from .service import InventoryService, InventoryValidationError
 from .search import search_inventory
 from .revision import InventoryRevisionConflict, InventoryRevisionRequired
-from . import form_drafts, lifecycle, network_creation, people_api
+from . import form_drafts, helpdesk_status, lifecycle, network_creation, people_api
 from .netctl_bindings import NetctlBindingConflict
 from .storage import InventoryPhotoError, InventoryPhotoStorage
 
@@ -1107,8 +1107,12 @@ def inventory_person(person_id: UUID, request: Request, asset_id: UUID | None = 
         assignment.person_id == str(person_id), assignment.ended_at.is_not(None),
     ).order_by(assignment.ended_at.desc(), assignment.id).limit(100)).all()
     pc_search = search_inventory(db, pc_q, pc_page, asset_type=InventoryAssetType.PC) if pc_q.strip() else None
+    links = helpdesk_status.read_links([str(person_id)])
+    account = links.get(str(person_id)) if links is not None else None
     return _people_page(request, db, {"person": person, "history": history, "pc_q": pc_q,
-                                      "pc_search": pc_search, "chosen_pc": _chosen_pc(db, asset_id)})
+                                      "pc_search": pc_search, "chosen_pc": _chosen_pc(db, asset_id),
+                                      "helpdesk_status_available": links is not None, "helpdesk_account": account,
+                                      "helpdesk_profile_url": helpdesk_status.profile_url(account) if account else None})
 
 
 async def _person_form(request: Request, db: Session) -> str:
