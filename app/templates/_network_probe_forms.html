@@ -7,7 +7,7 @@
     <label for="iperf-profile">Точка замера</label>
     <select id="iperf-profile" name="profile" required>
       {% for profile in probe_profiles.throughput %}
-      <option value="{{ profile.id }}">{{ profile.label }} · {{ profile.duration_seconds }} с · до {{ profile.bitrate_mbps }} Мбит/с</option>
+      <option value="{{ profile.id }}">{{ profile.label }} · {{ profile.duration_seconds }} с · цель {{ profile.bitrate_mbps }} Мбит/с</option>
       {% endfor %}
     </select>
     <label for="iperf-direction">Направление</label>

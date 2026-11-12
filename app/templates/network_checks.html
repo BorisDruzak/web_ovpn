@@ -46,7 +46,7 @@
     <dt>Отправитель / получатель, Мбит/с</dt>
     <dd>{{ '%.2f' | format(result.result.sender_mbps) }} / {{ '%.2f' | format(result.result.receiver_mbps) }}</dd>
     <dt>Повторные передачи TCP</dt><dd>{{ result.result.retransmits if result.result.retransmits is not none else '—' }}</dd>
-    <dt>Профиль замера</dt><dd>{{ result.result.duration_seconds }} с · предел {{ result.result.bitrate_mbps }} Мбит/с</dd>
+    <dt>Профиль замера</dt><dd>{{ result.result.duration_seconds }} с · цель {{ result.result.bitrate_mbps }} Мбит/с</dd>
   </dl>
   {% elif result.check == 'pcap_capture' and result.result.capture_id is defined %}
   <p>Пакетов {{ result.result.packets }} · {{ result.result.size_bytes }} байт</p>
