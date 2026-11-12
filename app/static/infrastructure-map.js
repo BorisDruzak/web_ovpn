@@ -585,6 +585,17 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       proof.append(make('small', identitySourceLabels[guest.identitySource]));
       label.append(proof);
     }
+    const system = guest?.operatingSystem;
+    if (system) {
+      const name = system.name || (system.platform === 'windows' ? 'Windows' : 'Linux');
+      const build = system.build && !system.version?.split('.').includes(system.build) && `сборка ${system.build}`;
+      const row = make('div');
+      row.append(make('small', [
+        ['ОС', name, system.version].filter(Boolean).join(' '), build,
+        system.architecture, 'Инвентарь ' + formatTime(system.collectedAt),
+      ].filter(Boolean).join(' · ')));
+      label.append(row);
+    }
     const health = guest?.health;
     if (health) {
       const row = make('div');
@@ -606,7 +617,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     }
     const profileLabels = {health_v1: 'Состояние', network_v1: 'Сеть', inventory_v1: 'Инвентарь'};
     for (const {profile, collectedAt} of guest?.contextProfiles ?? []) {
-      if (Object.hasOwn(profileLabels, profile)) {
+      if (Object.hasOwn(profileLabels, profile) && !(profile === 'inventory_v1' && system?.collectedAt === collectedAt)) {
         const row = make('div');
         row.append(make('small', `${profileLabels[profile]} · ${formatTime(collectedAt)}`));
         label.append(row);

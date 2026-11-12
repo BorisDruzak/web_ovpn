@@ -6325,13 +6325,18 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
             profiles = [{"profile": "health_v1", "collected_at": at},
                         {"profile": "network_v1", "collected_at": at},
                         {"profile": "session_v1", "collected_at": at},
-                        {"profile": "inventory_v1", "collected_at": "2099-01-01T00:00:00Z"}]
+                        {"profile": "inventory_v1", "collected_at": at}]
             return [{"id": f"00000000-0000-4000-8000-{index:012d}", "baseline_mac_keys": [key], "online": True,
                      "last_seen_at": at, "baseline_collected_at": at, "profiles": profiles}
                     for index, key in enumerate([keys[0], keys[1], keys[1]])]
 
         def read_profiles(self, device_id, profiles):
             self.reads.append((str(device_id), tuple(profiles)))
+            if tuple(profiles) == ("inventory_v1",):
+                return {"inventory_v1": {"profile": "inventory_v1", "collected_at": at,
+                         "sections": {"system": {"platform": "linux", "os_name": "Ubuntu", "os_version": "24.04",
+                                                  "architecture": "x86_64", "hostname": "private-hostname"},
+                                      "hardware": {"serial_number": "private-serial"}}}}
             return {"health_v1": {"profile": "health_v1", "collected_at": self.health_at,
                                   "sections": {"resources": {"uptime_seconds": 7200, "free_bytes": 2**31,
                                                              "load_1m": 0.0, "private": "excluded"},
@@ -6358,7 +6363,8 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
     assert matched == {"id": "vm:1", "name": "VM 1", "vmid": 1, "state": "matched",
                        "registrations": 1, "presence": "online", "lastSeenAt": at,
                        "contextProfiles": [{"profile": "health_v1", "collectedAt": at},
-                                           {"profile": "network_v1", "collectedAt": at}]}
+                                           {"profile": "network_v1", "collectedAt": at},
+                                           {"profile": "inventory_v1", "collectedAt": at}]}
     assert ambiguous["state"] == "ambiguous" and "lastSeenAt" not in ambiguous
     assert ambiguous["reason"] == "multiple_registrations"
     assert (unmatched["state"], unmatched["reason"], unmatched["registrations"]) == (
@@ -6373,19 +6379,23 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
     selected = client.get("/api/v1/network/infrastructure?view=agents&node_id=vm:1", headers=headers)
     assert selected.status_code == 200
     detail, = selected.json()["infrastructure"]["agentAudit"]["guests"]
-    assert detail == {**matched, "health": {"checkedAt": at, "uptimeSeconds": 7200,
+    system = {"collectedAt": at, "platform": "linux", "name": "Ubuntu", "version": "24.04",
+              "architecture": "x86_64"}
+    assert detail == {**matched, "operatingSystem": system, "health": {"checkedAt": at, "uptimeSeconds": 7200,
                                              "memoryAvailableBytes": 2**31, "services": [
                                                  {"name": "sshd", "status": "active"},
                                                  {"name": "NetworkManager", "status": "inactive"},
                                              ]}}
     assert "private-service" not in selected.text
-    assert Adapter.reads == [("00000000-0000-4000-8000-000000000000", ("health_v1",))]
+    assert "private-hostname" not in selected.text and "private-serial" not in selected.text
+    assert Adapter.reads == [("00000000-0000-4000-8000-000000000000", (profile,))
+                             for profile in ("health_v1", "inventory_v1")]
     selected = client.get("/api/v1/network/infrastructure?view=agents&node_id=vm:2", headers=headers)
     assert selected.json()["infrastructure"]["agentAudit"]["guests"] == [ambiguous]
-    assert len(Adapter.reads) == 1
+    assert len(Adapter.reads) == 2
     Adapter.health_at = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
     stale = client.get("/api/v1/network/infrastructure?view=agents&node_id=vm:1", headers=headers)
-    assert stale.json()["infrastructure"]["agentAudit"]["guests"] == [matched]
+    assert stale.json()["infrastructure"]["agentAudit"]["guests"] == [{**matched, "operatingSystem": system}]
     Adapter.health_at = at
 
     browser_url = "/network/infrastructure/agents"

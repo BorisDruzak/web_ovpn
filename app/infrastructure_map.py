@@ -2225,6 +2225,27 @@ def _guest_agent_health(snapshot: object, now: datetime) -> dict:
     return {"checkedAt": _time(checked_at).isoformat(), **metrics} if metrics else {}
 
 
+def _guest_agent_os(snapshot: object, now: datetime) -> dict:
+    if not isinstance(snapshot, dict) or snapshot.get("profile") != "inventory_v1":
+        return {}
+    collected_at = _time(snapshot.get("collected_at"))
+    sections = snapshot.get("sections")
+    system = sections.get("system") if isinstance(sections, dict) else None
+    if collected_at is None or collected_at > now or not isinstance(system, dict):
+        return {}
+    platform = system.get("platform")
+    if platform not in ("linux", "windows"):
+        return {}
+    fields = {
+        key: value for key, source, limit in (
+            ("name", "os_name", 80), ("version", "os_version", 64),
+            ("build", "os_build", 32), ("architecture", "architecture", 32),
+        )
+        if (value := _text(system.get(source), limit).strip()) and value.isprintable()
+    }
+    return {"collectedAt": collected_at.isoformat(), "platform": platform, **fields}
+
+
 def _guest_agent_online_at(identity: dict, now: datetime, *, verified_enrollment: bool = False) -> datetime | None:
     from .inventory.endpoint import CANDIDATE_MAX_AGE, STATE_MAX_AGE
 
@@ -2339,13 +2360,18 @@ def _summarize_guest_agents(nodes: dict, keys: dict, conflicts: set[str], identi
                 if profiles:
                     entry["contextProfiles"] = profiles
                 if node_id == selected_node and entry["presence"] == "online" and load_agent_profiles is not None:
-                    try:
-                        if "health_v1" not in snapshots:
-                            snapshots = load_agent_profiles(UUID(identity_id), ("health_v1",))
-                    except (EndpointPlatformServiceError, ValueError):
-                        snapshots = {}
+                    wanted = ("health_v1", "inventory_v1") if reports.get("inventory_v1") else ("health_v1",)
+                    for profile in wanted:
+                        if profile in snapshots:
+                            continue
+                        try:
+                            snapshots.update(load_agent_profiles(UUID(identity_id), (profile,)))
+                        except (EndpointPlatformServiceError, ValueError):
+                            continue
                     if health := _guest_agent_health(snapshots.get("health_v1"), now):
                         entry["health"] = health
+                    if operating_system := _guest_agent_os(snapshots.get("inventory_v1"), now):
+                        entry["operatingSystem"] = operating_system
         guests.append(entry)
     counts = Counter(row["state"] for row in guests)
     return {"sourceState": "ready", "total": len(guests), "eligible": len(matches),
