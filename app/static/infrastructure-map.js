@@ -467,6 +467,47 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     control?.focus();
   }
 
+  let agentAuditRequest = null;
+  let agentAudit = null;
+  let agentAuditExpires = 0;
+
+  async function refreshGuestAgentStatus(label) {
+    if (!label || !root.dataset.agentsUrl) return;
+    if (Date.now() >= agentAuditExpires && !agentAuditRequest) {
+      agentAuditRequest = (async () => {
+        try {
+          const response = await fetch(root.dataset.agentsUrl, {
+            cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(8_000),
+          });
+          if (!response.ok) throw new Error('Agent audit request failed');
+          agentAudit = (await response.json()).infrastructure?.agentAudit;
+        } catch {
+          agentAudit = null;
+        } finally {
+          agentAuditExpires = Date.now() + 30_000;
+          agentAuditRequest = null;
+        }
+      })();
+    }
+    await agentAuditRequest;
+    if (!label.isConnected) return;
+    if (agentAudit?.sourceState !== 'ready') {
+      label.textContent = 'Источник недоступен';
+      return;
+    }
+    const guests = agentAudit.guests ?? [];
+    const guest = guests.find(item => item.id === label.dataset.agentStatus);
+    if (guest?.state === 'ambiguous') {
+      label.textContent = 'Неоднозначное совпадение';
+    } else if (guest?.presence === 'online') {
+      label.textContent = 'На связи · ' + formatTime(guest.lastSeenAt);
+    } else if (!guest && agentAudit.matched + agentAudit.ambiguous > guests.length) {
+      label.textContent = 'Нет данных в сводке';
+    } else {
+      label.textContent = guest ? 'Связь не подтверждена' : 'Привязка не подтверждена';
+    }
+  }
+
   function renderGuestAttachment(attachment) {
     if (!attachment?.interfaces.length) return null;
     const panel = make('details', null, 'map-port-panel');
@@ -538,6 +579,13 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     };
     for (const [name,value] of Object.entries(items)) {
       if (value) properties.append(make('dt',name), make('dd',value));
+    }
+    if (node.guest && observation.state !== 'stopped') {
+      const agent = make('dd', 'Проверяется…');
+      agent.dataset.agentStatus = node.id;
+      agent.setAttribute('aria-live', 'polite');
+      properties.append(make('dt', 'Агент Endpoint'), agent);
+      void refreshGuestAgentStatus(agent);
     }
     const columns = make('div', null, 'map-detail-columns');
     const propertiesSection = make('section');
@@ -1315,6 +1363,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       } else {
         showAvailability();
       }
+      void refreshGuestAgentStatus(details.querySelector('[data-agent-status]'));
     } catch {
       showAvailability(data.snapshotAt ? 'Обновление карты недоступно. Показан последний полученный снимок.' : 'Не удалось загрузить снимок карты.');
     } finally {

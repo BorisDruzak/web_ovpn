@@ -50,7 +50,7 @@ from .network_observer import CATEGORY_LABELS, DEVICE_TYPE_LABELS, HOST_STATUS_F
 from .network_paths_adapter import get_network_path, list_network_paths
 from .routeros_backups import list_routeros_backups
 from .server_health_view import build_server_health_view
-from .infrastructure_map import load_infrastructure_map
+from .infrastructure_map import load_infrastructure_agent_audit, load_infrastructure_map
 from .server_drafts import create_draft_request, make_draft_request, observer_public_key, read_public_result
 from .ui_snapshot_cache import SnapshotCache
 from .vpnctl_client import VpnctlError, run_vpnctl
@@ -1703,6 +1703,13 @@ def network_infrastructure(request: Request, db: Session = Depends(get_db)):
 def network_infrastructure_snapshot(request: Request, db: Session = Depends(get_db)):
     require_user(request, db)
     graph = load_infrastructure_map(get_settings().infrastructure_map_snapshot_path, db=db, include_guest_attachments=True)
+    return JSONResponse({"infrastructure": graph}, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/network/infrastructure/agents")
+def network_infrastructure_agents(request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    graph = load_infrastructure_agent_audit(get_settings().infrastructure_map_snapshot_path)
     return JSONResponse({"infrastructure": graph}, headers={"Cache-Control": "no-store"})
 
 

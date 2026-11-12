@@ -36,6 +36,7 @@ from .network_paths_adapter import get_network_path, list_network_paths
 from .routeros_backups import list_routeros_backups
 from .server_health_view import build_server_health_view
 from .infrastructure_map import (
+    load_infrastructure_agent_audit,
     load_infrastructure_map,
     summarize_guest_attachment,
     summarize_guest_attachment_audit,
@@ -1054,20 +1055,7 @@ def api_network_infrastructure(
         raise HTTPException(status_code=422, detail="node_id is supported only for view=attachment")
     path = get_settings().infrastructure_map_snapshot_path
     if view == "agents":
-        adapter = None
-        identities = None
-        try:
-            adapter = get_endpoint_context_adapter()
-            identities = adapter.list_agent_network_identities()
-        except EndpointPlatformServiceError:
-            pass
-        finally:
-            if adapter is not None:
-                adapter.close()
-        graph = load_infrastructure_map(path, agent_identities=identities)
-        graph = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues", "agentAudit")
-                 if key in graph}
-        graph.setdefault("agentAudit", {"sourceState": "unavailable"})
+        graph = load_infrastructure_agent_audit(path)
     else:
         graph = load_infrastructure_map(path, db=db)
         if view == "services":

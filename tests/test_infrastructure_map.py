@@ -4323,7 +4323,8 @@ def test_reciprocal_mac_path_shows_fresh_stp_evidence_without_confirming_cable(t
 
 
 def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(tmp_path, monkeypatch):
-    from app import api
+    from app import infrastructure_map
+    from app.endpoint_platform_client import EndpointPlatformServiceError
 
     path = tmp_path / "infrastructure.json"
     monkeypatch.setenv("INFRASTRUCTURE_MAP_SNAPSHOT_PATH", str(path))
@@ -4337,7 +4338,11 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
     ]}), encoding="utf-8")
 
     class Adapter:
+        unavailable = False
+
         def list_agent_network_identities(self):
+            if self.unavailable:
+                raise EndpointPlatformServiceError("test")
             return [{"id": str(index), "baseline_mac_keys": [key], "online": True,
                      "last_seen_at": at, "baseline_collected_at": at}
                     for index, key in enumerate([keys[0], keys[1], keys[1]])]
@@ -4345,7 +4350,7 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
         def close(self):
             pass
 
-    monkeypatch.setattr(api, "get_endpoint_context_adapter", Adapter)
+    monkeypatch.setattr(infrastructure_map, "get_endpoint_context_adapter", Adapter)
     client, headers, _ = make_client(tmp_path, monkeypatch)
     regular = client.get("/api/v1/network/infrastructure", headers=headers).json()["infrastructure"]
     assert all(n["mapStatus"] == "unknown" and "agentMatchKeys" not in n for n in regular["nodes"])
@@ -4358,6 +4363,20 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
     assert matched == {"id": "vm:1", "name": "VM 1", "vmid": 1, "state": "matched",
                        "registrations": 1, "presence": "online", "lastSeenAt": at}
     assert ambiguous["state"] == "ambiguous" and "lastSeenAt" not in ambiguous
+
+    browser_url = "/network/infrastructure/agents"
+    assert client.get(browser_url, follow_redirects=False).status_code == 303
+    login = client.get("/login")
+    csrf = re.search(r'name="csrf_token" value="([^"]+)"', login.text).group(1)
+    client.post("/login", data={"csrf_token": csrf, "username": "admin", "password": "admin-pass"},
+                follow_redirects=False)
+    response = client.get(browser_url)
+    assert response.status_code == 200 and response.headers["cache-control"] == "no-store"
+    assert response.json()["infrastructure"]["agentAudit"] == result
+    assert all(key not in response.text for key in keys)
+    assert "nodes" not in response.json()["infrastructure"]
+    Adapter.unavailable = True
+    assert client.get(browser_url).json()["infrastructure"]["agentAudit"] == {"sourceState": "unavailable"}
 
 
 def test_missing_infrastructure_snapshot_has_explicit_empty_state(tmp_path, monkeypatch):

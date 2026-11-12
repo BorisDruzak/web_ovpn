@@ -10,6 +10,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .endpoint_context_adapter import get_endpoint_context_adapter
+from .endpoint_platform_client import EndpointPlatformServiceError
 from .server_observer import STALE_AFTER as SERVER_OBSERVER_MAX_AGE
 
 if TYPE_CHECKING:
@@ -1374,6 +1376,22 @@ def summarize_services(graph: dict) -> dict:
     services.sort(key=lambda node: (priority[node["status"]], node["name"].casefold(), node["id"]))
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
     return {**metadata, "serviceAudit": {"total": len(services), "counts": counts, "services": services[:128]}}
+
+
+def load_infrastructure_agent_audit(path: Path) -> dict:
+    adapter = None
+    identities = None
+    try:
+        adapter = get_endpoint_context_adapter()
+        identities = adapter.list_agent_network_identities()
+    except EndpointPlatformServiceError:
+        pass
+    finally:
+        if adapter is not None:
+            adapter.close()
+    graph = load_infrastructure_map(path, agent_identities=identities)
+    return {**{key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph},
+            "agentAudit": graph.get("agentAudit", {"sourceState": "unavailable"})}
 
 
 def _summarize_guest_agents(nodes: dict, keys: dict, identities: list[dict], now: datetime) -> dict:
