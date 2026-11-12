@@ -5387,6 +5387,42 @@ def test_skipped_host_probe_reports_failed_local_arp_without_promoting_availabil
     assert calls == [] and "arpDiagnostic" not in node["serviceChecks"][0]
 
 
+def test_skipped_service_shows_arp_from_its_host_and_same_address(tmp_path, monkeypatch):
+    from app import infrastructure_service_probes as probes
+    from app.infrastructure_collect import _asset_icmp_probes, build_graph
+    from app.infrastructure_map import load_infrastructure_map, summarize_services
+
+    address = "192.0.2.120"
+    arp = {"state": "no_reply", "address": address, "sourceIP": "192.0.2.30", "interface": "ens18"}
+    now = datetime.now(timezone.utc)
+    context = {"devices": [{"id": "server", "name": "Server", "kind": "server", "management_ip": address,
+                             "mac_addresses": ["02:00:00:00:00:20"]}]}
+    bindings = {"asset_ip_checks": {"server": address}, "asset_arp_diagnostics": ["server"],
+                "asset_services": {"web": {"asset": "server", "label": "Web", "require_network_identity": True}}}
+    calls = []
+
+    def local_arp(ip, _mac):
+        calls.append(ip)
+        return arp
+
+    monkeypatch.setattr(probes, "_local_arp_diagnostic", local_arp)
+    monkeypatch.setattr(probes, "_http_probe", lambda spec: pytest.fail("unverified target was contacted"))
+    graph = build_graph(context, {}, {}, {}, bindings, now)
+    probes.apply_service_probes(graph["nodes"], {**_asset_icmp_probes(context, bindings), "web": [
+        {"type": "http", "ip": address, "port": 30080}, {"type": "http", "ip": "192.0.2.121", "port": 8080},
+    ]})
+    path = tmp_path / "map.json"
+    path.write_text(json.dumps(graph), encoding="utf-8")
+    loaded = load_infrastructure_map(path)
+    web = next(node for node in loaded["nodes"] if node["id"] == "web")
+    matching, other = web["serviceChecks"]
+    assert calls == [address]
+    assert web["mapStatus"] == "unknown" and matching["skipped"] and matching["target"] == ""
+    assert matching["arpDiagnostic"] == arp and "arpDiagnostic" not in other
+    issues = summarize_services(loaded)["serviceAudit"]["services"][0]["issues"]
+    assert issues[0]["arpDiagnostic"] == arp
+
+
 def test_icmp_via_expected_router_keeps_route_evidence_separate_from_echo(monkeypatch):
     from app import infrastructure_service_probes as probes
     from app.infrastructure_map import _public_service_check

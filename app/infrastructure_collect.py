@@ -1616,6 +1616,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         if not bind_asset_vlan(item, host, spec) and spec.get("require_network_identity") is True:
             item["probeTargetIP"] = None
             if spec.get("asset") == host and host in address_by_asset and "gateway_segment" not in spec:
+                item["probeTargetArpAsset"] = host
                 identity_services.setdefault(host, []).append(item)
         route = bindings.get("route_evidence", {}).get(service["id"], {})
         intent = intents.get(route.get("intent"))
@@ -1637,6 +1638,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 item["probeTargetIP"] = gateways[0] if len(gateways) == 1 and spec.get("require_network_identity") is not True else None
             elif spec.get("require_network_identity") is True:
                 item["probeTargetIP"] = None
+                item["probeTargetArpAsset"] = asset
                 identity_services.setdefault(asset, []).append(item)
             else:
                 item["probeTargetIP"] = address_by_asset[asset]

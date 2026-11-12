@@ -1447,7 +1447,7 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 "method": "Настройки проверки", "checkedAt": datetime.now(timezone.utc).isoformat(),
                 **({"required": True} if service else {"supplemental": True}),
             })
-            return node, None
+            return node, None, (), ()
         skip_reason = ""
         if service and node.get("reachability", {}).get("state") == "stopped":
             skip_reason = "probe_host_stopped"
@@ -1459,6 +1459,7 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 skip_reason = "probe_target_mismatch"
         checks = []
         primary = []
+        blocked = []
         management_observation = None
         identity_method = node.get("probeTargetIdentityMethod")
         if identity_method != "ICMP · ARP + FDB":
@@ -1548,6 +1549,9 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                     management_observation = {"state": "reachable", "source": "UI_VPN", "method": method,
                                               "checkedAt": identity_at}
             checks.append(observation)
+            if (service and skip_reason == "probe_target_unconfirmed" and (asset := node.get("probeTargetArpAsset"))
+                    and isinstance(spec.get("ip"), str)):
+                blocked.append((asset, spec["ip"], observation))
             if service and protocol == "openvpn_management" and "localUdpSocket" in details:
                 binding = details["localUdpSocket"]
                 checks.append({
@@ -1560,14 +1564,23 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 primary.append(observation)
         node.setdefault("serviceChecks", []).extend(checks)
         if not primary:
-            return node, management_observation
+            return node, management_observation, checks, blocked
         results = {check["state"] for check in primary}
         state = "reachable" if "reachable" in results else "unreachable" if results == {"unreachable"} else "unknown"
         method = " + ".join(dict.fromkeys(check["method"] for check in primary if check["method"]))
         return node, {"state": state, "source": "Проверка сервиса", "method": method,
-                      "checkedAt": primary[-1]["checkedAt"]}
+                      "checkedAt": primary[-1]["checkedAt"]}, checks, blocked
 
+    asset_arp = {}
+    blocked_checks = []
     with ThreadPoolExecutor(max_workers=6) as pool:
-        for node, observation in pool.map(check, targets):
+        for node, observation, checks, blocked in pool.map(check, targets):
             if observation is not None:
                 node["reachability"] = observation
+            blocked_checks.extend(blocked)
+            for item in checks:
+                if node["kind"] != "Сервис" and (arp := item.get("arpDiagnostic")):
+                    asset_arp[node["id"], arp["address"]] = arp
+    for asset, address, item in blocked_checks:
+        if arp := asset_arp.get((asset, address)):
+            item["arpDiagnostic"] = arp

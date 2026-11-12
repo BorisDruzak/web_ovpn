@@ -648,8 +648,7 @@ def _public_service_check(check: dict, now: datetime) -> dict:
             result["component"] = True
     if (check.get("skipped") is True and result["checkedAt"] and result["state"] == "unknown"
             and reason in ("probe_target_unconfirmed", "probe_target_mismatch", "probe_host_stopped")):
-        if (not result["stale"] and result["source"] == "UI_VPN"
-                and result["method"] == "ICMP адреса из инвентаря" and reason == "probe_target_unconfirmed"
+        if (not result["stale"] and result["source"] == "UI_VPN" and reason == "probe_target_unconfirmed"
                 and (arp := _public_arp_details(check.get("arpDiagnostic")))):
             result["arpDiagnostic"] = arp
         return {**result, "target": "", "skipped": True, "reason": reason}
@@ -2396,7 +2395,7 @@ def summarize_services(graph: dict, *, host_id: str | None = None) -> dict:
                                             "pppoe", "rtspStatus", "ftpReply", "tlsExpiresAt", "tlsVersion",
                                             "dns", "localRoute", "vlanTransit", "identityCheckedAt", "errorSource",
                                             "responseCode", "attempts", "ipsecPolicy", "configuredPort", "localUdpSocket",
-                                            "sessionCount", "daemonReady")
+                                            "sessionCount", "daemonReady", "arpDiagnostic")
                 if key in check and check[key] is not None and check[key] != ""}}
             for check in node["serviceChecks"] if check.get("required") or (
                 state == "unknown" and check.get("supplemental") and check["state"] != "reachable"
