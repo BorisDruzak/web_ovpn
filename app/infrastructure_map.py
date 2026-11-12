@@ -2343,11 +2343,11 @@ def summarize_guest_attachment_audit(graph: dict) -> dict:
                                             "gapTotal": len(gaps), "gaps": gaps[:64]}}
 
 
-def summarize_services(graph: dict) -> dict:
+def summarize_services(graph: dict, *, host_id: str | None = None) -> dict:
     nodes = {node["id"]: node for node in graph["nodes"]}
     hosts = {}
     for link in graph["links"]:
-        if (link["confirmed"] and link["kind"] in {"Размещение", "Цель проверки"}
+        if (_is_service_attachment(link)
                 and nodes[link["a"]]["kind"] != "Сервис" and nodes[link["b"]]["kind"] == "Сервис"):
             hosts.setdefault(link["b"], set()).add(link["a"])
 
@@ -2356,7 +2356,7 @@ def summarize_services(graph: dict) -> dict:
     counts = dict.fromkeys(priority, 0)
     services = []
     for node in nodes.values():
-        if node["kind"] != "Сервис":
+        if node["kind"] != "Сервис" or (host_id is not None and host_id not in hosts.get(node["id"], ())):
             continue
         state = node["mapStatus"]
         counts[state] += 1
@@ -2418,8 +2418,12 @@ def load_infrastructure_agent_audit(path: Path, *, node_id: str | None = None) -
     finally:
         if adapter is not None:
             adapter.close()
-    return {**{key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph},
-            "agentAudit": graph.get("agentAudit", {"sourceState": "unavailable"})}
+    result = {**{key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph},
+              "agentAudit": graph.get("agentAudit", {"sourceState": "unavailable"})}
+    if node_id is not None and any(node["id"] == node_id and node["guest"] for node in graph["nodes"]):
+        result["attachment"] = summarize_guest_attachment(graph, node_id)["attachment"]
+        result["serviceAudit"] = summarize_services(graph, host_id=node_id)["serviceAudit"]
+    return result
 
 
 def _guest_agent_exclusion(node: dict, snapshot_fresh: bool) -> str:

@@ -6588,7 +6588,17 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
         {"id": "vm:6", "name": "VM 6", "guest": True, "vmid": 6, "kind": "Виртуальная машина",
          "sources": [{"name": "Proxmox", "status": "ok", "at": at, "label": "Запущена"}]},
     ])
-    path.write_text(json.dumps({"schema": 1, "snapshotAt": at, "nodes": guests}), encoding="utf-8")
+    host = {"id": "pve", "name": "Proxmox", "kind": "Гипервизор"}
+    service = {"id": "web", "name": "Web", "kind": "Сервис",
+               "serviceChecks": [{"method": "HTTP", "source": "UI_VPN", "state": "reachable",
+                                  "required": True, "checkedAt": at, "port": 443}]}
+    placement = {"a": "pve", "b": "vm:1", "kind": "Размещение ВМ", "confirmed": True,
+                 "portEvidence": [{"a": "vmbr0", "b": "net0", "source": "Proxmox · конфигурация ВМ",
+                                   "at": at, "confirmed": True,
+                                   "virtual": {"bridgeActive": True, "linkDisabled": False, "uplinks": ["eth0"]}}]}
+    links = [placement, {"a": "vm:1", "b": "web", "kind": "Цель проверки", "confirmed": True}]
+    path.write_text(json.dumps({"schema": 1, "snapshotAt": at, "nodes": [*guests, host, service],
+                                "links": links}), encoding="utf-8")
 
     class Adapter:
         unavailable = False
@@ -6630,9 +6640,11 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
     monkeypatch.setattr(infrastructure_map, "get_endpoint_context_adapter", Adapter)
     client, headers, _ = make_client(tmp_path, monkeypatch)
     regular = client.get("/api/v1/network/infrastructure", headers=headers).json()["infrastructure"]
-    assert all(n["mapStatus"] == "unknown" and "agentMatchKeys" not in n for n in regular["nodes"])
+    assert all("agentMatchKeys" not in n for n in regular["nodes"])
+    assert all(n["mapStatus"] == "unknown" for n in regular["nodes"] if n["guest"] and n["id"] != "vm:1")
     response = client.get("/api/v1/network/infrastructure?view=agents", headers=headers)
     assert response.status_code == 200
+    assert {"attachment", "serviceAudit"}.isdisjoint(response.json()["infrastructure"])
     assert all(key not in response.text for key in keys)
     result = response.json()["infrastructure"]["agentAudit"]
     assert (result["eligible"], result["matched"], result["ambiguous"]) == (3, 1, 1)
@@ -6656,7 +6668,16 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
     assert Adapter.reads == []
     selected = client.get("/api/v1/network/infrastructure?view=agents&node_id=vm:1", headers=headers)
     assert selected.status_code == 200
-    detail, = selected.json()["infrastructure"]["agentAudit"]["guests"]
+    context = selected.json()["infrastructure"]
+    detail, = context["agentAudit"]["guests"]
+    attachment = client.get("/api/v1/network/infrastructure?view=attachment&node_id=vm:1", headers=headers)
+    assert context["attachment"] == attachment.json()["infrastructure"]["attachment"]
+    guest, = context["attachment"]["guests"]
+    assert guest["placement"] == "confirmed"
+    interface, = guest["interfaces"]
+    assert (interface["guestPort"], interface["bridge"], interface["uplinks"]) == ("net0", "vmbr0", ["eth0"])
+    web, = context["serviceAudit"]["services"]
+    assert web["id"] == "web" and web["requiredChecks"] == {"passed": 1, "failed": 0, "unconfirmed": 0}
     system = {"collectedAt": at, "platform": "linux", "name": "Ubuntu", "version": "24.04",
               "architecture": "x86_64"}
     assert detail == {**matched, "operatingSystem": system, "health": {"checkedAt": at, "uptimeSeconds": 7200,
@@ -6699,6 +6720,11 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
     assert response.json()["infrastructure"]["agentAudit"]["guests"] == [detail]
     Adapter.unavailable = True
     assert client.get(browser_url).json()["infrastructure"]["agentAudit"] == {"sourceState": "unavailable"}
+    selected = client.get("/api/v1/network/infrastructure?view=agents&node_id=vm:1", headers=headers)
+    unavailable = selected.json()["infrastructure"]
+    assert unavailable["agentAudit"] == {"sourceState": "unavailable"}
+    assert unavailable["attachment"] == context["attachment"]
+    assert unavailable["serviceAudit"] == context["serviceAudit"]
 
 
 def test_agent_audit_selects_only_current_registration_among_long_offline_duplicates(tmp_path):
