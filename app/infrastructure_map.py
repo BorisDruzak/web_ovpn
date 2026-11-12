@@ -188,9 +188,9 @@ def _public_port(row: dict, now: datetime) -> dict:
         count, partial = learned.get("learnedMacCount"), learned.get("partial")
         if type(count) is int and 0 <= count < 2**53 and type(partial) is bool:
             result["fdbLearned"] = {"checkedAt": result["checkedAt"], "learnedMacCount": count, "partial": partial}
-    if source in ("RouterOS", "Proxmox"):
+    if source in ("RouterOS", "Proxmox", "Proxmox · sysfs"):
         result["source"] = source
-    if fresh and source == "Proxmox" and type(row.get("proxmoxActive")) is bool:
+    if fresh and source in ("Proxmox", "Proxmox · sysfs") and type(row.get("proxmoxActive")) is bool:
         result["proxmoxActive"] = row["proxmoxActive"]
     return result
 

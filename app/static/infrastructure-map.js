@@ -646,7 +646,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       panel.open = selectedPort !== null;
       const list = make('ul', null, 'map-detail-list');
       const states = {up: 'Линк поднят', down: 'Линк опущен', disabled: 'Отключён', unknown: 'Нет подтверждения'};
-      const proxmox = node.ports.some(port => port.source === 'Proxmox');
+      const proxmox = node.ports.every(port => port.source === 'Proxmox');
       const sorted = [...node.ports].sort((a,b) => a.name.localeCompare(b.name, 'ru', {numeric: true}));
       for (const port of sorted) {
         if (selectedPort && portKey(port.name) !== portKey(selectedPort)) continue;

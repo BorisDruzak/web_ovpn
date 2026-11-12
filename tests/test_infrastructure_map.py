@@ -1180,6 +1180,44 @@ def test_direct_link_compares_contemporaneous_port_samples(tmp_path):
     assert comparison() is None
 
 
+def test_proxmox_port_observer_verifies_target_and_only_updates_inventory_ports(tmp_path, monkeypatch):
+    from app import infrastructure_port_ssh as observer
+    from app.infrastructure_map import _public_port
+
+    now = datetime.now(timezone.utc)
+    nodes = [{"node": "pve1", "status": "online"}, {"node": "pve2", "status": "offline"}]
+    ports = [{"name": "eth0", "state": "unknown", "source": "Proxmox", "proxmoxActive": True,
+              "checkedAt": now.isoformat()}, {"name": "eth1", "state": "unknown", "source": "Proxmox"}]
+    pve = {"nodes": nodes, "physicalPorts": {"pve1": ports}}
+    context = {"devices": [
+        {"id": "pve1", "kind": "hypervisor", "management_ip": "192.0.2.1"},
+        {"id": "pve2", "kind": "hypervisor", "management_ip": "192.0.2.2"},
+    ]}
+    for name in ("pve-port-ssh-key", "pve-port-known-hosts"):
+        (tmp_path / name).touch()
+    calls = []
+    payload = {"hostname": "pve2", "ports": {"eth0": {"state": "up", "speedMbps": 1000},
+                                         "extra0": {"state": "disabled"}}}
+
+    def run(args, **options):
+        calls.append(args)
+        return observer.subprocess.CompletedProcess(args, 0, stdout=json.dumps(payload).encode())
+
+    monkeypatch.setattr(observer.subprocess, "run", run)
+    observer.collect_proxmox_port_states(context, pve, tmp_path)
+    assert ports[0]["state"] == "unknown"
+    payload["hostname"] = "pve1"
+    observer.collect_proxmox_port_states(context, pve, tmp_path)
+    assert len(calls) == 2 and all(args[-1] == "ui-vpn-ports@192.0.2.1" for args in calls)
+    assert all("StrictHostKeyChecking=yes" in args for args in calls)
+    assert [row["name"] for row in ports] == ["eth0", "eth1"]
+    public = _public_port(ports[0], datetime.now(timezone.utc))
+    assert (public["source"], public["state"], public["speedBps"], public["proxmoxActive"]) == (
+        "Proxmox · sysfs", "up", 10**9, True,
+    )
+    assert ports[1]["state"] == "unknown"
+
+
 def test_css_root_port_stp_projects_only_fresh_unambiguous_observations():
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import _public_node

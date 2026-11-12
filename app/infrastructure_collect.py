@@ -41,6 +41,7 @@ from .infrastructure_map import (
     index_port_states, observation_is_fresh, port_label_key,
     project_hypervisor_disks, project_hypervisor_lvm_thin, project_hypervisor_zfs,
 )
+from .infrastructure_port_ssh import collect_proxmox_port_states
 from .infrastructure_service_probes import apply_service_probes, probe_icmp
 from .netctl_client import NetctlError, run_netctl
 from .server_health_view import build_server_health_view
@@ -2017,6 +2018,9 @@ def main() -> int:
             pve = json.loads(args.proxmox_export.read_text(encoding="utf-8"))
             if not pve.get("at"):
                 raise ValueError("Proxmox export requires observation time")
+        credentials = os.environ.get("CREDENTIALS_DIRECTORY")
+        if args.proxmox_url and pve and bindings.get("proxmox_port_observer") is True and credentials:
+            collect_proxmox_port_states(context, pve, Path(credentials))
         guest_macs = {mac for config in pve.get("configs", {}).values() for mac in _guest_macs(config)}
         route_sources = {item["source"] for item in bindings.get("route_evidence", {}).values() if item.get("source")}
         lacp_links = bindings.get("lacp_links", [])
