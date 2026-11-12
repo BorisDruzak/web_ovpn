@@ -556,9 +556,13 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     label.textContent = guest?.presence === 'online'
       ? 'На связи · ' + formatTime(guest.lastSeenAt)
       : reasons[guest?.reason] ?? (guest?.state === 'matched' ? 'Связь не подтверждена' : 'Привязка не подтверждена');
-    if (guest?.identitySource === 'verified_enrollment') {
+    const identitySourceLabels = {
+      verified_enrollment: 'Регистрация сверена на ВМ',
+      active_mac_registration: 'Одна активная регистрация с этим MAC',
+    };
+    if (Object.hasOwn(identitySourceLabels, guest?.identitySource)) {
       const proof = make('div');
-      proof.append(make('small', 'Регистрация сверена на ВМ'));
+      proof.append(make('small', identitySourceLabels[guest.identitySource]));
       label.append(proof);
     }
     const health = guest?.health;

@@ -5733,6 +5733,44 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
     assert client.get(browser_url).json()["infrastructure"]["agentAudit"] == {"sourceState": "unavailable"}
 
 
+def test_agent_audit_selects_only_current_registration_among_long_offline_duplicates(tmp_path):
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    stamp = now.isoformat()
+    key = "mac-020000000001"
+    second_key = "mac-020000000002"
+    guest = {"id": "vm:1", "name": "VM 1", "guest": True, "vmid": 1,
+             "kind": "Виртуальная машина", "agentMatchKeys": [key],
+             "sources": [{"name": "Proxmox", "status": "ok", "at": stamp, "label": "Запущена"}]}
+    path = tmp_path / "infrastructure.json"
+
+    def audit(active_changes=None, offline_changes=None, *, extra_guest=False, two_adapters=False):
+        guest_keys = [key, second_key] if two_adapters else [key]
+        nodes = [{**guest, "agentMatchKeys": guest_keys}]
+        if extra_guest:
+            nodes.append({**guest, "id": "vm:2", "vmid": 2, "agentMatchKeys": [second_key]})
+        path.write_text(json.dumps({"schema": 1, "snapshotAt": stamp, "nodes": nodes}), encoding="utf-8")
+        old = (now - timedelta(days=2)).isoformat()
+        active = {"id": "current", "baseline_mac_keys": [key, second_key], "online": True,
+                  "last_seen_at": stamp, "baseline_collected_at": stamp, **(active_changes or {})}
+        offline = {"id": "previous", "baseline_mac_keys": [key], "online": False,
+                   "last_seen_at": old, "baseline_collected_at": old, **(offline_changes or {})}
+        return load_infrastructure_map(path, now, agent_identities=[active, offline])["agentAudit"]["guests"][0]
+
+    assert audit() == {
+        "id": "vm:1", "name": "VM 1", "vmid": 1, "state": "matched", "registrations": 2,
+        "identitySource": "active_mac_registration", "presence": "online", "lastSeenAt": stamp,
+    }
+    for changes in ({"online": True}, {"online": None}, {"last_seen_at": stamp}, {"last_seen_at": None}):
+        assert audit(offline_changes=changes)["reason"] == "multiple_registrations"
+    stale = (now - timedelta(days=2)).isoformat()
+    for changes in ({"last_seen_at": stale}, {"baseline_collected_at": stale}, {"online": False}):
+        assert audit(active_changes=changes)["reason"] == "multiple_registrations"
+    assert audit(active_changes={"baseline_mac_keys": [second_key]}, two_adapters=True)["reason"] == "multiple_registrations"
+    assert audit(extra_guest=True)["reason"] == "registration_matches_multiple_guests"
+
+
 def test_guest_enrollment_fallback_requires_fresh_matching_proxmox_mac(tmp_path, monkeypatch):
     from app import infrastructure_map
     from app.infrastructure_collect import build_graph

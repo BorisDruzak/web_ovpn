@@ -1780,11 +1780,23 @@ def _guest_agent_health(snapshot: object, now: datetime) -> dict:
     return {"checkedAt": _time(checked_at).isoformat(), **metrics} if metrics else {}
 
 
+def _guest_agent_online_at(identity: dict, now: datetime, *, verified_enrollment: bool = False) -> datetime | None:
+    from .inventory.endpoint import CANDIDATE_MAX_AGE, STATE_MAX_AGE
+
+    last_seen = _time(identity.get("last_seen_at"))
+    if identity.get("online") is not True or last_seen is None or not timedelta(0) <= now - last_seen <= STATE_MAX_AGE:
+        return None
+    baseline = _time(identity.get("baseline_collected_at"))
+    if verified_enrollment or baseline is not None and timedelta(0) <= now - baseline <= CANDIDATE_MAX_AGE:
+        return last_seen
+    return None
+
+
 def _summarize_guest_agents(nodes: dict, keys: dict, conflicts: set[str], identities: list[dict], now: datetime,
                             *, snapshot_fresh: bool, enrollments: dict[str, str], device_presences: list[dict],
                             load_agent_profiles: Callable[[UUID, tuple[str, ...]], dict] | None = None,
                             selected_node: str | None = None) -> dict:
-    from .inventory.endpoint import CANDIDATE_MAX_AGE, STATE_MAX_AGE
+    from .inventory.endpoint import CANDIDATE_MAX_AGE
 
     by_id = {row["id"]: row for row in identities if isinstance(row, dict)
              and isinstance(row.get("id"), str) and 0 < len(row["id"]) <= 255}
@@ -1826,9 +1838,25 @@ def _summarize_guest_agents(nodes: dict, keys: dict, conflicts: set[str], identi
             entry["reason"] = "enrollment_registration_conflict"
         elif not candidates:
             entry.update(state="unmatched", reason="enrollment_presence_unconfirmed" if enrollment else "no_matching_registration")
-        elif len(candidates) > 1:
-            entry["reason"] = "multiple_registrations"
         else:
+            active_mac_registration = len(candidates) > 1
+            if active_mac_registration:
+                # Ignore historical duplicates only while the same VM MAC has a single current registration.
+                historical = {
+                    identity_id for identity_id in candidates if by_id[identity_id].get("online") is False
+                    and (last_seen := _time(by_id[identity_id].get("last_seen_at"))) is not None
+                    and now - last_seen > CANDIDATE_MAX_AGE
+                }
+                current = candidates - historical
+                if len(current) != 1:
+                    guests.append({**entry, "reason": "multiple_registrations"})
+                    continue
+                active_id, = current
+                if (_guest_agent_online_at(by_id[active_id], now) is None
+                        or not any(candidates <= by_mac[key] for key in keys[node_id])):
+                    guests.append({**entry, "reason": "multiple_registrations"})
+                    continue
+                candidates = current
             identity_id, = candidates
             if guests_by_identity[identity_id] > 1:
                 entry["reason"] = "registration_matches_multiple_guests"
@@ -1838,13 +1866,12 @@ def _summarize_guest_agents(nodes: dict, keys: dict, conflicts: set[str], identi
                 identity = by_id.get(identity_id) or verified[identity_id]
                 if explicit:
                     entry["identitySource"] = "verified_enrollment"
+                elif active_mac_registration:
+                    entry["identitySource"] = "active_mac_registration"
                 presence = verified[identity_id] if explicit else identity
-                baseline = _time(identity.get("baseline_collected_at"))
-                last_seen = _time(presence.get("last_seen_at"))
-                fresh = ((explicit or baseline and timedelta(0) <= now - baseline <= CANDIDATE_MAX_AGE)
-                         and last_seen and timedelta(0) <= now - last_seen <= STATE_MAX_AGE)
-                entry["presence"] = "online" if fresh and presence.get("online") is True else "unconfirmed"
-                if entry["presence"] == "online":
+                last_seen = _guest_agent_online_at(presence, now, verified_enrollment=explicit)
+                entry["presence"] = "online" if last_seen is not None else "unconfirmed"
+                if last_seen is not None:
                     entry["lastSeenAt"] = last_seen.isoformat()
                 profile_rows = _rows(identity.get("profiles"), 5)
                 snapshots = {}
