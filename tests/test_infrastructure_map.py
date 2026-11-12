@@ -1091,11 +1091,13 @@ def test_https_probe_checks_dns_name_against_ca_while_connecting_to_verified_ip(
     from contextlib import nullcontext
     from types import SimpleNamespace
     from app import infrastructure_service_probes as probes
+    from app.infrastructure_map import _public_service_check
 
     name = "service.example.test"
     ip = "192.0.2.15"
     ca = str(tmp_path / "ca.pem")
-    raw, secured = object(), object()
+    raw = object()
+    secured = SimpleNamespace(getpeercert=lambda: {"notAfter": "Jan  1 00:00:00 2031 GMT"}, version=lambda: "TLSv1.3")
     events = []
 
     class Context:
@@ -1143,6 +1145,12 @@ def test_https_probe_checks_dns_name_against_ca_while_connecting_to_verified_ip(
     events.clear()
     assert probes._probe({**spec, "tls_sha256": "0" * 64}) == "unknown"
     assert not events
+    result = probes._http_probe({**spec, "report_tls_expiry": True})
+    checked_at = datetime.now(timezone.utc)
+    public = _public_service_check({**result, "method": "HTTPS", "source": "UI_VPN", "checkedAt": checked_at.isoformat()}, checked_at)
+    assert (public["state"], public["tlsExpiresAt"], public["tlsVersion"]) == ("reachable", "2031-01-01T00:00:00+00:00", "TLSv1.3")
+    failed = probes._http_probe({**spec, "tls_server_name": "wrong.example.test", "report_tls_expiry": True})
+    assert "tlsExpiresAt" not in failed
 
 
 def test_asset_https_probe_validates_certificate_before_sending_request(monkeypatch):

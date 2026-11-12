@@ -119,6 +119,9 @@ def _http(ip: str, port: int, spec: dict) -> dict:
     fingerprint = spec.get("tls_sha256")
     server_name = spec.get("tls_server_name")
     ca_file = spec.get("tls_ca_file")
+    report_tls_expiry = spec.get("report_tls_expiry", False)
+    if type(report_tls_expiry) is not bool or (report_tls_expiry and (not tls or not server_name or fingerprint is not None)):
+        raise ValueError("certificate expiry reporting requires name-validated HTTPS")
     context = None
     if server_name is not None or ca_file is not None:
         if not tls or fingerprint is not None:
@@ -145,6 +148,16 @@ def _http(ip: str, port: int, spec: dict) -> dict:
         if server_name:
             with socket.create_connection((ip, port), timeout=TIMEOUT) as transport:
                 connection.sock = context.wrap_socket(transport, server_hostname=server_name)
+            if report_tls_expiry:
+                certificate = connection.sock.getpeercert() or {}
+                expires = certificate.get("notAfter")
+                if isinstance(expires, str):
+                    try:
+                        observed["tlsExpiresAt"] = datetime.fromtimestamp(ssl.cert_time_to_seconds(expires), timezone.utc).isoformat()
+                    except (ValueError, OverflowError, OSError):
+                        pass
+                    else:
+                        observed["tlsVersion"] = connection.sock.version()
         if fingerprint is not None:
             connection.connect()
             certificate = connection.sock.getpeercert(binary_form=True)
