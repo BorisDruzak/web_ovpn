@@ -4110,7 +4110,8 @@ def test_configured_asset_fdb_path_is_scoped_and_requires_a_unique_live_port(mon
     assert "probeTargetIP" not in next(node for node in graph["nodes"] if node["id"] == "gateway")
 
 
-def test_asset_service_can_require_current_fdb_and_arp_identity(monkeypatch, tmp_path):
+@pytest.mark.parametrize("canonical", (False, True))
+def test_asset_service_can_require_current_fdb_and_arp_identity(monkeypatch, tmp_path, canonical):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map
     from app.infrastructure_service_probes import apply_service_probes
@@ -4120,6 +4121,8 @@ def test_asset_service_can_require_current_fdb_and_arp_identity(monkeypatch, tmp
     ip, mac = "192.0.2.22", "02:00:00:00:00:22"
     context = {"devices": [{"id": "recorder", "name": "Recorder", "kind": "video_recorder",
                             "management_ip": ip, "mac_addresses": [mac]}]}
+    if canonical:
+        context["services"] = [{"id": "recorder-web", "name": "Inventory Web", "device": "recorder"}]
     network = {"sources": [{"id": 1, "name": "switch", "driver": "snmp_switch", "enabled": True}],
                "ports": [{"source": "switch", "port_key": "ifindex:15", "name": "ge15", "oper_status": "up",
                           "last_seen_at": observed}],
@@ -4146,8 +4149,14 @@ def test_asset_service_can_require_current_fdb_and_arp_identity(monkeypatch, tmp
 
     node = read()
     assert node["mapStatus"] == "ok" and node["serviceChecks"][0]["identityCheckedAt"] == observed
+    assert node["name"] == ("Inventory Web" if canonical else "Web")
     assert read(now + timedelta(minutes=2))["mapStatus"] == "unknown"
     calls.clear()
+    if canonical:
+        bindings["asset_services"]["recorder-web"]["asset"] = "different-device"
+        assert read()["serviceChecks"][0]["reason"] == "probe_target_unconfirmed"
+        assert calls == []
+        bindings["asset_services"]["recorder-web"]["asset"] = "recorder"
     network["asset_fdb"].clear()
     node = read()
     assert calls == []

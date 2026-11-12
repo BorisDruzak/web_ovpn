@@ -1414,17 +1414,23 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             if MAC.fullmatch(mac):
                 bridge_owners.setdefault(mac, set()).add(device["id"])
     intents = {item["id"]: item for item in context.get("routing_intent", []) if "id" in item}
+    identity_services = {}
+    asset_services = bindings.get("asset_services", {})
     for service in context.get("services", []):
         host = service.get("device")
         item = node(service["id"], service["name"], "Сервис", nodes.get(host, {}).get("site", ""))
+        spec = asset_services.get(service["id"], {})
+        if spec.get("require_network_identity") is True:
+            item["probeTargetIP"] = None
+            if spec.get("asset") == host and host in address_by_asset and "gateway_segment" not in spec:
+                identity_services.setdefault(host, []).append(item)
         route = bindings.get("route_evidence", {}).get(service["id"], {})
         intent = intents.get(route.get("intent"))
         if intent and route.get("source"):
             item["serviceChecks"] = _route_checks(intent, route["source"], network.get("routes", []), now,
                                                  host_routes=route.get("host_routes"))
         edge(host, service["id"], "Размещение", "GitHub")
-    identity_services = {}
-    for service_id, spec in bindings.get("asset_services", {}).items():
+    for service_id, spec in asset_services.items():
         asset = spec["asset"]
         if asset in address_by_asset and service_id not in nodes:
             item = node(service_id, spec["label"], "Сервис", nodes[asset]["site"], "UI_VPN")

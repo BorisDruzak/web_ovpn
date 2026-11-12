@@ -1647,7 +1647,7 @@ def summarize_services(graph: dict) -> dict:
              "required": check.get("required") is True,
              **{key: check[key] for key in ("source", "checkedAt", "stale", "reason", "path", "port", "target",
                                             "pppoe", "rtspStatus", "ftpReply", "tlsExpiresAt", "tlsVersion",
-                                            "dns", "localRoute", "errorSource", "responseCode", "attempts")
+                                            "dns", "localRoute", "identityCheckedAt", "errorSource", "responseCode", "attempts")
                 if key in check and check[key] is not None and check[key] != ""}}
             for check in node["serviceChecks"] if check.get("required") or (
                 state == "unknown" and check.get("supplemental") and check["state"] != "reachable"
