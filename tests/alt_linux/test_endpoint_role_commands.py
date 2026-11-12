@@ -10,8 +10,8 @@ import yaml
 ROLE = Path(__file__).resolve().parents[2] / 'deploy/alt-linux/ansible/roles/software_endpoint_agent/tasks/main.yml'
 
 
-def command(name):
-    tasks = yaml.safe_load(ROLE.read_text(encoding='utf-8'))
+def command(name, role=ROLE):
+    tasks = yaml.safe_load(role.read_text(encoding='utf-8'))
     block = next(task['block'] for task in tasks if 'block' in task)
     task = next(task for task in block if task['name'] == name)
     return task['ansible.builtin.command']['argv']
@@ -45,6 +45,50 @@ def test_fingerprint_checks_each_tool_and_executes_only_exact_payload(tmp_path, 
         assert calls[1] == ['cpio', '-idm', '--quiet', './usr/lib64/endpoint-agent/release-bundle/*']
         binary = str(staging / 'fingerprint/usr/lib64/endpoint-agent/release-bundle/pc_agent/pc_agent')
         assert executed == [(binary, [binary, '--print-hardware-fingerprint'])]
+
+
+@pytest.mark.parametrize('failed_tool', [None, '/usr/bin/rpm2cpio', '/usr/bin/cpio'])
+def test_native_rpm_extraction_checks_both_tools(tmp_path, monkeypatch, failed_tool):
+    role = ROLE.parents[2] / 'software_endpoint_agent_native/tasks/main.yml'
+    argv = command('Extract only the approved runtime from the verified core RPM', role)
+    rpm = tmp_path / 'signed core; package.rpm'
+    destination = tmp_path / 'probe'
+    destination.mkdir()
+    runtime = 'opt/endpoint-agent/versions/3.2.183/endpoint-agent'
+    binary = destination / runtime / 'endpoint-agent'
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        assert kwargs['check'] is True
+        if args[0] == failed_tool:
+            raise subprocess.CalledProcessError(1, args)
+        if args[0] == '/usr/bin/rpm2cpio':
+            kwargs['stdout'].write(b'verified payload')
+        else:
+            assert kwargs['cwd'] == destination
+            assert kwargs['stdin'].read() == b'verified payload'
+            binary.parent.mkdir(parents=True)
+            binary.write_text('fixture', encoding='utf-8')
+            binary.chmod(0o700)
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(subprocess, 'run', run)
+    monkeypatch.setattr(sys, 'argv', ['extract', str(rpm), str(destination)])
+    program = compile(argv[2], '<native-rpm-extraction>', 'exec')
+    if failed_tool:
+        with pytest.raises(subprocess.CalledProcessError):
+            exec(program, {})
+        assert not binary.exists()
+    else:
+        exec(program, {})
+        assert binary.is_file()
+
+    assert calls[0] == ['/usr/bin/rpm2cpio', str(rpm)]
+    if failed_tool == '/usr/bin/rpm2cpio':
+        assert len(calls) == 1
+    else:
+        assert calls[1][-2:] == [f'./{runtime}/*', f'{runtime}/*']
 
 
 @pytest.mark.parametrize('credential,first_claim,second_claim,expected', [

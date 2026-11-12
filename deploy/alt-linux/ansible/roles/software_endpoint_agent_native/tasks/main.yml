@@ -228,18 +228,33 @@
         mode: "0700"
 
     - name: Extract only the approved runtime from the verified core RPM
-      ansible.builtin.shell:
-        executable: /bin/bash
-        chdir: "{{ endpoint_native_tmp.path }}/probe"
-        cmd: |
-          set -euo pipefail
-          /usr/bin/rpm2cpio "$ENDPOINT_NATIVE_CORE_RPM" |
-            /usr/bin/cpio --quiet --extract --make-directories --no-absolute-filenames --no-preserve-owner \
-              './opt/endpoint-agent/versions/3.2.183/endpoint-agent/*' 'opt/endpoint-agent/versions/3.2.183/endpoint-agent/*'
-          binary=./opt/endpoint-agent/versions/3.2.183/endpoint-agent/endpoint-agent
-          test -f "$binary" && test -x "$binary" && test ! -L "$binary"
-      environment:
-        ENDPOINT_NATIVE_CORE_RPM: "{{ endpoint_native_core_rpm }}"
+      ansible.builtin.command:
+        expand_argument_vars: false
+        argv:
+          - /usr/bin/python3
+          - -c
+          - |
+            import os
+            from pathlib import Path
+            import subprocess
+            import sys
+            import tempfile
+
+            rpm, destination = map(Path, sys.argv[1:])
+            runtime = Path("opt/endpoint-agent/versions/3.2.183/endpoint-agent")
+            with tempfile.TemporaryFile(dir=destination) as payload:
+                subprocess.run(["/usr/bin/rpm2cpio", str(rpm)], stdout=payload, check=True)
+                payload.seek(0)
+                subprocess.run([
+                    "/usr/bin/cpio", "--quiet", "--extract", "--make-directories",
+                    "--no-absolute-filenames", "--no-preserve-owner",
+                    f"./{runtime}/*", f"{runtime}/*",
+                ], stdin=payload, cwd=destination, check=True)
+            binary = destination / runtime / "endpoint-agent"
+            if binary.is_symlink() or not binary.is_file() or not os.access(binary, os.X_OK):
+                raise SystemExit(1)
+          - "{{ endpoint_native_core_rpm }}"
+          - "{{ endpoint_native_tmp.path }}/probe"
       changed_when: false
       no_log: true
 
