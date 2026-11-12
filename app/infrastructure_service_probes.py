@@ -834,7 +834,8 @@ def _ssh_identification(spec: dict) -> dict:
                     line, _, buffer = buffer.partition(b"\n")
                     if line.startswith(b"SSH-"):
                         valid = len(line) < 255 and re.fullmatch(
-                            rb"SSH-(?:2\.0|1\.99)-[\x21-\x2c\x2e-\x7e]+(?: [ -~]*)?\r?", line
+                            rb"SSH-(?:2\.0|1\.99)-(?:[\x21-\x2c\x2e-\x7e]+|IPSSH-[0-9]+(?:\.[0-9]+){2})(?: [ -~]*)?\r?",
+                            line,
                         )
                         return {"state": "reachable"} if valid else invalid
     except TimeoutError:
