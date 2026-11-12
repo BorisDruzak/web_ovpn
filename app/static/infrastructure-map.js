@@ -574,7 +574,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
 
   const agentAudits = new Map();
 
-  async function refreshGuestAgentStatus(label) {
+  async function refreshAgentStatus(label) {
     if (!label || !root.dataset.agentsUrl) return;
     const nodeId = label.dataset.agentStatus;
     let cached = agentAudits.get(nodeId);
@@ -603,11 +603,12 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       label.textContent = 'Источник недоступен';
       return;
     }
-    const guest = agentAudit.guests?.find(item => item.id === label.dataset.agentStatus);
+    const entry = agentAudit.guests?.find(item => item.id === nodeId)
+      ?? agentAudit.hypervisors?.find(item => item.id === nodeId);
     const reasons = {
       duplicate_guest_mac: 'Повторяющийся MAC в Proxmox',
       multiple_registrations: 'Несколько регистраций Endpoint',
-      registration_matches_multiple_guests: 'Регистрация совпадает с несколькими ВМ',
+      registration_matches_multiple_guests: 'Регистрация совпадает с несколькими узлами Proxmox',
       enrollment_registration_conflict: 'Регистрация расходится с данными MAC',
       enrollment_presence_unconfirmed: 'Состояние проверенной регистрации не подтверждено',
       no_matching_registration: 'Совпадений в Endpoint нет',
@@ -620,20 +621,23 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       network_config_unconfirmed: 'Настройки сети гостя не подтверждены',
       no_enabled_network_adapter: 'Нет включённого сетевого адаптера',
       no_unique_network_identity: 'Нет однозначного MAC для сопоставления',
+      management_mac_unconfirmed: 'MAC адреса управления Proxmox не подтверждён',
     };
-    label.textContent = guest?.presence === 'online'
-      ? 'На связи · ' + formatTime(guest.lastSeenAt)
-      : reasons[guest?.reason] ?? (guest?.state === 'matched' ? 'Связь не подтверждена' : 'Привязка не подтверждена');
+    label.textContent = entry?.presence === 'online'
+      ? 'На связи · ' + formatTime(entry.lastSeenAt)
+      : reasons[entry?.reason] ?? (entry?.state === 'matched' ? 'Связь не подтверждена' : 'Привязка не подтверждена');
     const identitySourceLabels = {
       verified_enrollment: 'Регистрация сверена на ВМ',
       active_mac_registration: 'Одна активная регистрация с этим MAC',
+      proxmox_management_mac: 'MAC управления сверён по Proxmox и ARP',
     };
-    if (Object.hasOwn(identitySourceLabels, guest?.identitySource)) {
+    if (Object.hasOwn(identitySourceLabels, entry?.identitySource)) {
       const proof = make('div');
-      proof.append(make('small', identitySourceLabels[guest.identitySource]));
+      proof.append(make('small', [identitySourceLabels[entry.identitySource],
+        entry.identityCheckedAt && formatTime(entry.identityCheckedAt)].filter(Boolean).join(' · ')));
       label.append(proof);
     }
-    const system = guest?.operatingSystem;
+    const system = entry?.operatingSystem;
     if (system) {
       const name = system.name || (system.platform === 'windows' ? 'Windows' : 'Linux');
       const build = system.build && !system.version?.split('.').includes(system.build) && `сборка ${system.build}`;
@@ -644,7 +648,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       ].filter(Boolean).join(' · ')));
       label.append(row);
     }
-    const health = guest?.health;
+    const health = entry?.health;
     if (health) {
       const row = make('div');
       const metrics = [];
@@ -668,7 +672,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       }
     }
     const profileLabels = {health_v1: 'Состояние', network_v1: 'Сеть', inventory_v1: 'Инвентарь'};
-    for (const {profile, collectedAt} of guest?.contextProfiles ?? []) {
+    for (const {profile, collectedAt} of entry?.contextProfiles ?? []) {
       if (Object.hasOwn(profileLabels, profile) && !(profile === 'inventory_v1' && system?.collectedAt === collectedAt)) {
         const row = make('div');
         row.append(make('small', `${profileLabels[profile]} · ${formatTime(collectedAt)}`));
@@ -883,12 +887,12 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     for (const [name,value] of Object.entries(items)) {
       if (value) properties.append(make('dt',name), make('dd',value));
     }
-    if (node.guest && observation.state !== 'stopped') {
+    if ((node.guest || node.kind === 'Гипервизор') && observation.state !== 'stopped') {
       const agent = make('dd', 'Проверяется…');
       agent.dataset.agentStatus = node.id;
       agent.setAttribute('aria-live', 'polite');
       properties.append(make('dt', 'Агент Endpoint'), agent);
-      void refreshGuestAgentStatus(agent);
+      void refreshAgentStatus(agent);
     }
     const columns = make('div', null, 'map-detail-columns');
     const propertiesSection = make('section');
@@ -1984,7 +1988,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       } else {
         showAvailability();
       }
-      void refreshGuestAgentStatus(details.querySelector('[data-agent-status]'));
+      void refreshAgentStatus(details.querySelector('[data-agent-status]'));
     } catch {
       showAvailability(data.snapshotAt ? 'Обновление карты недоступно. Показан последний полученный снимок.' : 'Не удалось загрузить снимок карты.');
     } finally {

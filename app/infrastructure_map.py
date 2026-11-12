@@ -2555,10 +2555,11 @@ def _guest_agent_online_at(identity: dict, now: datetime, *, verified_enrollment
     return None
 
 
-def _summarize_guest_agents(nodes: dict, keys: dict, conflicts: set[str], identities: list[dict], now: datetime,
-                            *, snapshot_fresh: bool, enrollments: dict[str, str], device_presences: list[dict],
-                            load_agent_profiles: Callable[[UUID, tuple[str, ...]], dict] | None = None,
-                            selected_node: str | None = None) -> dict:
+def _summarize_agent_audit(nodes: dict, keys: dict, conflicts: set[str], identities: list[dict], now: datetime,
+                           *, snapshot_fresh: bool, enrollments: dict[str, str], device_presences: list[dict],
+                           hypervisor_evidence: dict[str, str],
+                           load_agent_profiles: Callable[[UUID, tuple[str, ...]], dict] | None = None,
+                           selected_node: str | None = None) -> dict:
     from .inventory.endpoint import CANDIDATE_MAX_AGE
 
     by_id = {row["id"]: row for row in identities if isinstance(row, dict)
@@ -2583,15 +2584,22 @@ def _summarize_guest_agents(nodes: dict, keys: dict, conflicts: set[str], identi
             matches.setdefault(node_id, set()).add(enrollment)
     for node_id in conflicts:
         matches.setdefault(node_id, set())
-    guests_by_identity = Counter(identity_id for values in matches.values() for identity_id in values)
-    guests = []
+    nodes_by_identity = Counter(identity_id for values in matches.values() for identity_id in values)
+    guests, hypervisors = [], []
     for node_id, node in nodes.items():
-        if not node["guest"] or node["vmid"] is None:
+        hypervisor = node["kind"] == "Гипервизор"
+        if not hypervisor and (not node["guest"] or node["vmid"] is None):
             continue
-        entry = {key: node[key] for key in ("id", "name", "vmid")}
+        entries = hypervisors if hypervisor else guests
+        entry = {key: node[key] for key in ("id", "name")}
+        if not hypervisor:
+            entry["vmid"] = node["vmid"]
         candidates = matches.get(node_id)
         if candidates is None:
-            guests.append({**entry, "state": "not_eligible", "reason": _guest_agent_exclusion(node, snapshot_fresh)})
+            reason = _guest_agent_exclusion(node, snapshot_fresh) if not hypervisor else (
+                "management_mac_unconfirmed" if snapshot_fresh else "proxmox_stale"
+            )
+            entries.append({**entry, "state": "not_eligible", "reason": reason})
             continue
         entry.update(state="ambiguous", registrations=len(candidates))
         enrollment = enrollments.get(node_id)
@@ -2612,16 +2620,16 @@ def _summarize_guest_agents(nodes: dict, keys: dict, conflicts: set[str], identi
                 }
                 current = candidates - historical
                 if len(current) != 1:
-                    guests.append({**entry, "reason": "multiple_registrations"})
+                    entries.append({**entry, "reason": "multiple_registrations"})
                     continue
                 active_id, = current
                 if (_guest_agent_online_at(by_id[active_id], now) is None
                         or not any(candidates <= by_mac[key] for key in keys[node_id])):
-                    guests.append({**entry, "reason": "multiple_registrations"})
+                    entries.append({**entry, "reason": "multiple_registrations"})
                     continue
                 candidates = current
             identity_id, = candidates
-            if guests_by_identity[identity_id] > 1:
+            if nodes_by_identity[identity_id] > 1:
                 entry["reason"] = "registration_matches_multiple_guests"
             else:
                 entry["state"] = "matched"
@@ -2629,6 +2637,8 @@ def _summarize_guest_agents(nodes: dict, keys: dict, conflicts: set[str], identi
                 identity = by_id.get(identity_id) or verified[identity_id]
                 if explicit:
                     entry["identitySource"] = "verified_enrollment"
+                elif hypervisor:
+                    entry.update(identitySource="proxmox_management_mac", identityCheckedAt=hypervisor_evidence[node_id])
                 elif active_mac_registration:
                     entry["identitySource"] = "active_mac_registration"
                 presence = verified[identity_id] if explicit else identity
@@ -2670,13 +2680,15 @@ def _summarize_guest_agents(nodes: dict, keys: dict, conflicts: set[str], identi
                         entry["operatingSystem"] = operating_system
                     if health := _guest_agent_health(snapshots.get("health_v1"), now, platform=operating_system.get("platform")):
                         entry["health"] = health
-        guests.append(entry)
+        entries.append(entry)
     counts = Counter(row["state"] for row in guests)
-    return {"sourceState": "ready", "total": len(guests), "eligible": len(matches),
+    return {"sourceState": "ready", "total": len(guests), "eligible": len(guests) - counts["not_eligible"],
             "matched": counts["matched"], "ambiguous": counts["ambiguous"], "unmatched": counts["unmatched"],
             "notEligible": counts["not_eligible"],
             "guests": sorted((row for row in guests if selected_node is None or row["id"] == selected_node),
-                             key=lambda row: (row["vmid"], row["id"]))}
+                             key=lambda row: (row["vmid"], row["id"])),
+            "hypervisors": sorted((row for row in hypervisors if selected_node is None or row["id"] == selected_node),
+                                  key=lambda row: row["id"])}
 
 
 def load_infrastructure_map(
@@ -2716,6 +2728,7 @@ def load_infrastructure_map(
     agent_keys = {}
     agent_conflicts = set()
     agent_enrollments = {}
+    hypervisor_evidence = {}
     lacp_expectations = {}
     for row in _rows(raw.get("nodes"), 600):
         node = _public_node(row, now)
@@ -2729,7 +2742,15 @@ def load_infrastructure_map(
             if node["kind"] == "Рабочая станция" and re.fullmatch(r"mac:(?:[0-9A-F]{2}:){5}[0-9A-F]{2}", key):
                 endpoint_keys[node["id"]] = key
             keys = row.get("agentMatchKeys")
-            if (agent_identities is not None and node["guest"] and node["vmid"] is not None
+            if (agent_identities is not None and node["kind"] == "Гипервизор" and now - stamp <= MAX_AGE
+                    and observation_is_fresh(row.get("agentMatchCheckedAt"), now)
+                    and any(s["name"] == "Proxmox" and s["label"] == "В сети" and not s["stale"] for s in node["sources"])
+                    and isinstance(keys, list) and len(keys) == 1
+                    and isinstance(keys[0], str) and re.fullmatch(r"mac-[0-9a-f]{12}", keys[0])):
+                agent_keys[node["id"]] = {keys[0]}
+                hypervisor_evidence[node["id"]] = _time(row["agentMatchCheckedAt"]).isoformat()
+            elif (agent_identities is not None and node["kind"] != "Гипервизор"
+                    and node["guest"] and node["vmid"] is not None
                     and now - stamp <= MAX_AGE
                     and any(s["name"] == "Proxmox" and s["label"] == "Запущена" and not s["stale"] for s in node["sources"])):
                 if row.get("agentMatchConflict") is True:
@@ -2985,10 +3006,10 @@ def load_infrastructure_map(
         "overviewGuests": node_ids("overviewGuests"),
         "git": revision if re.fullmatch(r"[0-9a-f]{40}", revision) else "",
         **({"collectionIssues": issues} if issues else {}),
-        **({"agentAudit": _summarize_guest_agents(
+        **({"agentAudit": _summarize_agent_audit(
             nodes, agent_keys, agent_conflicts, agent_identities, now, snapshot_fresh=now - stamp <= MAX_AGE,
             enrollments=agent_enrollments, device_presences=device_presences, load_agent_profiles=load_agent_profiles,
-            selected_node=agent_node_id,
+            hypervisor_evidence=hypervisor_evidence, selected_node=agent_node_id,
         )}
            if agent_identities is not None else {}),
         **attachments,

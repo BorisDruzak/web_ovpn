@@ -7137,6 +7137,47 @@ def test_agent_audit_reports_duplicate_guest_macs_without_using_them_for_presenc
     ]
 
 
+def test_agent_audit_matches_hypervisor_using_verified_management_mac(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    arp_at = (now - timedelta(minutes=2)).isoformat()
+    address, mac = "192.0.2.11", "02:00:00:00:00:01"
+    context = {"devices": [{"id": "pve1", "name": "pve1", "kind": "hypervisor", "management_ip": address}]}
+    network = {
+        "hosts": [{"ip": address, "mac": mac, "last_seen_at": arp_at}],
+        "arp": [{"ip": address, "mac": mac, "last_seen_at": arp_at}],
+    }
+    pve = {"at": at, "cluster": [], "nodes": [{"node": "pve1", "status": "online"}], "guests": [],
+           "management": {"pve1": {"address": address, "port": "eno1"}}}
+    identity = {"id": "hidden-registration", "baseline_mac_keys": ["mac-020000000001"], "online": True,
+                "baseline_collected_at": at, "last_seen_at": at}
+    path = tmp_path / "map.json"
+
+    def read(when=now):
+        path.write_text(json.dumps(build_graph(context, network, {}, pve, {}, now)), encoding="utf-8")
+        return load_infrastructure_map(path, when, agent_identities=[identity], agent_node_id="pve1")["agentAudit"]
+
+    audit = read()
+    assert (audit["total"], audit["eligible"], audit["matched"], audit["guests"]) == (0, 0, 0, [])
+    entry, = audit["hypervisors"]
+    assert entry == {"id": "pve1", "name": "pve1", "state": "matched", "registrations": 1, "presence": "online",
+                     "lastSeenAt": at, "identityCheckedAt": arp_at, "identitySource": "proxmox_management_mac"}
+    assert identity["id"] not in json.dumps(audit) and mac not in json.dumps(audit)
+
+    stale, = read(now + timedelta(minutes=24))["hypervisors"]
+    assert stale["state"] == "not_eligible" and stale["reason"] == "management_mac_unconfirmed"
+    network["arp"].append({**network["arp"][0], "mac": "02:00:00:00:00:02"})
+    conflict, = read()["hypervisors"]
+    assert conflict["state"] == "not_eligible" and "presence" not in conflict
+    network["arp"].pop()
+    pve["management"]["pve1"]["address"] = "192.0.2.12"
+    different, = read()["hypervisors"]
+    assert different["state"] == "not_eligible" and "presence" not in different
+
+
 def test_missing_infrastructure_snapshot_has_explicit_empty_state(tmp_path, monkeypatch):
     monkeypatch.setenv("INFRASTRUCTURE_MAP_SNAPSHOT_PATH", str(tmp_path / "missing.json"))
     client, headers, _ = make_client(tmp_path, monkeypatch)

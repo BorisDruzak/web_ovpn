@@ -2607,6 +2607,10 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 and len(addresses.get(address, [])) == 1 and arp and arp[0] in macs
                 and isinstance(port, str) and INTERFACE_NAME.fullmatch(port)):
             management_ports[key] = (port, *arp)
+    for key, (_, mac, arp_at) in management_ports.items():
+        if devices_by_mac[mac] == {key}:
+            nodes[key]["agentMatchKeys"] = ["mac-" + mac.replace(":", "")]
+            nodes[key]["agentMatchCheckedAt"] = min(arp_at, datetime.fromisoformat(pve_at)).isoformat()
     attachments = [report for report in network.get("attachments", [])
                    if observation_is_fresh(report.get("observed_at"), now)]
     locations = {}
