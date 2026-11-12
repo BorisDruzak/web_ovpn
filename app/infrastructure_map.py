@@ -6,7 +6,7 @@ import logging
 import math
 import re
 from collections import Counter, defaultdict, deque
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -133,6 +133,22 @@ def observation_is_fresh(value: object, now: datetime, *, max_age: timedelta = M
 
 def _rows(value: object, limit: int) -> list[dict]:
     return [row for row in value[:limit] if isinstance(row, dict)] if isinstance(value, list) else []
+
+
+def inventory_link_sources(value: object) -> list[dict]:
+    sources = {}
+    for row in _rows(value, 8):
+        path, observed = row.get("path"), row.get("observedOn")
+        if (not isinstance(path, str) or len(path) > 240 or not re.fullmatch(
+                r"(?:docs|evidence)/(?:[A-Za-z0-9_-][A-Za-z0-9_.-]*/)*[A-Za-z0-9_-][A-Za-z0-9_.-]*\.(?:md|ya?ml|json|txt)", path)
+                or not isinstance(observed, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", observed)):
+            continue
+        try:
+            date.fromisoformat(observed)
+        except ValueError:
+            continue
+        sources[path, observed] = {"path": path, "observedOn": observed}
+    return list(sources.values())
 
 
 def _state(value: object) -> str:
@@ -1304,6 +1320,7 @@ def summarize_topology(graph: dict) -> dict:
     counts = {"current": 0, "verifiedInventory": 0, "unconfirmed": 0}
     pending = {}
     alerts = []
+    inventory_pairs = []
     for link in graph["links"]:
         if link["kind"] != "Сетевое соединение":
             continue
@@ -1312,7 +1329,9 @@ def summarize_topology(graph: dict) -> dict:
                       for alert in link.get("portAlerts", []))
         reports = link["portEvidence"]
         current = [r for r in reports if link["confirmed"] and r.get("pairEvidence") == "current"]
-        inventory = any(r.get("pairEvidence") == "verified_inventory" for r in reports)
+        inventory = [r for r in reports if r.get("pairEvidence") == "verified_inventory"]
+        inventory_pairs.extend({"a": a, "b": b, "portA": r["a"], "portB": r["b"],
+                                "inventorySources": r.get("inventorySources", [])} for r in inventory)
         counts["current" if current else "verifiedInventory" if inventory else "unconfirmed"] += 1
 
         def covers(declared, report):
@@ -1351,6 +1370,7 @@ def summarize_topology(graph: dict) -> dict:
             pending[(a, b, declared["a"], declared["b"])] = {
                 "a": a, "b": b, "nameA": nodes[a]["name"], "nameB": nodes[b]["name"],
                 "portA": declared["a"], "portB": declared["b"], "observedPaths": related[:8],
+                **({"inventorySources": declared["inventorySources"]} if "inventorySources" in declared else {}),
                 **({"portObservations": observations} if observations else {}),
                 **({"lldpObservations": lldp} if lldp else {}),
             }
@@ -1368,6 +1388,7 @@ def summarize_topology(graph: dict) -> dict:
     downstream = [{"id": node["id"], "name": node["name"], **node["downstream"]}
                   for node in nodes.values() if "downstream" in node]
     return {**metadata, "topologyAudit": {"directLinks": counts, "pendingTotal": len(pending),
+                                        "inventoryPairs": inventory_pairs[:64],
                                         "portAlertTotal": len(alerts), "portAlerts": alerts[:64],
                                         "portCounterAudit": _summarize_port_counters(nodes),
                                         "stpRootPaths": stp, "stpRoots": roots, "vlanAudits": vlan_audits[:64],
@@ -1757,6 +1778,8 @@ def load_infrastructure_map(
                         source == "GitHub" or observation_is_fresh(
                             report.get("at"), now, max_age=SERVICE_PROBE_MAX_AGE if source == PPPOE_SOURCE else MAX_AGE)),
                 })
+                if source == "GitHub" and (references := inventory_link_sources(report.get("inventorySources"))):
+                    evidence[-1]["inventorySources"] = references
                 paired = edge["kind"] == "Сетевое соединение" or source in {RECIPROCAL_MAC_SOURCE, "netctl FDB + Proxmox"}
                 observed_attachment = (source in {"netctl FDB", "MikroTik · ARP", "MikroTik · ARP + FDB"}
                                        and evidence[-1]["confirmed"])

@@ -47,7 +47,7 @@ from .infrastructure_map import (
     PPPOE_INTERNET_METHOD, PPPOE_METHOD, PPPOE_SOURCE, PVE_DISK_DEVICE, PVE_STORAGE_ID, RECIPROCAL_MAC_SOURCE,
     SERVICE_PROBE_MAX_AGE, SHARED_LLDP_KIND, SHARED_LLDP_SOURCE, STP_ROOT_PATH_MAX_AGE,
     TRANSCEIVER_MAX_AGE,
-    index_port_states, observation_is_fresh, port_label_key,
+    index_port_states, inventory_link_sources, observation_is_fresh, port_label_key,
     project_hypervisor_disks, project_hypervisor_lvm_thin, project_hypervisor_zfs,
 )
 from .infrastructure_port_ssh import collect_proxmox_port_states
@@ -1238,7 +1238,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         })
 
     def edge(a, b, kind, source, confirmed=True, details="", ports=None, at=None, vlan=None, virtual=None,
-             evidence_only=False, lacp_polled_at=None, expected_vlans=None):
+             evidence_only=False, lacp_polled_at=None, expected_vlans=None, inventory_sources=None):
         if a not in nodes or b not in nodes or a == b:
             return
         key = (tuple(sorted((a, b))), kind)
@@ -1262,6 +1262,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 report["lacpPolledAt"] = lacp_polled_at
             if expected_vlans:
                 report["expectedVlans"] = expected_vlans
+            if inventory_sources:
+                report["inventorySources"] = inventory_sources
             if report not in evidence:
                 evidence.append(report)
         if evidence:
@@ -1387,14 +1389,19 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             kind = "Транзитный сегмент"
         ports = (a.get("interface") or "", b.get("interface") or "")
         verified = link.get("state", {}).get("verified") is True
+        references = inventory_link_sources([
+            {"path": row.get("source"), "observedOn": str(row.get("observed_at"))}
+            for row in link.get("evidence", [])[:8] if isinstance(row, dict)
+        ])
         if (link.get("relation") == "connected_to" and ports[0]
                 and link.get("state", {}).get("observed") == "lldp_neighbor_on_shared_or_intermediate_l2_path"):
             shared_ports.add((a["device"], port_label_key(ports[0])))
-            edge(a["device"], b["device"], SHARED_LLDP_KIND, "GitHub", False, ports=ports)
+            edge(a["device"], b["device"], SHARED_LLDP_KIND, "GitHub", False, ports=ports, inventory_sources=references)
             continue
         edge(a["device"], b["device"], kind, "GitHub", verified, ports=ports,
              vlan=vlan.get("id") if tagged_transit else None,
-             expected_vlans=link.get("vlans") if kind == "Сетевое соединение" else None)
+             expected_vlans=link.get("vlans") if kind == "Сетевое соединение" else None,
+             inventory_sources=references)
         if verified and kind == "Сетевое соединение" and link.get("relation") == "connected_to":
             for switch, host in ((a, b), (b, a)):
                 if (nodes.get(switch["device"], {}).get("kind") == NETWORK_KINDS[0]

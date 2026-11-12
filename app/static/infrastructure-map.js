@@ -1249,6 +1249,25 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           edge.source === 'GitHub' && reciprocalPaths.has(pairOf(edge)))
         .map(edge => [pairOf(edge), edge]));
       const portName = name => name && name.toLowerCase() !== 'unknown' ? name : 'порт неизвестен';
+      const appendInventorySources = (container, sources) => {
+        if (!sources?.length) return;
+        const referenceList = make('details');
+        referenceList.append(make('summary', `Источники инвентаря (${sources.length})`));
+        for (const {path, observedOn} of sources) {
+          const line = make('small', `${observedOn} · `);
+          if (/^[0-9a-f]{40}$/.test(data.git)) {
+            const link = make('a', path.split('/').pop());
+            link.href = `https://github.com/BorisDruzak/network_configuration/blob/${data.git}/${path}`;
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            line.append(link);
+          } else {
+            line.append(path);
+          }
+          referenceList.append(line);
+        }
+        container.append(referenceList);
+      };
       for (const edge of links.slice().sort((a,b) => Number(b.confirmed)-Number(a.confirmed))) {
         const declared = inventory.get(pairOf(edge));
         if (edge === declared) continue;
@@ -1275,6 +1294,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           const proof = {current: ' · пара по свежему наблюдению',
                          verified_inventory: ' · пара по подтверждённой записи инвентаря'}[evidence.pairEvidence] ?? '';
           li.append(make('small', ports + vlan + ' · ' + source + time + proof + (evidence.confirmed ? '' : ' · без подтверждения')));
+          appendInventorySources(li, evidence.inventorySources);
           for (const {deviceId, localPort, bridgeDeviceId, designatedBridgeMac, designatedPortId,
             designatedPortName, checkedAt} of evidence.stpPaths ?? []) {
             const bridge = byId.get(bridgeDeviceId)?.name ?? designatedBridgeMac;
@@ -1370,6 +1390,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
             if (evidence.source !== 'GitHub') continue;
             const [local, remote] = declared.a === id ? [evidence.a, evidence.b] : [evidence.b, evidence.a];
             li.append(make('small', portName(local) + ' ↔ ' + portName(remote) + ' · GitHub (конфигурация)'));
+            appendInventorySources(li, evidence.inventorySources);
           }
         }
         (unconfirmedPath ? observations : list).append(li);

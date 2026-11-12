@@ -4918,6 +4918,37 @@ def test_service_audit_shares_map_status_and_reports_required_check_gaps(tmp_pat
     assert response.headers["cache-control"] == "no-store"
 
 
+def test_inventory_port_sources_are_dated_and_kept_separate_from_live_checks(tmp_path):
+    from datetime import date
+
+    from app.infrastructure_collect import build_graph, publish_snapshot
+    from app.infrastructure_map import load_infrastructure_map, summarize_topology
+
+    now = datetime.now(timezone.utc)
+    observed = date(2026, 8, 7)
+    reference = {"source": "evidence/manual/port-check.yaml", "observed_at": observed, "value": "omit detail"}
+    links = [{"relation": "connected_to", "endpoint_a": {"device": "a", "interface": f"ge{index}"},
+              "endpoint_b": {"device": key, "interface": "eth0"}, "state": {"verified": key == "b"},
+              "evidence": [reference, reference, {**reference, "source": "docs/../private.yml"},
+                           {**reference, "source": "https://example.test/private"},
+                           {**reference, "observed_at": "2026-02-30"}]}
+             for index, key in enumerate(("b", "c"), 1)]
+    context = {"devices": [{"id": key, "name": key, "kind": "switch"} for key in "abc"], "links": links}
+    path = tmp_path / "map.json"
+    publish_snapshot(path, build_graph(context, {}, {}, {}, {}, now))
+    graph = load_infrastructure_map(path, now)
+    expected = [{"path": "evidence/manual/port-check.yaml", "observedOn": "2026-08-07"}]
+    verified, pending = [edge["portEvidence"][0] for edge in graph["links"]]
+    assert verified["inventorySources"] == pending["inventorySources"] == expected
+    assert verified["at"] is pending["at"] is None
+    assert verified["pairEvidence"] == "verified_inventory" and not pending["confirmed"]
+    assert "omit detail" not in path.read_text(encoding="utf-8")
+    audit = summarize_topology(graph)["topologyAudit"]
+    assert audit["pending"][0]["inventorySources"] == expected
+    assert audit["inventoryPairs"] == [{"a": "a", "b": "b", "portA": "ge1", "portB": "eth0",
+                                         "inventorySources": expected}]
+
+
 def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_paths(tmp_path, monkeypatch):
     path = tmp_path / "infrastructure.json"
     monkeypatch.setenv("INFRASTRUCTURE_MAP_SNAPSHOT_PATH", str(path))
