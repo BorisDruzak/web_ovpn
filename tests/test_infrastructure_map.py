@@ -2854,6 +2854,41 @@ def test_infrastructure_map_serves_only_public_snapshot(tmp_path, monkeypatch):
     assert response.headers["cache-control"] == "no-store"
 
 
+def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_paths(tmp_path, monkeypatch):
+    path = tmp_path / "infrastructure.json"
+    monkeypatch.setenv("INFRASTRUCTURE_MAP_SNAPSHOT_PATH", str(path))
+    now = datetime.now(timezone.utc).isoformat()
+    path.write_text(json.dumps({
+        "schema": 1, "snapshotAt": now,
+        "nodes": [{"id": "snr", "name": "SNR", "kind": "Коммутатор"},
+                  {"id": "pve", "name": "pve1", "kind": "Гипервизор", "ports": [{"name": "enp2s0"}]}],
+        "links": [
+            {"a": "snr", "b": "pve", "kind": "Сетевое соединение", "confirmed": True, "portEvidence": [
+                {"a": "xe3", "b": "vm_net_10g", "source": "GitHub", "confirmed": True},
+                {"a": "xe3", "b": "ens7f1", "source": "netctl FDB + Proxmox", "confirmed": True, "at": now},
+                {"a": "ge12", "b": "management_1g", "source": "GitHub", "confirmed": False},
+                {"a": "xe3", "b": "enp2s0", "source": "GitHub", "confirmed": False},
+            ]},
+            {"a": "pve", "b": "snr", "kind": "Путь по MAC-таблице", "confirmed": True, "portEvidence": [
+                {"a": "enp134s0", "b": "ge12", "source": "netctl FDB + Proxmox", "confirmed": True, "at": now},
+            ]},
+        ],
+    }), encoding="utf-8")
+    client, headers, _ = make_client(tmp_path, monkeypatch)
+    response = client.get("/api/v1/network/infrastructure?view=topology", headers=headers)
+    assert response.status_code == 200
+    graph = response.json()["infrastructure"]
+    assert "nodes" not in graph and "links" not in graph
+    audit = graph["topologyAudit"]
+    assert audit["directLinks"] == {"current": 1, "verifiedInventory": 0, "unconfirmed": 0}
+    assert audit["pendingTotal"] == 2
+    pending, mismatch = audit["pending"]
+    assert (pending["a"], pending["b"], pending["portA"], pending["portB"]) == ("snr", "pve", "ge12", "management_1g")
+    observed, = pending["observedPaths"]
+    assert (observed["portA"], observed["portB"]) == ("ge12", "enp134s0")
+    assert mismatch["portB"] == "enp2s0" and mismatch["observedPaths"] == []
+
+
 def test_missing_infrastructure_snapshot_has_explicit_empty_state(tmp_path, monkeypatch):
     monkeypatch.setenv("INFRASTRUCTURE_MAP_SNAPSHOT_PATH", str(tmp_path / "missing.json"))
     client, headers, _ = make_client(tmp_path, monkeypatch)

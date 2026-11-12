@@ -174,11 +174,12 @@ TOOLS: dict[str, dict[str, Any]] = {
     "openvpn_nat_status": tool_schema("Show ViPNet NAT counters."),
     "openvpn_network_dashboard": tool_schema("Show network observer dashboard summary and source health."),
     "openvpn_network_infrastructure": tool_schema(
-        "Read the map. Search with query, inspect a node with node_id, or add port_name to inspect that node's port.",
+        "Read the map. Use view=topology for port confirmation gaps, query to search, or node_id and optional port_name to inspect.",
         {
             "query": {"type": "string", "minLength": 1, "maxLength": 160},
             "node_id": {"type": "string", "minLength": 1, "maxLength": 160},
             "port_name": {"type": "string", "minLength": 1, "maxLength": 64},
+            "view": {"type": "string", "enum": ["topology"]},
         },
     ),
     "openvpn_network_hosts": tool_schema(
@@ -532,7 +533,12 @@ def _infrastructure_port(graph: dict, node: dict | None, port_name: str) -> dict
     return result
 
 
-def _infrastructure_snapshot(node_id: str | None, query: str | None, port_name: str | None) -> dict[str, Any]:
+def _infrastructure_snapshot(node_id: str | None, query: str | None, port_name: str | None,
+                             view: str | None = None) -> dict[str, Any]:
+    if view is not None:
+        if view != "topology" or any(value is not None for value in (node_id, query, port_name)):
+            raise ValueError("view must be topology and cannot be combined with node_id, query, or port_name")
+        return api_request("GET", "/api/v1/network/infrastructure?view=topology")
     if node_id is not None and query is not None:
         raise ValueError("pass either node_id or query")
     if node_id is not None and (not isinstance(node_id, str) or not 1 <= len(node_id) <= 160):
@@ -689,7 +695,9 @@ def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     if name == "openvpn_network_dashboard":
         return api_request("GET", "/api/v1/network/dashboard")
     if name == "openvpn_network_infrastructure":
-        return _infrastructure_snapshot(arguments.get("node_id"), arguments.get("query"), arguments.get("port_name"))
+        return _infrastructure_snapshot(
+            arguments.get("node_id"), arguments.get("query"), arguments.get("port_name"), arguments.get("view"),
+        )
     if name == "openvpn_network_hosts":
         return api_request(
             "GET",

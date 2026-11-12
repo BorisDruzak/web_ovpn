@@ -750,6 +750,73 @@ def _compare_link_ports(ports: dict) -> dict:
     return {"state": state, "checkedAt": first.isoformat()}
 
 
+def summarize_topology(graph: dict) -> dict:
+    nodes = {node["id"]: node for node in graph["nodes"]}
+    port_aliases = {
+        (node["id"], port_label_key(alias)): port_label_key(port["name"])
+        for node in nodes.values()
+        for port in node["ports"]
+        for alias in port.get("aliases", [])
+    }
+    port_names = {node_id: {port_label_key(port["name"]) for port in node["ports"]} for node_id, node in nodes.items()}
+    unnamed = {"", "-", "unknown", "неизвестно"}
+
+    def port_key(node_id, label):
+        key = port_label_key(label)
+        return port_aliases.get((node_id, key), key)
+
+    paths = {}
+    for link in graph["links"]:
+        if link["confirmed"] and link["kind"] in ("Путь по MAC-таблице", SHARED_LLDP_KIND):
+            paths.setdefault(frozenset((link["a"], link["b"])), []).extend(
+                (link["a"], report) for report in link["portEvidence"] if report["confirmed"]
+            )
+
+    counts = {"current": 0, "verifiedInventory": 0, "unconfirmed": 0}
+    pending = {}
+    for link in graph["links"]:
+        if link["kind"] != "Сетевое соединение":
+            continue
+        a, b = link["a"], link["b"]
+        reports = link["portEvidence"]
+        current = [r for r in reports if link["confirmed"] and r.get("pairEvidence") == "current"]
+        inventory = any(r.get("pairEvidence") == "verified_inventory" for r in reports)
+        counts["current" if current else "verifiedInventory" if inventory else "unconfirmed"] += 1
+
+        def covers(declared, report):
+            sides = [side for side in ("a", "b") if port_label_key(declared[side]) not in unnamed]
+            lacp = report.get("lacp")
+            if lacp:
+                side = lacp["side"]
+                if port_key(link[side], declared[side]) == port_key(link[side], lacp["aggregate"]):
+                    return True
+            if report["source"] == "netctl FDB + Proxmox":
+                sides = [side for side in sides if nodes[link[side]]["kind"] != "Гипервизор"
+                         or port_key(link[side], declared[side]) in port_names[link[side]]]
+            return bool(sides) and all(
+                port_key(link[side], declared[side]) == port_key(link[side], report[side]) for side in sides
+            )
+
+        for declared in reports:
+            if (declared["source"] != "GitHub" or declared["confirmed"]
+                    or all(port_label_key(declared[side]) in unnamed for side in ("a", "b"))
+                    or any(covers(declared, r) for r in current)):
+                continue
+            related = []
+            for origin, report in paths.get(frozenset((a, b)), []):
+                pa, pb = (report["a"], report["b"]) if origin == a else (report["b"], report["a"])
+                if ((pa and port_key(a, pa) == port_key(a, declared["a"]))
+                        or (pb and port_key(b, pb) == port_key(b, declared["b"]))):
+                    related.append({"portA": pa, "portB": pb, "source": report["source"], "checkedAt": report["at"]})
+            pending[(a, b, declared["a"], declared["b"])] = {
+                "a": a, "b": b, "nameA": nodes[a]["name"], "nameB": nodes[b]["name"],
+                "portA": declared["a"], "portB": declared["b"], "observedPaths": related[:8],
+            }
+    metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
+    return {**metadata, "topologyAudit": {"directLinks": counts, "pendingTotal": len(pending),
+                                        "pending": [pending[key] for key in sorted(pending)[:64]]}}
+
+
 def load_infrastructure_map(path: Path, now: datetime | None = None, *, db: Session | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
     empty = {

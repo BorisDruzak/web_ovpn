@@ -35,7 +35,7 @@ from .network_observer import list_from as network_list_from, merge_unified_host
 from .network_paths_adapter import get_network_path, list_network_paths
 from .routeros_backups import list_routeros_backups
 from .server_health_view import build_server_health_view
-from .infrastructure_map import load_infrastructure_map
+from .infrastructure_map import load_infrastructure_map, summarize_topology
 from .vpnctl_client import VpnctlError, run_vpnctl
 
 CLIENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -1038,10 +1038,15 @@ def api_network_dashboard(actor: str = Depends(require_api_actor)):
 
 
 @router.get("/network/infrastructure")
-def api_network_infrastructure(actor: str = Depends(require_api_actor), db: Session = Depends(get_db)):
+def api_network_infrastructure(
+    view: Literal["topology"] | None = None,
+    actor: str = Depends(require_api_actor),
+    db: Session = Depends(get_db),
+):
     graph = load_infrastructure_map(get_settings().infrastructure_map_snapshot_path, db=db)
     return JSONResponse(
-        {"status": "ok", "infrastructure": graph}, headers={"Cache-Control": "no-store"},
+        {"status": "ok", "infrastructure": summarize_topology(graph) if view == "topology" else graph},
+        headers={"Cache-Control": "no-store"},
     )
 
 
