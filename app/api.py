@@ -1492,7 +1492,8 @@ def api_network_observations(actor: str = Depends(require_api_actor), host: str 
 
 @router.get("/network/ipsec")
 def api_network_ipsec(actor: str = Depends(require_api_actor), source: str = Query(default="")):
-    args = ["ipsec", "status"]
+    """Return an IPsec report, including status and errors for unreachable sources."""
+    args = ["ipsec", "status", "--allow-source-errors"]
     if source:
         args.extend(["--source", source])
     return api_response(call_netctl(args, timeout=60))

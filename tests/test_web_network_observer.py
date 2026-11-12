@@ -151,6 +151,11 @@ elif cmd[:2] == ["update-posture", "list"]:
     print(json.dumps({"status": "ok", "sources": [{"source": "mikrotik-main", "status": "ok", "collected_at": collected_at}], "update_posture": [{"source": "mikrotik-main", "channel": "stable", "installed_version": "7.19.4", "latest_version": "", "routerboot_current_version": "7.19.4", "routerboot_upgrade_version": "7.20.1", "last_seen_at": collected_at, "host": "router.internal", "credential": "not-a-secret", "raw_output": "private", "schedulers": [{"name": "backup-private", "disabled": False, "next_run": "tomorrow"}, {"name": "secret-job", "disabled": True, "next_run": "later"}]}]}))
 elif cmd[:1] == ["collector-status"]:
     print(json.dumps({"status": "ok", "enabled": True, "active": True, "next_run": ""}))
+elif cmd[:2] == ["ipsec", "status"] and "--source" in cmd and "mikrotik-hex" in cmd:
+    print(json.dumps({"status": "ok", "summary": {"sources": 1, "ok": 0, "warn": 0, "error": 1},
+        "site_checks": [], "sources": [{"source": "mikrotik-hex", "status": "error", "summary": {},
+        "errors": [{"section": "active_peers", "message": "SSH connection timed out"}]}]}))
+    sys.exit(0 if "--allow-source-errors" in cmd else 1)
 elif cmd[:2] == ["ipsec", "status"]:
     print(json.dumps({"status": "ok", "summary": {"sources": 2, "ok": 2, "warn": 0, "error": 0, "site_checks_ok": 1, "site_checks_warn": 0}, "site_checks": [{
         "status": "ok",
@@ -2700,3 +2705,20 @@ def test_network_diagnostic_api_returns_ipsec_backups_and_logs(tmp_path, monkeyp
     assert backups.json()["data"]["error"] is None
     assert logs.status_code == 200
     assert logs.json()["data"]["events"] == []
+
+
+def test_ipsec_keeps_unreachable_source_in_api_and_panel(tmp_path, monkeypatch):
+    client, headers = make_client(tmp_path, monkeypatch)
+    login(client)
+    params = {"source": "mikrotik-hex"}
+
+    response = client.get("/api/v1/network/ipsec", params=params, headers=headers)
+    assert response.status_code == 200
+    report = response.json()["data"]
+    assert report["summary"]["error"] == 1
+    assert report["sources"][0]["errors"] == [{"section": "active_peers", "message": "SSH connection timed out"}]
+
+    page = client.get("/network/ipsec", params=params)
+    assert page.status_code == 200
+    assert "active_peers: SSH connection timed out" in page.text
+    assert "failed with code 1" not in page.text

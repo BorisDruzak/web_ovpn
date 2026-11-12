@@ -2864,6 +2864,27 @@ def test_ipsec_status_reports_source_health(tmp_path, capsys):
     assert data["sources"][0]["policies"][0]["dst_address"] == "192.168.99.0/24"
 
 
+def test_ipsec_report_keeps_source_errors_without_hiding_command_errors(tmp_path, capsys, monkeypatch):
+    config_path = tmp_path / "netctl.yaml"
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    write_mock_source(config_path)
+
+    def unreachable(_source):
+        raise RuntimeError("SSH connection timed out")
+
+    monkeypatch.setattr("netctl.cli._ipsec_source_status", unreachable)
+    args = ["--json", "--config", str(config_path), "--db", db_url, "ipsec", "status"]
+    normal_rc, normal = run_cli(args, capsys)
+    report_rc, report = run_cli([*args, "--allow-source-errors"], capsys)
+    missing_rc, missing = run_cli([*args, "--allow-source-errors", "--source", "missing-router"], capsys)
+
+    assert normal_rc == 1
+    assert report_rc == 0 and report == normal
+    assert report["sources"][0]["status"] == "error"
+    assert report["sources"][0]["errors"] == [{"section": "source", "message": "SSH connection timed out"}]
+    assert missing_rc == 1 and missing["status"] == "error"
+
+
 def test_ipsec_status_ignores_switch_only_sources(tmp_path, capsys):
     config_path = tmp_path / "netctl.yaml"
     db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"

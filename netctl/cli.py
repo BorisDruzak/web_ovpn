@@ -1428,7 +1428,9 @@ def cmd_ipsec(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         site_checks = _ipsec_site_checks(results)
         summary["site_checks_ok"] = sum(1 for item in site_checks if item.get("status") == "ok")
         summary["site_checks_warn"] = sum(1 for item in site_checks if item.get("status") == "warn")
-        return (1 if results and summary["ok"] == 0 and summary["error"] else 0), ok(summary=summary, sources=results, site_checks=site_checks)
+        source_errors = summary["ok"] == 0 and summary["error"] > 0
+        exit_code = 1 if source_errors and not args.allow_source_errors else 0
+        return exit_code, ok(summary=summary, sources=results, site_checks=site_checks)
     finally:
         conn.close()
 
@@ -1998,6 +2000,10 @@ def build_parser() -> argparse.ArgumentParser:
     ipsec_sub = ipsec.add_subparsers(dest="ipsec_command", required=True)
     ipsec_status = ipsec_sub.add_parser("status")
     ipsec_status.add_argument("--source", default="")
+    ipsec_status.add_argument(
+        "--allow-source-errors", action="store_true",
+        help="Return a successful exit code when source errors are included in the status report",
+    )
 
     sub.add_parser("dashboard")
     sub.add_parser("validate")

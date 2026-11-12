@@ -2630,7 +2630,7 @@ def network_routes(request: Request, db: Session = Depends(get_db)):
 def network_ipsec(request: Request, db: Session = Depends(get_db)):
     require_user(request, db)
     source = request.query_params.get("source") or ""
-    args = ["ipsec", "status"]
+    args = ["ipsec", "status", "--allow-source-errors"]
     if source:
         args.extend(["--source", require_source_name(source)])
     data, error = net_cli_call(request, args, timeout=60)
