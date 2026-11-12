@@ -34,6 +34,35 @@ def test_create_publishes_only_after_all_components_verify(
     assert not list(sandbox.settings.backup_root.glob(".creating-*"))
 
 
+@pytest.mark.parametrize("target", ("../usr/lib/os-release", "/usr/lib/os-release"))
+def test_create_accepts_canonical_os_release_symlink(tmp_path: Path, target: str) -> None:
+    sandbox = BackupSandbox.create(tmp_path)
+    sandbox.seed_complete_controller()
+    os_release = sandbox.root / "etc/os-release"
+    canonical = sandbox.root / "usr/lib/os-release"
+    canonical.parent.mkdir(parents=True)
+    os_release.rename(canonical)
+    os_release.symlink_to(target)
+
+    result = sandbox.repository().create()
+
+    manifest = sandbox.settings.backup_root / result.backup_id / "manifest.json"
+    assert json.loads(manifest.read_text())["controller"]["os_id"] == "altlinux"
+
+
+def test_create_rejects_redirected_os_release(tmp_path: Path) -> None:
+    sandbox = BackupSandbox.create(tmp_path)
+    sandbox.seed_complete_controller()
+    os_release = sandbox.root / "etc/os-release"
+    os_release.rename(os_release.with_name("redirected-release"))
+    os_release.symlink_to("redirected-release")
+
+    with pytest.raises(BackupError, match="not a regular file"):
+        sandbox.repository().create()
+
+    assert sandbox.published_backups() == []
+
+
 def test_create_failure_restores_units_and_does_not_publish(
     tmp_path: Path,
 ) -> None:

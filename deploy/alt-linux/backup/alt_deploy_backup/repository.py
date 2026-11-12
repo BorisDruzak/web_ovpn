@@ -320,10 +320,17 @@ class BackupRepository:
             "/etc/machine-id",
             maximum=1024,
         )
-        os_release = self._read_optional_text(
-            "/etc/os-release",
-            maximum=64 * 1024,
-        )
+        os_release_name = "/etc/os-release"
+        os_release_path = self._controller_path(os_release_name)
+        assert_safe_parents(os_release_path)
+        if os_release_path.is_symlink():
+            try:
+                target = os.readlink(os_release_path)
+            except OSError as exc:
+                raise _preflight("Controller OS metadata link cannot be inspected") from exc
+            if target in ("../usr/lib/os-release", "/usr/lib/os-release"):
+                os_release_name = "/usr/lib/os-release"
+        os_release = self._read_optional_text(os_release_name, maximum=64 * 1024)
         if os_release is None:
             raise _preflight("Controller OS metadata is unavailable")
         values: dict[str, str] = {}

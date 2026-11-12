@@ -57,6 +57,10 @@ sudo test -f /etc/systemd/system/alt-deploy-guard.service
 sudo systemctl daemon-reload
 ```
 
+The controller identity accepts a regular `/etc/os-release` or the standard
+link to `/usr/lib/os-release`. The canonical target must be a regular file
+under the same controller root.
+
 ## 4. Safe preflight before backup creation
 
 Stop creating provisioning jobs and review controller-local readiness:
