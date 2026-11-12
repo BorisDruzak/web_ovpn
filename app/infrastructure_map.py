@@ -20,7 +20,7 @@ from .endpoint_platform_client import EndpointPlatformServiceError
 from .server_observer import STALE_AFTER as SERVER_OBSERVER_MAX_AGE
 from .server_observer import (
     ACTI_BACKUP_MAX_REPOSITORY_BYTES, ACTI_BACKUP_MIN_FREE_GIB, ACTI_BACKUP_WATCHDOG_MAX_AGE,
-    valid_acti_backup_job, valid_acti_backup_repository,
+    valid_acti_backup_job, valid_acti_backup_repository, valid_observer_disk_capacity,
 )
 
 if TYPE_CHECKING:
@@ -205,6 +205,8 @@ def _observer_measurement(check: dict, name: str, now: datetime) -> dict:
     expected = _number(check.get("expected"))
     if valid(expected):
         result["warningThreshold"] = expected
+    if valid_observer_disk_capacity(name, capacity := check.get("disk_capacity"), observed):
+        result["diskCapacity"] = {"freeBytes": capacity["free_bytes"], "totalBytes": capacity["total_bytes"]}
     return result
 
 
@@ -1694,7 +1696,7 @@ def summarize_services(graph: dict) -> dict:
              "required": check.get("required") is True,
              "status": check["status"], "source": "Server Observer",
              **{key: check[key] for key in ("checkedAt", "stale", "error", "unit", "observed", "warningThreshold",
-                                           "backupJob", "backupRepository", "sourceNodeId")
+                                           "backupJob", "backupRepository", "diskCapacity", "sourceNodeId")
                 if key in check}}
             for check in node["checks"] if check.get("required") or check["status"] in ("critical", "warn")
         ]

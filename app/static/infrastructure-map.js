@@ -720,6 +720,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       for (const check of ordered) {
         const row = make('li');
         const value = measurement(check.unit, check.observed);
+        const disk = check.diskCapacity;
+        const capacity = disk && `${measurement('bytes', disk.freeBytes)} из ${measurement('bytes', disk.totalBytes)}`;
         const threshold = measurement(check.unit, check.warningThreshold);
         const limit = check.unit === 'hours' ? 'предел ' : 'порог предупреждения ';
         const memoryMeasurement = /^(windows|linux)_memory_available_/.test(check.name);
@@ -730,7 +732,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           job.completedAt && `завершено ${formatTime(job.completedAt)}`,
           job.timerActive === false && 'таймер неактивен',
           job.timerActive === null && 'состояние таймера не подтверждено'] : [status];
-        const notes = [...jobDetails, errors[check.error], value, threshold && limit + threshold,
+        const notes = [...jobDetails, errors[check.error], value, capacity, threshold && limit + threshold,
           check.required && 'обязательная проверка', check.checkedAt && formatTime(check.checkedAt),
           check.stale && 'устарело'];
         row.append(make('strong', check.label || check.name), make('small', notes.filter(Boolean).join(' · ')));

@@ -456,6 +456,32 @@ def test_file_server_probe_checks_windows_e_volume_smb_and_ssh():
     assert "& $running 'sshd'" in probe
 
 
+@pytest.mark.parametrize(("role", "name"), [
+    ("directum", "c_disk_free"), ("active_directory", "c_disk_free"), ("file_server", "data_disk_free"),
+])
+def test_windows_disk_capacity_agrees_with_the_percentage(role, name):
+    config = runtime_config()
+    config["targets"] = [next(t for t in config["targets"] if t["role"] == role)]
+    sample = {"free_bytes": 34 * 2**30, "total_bytes": 100 * 2**30}
+
+    def read(disk_capacity):
+        def runner(command, **kwargs):
+            completed = healthy_runner(command, **kwargs)
+            payload = json.loads(completed.stdout)
+            payload["disk_capacity"] = disk_capacity
+            payload["data_free_percent" if role == "file_server" else "free_percent"] = 34.0
+            return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+        snapshot = collect(config, runner=runner, now=parse_utc("2026-07-19T10:00:00Z"))
+        return next(c for c in snapshot["targets"][0]["checks"] if c["name"] == name)
+
+    assert read(sample)["disk_capacity"] == sample
+    for invalid in (None, {**sample, "free_bytes": True}, {**sample, "total_bytes": 0},
+                    {**sample, "free_bytes": 30 * 2**30}, {**sample, "private": "excluded"}):
+        check = read(invalid)
+        assert check["observed"] == 34.0 and "disk_capacity" not in check
+
+
 @pytest.mark.parametrize("memory,expected", [
     ({"available_kib": 2 * 2**20, "visible_kib": 8 * 2**20}, (2 * 2**30, 25.0)),
     ({"available_kib": 0, "visible_kib": 8 * 2**20}, (0, 0.0)),
@@ -621,6 +647,7 @@ function Resolve-DnsName { [CmdletBinding()] param([Parameter(ValueFromRemaining
 
     assert completed.returncode == 0, completed.stderr
     payload = json.loads(completed.stdout)
+    assert payload["disk_capacity"] == {"free_bytes": 34, "total_bytes": 100}
     assert set(payload["services"]) == expected_services
     assert all(payload["services"].values())
 

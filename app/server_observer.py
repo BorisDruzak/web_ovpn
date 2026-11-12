@@ -47,7 +47,8 @@ SNAPSHOT_FILE_MODE = 0o640
 SNAPSHOT_REPLACE_ATTEMPTS = 3
 SNAPSHOT_REPLACE_RETRY_SECONDS = 0.01
 _PUBLIC_CHECK_FIELDS = frozenset(
-    {"name", "source", "status", "observed", "expected", "latency_ms", "error", "backup_job", "backup_repository"}
+    {"name", "source", "status", "observed", "expected", "latency_ms", "error",
+     "backup_job", "backup_repository", "disk_capacity"}
 )
 _STATUS_PRIORITY = {"ok": 0, "warn": 1, "critical": 2, "error": 3}
 _SAFE_CHECK_NAMES = re.compile(r"[a-z][a-z0-9_]{0,63}$")
@@ -175,6 +176,7 @@ _DIRECTUM_BODY = (
     "$logs=Get-ChildItem -LiteralPath 'C:\\rxdata\\logs' -File -Recurse -ErrorAction SilentlyContinue|"
     "Measure-Object -Property Length -Sum;"
     "$report=[pscustomobject]@{free_percent=[math]::Round(100*$c.FreeSpace/$c.Size,2);"
+    "disk_capacity=@{free_bytes=[int64]$c.FreeSpace;total_bytes=[int64]$c.Size};"
     "log_bytes=[int64]$logs.Sum;"
     "services=@{directumrx=[bool]($directum -and $directum.Status -eq 'Running');"
     "mongo=[bool](& $running 'MongoDB');rabbitmq=[bool](& $running 'RabbitMQ');"
@@ -223,6 +225,7 @@ _ROLE_PROBES = {
         "$s=Get-Service -Name $n -ErrorAction SilentlyContinue;[bool]($s -and $s.Status -eq 'Running')};"
         "$e=Get-CimInstance Win32_LogicalDisk -Filter 'DeviceID=\"E:\"' -ErrorAction Stop;"
         "$report=[pscustomobject]@{data_free_percent=[math]::Round(100*$e.FreeSpace/$e.Size,2);"
+        "disk_capacity=@{free_bytes=[int64]$e.FreeSpace;total_bytes=[int64]$e.Size};"
         "services=@{sshd=[bool](& $running 'sshd');smb=[bool](& $running 'LanmanServer')}};"
         + _WINDOWS_REPORT_JSON,
         "file_server",
@@ -233,6 +236,7 @@ _ROLE_PROBES = {
         "$s=Get-Service -Name $n -ErrorAction SilentlyContinue;[bool]($s -and $s.Status -eq 'Running')};"
         "$c=Get-CimInstance Win32_LogicalDisk -Filter 'DeviceID=\"C:\"' -ErrorAction Stop;"
         "$report=[pscustomobject]@{free_percent=[math]::Round(100*$c.FreeSpace/$c.Size,2);"
+        "disk_capacity=@{free_bytes=[int64]$c.FreeSpace;total_bytes=[int64]$c.Size};"
         "services=@{dns=[bool](& $running 'DNS');"
         "ntds=[bool](& $running 'NTDS');adws=[bool](& $running 'ADWS')};"
         "internal_dns=[bool](Resolve-DnsName localhost -ErrorAction SilentlyContinue);external_dns="
@@ -871,6 +875,16 @@ def _require_role_payload(role: str, payload: dict[str, Any]) -> None:
             raise _ProbeFailure("unexpected_response")
 
 
+def valid_observer_disk_capacity(name: str, capacity: Any, percent: Any) -> bool:
+    if (name not in ("c_disk_free", "data_disk_free")
+            or not isinstance(capacity, dict) or set(capacity) != {"free_bytes", "total_bytes"}
+            or type(percent) not in (int, float) or not 0 <= percent <= 100):
+        return False
+    free, total = capacity["free_bytes"], capacity["total_bytes"]
+    return (type(free) is int and type(total) is int and 0 < total < 2**53 and 0 <= free <= total
+            and abs(percent - 100 * free / total) <= 0.005000001)
+
+
 def _append_disk_check(
     checks: list[dict[str, Any]], source: str, payload: dict[str, Any], key: str, name: str, latency_ms: float
 ) -> None:
@@ -880,8 +894,11 @@ def _append_disk_check(
     if not _is_safe_nonnegative_number(value) or value > 100:
         raise _ProbeFailure("unexpected_response")
     checks[:] = [check for check in checks if check["name"] != name]
-    checks.append({"name": name, "source": source, "status": classify_disk(value), "observed": value,
-                   "expected": 15, "latency_ms": latency_ms})
+    check = {"name": name, "source": source, "status": classify_disk(value), "observed": value,
+             "expected": 15, "latency_ms": latency_ms}
+    if valid_observer_disk_capacity(name, capacity := payload.get("disk_capacity"), value):
+        check["disk_capacity"] = capacity
+    checks.append(check)
 
 
 def _append_log_check(
@@ -1009,6 +1026,11 @@ def public_check(check: dict[str, Any]) -> dict[str, Any]:
         if name != "repository_capacity" or not valid_acti_backup_repository(check["backup_repository"]):
             raise ValueError("backup repository measurements are not allowed")
         public["backup_repository"] = check["backup_repository"]
+    if "disk_capacity" in check:
+        capacity = check["disk_capacity"]
+        if not valid_observer_disk_capacity(name, capacity, public.get("observed")):
+            raise ValueError("disk capacity measurements are not allowed")
+        public["disk_capacity"] = capacity
     return public
 
 

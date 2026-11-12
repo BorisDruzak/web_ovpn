@@ -115,7 +115,8 @@ def test_observer_disk_measurements_publish_units_and_reported_warning_threshold
     snapshot = tmp_path / "infrastructure.json"
     report = {"freshness": "current", "targets": [
         {"role": "directum", "status": "critical", "observed_at": stamp, "checks": [
-            {"name": "c_disk_free", "status": "critical", "observed": 5.32, "expected": 15},
+            {"name": "c_disk_free", "status": "critical", "observed": 5.32, "expected": 15,
+             "disk_capacity": {"free_bytes": 5320, "total_bytes": 100000}},
             {"name": "rxdata_log_bytes", "status": "ok", "observed": 9 * 2**30, "expected": 20 * 2**30},
             {"name": "windows_memory_available_bytes", "status": "ok", "observed": 2**30},
             {"name": "windows_memory_available_percent", "status": "ok", "observed": 12.5},
@@ -135,6 +136,7 @@ def test_observer_disk_measurements_publish_units_and_reported_warning_threshold
     disk = checks["c_disk_free"]
     assert disk["label"] == "Свободно на диске C:"
     assert (disk["unit"], disk["observed"], disk["warningThreshold"]) == ("percent", 5.32, 15)
+    assert disk["diskCapacity"] == {"freeBytes": 5320, "totalBytes": 100000}
     logs = checks["rxdata_log_bytes"]
     assert (logs["unit"], logs["observed"], logs["warningThreshold"]) == ("bytes", 9 * 2**30, 20 * 2**30)
     assert checks["windows_memory_available_bytes"]["unit"] == "bytes"
