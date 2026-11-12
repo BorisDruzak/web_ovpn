@@ -593,6 +593,25 @@ def _public_service_check(check: dict, now: datetime) -> dict:
                 result["pppoe"]["parentLink"] = {"state": link["state"], "source": "RouterOS",
                                                  "checkedAt": _time(link["checkedAt"]).isoformat()}
     reason = check.get("reason")
+    ipsec = check.get("ipsecPolicy")
+    if result["method"] == "IPsec фаза 2" and result["source"] == "MikroTik IPsec" and isinstance(ipsec, dict):
+        remote = _network_address(ipsec.get("remoteNetwork"))
+        directions = []
+        for row in _rows(ipsec.get("directions"), 2):
+            source = _text(row.get("source"), 64)
+            if not source:
+                continue
+            at = row.get("checkedAt")
+            detail = {"source": source, "state": "unknown", "checkedAt": None, "reason": "ipsec_observation_unavailable"}
+            if observation_is_fresh(at, now, max_age=SERVICE_PROBE_MAX_AGE):
+                state, failure = row.get("state"), row.get("reason")
+                if state == "reachable":
+                    detail = {"source": source, "state": state, "checkedAt": _time(at).isoformat()}
+                elif state == "unreachable" and failure in ("ipsec_policy_missing", "ipsec_phase2_not_established"):
+                    detail.update(state=state, checkedAt=_time(at).isoformat(), reason=failure)
+            directions.append(detail)
+        if remote and len(directions) == 2 and directions[0]["source"] != directions[1]["source"]:
+            result["ipsecPolicy"] = {"remoteNetwork": remote, "directions": directions}
     if reason == "probe_configuration" and result["source"] == "UI_VPN" and result["method"] == "Настройки проверки":
         result["reason"] = reason
     if backup:
@@ -638,7 +657,7 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         round_trip = check.get("roundTripMs")
         if type(round_trip) in (int, float) and 0 <= round_trip <= 3000:
             result["roundTripMs"] = round_trip
-        if reason in ("icmp_no_echo_reply", "icmp_unreachable", "icmp_probe_error",
+        if reason in ("icmp_no_echo_reply", "icmp_reply_unconfirmed", "icmp_unreachable", "icmp_probe_error",
                       "icmp_route_unconfirmed", "icmp_route_mismatch"):
             result["reason"] = reason
     sip = result["method"] == "SIP OPTIONS (UDP)"
@@ -2254,7 +2273,7 @@ def summarize_services(graph: dict) -> dict:
              **{key: check[key] for key in ("source", "checkedAt", "stale", "reason", "path", "port", "target",
                                             "pppoe", "rtspStatus", "ftpReply", "tlsExpiresAt", "tlsVersion",
                                             "dns", "localRoute", "vlanTransit", "identityCheckedAt", "errorSource",
-                                            "responseCode", "attempts")
+                                            "responseCode", "attempts", "ipsecPolicy")
                 if key in check and check[key] is not None and check[key] != ""}}
             for check in node["serviceChecks"] if check.get("required") or (
                 state == "unknown" and check.get("supplemental") and check["state"] != "reachable"

@@ -4442,8 +4442,9 @@ def test_collection_reads_source_registry_without_syncing_config(monkeypatch):
     assert calls == ["snapshot", ("ports", 0), ("ports", 500), ("lldp", 0), ("stp", 0), "closed"]
 
 
-def test_ipsec_phase_two_requires_expected_peers_and_both_policy_directions():
-    from app.infrastructure_collect import build_graph
+def test_ipsec_phase_two_requires_expected_peers_and_both_policy_directions(tmp_path):
+    from app.infrastructure_collect import build_graph, publish_snapshot
+    from app.infrastructure_map import load_infrastructure_map, summarize_services
 
     now = datetime.now(timezone.utc)
     at = now.isoformat()
@@ -4473,7 +4474,21 @@ def test_ipsec_phase_two_requires_expected_peers_and_both_policy_directions():
     assert state == "reachable"
     assert {e["a"] for e in graph["links"] if e["b"] == "ipsec:office-tunnel" and e["confirmed"]} == {"left", "right"}
     reply["peer"] = "another-peer"
-    assert build()[1] == "unreachable"
+    graph, state = build()
+    assert state == "unreachable"
+    path = tmp_path / "infrastructure.json"
+    publish_snapshot(path, graph)
+    issue, = summarize_services(load_infrastructure_map(path, now))["serviceAudit"]["services"][0]["issues"]
+    assert issue["required"] is True and issue["target"] == local
+    assert issue["ipsecPolicy"] == {"remoteNetwork": remote, "directions": [
+        {"source": "local-router", "state": "reachable", "checkedAt": at},
+        {"source": "remote-router", "state": "unreachable", "checkedAt": at, "reason": "ipsec_policy_missing"},
+    ]}
+    reply.update(peer="main", established=False)
+    graph, state = build()
+    assert state == "unreachable"
+    service = next(n for n in graph["nodes"] if n["id"] == "ipsec:office-tunnel")
+    assert service["serviceChecks"][0]["ipsecPolicy"]["directions"][1]["reason"] == "ipsec_phase2_not_established"
     network["ipsec"].pop("remote-router")
     assert build()[1] == "unknown"
 

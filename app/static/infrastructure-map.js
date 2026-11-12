@@ -1419,7 +1419,11 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         connection_refused: 'Отказ на UDP-запрос, источник не определён', timeout: 'Ответ не получен вовремя',
         icmp_port_unreachable: 'ICMP: UDP-порт недоступен', icmp_rejected: 'Получен отказ ICMP',
         icmp_no_echo_reply: 'Нет ответа ICMP Echo Reply', icmp_unreachable: 'Получено сообщение о недостижимости',
+        icmp_reply_unconfirmed: 'Ответ ICMP не подтверждён',
         icmp_probe_error: 'Не удалось выполнить ICMP-проверку',
+        ipsec_observation_unavailable: 'Нет свежих данных опроса',
+        ipsec_policy_missing: 'Ожидаемая политика не найдена',
+        ipsec_phase2_not_established: 'Политика найдена, фаза 2 не установлена',
         icmp_route_unconfirmed: 'Маршрут UI_VPN не подтверждён, ICMP не отправлен',
         icmp_route_mismatch: 'Выбран другой маршрут UI_VPN, ICMP не отправлен',
         transport_error: 'Ошибка сетевого запроса', unexpected_response: 'Ответ не соответствует запросу',
@@ -1506,9 +1510,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           wireguard.latestHandshake && 'handshake ' + formatTime(wireguard.latestHandshake)]
           .filter(Boolean).map(text => ' · ' + text).join('') : '';
         const endpoint = [check.method, wireguard?.interface, vlan?.id, check.backupVmid && 'ВМ ' + check.backupVmid,
-          check.target, check.httpHost, check.port, check.path, check.dns?.name,
+          check.target, check.ipsecPolicy && '↔ ' + check.ipsecPolicy.remoteNetwork, check.httpHost, check.port, check.path, check.dns?.name,
           check.dns?.record, check.tunnelInterface, check.tunnelAddress, check.smbShare].filter(Boolean).join(' ');
-        const confirmed = ['Маршрут', 'Маршрут · WireGuard', 'OpenVPN TUN', 'SMB Mount', 'Копия Proxmox']
+        const confirmed = ['Маршрут', 'Маршрут · WireGuard', 'OpenVPN TUN', 'SMB Mount', 'Копия Proxmox', 'IPsec фаза 2']
           .includes(check.method) ? 'Подтверждён' :
           node.id === data.clusterId ? 'В норме' : 'Отвечает';
         const sessionState = pppoe && {
@@ -1572,6 +1576,11 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           title.addEventListener('click', () => select(guests[0].id));
         }
         row.append(title, make('small', result + http + rtsp + ftp + certificate + postgresql + smb + (reason ? ' · ' + reason + errorSource : '') + backup + policy + dns + rtt + attempts + gateway + egress + management + scope + source + time + identity + (check.stale ? ' · устарело' : '')));
+        for (const direction of check.ipsecPolicy?.directions ?? []) {
+          const status = direction.state === 'reachable' ? 'Фаза 2 установлена' : reasons[direction.reason];
+          row.append(make('small', [direction.source, status, direction.checkedAt && formatTime(direction.checkedAt)]
+            .filter(Boolean).join(' · ')));
+        }
         if (arpResult) {
           row.append(make('small', arpResult + ' · ' + arp.address + ' · из ' + arp.sourceIP + ' · ' + arp.interface));
         }

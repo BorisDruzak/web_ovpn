@@ -1028,22 +1028,26 @@ def _ipsec_policy_checks(feature: dict, remote: str, spec: dict, snapshots: dict
         snapshot = snapshots.get(source, {})
         at = snapshot.get("at")
         if not observation_is_fresh(at, now):
-            return "unknown", None
-        established = any(policy.get("peer") == peer and policy.get("src_address") == src
-                          and policy.get("dst_address") == dst and policy.get("action") == "encrypt"
-                          and policy.get("tunnel") is True and policy.get("established") is True
-                          for policy in snapshot["policies"])
-        return ("reachable" if established else "unreachable"), datetime.fromisoformat(at)
+            return {"source": source, "state": "unknown", "checkedAt": None, "reason": "ipsec_observation_unavailable"}
+        matches = [policy for policy in snapshot["policies"]
+                   if policy.get("peer") == peer and policy.get("src_address") == src
+                   and policy.get("dst_address") == dst and policy.get("action") == "encrypt"
+                   and policy.get("tunnel") is True]
+        if any(policy.get("established") is True for policy in matches):
+            return {"source": source, "state": "reachable", "checkedAt": at}
+        return {"source": source, "state": "unreachable", "checkedAt": at,
+                "reason": "ipsec_phase2_not_established" if matches else "ipsec_policy_missing"}
 
     checks = []
     for local in feature["policy_destinations"]:
-        forward, left = direction(spec["local_source"], feature["central_peer"]["name"], local, remote)
-        reverse, right = direction(spec["remote_source"], feature["remote_peer"]["name"], remote, local)
-        states = (forward, reverse)
+        directions = [direction(spec["local_source"], feature["central_peer"]["name"], local, remote),
+                      direction(spec["remote_source"], feature["remote_peer"]["name"], remote, local)]
+        states = {row["state"] for row in directions}
         state = "unreachable" if "unreachable" in states else "unknown" if "unknown" in states else "reachable"
-        stamps = [stamp for status, stamp in ((forward, left), (reverse, right)) if status == state or state == "reachable"]
-        checked_at = min((stamp for stamp in stamps if stamp), default=now).isoformat()
-        checks.append({**_observation(state, "MikroTik IPsec", "IPsec фаза 2", checked_at), "target": local})
+        stamps = [datetime.fromisoformat(row["checkedAt"]) for row in directions if row["state"] == state and row["checkedAt"]]
+        checked_at = min(stamps, default=now).isoformat()
+        checks.append({**_observation(state, "MikroTik IPsec", "IPsec фаза 2", checked_at), "target": local,
+                       "required": True, "ipsecPolicy": {"remoteNetwork": remote, "directions": directions}})
     return checks
 
 
@@ -1073,13 +1077,15 @@ def _collect_ipsec_connectivity(context: dict, sources: list[dict], configured: 
             ("UI_VPN", remote, lambda: probe_icmp(str(remote), source_ip=str(local))),
             (router["name"], local, lambda: legacy_driver_for(router, load_secrets()).ping_ipv4(str(local), str(remote))),
         ):
+            reason = "icmp_reply_unconfirmed"
             try:
                 replied = probe_once()
             except (OSError, ValueError, subprocess.SubprocessError):
                 replied = False
+                reason = "icmp_probe_error"
             stamp = datetime.now(timezone.utc).isoformat()
             checks.append({**_observation("reachable" if replied else "unknown", source, "ICMP", stamp),
-                           "target": str(address)})
+                           "target": str(address), "required": True, **({"reason": reason} if not replied else {})})
         observations[feature_id] = checks
     return observations
 
