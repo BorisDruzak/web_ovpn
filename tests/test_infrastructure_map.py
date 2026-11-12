@@ -4363,6 +4363,7 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
     assert matched == {"id": "vm:1", "name": "VM 1", "vmid": 1, "state": "matched",
                        "registrations": 1, "presence": "online", "lastSeenAt": at}
     assert ambiguous["state"] == "ambiguous" and "lastSeenAt" not in ambiguous
+    assert ambiguous["reason"] == "multiple_registrations"
 
     browser_url = "/network/infrastructure/agents"
     assert client.get(browser_url, follow_redirects=False).status_code == 303
@@ -4377,6 +4378,44 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
     assert "nodes" not in response.json()["infrastructure"]
     Adapter.unavailable = True
     assert client.get(browser_url).json()["infrastructure"]["agentAudit"] == {"sourceState": "unavailable"}
+
+
+def test_agent_audit_reports_duplicate_guest_macs_without_using_them_for_presence(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    mac = "02:00:00:00:00:01"
+    pve = {
+        "at": at, "cluster": [], "nodes": [{"node": "pve1", "status": "online"}],
+        "guests": [{"vmid": vmid, "node": "pve1", "status": "running", "type": "qemu"} for vmid in (100, 101)],
+        "configs": {str(vmid): {"net0": f"virtio={mac},bridge=vmbr0"} for vmid in (100, 101)},
+    }
+    raw = build_graph({}, {}, {}, pve, {}, now)
+    path = tmp_path / "map.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    identities = [{"id": "registration", "baseline_mac_keys": ["mac-020000000001"], "online": True,
+                   "baseline_collected_at": at, "last_seen_at": at}]
+    graph = load_infrastructure_map(path, now, agent_identities=identities)
+    audit = graph["agentAudit"]
+    assert (audit["eligible"], audit["matched"], audit["ambiguous"]) == (2, 0, 2)
+    assert [(entry["vmid"], entry["reason"]) for entry in audit["guests"]] == [
+        (100, "duplicate_guest_mac"), (101, "duplicate_guest_mac"),
+    ]
+    assert all("presence" not in entry and "lastSeenAt" not in entry for entry in audit["guests"])
+    assert mac not in json.dumps(graph) and "agentMatchConflict" not in json.dumps(graph)
+    stale = load_infrastructure_map(path, now + timedelta(hours=1), agent_identities=identities)
+    assert stale["agentAudit"]["guests"] == []
+
+    pve["configs"]["101"]["net0"] = "virtio=02:00:00:00:00:02,bridge=vmbr0"
+    raw = build_graph({}, {}, {}, pve, {}, now)
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    identities[0]["baseline_mac_keys"].append("mac-020000000002")
+    guests = load_infrastructure_map(path, now, agent_identities=identities)["agentAudit"]["guests"]
+    assert [(entry["vmid"], entry["reason"]) for entry in guests] == [
+        (100, "registration_matches_multiple_guests"), (101, "registration_matches_multiple_guests"),
+    ]
 
 
 def test_missing_infrastructure_snapshot_has_explicit_empty_state(tmp_path, monkeypatch):

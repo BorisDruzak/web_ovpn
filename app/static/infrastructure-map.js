@@ -498,7 +498,11 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const guests = agentAudit.guests ?? [];
     const guest = guests.find(item => item.id === label.dataset.agentStatus);
     if (guest?.state === 'ambiguous') {
-      label.textContent = 'Неоднозначное совпадение';
+      label.textContent = {
+        duplicate_guest_mac: 'Повторяющийся MAC в Proxmox',
+        multiple_registrations: 'Несколько регистраций Endpoint',
+        registration_matches_multiple_guests: 'Регистрация совпадает с несколькими ВМ',
+      }[guest.reason] ?? 'Неоднозначное совпадение';
     } else if (guest?.presence === 'online') {
       label.textContent = 'На связи · ' + formatTime(guest.lastSeenAt);
     } else if (!guest && agentAudit.matched + agentAudit.ambiguous > guests.length) {

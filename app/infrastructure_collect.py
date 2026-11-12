@@ -1754,10 +1754,13 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             configured_nics = {name for name in config if re.fullmatch(r"net[0-9]+", name)}
             if observation_is_fresh(pve_at, now):
                 if status == "ok":
+                    enabled_macs = {mac for _, _, disabled, mac in interfaces.values() if mac and not disabled}
+                    conflicting = {mac for mac in enabled_macs if mac_counts[mac] > 1 or interface_mac_counts[mac] > 1}
+                    if conflicting:
+                        item["agentMatchConflict"] = True
                     keys = sorted({
-                        "mac-" + mac.replace(":", "") for _, _, disabled, mac in interfaces.values()
-                        if mac and not disabled and mac_counts[mac] == interface_mac_counts[mac] == 1
-                        and declared_devices_by_mac.get(mac, set()) <= {key}
+                        "mac-" + mac.replace(":", "") for mac in enabled_macs - conflicting
+                        if declared_devices_by_mac.get(mac, set()) <= {key}
                     })
                     if keys:
                         item["agentMatchKeys"] = keys

@@ -1394,7 +1394,7 @@ def load_infrastructure_agent_audit(path: Path) -> dict:
             "agentAudit": graph.get("agentAudit", {"sourceState": "unavailable"})}
 
 
-def _summarize_guest_agents(nodes: dict, keys: dict, identities: list[dict], now: datetime) -> dict:
+def _summarize_guest_agents(nodes: dict, keys: dict, conflicts: set[str], identities: list[dict], now: datetime) -> dict:
     from .inventory.endpoint import CANDIDATE_MAX_AGE, STATE_MAX_AGE
 
     by_id = {row["id"]: row for row in identities if isinstance(row, dict)
@@ -1408,19 +1408,28 @@ def _summarize_guest_agents(nodes: dict, keys: dict, identities: list[dict], now
             if isinstance(key, str) and re.fullmatch(r"mac-[0-9a-f]{12}", key):
                 by_mac[key].add(identity_id)
     owners = Counter(key for values in keys.values() for key in values)
+    conflicts = conflicts | {node_id for node_id, values in keys.items() if any(owners[key] > 1 for key in values)}
     matches = {node_id: set().union(*(by_mac[key] for key in values if owners[key] == 1))
                for node_id, values in keys.items()}
+    for node_id in conflicts:
+        matches.setdefault(node_id, set())
     guests_by_identity = Counter(identity_id for values in matches.values() for identity_id in values)
     guests = []
     for node_id, candidates in matches.items():
-        if not candidates:
+        if not candidates and node_id not in conflicts:
             continue
         node = nodes[node_id]
         entry = {key: node[key] for key in ("id", "name", "vmid")}
         entry.update(state="ambiguous", registrations=len(candidates))
-        if len(candidates) == 1:
+        if node_id in conflicts:
+            entry["reason"] = "duplicate_guest_mac"
+        elif len(candidates) > 1:
+            entry["reason"] = "multiple_registrations"
+        else:
             identity_id, = candidates
-            if guests_by_identity[identity_id] == 1:
+            if guests_by_identity[identity_id] > 1:
+                entry["reason"] = "registration_matches_multiple_guests"
+            else:
                 entry["state"] = "matched"
                 identity = by_id[identity_id]
                 baseline, last_seen = _time(identity.get("baseline_collected_at")), _time(identity.get("last_seen_at"))
@@ -1430,7 +1439,7 @@ def _summarize_guest_agents(nodes: dict, keys: dict, identities: list[dict], now
                 if entry["presence"] == "online":
                     entry["lastSeenAt"] = last_seen.isoformat()
         guests.append(entry)
-    return {"sourceState": "ready", "eligible": len(keys),
+    return {"sourceState": "ready", "eligible": len(matches),
             "matched": sum(row["state"] == "matched" for row in guests),
             "ambiguous": sum(row["state"] == "ambiguous" for row in guests),
             "guests": sorted(guests, key=lambda row: row["vmid"])[:64]}
@@ -1466,6 +1475,7 @@ def load_infrastructure_map(
     port_states = {}
     endpoint_keys = {}
     agent_keys = {}
+    agent_conflicts = set()
     lacp_expectations = {}
     for row in _rows(raw.get("nodes"), 600):
         node = _public_node(row, now)
@@ -1480,11 +1490,14 @@ def load_infrastructure_map(
                 endpoint_keys[node["id"]] = key
             keys = row.get("agentMatchKeys")
             if (agent_identities is not None and node["guest"] and node["vmid"] is not None
-                    and now - stamp <= MAX_AGE and isinstance(keys, list)
+                    and now - stamp <= MAX_AGE
                     and any(s["name"] == "Proxmox" and s["label"] == "Запущена" and not s["stale"] for s in node["sources"])):
-                valid = {key for key in keys[:32] if isinstance(key, str) and re.fullmatch(r"mac-[0-9a-f]{12}", key)}
-                if valid:
-                    agent_keys[node["id"]] = valid
+                if row.get("agentMatchConflict") is True:
+                    agent_conflicts.add(node["id"])
+                if isinstance(keys, list):
+                    valid = {key for key in keys[:32] if isinstance(key, str) and re.fullmatch(r"mac-[0-9a-f]{12}", key)}
+                    if valid:
+                        agent_keys[node["id"]] = valid
     for node_id, node in nodes.items():
         stp = node.get("stpRootPath", {})
         bridge_id = stp.get("bridgeDeviceId")
@@ -1620,7 +1633,7 @@ def load_infrastructure_map(
         "overviewGuests": node_ids("overviewGuests"),
         "git": revision if re.fullmatch(r"[0-9a-f]{40}", revision) else "",
         **({"collectionIssues": issues} if issues else {}),
-        **({"agentAudit": _summarize_guest_agents(nodes, agent_keys, agent_identities, now)}
+        **({"agentAudit": _summarize_guest_agents(nodes, agent_keys, agent_conflicts, agent_identities, now)}
            if agent_identities is not None else {}),
         **({"guestAttachments": _guest_attachments(nodes, links, [key for key, node in nodes.items() if node["guest"]])}
            if include_guest_attachments else {}),
