@@ -176,6 +176,23 @@ def test_router_api_uses_the_same_selectors_and_final_cumulative_counts(monkeypa
     assert "test-only-credential" not in repr(result)
 
 
+@pytest.mark.parametrize("reply, expected", [
+    (["!re", "=address=192.0.2.50", "=interface=ether9", "=status=incomplete", "=complete=false", "",
+      "!done", ""], {"status": "observed", "state": "incomplete", "resolved": False}),
+    (["!re", "=address=192.0.2.50", "=interface=other", "=status=reachable", "=complete=true", "",
+      "!done", ""], {"status": "missing"}),
+    (["!trap", "=message=permission denied", ""], {"status": "unavailable"}),
+])
+def test_gateway_arp_preserves_ping_and_uses_exact_interface(monkeypatch, reply, expected):
+    sock = fake_api(monkeypatch, ["!re", "=sent=3", "=received=0", "", "!done", "", *reply])
+    result = run_probe(sources=[API_SOURCE], secrets=API_SECRETS, interface="ether9", observe_neighbor=True)
+    assert result["status"] == "unreachable"
+    assert result["observed_path"] is None
+    assert result["evidence"]["gateway_arp"] == expected
+    assert sock.words[-5:] == ["/ip/arp/print", "=.proplist=address,interface,status,complete,disabled",
+                               "?address=192.0.2.50", "?interface=ether9", ""]
+
+
 def test_router_api_reports_icmp_error_without_guessing_a_path(monkeypatch):
     fake_api(monkeypatch, [
         "!re", "=seq=0", "=host=192.0.2.5", "=size=576", "=ttl=63", "=time=893us",

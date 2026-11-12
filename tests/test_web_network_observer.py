@@ -2376,7 +2376,7 @@ def test_route_availability_catalog_execution_and_history(tmp_path, monkeypatch)
     profiles = network_probe_profiles.ProbeProfiles.model_validate({"routes": {profile_id: {
         "label": "Central WAN comparison", "scheduled": True, "probes": [
             {"id": "rtk", "expected_path": "RTK", "target": "192.0.2.20", "protocol": "icmp",
-             "router_source": "mikrotik-main", "routing_table": "isp1"},
+             "router_source": "mikrotik-main", "interface": "ether9", "observe_neighbor": True},
         ],
     }}})
     monkeypatch.setattr(network_probe_profiles, "load_probe_profiles", lambda: profiles)
@@ -2385,7 +2385,9 @@ def test_route_availability_catalog_execution_and_history(tmp_path, monkeypatch)
 
     def probe(args, **kwargs):
         calls.append(args)
-        return {"probe": {"status": "reachable", "evidence": {"packet_loss_pct": 0}}}
+        return {"probe": {"status": "reachable", "evidence": {
+            "packet_loss_pct": 0, "gateway_arp": {"status": "observed", "state": "reachable", "resolved": True},
+        }}}
 
     monkeypatch.setattr(network_route_matrix, "run_netctl", probe)
     base = "/api/v1/network/diagnostics"
@@ -2398,6 +2400,7 @@ def test_route_availability_catalog_execution_and_history(tmp_path, monkeypatch)
     data = client.post(endpoint, headers=headers, json=payload).json()["data"]
     assert data["status"] == "reachable"
     assert data["result"]["probes"][0]["path_status"] == "unconfirmed"
+    assert data["result"]["probes"][0]["evidence"]["gateway_arp"]["resolved"] is True
     assert client.post(endpoint, headers=headers, json=payload).json()["data"]["status"] == "rate_limited"
     history = client.get(base + "/route-runs", headers=headers, params={"profile": profile_id}).json()["data"]["runs"]
     assert len(history) == 1 and history[0]["result"]["probes"] == data["result"]["probes"]
@@ -2405,6 +2408,7 @@ def test_route_availability_catalog_execution_and_history(tmp_path, monkeypatch)
     response = client.post("/network/diagnostics/checks", data={"csrf_token": csrf, **payload})
     assert response.status_code == 200
     assert "Путь не подтверждён" in response.text and "mikrotik-main" in response.text
+    assert "ARP шлюза · reachable" in response.text
     assert [call[:-1] for call in calls] == [["path", "probe", "--profile=central-wan", "--probe=rtk"]] * 2
 
 

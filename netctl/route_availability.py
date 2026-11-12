@@ -204,6 +204,30 @@ def _measure_first_hop(
     return responder
 
 
+def _observe_gateway_arp(client: RouterOSApiClient, target: str, interface: str, deadline: float) -> dict:
+    timeout = min(2.0, deadline - monotonic())
+    if client.sock is None or timeout <= 0:
+        return {"status": "unavailable"}
+    try:
+        client.sock.settimeout(timeout)
+        rows = client.call(["/ip/arp/print", "=.proplist=address,interface,status,complete,disabled",
+                            f"?address={target}", f"?interface={interface}"])
+    except TimeoutError:
+        return {"status": "timeout"}
+    except (OSError, RuntimeError, ValueError):
+        return {"status": "unavailable"}
+    matches = [row for row in rows if row.get("address") == target and row.get("interface") == interface
+               and row.get("disabled") != "true"]
+    if len(matches) != 1:
+        return {"status": "ambiguous" if matches else "missing"}
+    row = matches[0]
+    state = row.get("status")
+    states = {"reachable", "stale", "delay", "probe", "permanent", "incomplete", "failed"}
+    complete = row.get("complete")
+    return {"status": "observed", "state": state if state in states else "unknown",
+            "resolved": {"true": True, "false": False}.get(complete)}
+
+
 def probe_router_route(
     *,
     source: str,
@@ -213,6 +237,7 @@ def probe_router_route(
     routing_table: str | None = None,
     mtu: int | None = None,
     expected_first_hop: str | None = None,
+    observe_neighbor: bool = False,
     sources: list[dict],
     secrets: dict,
 ) -> dict:
@@ -229,6 +254,8 @@ def probe_router_route(
             raise ValueError(f"invalid router {label}")
     if mtu is not None and (type(mtu) is not int or not 68 <= mtu <= 9000):
         raise ValueError("MTU must be an integer from 68 through 9000")
+    if type(observe_neighbor) is not bool or (observe_neighbor and (not interface or expected_hop)):
+        raise ValueError("gateway ARP requires a bound interface and a direct gateway target")
 
     evidence = {
         "method": "routeros_ping",
@@ -240,6 +267,8 @@ def probe_router_route(
         },
     }
     observed_path = None
+    if observe_neighbor:
+        evidence["gateway_arp"] = {"status": "unavailable"}
     first_hop = None
     if expected_hop is not None:
         first_hop = {"expected": str(expected_hop), "status": "unknown", "reason": "primary_probe_unavailable"}
@@ -311,6 +340,8 @@ def probe_router_route(
                 client = stack.push(MikroTikApiDriver(router, secrets)._client())
                 client = client.__enter__()
                 metrics = _read_api_metrics(client.call(words))
+                if observe_neighbor:
+                    evidence["gateway_arp"] = _observe_gateway_arp(client, str(destination), interface, deadline)
                 if metrics is not None and first_hop is not None:
                     hop_words = ["/ping", *(f"={argument}" for argument in hop_arguments)]
                     if mtu is not None:

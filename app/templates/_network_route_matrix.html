@@ -12,6 +12,11 @@
           {{ status_labels.get(row.status, row.status) }}
           {% if row.evidence.packet_loss_pct is defined %}<br>Потери {{ row.evidence.packet_loss_pct }}%{% endif %}
           {% if row.evidence.rtt_ms is defined and row.evidence.rtt_ms.avg is defined %}<br>RTT {{ row.evidence.rtt_ms.avg }} мс{% endif %}
+          {% if row.evidence.gateway_arp is defined %}
+          {% set arp = row.evidence.gateway_arp %}
+          <br>ARP шлюза · {{ {'observed': arp.state, 'missing': 'запись отсутствует', 'ambiguous': 'несколько записей', 'timeout': 'таймаут'}.get(arp.status, 'нет данных') }}
+          {% if arp.resolved is sameas false %} · MAC не разрешён{% endif %}
+          {% endif %}
           {% if row.evidence.duration_ms is defined %}<br>{{ row.evidence.duration_ms }} мс{% endif %}
           {% if row.evidence.http_status is defined %}<br>HTTP {{ row.evidence.http_status }}{% endif %}
           {% if row.evidence.dns_rcode is defined %}<br>DNS {{ row.evidence.dns_rcode }}{% endif %}
