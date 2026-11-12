@@ -304,8 +304,20 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         round_trip = check.get("roundTripMs")
         if type(round_trip) in (int, float) and 0 <= round_trip <= 3000:
             result["roundTripMs"] = round_trip
-        if reason in ("icmp_no_echo_reply", "icmp_unreachable", "icmp_probe_error"):
+        if reason in ("icmp_no_echo_reply", "icmp_unreachable", "icmp_probe_error",
+                      "icmp_route_unconfirmed", "icmp_route_mismatch"):
             result["reason"] = reason
+        route = check.get("localRoute")
+        if isinstance(route, dict) and not result["stale"] and route.get("state") in ("reachable", "unreachable", "unknown"):
+            details = {"state": route["state"]}
+            for key in ("expectedGateway", "gateway", "sourceIP"):
+                address = _network_address(route.get(key))
+                if address and "/" not in address and ":" not in address:
+                    details[key] = address
+            interface = route.get("interface")
+            if isinstance(interface, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", interface):
+                details["interface"] = interface
+            result["localRoute"] = details
     if result["method"] in ("HTTP", "HTTPS"):
         host = check.get("httpHost")
         if result["method"] == "HTTP" and isinstance(host, str) and re.fullmatch(r"[A-Za-z0-9.-]{1,253}", host):

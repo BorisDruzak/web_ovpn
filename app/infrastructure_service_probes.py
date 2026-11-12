@@ -603,6 +603,36 @@ def _icmp_check(ip: str) -> dict:
     return {"state": "unknown", "reason": "icmp_probe_error"}
 
 
+def _icmp_via_router(ip: str, gateway: object) -> dict:
+    unknown = {"state": "unknown", "reason": "icmp_route_unconfirmed"}
+    if not isinstance(ip, str) or not isinstance(gateway, str):
+        return unknown
+    try:
+        address, expected = str(ipaddress.IPv4Address(ip)), str(ipaddress.IPv4Address(gateway))
+    except ValueError:
+        return unknown
+    route = {"state": "unknown", "expectedGateway": expected}
+    try:
+        rows = json.loads(subprocess.check_output(
+            ["/usr/sbin/ip", "-j", "-4", "route", "get", address], timeout=TIMEOUT, stderr=subprocess.DEVNULL,
+        ))
+        if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
+            return {**unknown, "localRoute": route}
+        row, = rows
+        interface = row.get("dev")
+        if row.get("dst") != address or not isinstance(interface, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", interface):
+            return {**unknown, "localRoute": route}
+        actual = str(ipaddress.IPv4Address(row["gateway"])) if row.get("gateway") else ""
+        source = str(ipaddress.IPv4Address(row["prefsrc"]))
+    except (KeyError, OSError, ValueError, subprocess.SubprocessError):
+        return {**unknown, "localRoute": route}
+    route.update(state="reachable" if actual == expected else "unreachable",
+                 gateway=actual, interface=interface, sourceIP=source)
+    if actual != expected:
+        return {**unknown, "reason": "icmp_route_mismatch", "localRoute": route}
+    return {**_icmp_check(address), "localRoute": route}
+
+
 def _postgresql(spec: dict) -> dict:
     try:
         address = str(ipaddress.ip_address(spec["ip"]))
@@ -711,7 +741,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
             elif protocol == "dns":
                 details = _dns(spec)
             elif protocol == "icmp":
-                details = _icmp_check(spec.get("ip"))
+                details = (_icmp_via_router(spec.get("ip"), spec["route_via"]) if "route_via" in spec
+                           else _icmp_check(spec.get("ip")))
             elif protocol == "postgresql":
                 details = _postgresql(spec)
             elif protocol == "smb":

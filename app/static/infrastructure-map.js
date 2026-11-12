@@ -705,6 +705,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         icmp_port_unreachable: 'ICMP: UDP-порт недоступен', icmp_rejected: 'Получен отказ ICMP',
         icmp_no_echo_reply: 'Нет ответа ICMP Echo Reply', icmp_unreachable: 'Получено сообщение о недостижимости',
         icmp_probe_error: 'Не удалось выполнить ICMP-проверку',
+        icmp_route_unconfirmed: 'Маршрут UI_VPN не подтверждён, ICMP не отправлен',
+        icmp_route_mismatch: 'Выбран другой маршрут UI_VPN, ICMP не отправлен',
         transport_error: 'Ошибка сетевого запроса', unexpected_response: 'Ответ не соответствует запросу',
         dns_no_answer: 'Нет записи запрошенного типа', dns_address_mismatch: 'Адреса не совпадают с ожидаемыми',
         http_content_type: 'Неожиданный тип ответа', http_body_limit: 'Ответ превышает лимит проверки',
@@ -759,6 +761,12 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const dns = [check.dns?.rcode, check.dns?.transport, check.dns?.addresses?.join(', ')]
           .filter(Boolean).map(value => ' · ' + value).join('');
         const http = check.httpStatus ? ' · HTTP ' + check.httpStatus : '';
+        const localRoute = check.localRoute;
+        const egress = localRoute?.interface
+          ? ' · Выход UI_VPN: ' + [localRoute.sourceIP, localRoute.interface,
+            localRoute.gateway && 'через ' + localRoute.gateway,
+            localRoute.state === 'unreachable' && 'ожидался ' + localRoute.expectedGateway].filter(Boolean).join(' · ')
+          : '';
         const rtt = check.roundTripMs === undefined ? '' : ' · RTT ' +
           check.roundTripMs.toLocaleString('ru-RU', {maximumFractionDigits: 3}) + ' мс';
         const postgresql = check.postgresqlTls === 'negotiated' ? ' · Согласован ' + (check.tlsVersion ?? 'TLS') :
@@ -767,7 +775,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           (check.smbSigningRequired ? ' · сервер требует подпись' : ' · сервер не требует подпись') : '';
         const scope = check.supplemental ? ' · дополнительная проверка' :
           check.component ? ' · компонент сервиса' : check.required ? ' · проверка доступности' : '';
-        row.append(make('strong', endpoint || 'Проверка'), make('small', result + http + postgresql + smb + (reason ? ' · ' + reason + errorSource : '') + dns + rtt + attempts + gateway + management + scope + source + time + (check.stale ? ' · устарело' : '')));
+        row.append(make('strong', endpoint || 'Проверка'), make('small', result + http + postgresql + smb + (reason ? ' · ' + reason + errorSource : '') + dns + rtt + attempts + gateway + egress + management + scope + source + time + (check.stale ? ' · устарело' : '')));
         list.append(row);
       }
       propertiesSection.append(make('h3', 'Проверки'), list);

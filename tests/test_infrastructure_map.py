@@ -2680,6 +2680,43 @@ def test_route_checks_report_mismatch_inactive_and_missing_observation():
     ]
 
 
+def test_icmp_via_expected_router_keeps_route_evidence_separate_from_echo(monkeypatch):
+    from app import infrastructure_service_probes as probes
+    from app.infrastructure_map import _public_service_check
+
+    target, gateway = "192.0.2.19", "192.0.2.1"
+    route = {"dst": target, "gateway": gateway, "dev": "ens18", "prefsrc": "192.0.2.30"}
+    calls = []
+
+    def route_output(command, **kwargs):
+        assert command == ["/usr/sbin/ip", "-j", "-4", "route", "get", target]
+        return json.dumps([route]).encode()
+
+    def ping(address):
+        calls.append(address)
+        return {"state": "unknown", "reason": "icmp_no_echo_reply"}
+
+    monkeypatch.setattr(probes.subprocess, "check_output", route_output)
+    monkeypatch.setattr(probes, "_icmp_check", ping)
+
+    def check():
+        node = {"id": "vpn", "kind": "Сервис"}
+        probes.apply_service_probes([node], {"vpn": [
+            {"type": "icmp", "ip": target, "route_via": gateway, "supplemental": True},
+        ]})
+        return _public_service_check(node["serviceChecks"][0], datetime.now(timezone.utc))
+
+    observed = check()
+    assert observed["state"] == "unknown" and observed["reason"] == "icmp_no_echo_reply"
+    assert observed["localRoute"] == {"state": "reachable", "gateway": gateway, "expectedGateway": gateway,
+                                      "interface": "ens18", "sourceIP": "192.0.2.30"}
+    route["gateway"] = "192.0.2.254"
+    different = check()
+    assert different["state"] == "unknown" and different["reason"] == "icmp_route_mismatch"
+    assert different["localRoute"]["state"] == "unreachable"
+    assert calls == [target]
+
+
 def test_icmp_diagnostics_distinguish_echo_silence_and_probe_error(monkeypatch):
     from subprocess import CompletedProcess, TimeoutExpired
     from app import infrastructure_service_probes as probes
