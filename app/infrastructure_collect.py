@@ -28,6 +28,7 @@ from netctl.config import DEFAULT_DB_URL, load_secrets
 from netctl.context import load_context_bytes, load_schema, validate_context
 from netctl.db import list_sources, read_context_snapshot
 from netctl.drivers import legacy_driver_for
+from netctl.snmp.fdb import read_learned_fdb_port
 from netctl.snmp.interfaces import read_interface_link, read_snr_transceivers, read_switch_link_modes
 from netctl.snmp.lacp import read_lacp_members
 from netctl.snmp.stp import read_stp_designated_ports, read_stp_root_path
@@ -543,6 +544,72 @@ def _collect_guest_arp_probes(pve: dict, network: dict, configured: dict, now: d
                 mac, address, observation = result
                 checks.setdefault(mac, []).append((address, observation))
     return checks
+
+
+async def _collect_guest_attachment_fdb(pve: dict, network: dict, bindings: dict, now: datetime) -> list[dict]:
+    configured = bindings.get("guest_attachment_fdb", {})
+    if not configured or not observation_is_fresh(pve.get("at"), now):
+        return []
+    sources = network.get("sources", [])
+    snr = {row["source"] for row in network.get("switches", []) if row.get("profile_id") == "snr"
+           and observation_is_fresh(row.get("last_success_at"), now)}
+    switches = {row["name"]: row for row in sources if row.get("enabled") and row["name"] in snr
+                and row.get("driver") == "snmp_switch" and type(row.get("id")) is int}
+    arp_rows = network.get("arp", [])
+    arp = _arp_mappings(arp_rows, now)
+    already_observed = {(row["source_id"], row["port_key"], row["mac"].lower())
+                        for row in network.get("guest_fdb", []) if observation_is_fresh(row.get("observed_at"), now)}
+    configs = pve.get("configs", {})
+    owners = Counter(mac for config in configs.values() for mac in _guest_macs(config))
+    guests = pve.get("guests", [])
+    vmids = Counter(str(guest["vmid"]) for guest in guests)
+    running = {str(guest["vmid"]) for guest in guests if guest.get("status") == "running"
+               and not guest.get("template") and vmids[str(guest["vmid"])] == 1}
+
+    async def check(vmid, switch):
+        address = bindings.get("guest_probe_ips", {}).get(vmid)
+        router = bindings.get("guest_router_arp_sources", {}).get(vmid)
+        if not address or address not in arp or not router or vmid not in running:
+            return None
+        mac, _ = arp[address]
+        nics = _guest_interfaces(configs.get(vmid, {}))
+        if owners[mac] != 1 or sum(not disabled and nic_mac == mac for _, _, disabled, nic_mac in nics.values()) != 1:
+            return None
+        interfaces = {row["interface"] for row in arp_rows if row.get("source") == router and row.get("ip") == address
+                      and str(row.get("mac") or "").lower() == mac and row.get("interface")
+                      and observation_is_fresh(row.get("last_seen_at"), now)}
+        if len(interfaces) != 1 or not await asyncio.to_thread(
+            _router_layer2_observation, sources, router, interfaces.pop(), mac, address=address,
+        ):
+            return None
+        rows = [row for row in network.get("ports", []) if row.get("source") == switch["name"]
+                and type(row.get("collector_run_id")) is int]
+        latest = max((row["collector_run_id"] for row in rows), default=None)
+        try:
+            async with asyncio.timeout(4), SnmpTransport.from_source(switch) as transport:
+                port_index = await read_learned_fdb_port(transport, mac)
+                if port_index is None:
+                    return None
+                matches = [row for row in rows if row["collector_run_id"] == latest
+                           and port_index in (row.get("if_index"), row.get("bridge_port"))]
+                if len(matches) != 1:
+                    return None
+                port, = matches
+                if (not port.get("port_key") or not port.get("name") or type(port.get("if_index")) is not int
+                        or (switch["id"], port["port_key"], mac) in already_observed
+                        or not observation_is_fresh(port.get("last_seen_at"), now)):
+                    return None
+                link = await read_interface_link(transport, port["if_index"], port["name"])
+                if link.get("state") == "up":
+                    return {"source_id": switch["id"], "port_key": port["port_key"], "mac": mac, "vlan_id": None,
+                            "observed_at": datetime.now(timezone.utc).isoformat()}
+        except (TimeoutError, OSError, ValueError):
+            pass
+        return None
+
+    observations = await asyncio.gather(*(check(vmid, switches[name]) for vmid, name in list(configured.items())[:8]
+                                          if isinstance(name, str) and name in switches))
+    return [row for row in observations if row]
 
 
 def _route_checks(intent: dict, source: str, routes: list[dict], now: datetime, *, host_routes: object = None) -> list[dict]:
@@ -2785,6 +2852,9 @@ def main() -> int:
                 bindings.get("guest_router_arp_sources"),
                 auto_on_link=bindings.get("guest_auto_arp_probes") is True,
             )
+            network.setdefault("guest_fdb", []).extend(asyncio.run(
+                _collect_guest_attachment_fdb(pve, network, bindings, datetime.now(timezone.utc))
+            ))
             network["asset_mac_checks"] = _collect_asset_mac_probes(
                 context, network["sources"], bindings.get("asset_mac_probes", {}),
             )

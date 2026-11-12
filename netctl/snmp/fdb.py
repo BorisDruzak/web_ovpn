@@ -19,6 +19,25 @@ from .profiles import PortProfile
 _FDB_STATUS = {1: "other", 2: "invalid", 3: "learned", 4: "self", 5: "mgmt"}
 
 
+async def read_learned_fdb_port(transport, mac: str) -> int | None:
+    index = tuple(bytes.fromhex(mac.replace(":", "")))
+    if len(index) != 6:
+        return None
+
+    async def scalar(column):
+        oid = (*column, *index)
+        result = await transport.get(oid)
+        if (result.outcome is SnmpOutcome.SUCCESS_WITH_ROWS and len(result.rows) == 1
+                and result.rows[0].oid == oid):
+            return _compatible_integral(result.rows[0], "FDB value")
+        return None
+
+    port = await scalar(DOT1D_FDB_PORT)
+    if port and await scalar(DOT1D_FDB_STATUS) == 3:
+        return port
+    return None
+
+
 def _successful_rows(result: CapabilityResult) -> tuple[SnmpVarBind, ...]:
     if result.outcome not in {
         SnmpOutcome.SUCCESS_WITH_ROWS,

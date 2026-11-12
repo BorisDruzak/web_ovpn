@@ -4897,6 +4897,72 @@ def test_router_layer2_checks_follow_inventory_and_guest_arp_identity(monkeypatc
     assert len(calls) == 2
 
 
+def test_guest_attachment_probe_requires_router_arp_and_a_live_learned_switch_port(monkeypatch):
+    import asyncio
+
+    from app import infrastructure_collect as collector
+    from netctl.snmp.models import CapabilityResult, SnmpVarBind
+    from netctl.snmp.oids import DOT1D_FDB_PORT, DOT1D_FDB_STATUS
+    from netctl.snmp.outcomes import SnmpOutcome
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    mac, ip = "02:00:00:00:00:03", "192.0.2.21"
+    pve = {"at": at, "guests": [{"vmid": 111, "status": "running"}],
+           "configs": {"111": {"net0": f"virtio={mac},bridge=vmbr1"}}}
+    arp = {"ip": ip, "mac": mac, "source": "router", "interface": "bridge-lan", "last_seen_at": at}
+    network = {"arp": [arp], "sources": [
+        {"name": "switch", "id": 7, "driver": "snmp_switch", "enabled": True},
+    ], "switches": [{"source": "switch", "profile_id": "snr", "last_success_at": at}],
+        "ports": [{"source": "switch", "collector_run_id": 9, "port_key": "xe3", "name": "xe3",
+                   "if_index": 5027, "oper_status": "up", "last_seen_at": at}]}
+    bindings = {"guest_probe_ips": {"111": ip}, "guest_router_arp_sources": {"111": "router"},
+                "guest_attachment_fdb": {"111": "switch"}}
+    calls = []
+    learned = True
+
+    class Transport:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def get(self, oid):
+            column, index = oid[:-6], oid[-6:]
+            assert index == tuple(bytes.fromhex(mac.replace(":", "")))
+            assert calls[-1] == ("router", "bridge-lan", mac, ip)
+            value = {DOT1D_FDB_STATUS: 3 if learned else 4, DOT1D_FDB_PORT: 5027}[column]
+            return CapabilityResult("", SnmpOutcome.SUCCESS_WITH_ROWS, (SnmpVarBind(oid, "integer", value),))
+
+    def probe(sources, name, interface, target, *, address):
+        calls.append((name, interface, target, address))
+        return {"state": "reachable"}
+
+    async def link(transport, index, name):
+        assert (index, name) == (5027, "xe3")
+        return {"state": "up"}
+
+    monkeypatch.setattr(collector.SnmpTransport, "from_source", lambda _: Transport())
+    monkeypatch.setattr(collector, "_router_layer2_observation", probe)
+    monkeypatch.setattr(collector, "read_interface_link", link)
+
+    def collect():
+        return asyncio.run(collector._collect_guest_attachment_fdb(pve, network, bindings, now))
+
+    row, = collect()
+    assert {k: row[k] for k in ("source_id", "port_key", "mac", "vlan_id")} == {
+        "source_id": 7, "port_key": "xe3", "mac": mac, "vlan_id": None,
+    }
+    network["guest_fdb"] = [{**row, "observed_at": at, "vlan_id": 1}]
+    assert collect() == []
+    network["guest_fdb"].clear()
+    learned = False
+    assert collect() == []
+    arp["source"] = "other-router"
+    assert collect() == [] and len(calls) == 3
+
+
 def test_inventory_binding_needs_matching_guest_mac():
     from app.infrastructure_collect import build_graph
 
