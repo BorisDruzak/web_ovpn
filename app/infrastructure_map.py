@@ -1809,6 +1809,14 @@ def _attachment_vlan_memberships(interface: dict, match: dict, ports: dict, now:
     return {"id": vid, "basis": basis, "ports": observations} if observations else {}
 
 
+def _guest_power(node: dict) -> str:
+    if node["reachability"]["state"] == "stopped":
+        return "stopped"
+    proxmox = next((source for source in node["sources"] if source["name"] == "Proxmox" and not source["stale"]), {})
+    return {"Запущена": "running", "Выключена": "stopped", "Приостановлена": "paused",
+            "Гостевая ОС ещё не запущена": "prelaunch"}.get(proxmox.get("label"), "unknown")
+
+
 def _guest_attachments(nodes: dict, links: list[dict], guest_ids: list[str], now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
     placements = defaultdict(list)
@@ -1853,10 +1861,11 @@ def _guest_attachments(nodes: dict, links: list[dict], guest_ids: list[str], now
     guests = {}
     for guest_id in guest_ids:
         candidates = placements[guest_id]
-        guest = {"guest": _attachment_node(nodes[guest_id]), "hypervisor": None, "interfaces": [],
+        node = nodes[guest_id]
+        guest = {"guest": _attachment_node(node), "hypervisor": None, "interfaces": [], "power": _guest_power(node),
                  "placement": "ambiguous" if len(candidates) > 1 else "unconfirmed"}
         guests[guest_id] = guest
-        io = nodes[guest_id].get("guestIo", {})
+        io = node.get("guestIo", {})
         if all(key in io for key in GUEST_NETWORK_RATE_FIELDS):
             guest["networkTraffic"] = {"source": "Proxmox", **{
                 key: io[key] for key in (*GUEST_NETWORK_RATE_FIELDS, "checkedAt", "intervalSeconds")
@@ -2265,23 +2274,18 @@ def summarize_guest_attachment_audit(graph: dict) -> dict:
         ("bridge_uplink", False): "bridge_uplink",
         ("configured_bridge", False): "configured_bridge",
     }
-    guest_counts = dict.fromkeys(("running", "stopped", "unknown"), 0)
+    guest_counts = dict.fromkeys(("running", "stopped", "prelaunch", "paused", "unknown"), 0)
     interface_counts = dict.fromkeys((*evidence_order.values(), "local_neighbor_with_physical_pair",
                                       "local_neighbor", "unconfirmed", "inactive"), 0)
     gaps = []
-    for guest_id, attachment in guests.items():
-        node = nodes[guest_id]
-        power = "unknown"
-        if node["reachability"]["state"] == "stopped":
-            power = "stopped"
-        elif any(source["name"] == "Proxmox" and source["label"] == "Запущена" and not source["stale"]
-                 for source in node["sources"]):
-            power = "running"
+    for attachment in guests.values():
+        power = attachment["power"]
+        inactive = power in {"stopped", "prelaunch", "paused"}
         guest_counts[power] += 1
 
         incomplete = []
         for interface in attachment["interfaces"]:
-            if power == "stopped" or interface["linkDisabled"]:
+            if inactive or interface["linkDisabled"]:
                 state = "inactive"
             else:
                 evidence = {(row["basis"], "physicalPair" in row) for row in interface["switchObservations"]}
@@ -2296,7 +2300,7 @@ def summarize_guest_attachment_audit(graph: dict) -> dict:
                 incomplete.append({"guestPort": interface["guestPort"], "bridge": interface["bridge"], "state": state})
                 if "arpDiagnostic" in interface:
                     incomplete[-1]["arpDiagnostic"] = interface["arpDiagnostic"]
-        if power != "stopped" and (incomplete or not attachment["interfaces"]):
+        if not inactive and (incomplete or not attachment["interfaces"]):
             gaps.append({"guest": attachment["guest"], "hypervisor": attachment["hypervisor"],
                          "power": power, "placement": attachment["placement"], "interfaces": incomplete,
                          **({"networkTraffic": attachment["networkTraffic"]} if "networkTraffic" in attachment else {})})

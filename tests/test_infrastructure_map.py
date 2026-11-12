@@ -225,7 +225,7 @@ def test_observer_disk_measurements_publish_units_and_reported_warning_threshold
 
 def test_qemu_prelaunch_reports_guest_state_backup_lock_and_configured_bridge(tmp_path):
     from app.infrastructure_collect import build_graph
-    from app.infrastructure_map import load_infrastructure_map
+    from app.infrastructure_map import load_infrastructure_map, summarize_guest_attachment, summarize_guest_attachment_audit
 
     now = datetime.now(timezone.utc)
     stamp = now.isoformat()
@@ -238,26 +238,38 @@ def test_qemu_prelaunch_reports_guest_state_backup_lock_and_configured_bridge(tm
     def read(when=now):
         path.write_text(json.dumps(build_graph({}, {}, {}, pve, {}, now)), encoding="utf-8")
         graph = load_infrastructure_map(path, when)
-        return next(node for node in graph["nodes"] if node["id"] == "pve-guest:104"), graph["links"]
+        node = next(node for node in graph["nodes"] if node["id"] == "pve-guest:104")
+        return node, graph
 
-    node, links = read()
+    node, graph = read()
     assert node["reachability"]["state"] == "unreachable"
     assert node["reachability"]["source"] == "Proxmox"
     assert node["mapStatus"] == "critical"
     assert node["properties"]["Состояние ВМ"] == "Гостевая ОС ещё не запущена"
     assert node["properties"]["Блокировка Proxmox"] == "Резервное копирование"
-    placement = next(link for link in links if link["b"] == "pve-guest:104")
+    placement = next(link for link in graph["links"] if link["b"] == "pve-guest:104")
     port, = placement["portEvidence"]
     assert (port["a"], port["b"]) == ("vmbr1", "net0")
     assert port["virtual"]["switchPorts"] == []
+    for power in ("prelaunch", "paused"):
+        guest.update(status=power)
+        _, graph = read()
+        audit = summarize_guest_attachment_audit(graph)["attachmentAudit"]
+        assert audit["guestCounts"][power] == 1 and audit["guestCounts"]["unknown"] == 0
+        assert audit["gapTotal"] == 0 and audit["interfaceCounts"]["inactive"] == 1
+        attachment, = summarize_guest_attachment(graph, node["id"])["attachment"]["guests"]
+        assert attachment["power"] == power and attachment["interfaces"][0]["bridge"] == "vmbr1"
 
-    node, _ = read(now + timedelta(minutes=26))
+    guest.update(status="prelaunch")
+    node, graph = read(now + timedelta(minutes=26))
     assert node["mapStatus"] == "unknown"
     assert "Блокировка Proxmox" not in node["properties"]
+    assert summarize_guest_attachment_audit(graph)["attachmentAudit"]["guestCounts"]["unknown"] == 1
     guest.update(status="running")
-    node, _ = read()
+    node, graph = read()
     assert node["reachability"]["state"] == "unknown"
     assert node["properties"]["Блокировка Proxmox"] == "Резервное копирование"
+    assert summarize_guest_attachment_audit(graph)["attachmentAudit"]["gapTotal"] == 1
 
 
 def test_guest_network_reports_an_empty_configuration_only_after_a_successful_read(tmp_path):
@@ -6141,7 +6153,7 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
         return report["attachmentAudit"]
 
     audit = read_audit()
-    assert audit["guestCounts"] == {"running": 1, "stopped": 0, "unknown": 0}
+    assert audit["guestCounts"] == {"running": 1, "stopped": 0, "prelaunch": 0, "paused": 0, "unknown": 0}
     assert audit["interfaceCounts"]["guest_mac_with_physical_pair"] == 1
     assert audit["gapTotal"] == 0
     browser_endpoint = "/network/infrastructure/snapshot"
@@ -6262,7 +6274,7 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     assert gap["placement"] == "unconfirmed" and gap["interfaces"] == []
     raw["nodes"][1]["reachability"] = {"state": "stopped", "checkedAt": stamp, "source": "Proxmox"}
     read()
-    assert read_audit()["guestCounts"] == {"running": 0, "stopped": 1, "unknown": 0}
+    assert read_audit()["guestCounts"] == {"running": 0, "stopped": 1, "prelaunch": 0, "paused": 0, "unknown": 0}
     assert read_audit()["gapTotal"] == 0
 
 
