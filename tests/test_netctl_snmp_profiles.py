@@ -29,6 +29,7 @@ _CSS326_FIXTURE = Path(__file__).parent / "fixtures" / "snmp" / "css326.json"
 class _PagedFixtureTransport:
     def __init__(self, pages: list[dict[str, object]]) -> None:
         self.results: dict[tuple[int, ...], CapabilityResult] = {}
+        self.instance_reads: list[tuple[tuple[int, ...], tuple[int, ...]]] = []
         for page in pages:
             request_oid = tuple(page["request_oid"])
             prior = self.results.get(request_oid)
@@ -70,6 +71,14 @@ class _PagedFixtureTransport:
         return self.results.get(
             oid, CapabilityResult(capability, SnmpOutcome.SUCCESS_EMPTY)
         )
+
+    async def get_instances(
+        self, oid: tuple[int, ...], indexes: tuple[int, ...], *, capability: str = ""
+    ) -> CapabilityResult:
+        self.instance_reads.append((oid, indexes))
+        results = [await self.get(oid + (index,)) for index in indexes]
+        rows = tuple(row for result in results for row in result.rows)
+        return CapabilityResult(capability, SnmpOutcome.SUCCESS_WITH_ROWS if rows else SnmpOutcome.SUCCESS_EMPTY, rows)
 
 
 @dataclass(frozen=True)
@@ -289,6 +298,30 @@ def test_broadcast_snmp_columns_are_optional_and_join_by_ifindex(outcome, value_
     assert sample.in_broadcast_packets == 2**63 + 1
     assert sample.out_broadcast_packets == out_value
     assert sample.counter_discontinuity_ticks == 0
+
+
+@pytest.mark.parametrize("profile", ["css326", "tplink"])
+def test_switch_reads_broadcast_markers_by_ifindex(profile):
+    from netctl.snmp.oids import (
+        IF_COUNTER_DISCONTINUITY_TIME, IF_HC_IN_BROADCAST_PACKETS,
+        IF_HC_IN_OCTETS, IF_HC_OUT_OCTETS, IF_INDEX,
+    )
+
+    transport = (_css326_fixture_transport if profile == "css326" else _tplink_fixture_transport)()
+    index = transport.results[IF_INDEX].rows[0].value
+    for oid in (IF_HC_IN_OCTETS, IF_HC_OUT_OCTETS, IF_HC_IN_BROADCAST_PACKETS):
+        transport.results[oid] = CapabilityResult(
+            "", SnmpOutcome.SUCCESS_WITH_ROWS, (SnmpVarBind(oid + (index,), "counter64", 123),),
+        )
+    marker = IF_COUNTER_DISCONTINUITY_TIME + (index,)
+    transport.results[marker] = CapabilityResult(
+        "", SnmpOutcome.SUCCESS_WITH_ROWS, (SnmpVarBind(marker, "time_ticks", 0),),
+    )
+
+    snapshot = asyncio.run(collect_switch_snapshot({}, transport))
+
+    assert transport.instance_reads == [(IF_COUNTER_DISCONTINUITY_TIME, (index,))]
+    assert next(row for row in snapshot.counter_samples if row.if_index == index).counter_discontinuity_ticks == 0
 
 
 def test_ifx_timeout_keeps_valid_core_bridge_and_fdb_snapshot() -> None:

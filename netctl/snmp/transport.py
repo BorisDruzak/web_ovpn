@@ -37,6 +37,8 @@ RawResponse = tuple[object, object, object, tuple[object, ...]]
 class SnmpBackend(Protocol):
     async def get(self, oid: NumericOid) -> RawResponse: ...
 
+    async def get_many(self, oids: tuple[NumericOid, ...]) -> RawResponse: ...
+
     def walk(self, oid: NumericOid) -> AsyncIterator[RawResponse]: ...
 
     async def close(self) -> None: ...
@@ -46,6 +48,9 @@ BackendFactory = Callable[..., SnmpBackend]
 DEFAULT_MAX_WALK_RESPONSES = 100
 DEFAULT_MAX_WALK_ROWS = 10_000
 MAX_WALK_DEADLINE_SECONDS = 3_600.0
+INSTANCE_BATCH_SIZE = 8
+MAX_INSTANCE_GETS = 64
+INSTANCE_GET_DEADLINE_SECONDS = 5.0
 
 
 def collect_on_worker_loop(factory: Callable[[], Awaitable[T]]) -> T:
@@ -91,13 +96,16 @@ class _PySnmpBackend:
         return self._target
 
     async def get(self, oid: NumericOid) -> RawResponse:
+        return await self.get_many((oid,))
+
+    async def get_many(self, oids: tuple[NumericOid, ...]) -> RawResponse:
         target = await self._transport_target()
         return await get_cmd(
             self._engine,
             self._auth,
             target,
             self._context,
-            ObjectType(ObjectIdentity(oid)),
+            *(ObjectType(ObjectIdentity(oid)) for oid in oids),
             lookupMib=False,
         )
 
@@ -415,6 +423,34 @@ class SnmpTransport:
                 "transport_error",
                 "SNMP transport failed",
             )
+
+    async def get_instances(
+        self, oid: NumericOid, indexes: tuple[int, ...], *, capability: str = ""
+    ) -> CapabilityResult:
+        base = require_numeric_oid(oid)
+        name = capability or oid_text(base)
+        if len(indexes) > MAX_INSTANCE_GETS:
+            return _failure_result(name, SnmpOutcome.PARSE_ERROR, "instance_limit", "SNMP instance limit reached")
+        oids = tuple(require_numeric_oid(base + (index,)) for index in dict.fromkeys(indexes))
+        rows: list[SnmpVarBind] = []
+        try:
+            async with asyncio.timeout(INSTANCE_GET_DEADLINE_SECONDS):
+                for offset in range(0, len(oids), INSTANCE_BATCH_SIZE):
+                    batch = oids[offset : offset + INSTANCE_BATCH_SIZE]
+                    response = await self._backend.get_many(batch)
+                    result = self._consume_responses(name, (response,))
+                    if result.outcome not in {SnmpOutcome.SUCCESS_WITH_ROWS, SnmpOutcome.SUCCESS_EMPTY}:
+                        return result
+                    if len(result.rows) != len(batch) or {row.oid for row in result.rows} != set(batch):
+                        return _failure_result(
+                            name, SnmpOutcome.PARSE_ERROR, "instance_mismatch", "SNMP GET instances did not match the request",
+                        )
+                    rows.extend(result.rows)
+        except TimeoutError:
+            return _failure_result(name, SnmpOutcome.TIMEOUT, "instance_deadline_exceeded", "SNMP GET instance deadline exceeded")
+        except Exception:
+            return _failure_result(name, SnmpOutcome.PARSE_ERROR, "transport_error", "SNMP transport failed")
+        return self._success_result(name, rows)
 
     async def walk(
         self, oid: tuple[int, ...], *, capability: str = ""

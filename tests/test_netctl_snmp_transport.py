@@ -637,6 +637,30 @@ def test_get_returns_one_typed_result_without_closing_shared_backend() -> None:
     assert backend.closed is False
 
 
+@pytest.mark.parametrize("unexpected", [False, True])
+def test_get_instances_batches_and_rejects_unrequested_oids(unexpected):
+    from netctl.snmp import SnmpOutcome
+
+    batches = []
+
+    class InstanceBackend(FakeBackend):
+        async def get_many(self, oids):
+            batches.append(oids)
+            return _response(*(
+                (rfc1902.ObjectName(oid if not unexpected else BASE_OID + (100,)), rfc1902.TimeTicks(0))
+                for oid in oids
+            ))
+
+    result = asyncio.run(_transport(InstanceBackend()).get_instances(BASE_OID, tuple(range(1, 10)), capability="marker"))
+    if unexpected:
+        assert result.outcome is SnmpOutcome.PARSE_ERROR and not result.rows
+        assert [len(batch) for batch in batches] == [8]
+    else:
+        assert result.outcome is SnmpOutcome.SUCCESS_WITH_ROWS
+        assert [len(batch) for batch in batches] == [8, 1]
+        assert [row.oid for row in result.rows] == [BASE_OID + (i,) for i in range(1, 10)]
+
+
 @pytest.mark.parametrize(
     "override",
     [

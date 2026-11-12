@@ -95,6 +95,10 @@ class CollectorTransport(Protocol):
         self, oid: tuple[int, ...], *, capability: str = ""
     ) -> CapabilityResult: ...
 
+    async def get_instances(
+        self, oid: tuple[int, ...], indexes: tuple[int, ...], *, capability: str = ""
+    ) -> CapabilityResult: ...
+
 
 _SYSTEM_CAPABILITIES = (
     (SYS_DESCR, "sys_descr"),
@@ -771,7 +775,15 @@ async def collect_switch_snapshot(
             if counter_samples:
                 broadcast_columns = {}
                 for oid, capability, field, value_type in _BROADCAST_COUNTER_COLUMNS:
-                    result = await transport.walk(oid, capability=capability)
+                    if oid == IF_COUNTER_DISCONTINUITY_TIME and profile.profile_id in {"css326", "tplink"}:
+                        counted_indexes = (
+                            broadcast_columns.get("in_broadcast_packets", {}).keys()
+                            | broadcast_columns.get("out_broadcast_packets", {}).keys()
+                        )
+                        indexes = tuple(sorted(counted_indexes.intersection(sample.if_index for sample in counter_samples)))
+                        result = await transport.get_instances(oid, indexes, capability=capability)
+                    else:
+                        result = await transport.walk(oid, capability=capability)
                     if result.outcome is SnmpOutcome.SUCCESS_WITH_ROWS:
                         try:
                             broadcast_columns[field] = parse_broadcast_column(result, oid, value_type=value_type)
