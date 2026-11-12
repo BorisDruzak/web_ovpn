@@ -1188,6 +1188,61 @@ def test_smb_requires_complete_negotiate_reply_and_reports_dialect(monkeypatch):
     assert check(response)["state"] == "unknown"
 
 
+@pytest.mark.parametrize("protocol", ["mongodb_ping", "amqp_start", "redis_ping"])
+def test_directum_dependencies_require_the_matching_application_protocol(monkeypatch, protocol):
+    import struct
+
+    from app import infrastructure_service_probes as probes
+
+    sent = []
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def settimeout(self, value):
+            assert 0 < value <= probes.TIMEOUT
+
+        def sendall(self, data):
+            sent.append(data)
+            if protocol == "mongodb_ping":
+                assert data.endswith(b"\x02$db\x00\x06\x00\x00\x00admin\x00\x00")
+                request_id = struct.unpack_from("<i", data, 4)[0]
+                self.response = struct.pack("<4i", 38, 1, request_id, 2013) + bytes.fromhex(
+                    "000000000011000000016f6b00000000000000f03f00")
+            elif protocol == "amqp_start":
+                assert data == b"AMQP\x00\x00\x09\x01"
+                body = bytes.fromhex("000a000a00090000000000000005504c41494e00000005656e5f5553")
+                self.response = struct.pack("!BHI", 1, 0, len(body)) + body + b"\xce"
+            else:
+                assert data == b"*1\r\n$4\r\nPING\r\n"
+                self.response = b"+PONG\r\n"
+            if corrupt:
+                self.response = self.response[:-1] + b"X"
+
+        def recv(self, size):
+            size = min(size, 3)
+            data, self.response = self.response[:size], self.response[size:]
+            return data
+
+    monkeypatch.setattr(probes.socket, "create_connection", lambda *args, **kwargs: Connection())
+    spec = {"type": protocol, "ip": "192.0.2.10", "port": 1234}
+    node = {"id": "svc", "kind": "Сервис", "probeTargetIP": None}
+    probes.apply_service_probes([node], {"svc": [spec]})
+    assert node["serviceChecks"][0]["reason"] == "probe_target_unconfirmed"
+    assert not sent
+
+    for corrupt, state in ((False, "reachable"), (True, "unknown")):
+        node = {"id": "svc", "kind": "Сервис", "probeTargetIP": spec["ip"]}
+        probes.apply_service_probes([node], {"svc": [spec]})
+        check, = node["serviceChecks"]
+        assert check["state"] == state and check["required"]
+        assert check["target"] == spec["ip"] and check["port"] == spec["port"]
+
+
 def test_postgresql_probe_requires_protocol_response(monkeypatch):
     from app import infrastructure_service_probes as probes
     from app.infrastructure_map import _public_service_check
@@ -1325,6 +1380,7 @@ def test_guest_service_requires_matching_mac_and_arp_to_enable_probe(monkeypatch
 
     graph, service = build()
     assert service["reachability"]["state"] == "reachable"
+    assert service["serviceChecks"][0]["identityCheckedAt"] == now.isoformat()
     assert any(e["a"] == "pve-guest:108" and e["b"] == "zabbix-api" and e["confirmed"] for e in graph["links"])
     assert any(e["a"] == "consumer" and e["b"] == "zabbix-api" and e["confirmed"]
                and e["kind"] == "Зависимость сервиса" for e in graph["links"])
@@ -1345,7 +1401,15 @@ def test_guest_service_requires_matching_mac_and_arp_to_enable_probe(monkeypatch
     pve["configs"]["108"]["net0"] = "virtio=02:00:00:00:00:99,bridge=vmbr0"
     graph, service = build()
     assert "reachability" not in service
-    assert not any(e["b"] == "zabbix-api" for e in graph["links"])
+    dependency, = [e for e in graph["links"] if e["b"] == "zabbix-api"]
+    assert (dependency["a"], dependency["kind"], dependency["confirmed"]) == (
+        "consumer", "Зависимость сервиса", True,
+    )
+    pve["configs"]["108"]["net0"] = f"virtio={mac},bridge=vmbr0"
+    pve["at"] = (now - timedelta(hours=1)).isoformat()
+    graph, service = build()
+    assert service["serviceChecks"][0]["reason"] == "probe_target_unconfirmed"
+    assert [e["kind"] for e in graph["links"] if e["b"] == "zabbix-api"] == ["Зависимость сервиса"]
 
 
 def test_port_evidence_keeps_direction_and_parallel_links(tmp_path):

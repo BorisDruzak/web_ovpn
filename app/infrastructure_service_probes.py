@@ -39,7 +39,9 @@ PROBE_METHODS = {
     "sip_options": "SIP OPTIONS (UDP)", "icmp": "ICMP", "vlan_transit": "ICMP · VLAN",
     "wireguard_policy": "Маршрут · WireGuard", "ipmi_lan": "IPMI LAN (UDP)", "rtsp_options": "RTSP OPTIONS",
     "ssh_identification": "SSH", "ftp_features": "FTP FEAT", "tls_certificate": "Сертификат TLS",
+    "mongodb_ping": "MongoDB ping", "amqp_start": "AMQP Connection.Start", "redis_ping": "Redis PING",
 }
+DEPENDENCY_PROTOCOLS = {"mongodb_ping", "amqp_start", "redis_ping"}
 
 
 def _http_path(path: object) -> str:
@@ -1151,6 +1153,69 @@ def _postgresql(spec: dict) -> dict:
         return {"state": "unknown"}
 
 
+def _dependency_protocol_response(connection: socket.socket, protocol: str, deadline: float) -> bool:
+    def read(size: int) -> bytes:
+        data = bytearray()
+        while len(data) < size:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise TimeoutError
+            connection.settimeout(remaining)
+            chunk = connection.recv(size - len(data))
+            if not chunk:
+                raise EOFError
+            data.extend(chunk)
+        return bytes(data)
+
+    if protocol == "redis_ping":
+        connection.sendall(b"*1\r\n$4\r\nPING\r\n")
+        return read(7) == b"+PONG\r\n"
+    if protocol == "amqp_start":
+        connection.sendall(b"AMQP\x00\x00\x09\x01")
+        frame_type, channel, size = struct.unpack("!BHI", read(7))
+        if frame_type != 1 or channel != 0 or not 18 <= size <= 16_384:
+            return False
+        frame = read(size + 1)
+        return frame.startswith(b"\x00\x0a\x00\x0a\x00\x09") and frame[-1] == 0xce
+
+    # An unauthenticated ping of a standalone MongoDB returns a single BSON {ok: 1.0}.
+    request_id = uuid.uuid4().int % 2**31
+    ping = b"\x10ping\0" + struct.pack("<i", 1) + b"\x02$db\0" + struct.pack("<i", 6) + b"admin\0\0"
+    command = b"\0" * 5 + struct.pack("<i", len(ping) + 4) + ping
+    connection.sendall(struct.pack("<4i", 16 + len(command), request_id, 0, 2013) + command)
+    expected = b"\0" * 5 + struct.pack("<i", 17) + b"\x01ok\0" + struct.pack("<d", 1.0) + b"\0"
+    length, _, response_to, opcode = struct.unpack("<4i", read(16))
+    return (length == 16 + len(expected) and response_to == request_id and opcode == 2013
+            and read(len(expected)) == expected)
+
+
+def _dependency_protocol_probe(spec: dict) -> dict:
+    try:
+        address = str(ipaddress.ip_address(spec["ip"]))
+        port = spec["port"]
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise ValueError("invalid service probe port")
+        deadline = monotonic() + TIMEOUT
+        with socket.create_connection((address, port), timeout=TIMEOUT) as connection:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise TimeoutError
+            connection.settimeout(remaining)
+            if _dependency_protocol_response(connection, spec["type"], deadline):
+                return {"state": "reachable"}
+        return {"state": "unknown", "reason": "unexpected_response"}
+    except EOFError:
+        return {"state": "unknown", "reason": "unexpected_response"}
+    except TimeoutError:
+        return {"state": "unknown", "reason": "timeout"}
+    except (ConnectionRefusedError, ConnectionResetError):
+        return {"state": "unreachable", "reason": "transport_error"}
+    except OSError:
+        return {"state": "unknown", "reason": "transport_error"}
+    except (KeyError, TypeError, ValueError):
+        return {"state": "unknown"}
+
+
 def _probe(spec: dict) -> str:
     try:
         protocol = spec["type"]
@@ -1255,6 +1320,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 details = _wireguard_policy(spec)
             elif protocol == "postgresql":
                 details = _postgresql(spec)
+            elif protocol in DEPENDENCY_PROTOCOLS:
+                details = _dependency_protocol_probe(spec)
             elif protocol == "smb":
                 details = _smb(spec)
             elif protocol == "smb_mount":
@@ -1275,7 +1342,7 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 "target": spec.get("ip") if not skip_reason and (
                     protocol in {"icmp", "vlan_transit", "sip_options", "ipmi_lan", "rtsp_options", "ssh_identification", "ftp_features",
                                  "zabbix_api", "postgresql", "dns", "smb", "tls_certificate"}
-                    or "probeTargetIP" in node
+                    or protocol in DEPENDENCY_PROTOCOLS or "probeTargetIP" in node
                 ) else None,
                 "checkedAt": datetime.now(timezone.utc).isoformat(),
             }

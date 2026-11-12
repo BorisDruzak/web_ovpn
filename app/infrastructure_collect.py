@@ -1973,6 +1973,9 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
     for role, spec in roles.items():
         if spec.get("asset") in nodes:
             service_dependencies("role:" + role, spec)
+    for services in guest_services.values():
+        for service, spec in services:
+            service_dependencies(service["id"], spec)
 
     cluster_id = ""
     hypervisors = []
@@ -2110,16 +2113,18 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                             )
                 for service, spec in guest_services.get(str(vmid), []):
                     mac = str(spec.get("mac") or "").lower()
-                    if mac_counts[mac] != 1 or mac not in guest_macs.get(str(vmid), set()):
+                    if (guest_ids[vmid] != 1 or not observation_is_fresh(pve_at, now)
+                            or mac_counts[mac] != 1 or mac not in guest_macs.get(str(vmid), set())):
                         continue
                     edge(key, service["id"], "Размещение", "Proxmox", at=pve_at)
-                    service_dependencies(service["id"], spec)
-                    if stopped and guest_ids[vmid] == 1:
+                    if stopped:
                         service["reachability"] = _observation("stopped", "Proxmox", "Состояние ВМ", pve_at)
                     address = bindings.get("guest_probe_ips", {}).get(str(vmid))
-                    if (status == "ok" and arp_mappings.get(address, (None,))[0] == mac
+                    arp = arp_mappings.get(address)
+                    if (status == "ok" and arp and arp[0] == mac
                             and any(nic_mac == mac and not disabled for _, _, disabled, nic_mac in interfaces.values())):
                         service["probeTargetIP"] = address
+                        service["probeTargetIdentityAt"] = min(datetime.fromisoformat(pve_at), arp[1]).isoformat()
             if not guest.get("template") and guest.get("status") == "stopped":
                 item["reachability"] = _observation("stopped", "Proxmox", "Состояние ВМ", pve_at)
             elif prelaunch and not guest.get("template") and observation_is_fresh(pve_at, now):
