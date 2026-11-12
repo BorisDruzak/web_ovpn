@@ -650,6 +650,33 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     return panel;
   }
 
+  function renderObservedHostPorts(host) {
+    const list = make('ul', null, 'map-detail-list');
+    const rendered = new Set();
+    for (const edge of incident.get(host.id) ?? []) {
+      if (!edge.confirmed) continue;
+      const switchSide = edge.a === host.id ? 'b' : 'a';
+      const target = byId.get(edge[switchSide]);
+      for (const reading of edge.portEvidence ?? []) {
+        const endpoint = reading.learnedEndpoint;
+        const port = reading[switchSide];
+        if (!reading.confirmed || endpoint?.deviceId !== host.id || endpoint.switchId !== target.id || !port) continue;
+        const key = [target.id, portKey(port), endpoint.mac].join('/');
+        if (rendered.has(key)) continue;
+        rendered.add(key);
+        const row = make('li');
+        row.append(switchPortButton(target.id, target.name, port),
+          make('small', [endpoint.mac, reading.source, formatTime(reading.at)].join(' · ')));
+        list.append(row);
+      }
+    }
+    if (!rendered.size) return null;
+    const panel = make('section');
+    panel.dataset.section = 'observed-host-ports';
+    panel.append(make('h3', 'MAC на порту коммутатора'), list);
+    return panel;
+  }
+
   function renderGuestAttachment(attachment) {
     if (!attachment?.interfaces.length) return null;
     const panel = make('details', null, 'map-port-panel');
@@ -870,6 +897,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const resourceHost = placementHost.guest ? placementHost : node;
     const servicePaths = renderServicePaths(data.servicePaths?.[id]);
     if (servicePaths) propertiesSection.append(servicePaths);
+    if (node.kind === 'Сервис' && placementHost !== node && !placementHost.guest) {
+      const observedPorts = renderObservedHostPorts(placementHost);
+      if (observedPorts) propertiesSection.append(observedPorts);
+    }
     const guestAttachment = renderGuestAttachment(data.guestAttachments?.[resourceHost.id]);
     if (guestAttachment) {
       if (servicePaths) guestAttachment.open = false;
