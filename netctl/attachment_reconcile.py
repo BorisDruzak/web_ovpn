@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from typing import Any, Sequence
 
@@ -104,6 +105,7 @@ def _start_run(
 
 def _eligible_interfaces(conn: sqlite3.Connection) -> dict[int, int]:
     eligible: dict[int, int] = {}
+    authoritative_sites: dict[str, bool] = {}
     rows = conn.execute(
         """
         SELECT interfaces.id AS interface_id, interfaces.asset_id, interfaces.mac, assets.site
@@ -126,17 +128,24 @@ def _eligible_interfaces(conn: sqlite3.Connection) -> dict[int, int]:
             """,
             (asset_id, asset_id),
         ).fetchone()
-        switch_runs = conn.execute(
-            """
-            SELECT runs.status, runs.outcomes_json
-            FROM network_sources AS sources
-            JOIN switch_collection_runs AS runs ON runs.source_id = sources.id
-            WHERE sources.site = ?
-            ORDER BY runs.id DESC
-            """,
-            (str(row["site"]),),
-        ).fetchall()
-        if observed is not None and any(has_authoritative_fdb(run["status"], run["outcomes_json"]) for run in switch_runs):
+        if observed is None:
+            continue
+        site = str(row["site"])
+        if site not in authoritative_sites:
+            with closing(conn.execute(
+                """
+                SELECT runs.status, runs.outcomes_json
+                FROM network_sources AS sources
+                JOIN switch_collection_runs AS runs ON runs.source_id = sources.id
+                WHERE sources.site = ? AND runs.status IN ('success', 'partial')
+                ORDER BY runs.id DESC
+                """,
+                (site,),
+            )) as switch_runs:
+                authoritative_sites[site] = any(
+                    has_authoritative_fdb(run["status"], run["outcomes_json"]) for run in switch_runs
+                )
+        if authoritative_sites[site]:
             eligible[int(row["interface_id"])] = asset_id
     return eligible
 

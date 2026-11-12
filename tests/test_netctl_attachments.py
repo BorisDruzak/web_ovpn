@@ -322,6 +322,36 @@ def test_attachment_resolution_uses_confirmed_ambiguous_uplink_and_unresolved_ru
     assert (unresolved.status, unresolved.confidence, unresolved.selected) == ("unresolved", 0, None)
 
 
+def test_eligible_interfaces_checks_fdb_history_once_per_observed_site(tmp_path: Path) -> None:
+    from contextlib import closing
+
+    from netctl.attachment_reconcile import _eligible_interfaces
+
+    at = "2026-07-22T08:00:00Z"
+    with closing(_attachment_db(tmp_path)) as conn:
+        conn.execute("UPDATE assets SET site = 'central' WHERE id IN (1, 2)")
+        conn.execute("UPDATE assets SET site = 'remote' WHERE id = 3")
+        conn.execute("UPDATE network_sources SET site = 'central' WHERE id = 10")
+        conn.execute("UPDATE network_sources SET site = 'remote' WHERE id = 11")
+        conn.execute("UPDATE switch_collection_runs SET status = 'failed' WHERE source_id = 11")
+        conn.execute(
+            """INSERT INTO switch_collection_runs (source_id, started_at, finished_at, status)
+               VALUES (10, ?, ?, 'failed')""",
+            ("2026-07-22T08:01:00Z", "2026-07-22T08:01:00Z"),
+        )
+        conn.executemany(
+            """INSERT INTO ip_observations (asset_id, source_key, ip, first_seen_at, last_seen_at, is_current, observation_source)
+               VALUES (?, 'fixture', ?, ?, ?, 1, 'arp')""",
+            [(asset, f"192.0.2.{asset}", at, at) for asset in (1, 2, 3)],
+        )
+        statements = []
+        conn.set_trace_callback(statements.append)
+
+        assert _eligible_interfaces(conn) == {1: 1, 2: 2}
+        history_queries = [sql for sql in statements if "JOIN switch_collection_runs" in sql]
+        assert len(history_queries) == 2
+
+
 def test_reconcile_attachments_persists_candidates_and_a_move(
     tmp_path: Path, monkeypatch
 ) -> None:
