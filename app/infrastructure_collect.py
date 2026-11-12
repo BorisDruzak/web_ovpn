@@ -662,6 +662,25 @@ def _collect_local_guest_ipv4(bindings: dict) -> dict:
     return result
 
 
+def _collect_local_asset_arp(context: dict, bindings: dict) -> list[dict]:
+    configured = bindings.get("asset_local_arp")
+    if not isinstance(configured, dict) or not configured:
+        return []
+    switch_paths = bindings.get("asset_fdb_paths", {})
+    rows = []
+    for device in context["devices"]:
+        asset, address = device["id"], device.get("management_ip")
+        mac = str(configured.get(asset, "")).lower()
+        if not (asset in switch_paths and address and MAC.fullmatch(mac)
+                and mac in {value.lower() for value in device.get("mac_addresses", [])}):
+            continue
+        reading = _local_arp_diagnostic(address, mac)
+        if reading.get("state") == "matched":
+            rows.append({"ip": address, "mac": mac, "interface": reading["interface"],
+                         "last_seen_at": datetime.now(timezone.utc).isoformat(), "source": "UI_VPN · локальный ARP"})
+    return rows
+
+
 def _collect_guest_arp_probes(pve: dict, network: dict, configured: dict, now: datetime,
                               router_sources: dict | None = None, *, auto_on_link: bool = False,
                               local_macs: dict | None = None, arp_diagnostics: dict | None = None) -> dict:
@@ -3082,7 +3101,7 @@ def _read_rx_silence_windows(connection: sqlite3.Connection, telemetry: list[dic
 
 def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | None = None,
                  transit_sources: set[str] | None = None, *, asset_fdb_ips: set[str] | None = None,
-                 downstream_links: dict | None = None) -> dict:
+                 downstream_links: dict | None = None, local_asset_arp: list[dict] | None = None) -> dict:
     commands = {
         "switches": (["switches", "status"], "switches"),
         "links": (["topology", "links"], "links"),
@@ -3176,6 +3195,7 @@ def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | N
             """
         )]
         if asset_fdb_ips:
+            data["arp"].extend(local_asset_arp or ())
             macs = {row["mac"].lower() for row in data["arp"] if row["ip"] in asset_fdb_ips and row["mac"]}
             data["asset_fdb"] = query_observed_mac_ports(connection, macs, learned_only=True)
         if route_sources:
@@ -3480,6 +3500,7 @@ def main() -> int:
         start_stage("Network Observer database and CLI")
         try:
             network = read_network(guest_macs, route_sources | transit_sources, transit_sources, asset_fdb_ips=asset_fdb_ips,
+                                   local_asset_arp=_collect_local_asset_arp(context, bindings),
                                    downstream_links=_downstream_links(context, bindings.get("downstream_mac_links")))
         except (NetctlError, sqlite3.Error, OSError, ValueError) as exc:
             collection_issues.append("network_observer")

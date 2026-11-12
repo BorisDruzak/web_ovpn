@@ -4802,6 +4802,35 @@ def test_confirmed_attachment_requires_fdb_and_port_from_same_collection():
         assert query_confirmed_attachment_ports(conn) == []
 
 
+def test_local_asset_arp_requires_inventory_mac_and_a_configured_fdb_source(monkeypatch):
+    from app import infrastructure_collect as collector
+
+    mac = "02:00:00:00:00:01"
+    router = {"id": "router", "management_ip": "192.0.2.10", "mac_addresses": [mac.upper()]}
+    context = {"devices": [router, {**router, "id": "other", "management_ip": "192.0.2.11"}]}
+    bindings = {"asset_local_arp": {"router": mac, "other": mac}, "asset_fdb_paths": {"router": "switch"}}
+    observed = "matched"
+    calls = []
+
+    def probe(address, expected_mac):
+        calls.append((address, expected_mac))
+        return {"state": observed, "interface": "eth0"}
+
+    monkeypatch.setattr(collector, "_local_arp_diagnostic", probe)
+    rows = collector._collect_local_asset_arp(context, bindings)
+    assert calls == [("192.0.2.10", mac)]
+    assert rows[0]["source"] == "UI_VPN · локальный ARP" and rows[0]["interface"] == "eth0"
+    fresh = datetime.now(timezone.utc)
+    assert collector._arp_mappings(rows, fresh)["192.0.2.10"][0] == mac
+    assert collector._arp_mappings([*rows, {**rows[0], "mac": "02:00:00:00:00:02"}], fresh) == {}
+    observed = "different_mac"
+    assert collector._collect_local_asset_arp(context, bindings) == []
+    router["mac_addresses"] = []
+    calls.clear()
+    assert collector._collect_local_asset_arp(context, bindings) == []
+    assert calls == []
+
+
 def test_configured_asset_fdb_path_is_scoped_and_requires_a_unique_live_port(monkeypatch, tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map
