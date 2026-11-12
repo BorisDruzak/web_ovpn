@@ -5,6 +5,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 
@@ -16,6 +17,9 @@ from sqlalchemy.orm import Session
 from .audit import write_audit
 from .models import WebAuditLog
 from .network_actions import acquire_network_action
+from .network_capture_store import create_capture
+from .network_probe_profiles import ProfileId, load_probe_profiles
+from .network_throughput import run_throughput
 from .netctl_client import NetctlError, run_netctl
 
 SOURCE_PATTERN = r"^[A-Za-z0-9._-]+$"
@@ -31,8 +35,12 @@ CHECKS = (
     {"check": "asset_route", "title": "Маршрут от сетевого актива", "active": False},
     {"check": "trace_route", "title": "Трассировка до наблюдаемого узла", "active": True},
     {"check": "source_test", "title": "Связь с источником Network Observer", "active": True},
+    {"check": "iperf3", "title": "Замер пропускной способности iperf3", "active": True},
+    {"check": "pcap_capture", "title": "Захват PCAP для Wireshark", "active": True},
+    {"check": "loop_check", "title": "Признаки L2-петель", "active": False},
 )
 AUDIT_PREFIX = "network-check-"
+_throughput_lock = threading.Lock()
 
 
 class CheckInput(BaseModel):
@@ -68,8 +76,24 @@ class TraceRouteCheck(CheckInput):
     destination: ipaddress.IPv4Address
 
 
+class IperfCheck(CheckInput):
+    check: Literal["iperf3"]
+    profile: ProfileId
+    direction: Literal["send", "receive"] = "send"
+
+
+class CaptureCheck(CheckInput):
+    check: Literal["pcap_capture"]
+    profile: ProfileId
+
+
+class LoopCheck(CheckInput):
+    check: Literal["loop_check"]
+    source: str | None = Field(default=None, max_length=128, pattern=SOURCE_PATTERN)
+
+
 NetworkCheck = Annotated[
-    LinuxRouteCheck | AssetRouteCheck | SourceTestCheck | TraceRouteCheck,
+    LinuxRouteCheck | AssetRouteCheck | SourceTestCheck | TraceRouteCheck | IperfCheck | CaptureCheck | LoopCheck,
     Field(discriminator="check"),
 ]
 NETWORK_CHECK_INPUT = TypeAdapter(NetworkCheck)
@@ -88,6 +112,16 @@ CHECK_STATUS_LABELS = {
     "partial": "Получена неполная трассировка",
     "not_monitored": "Узел не входит в мониторинг",
     "rate_limited": "Повторите эту проверку через 5 минут",
+    "measured": "Замер пропускной способности завершён",
+    "captured": "Захват сохранён",
+    "empty_capture": "Захват завершён без совпавших пакетов",
+    "busy": "Проверка занята. Повторите позже",
+    "timeout": "Истекло время проверки",
+    "suspected_loop": "Есть признаки возможной L2-петли",
+    "mac_flapping": "Обнаружено повторное перемещение MAC",
+    "no_evidence": "Признаки петли не выявлены в наблюдениях",
+    "insufficient_data": "Для оценки петель недостаточно наблюдений",
+    "no_sources": "Нет подходящих источников наблюдений",
 }
 
 
@@ -211,9 +245,58 @@ def trace_linux_route(destination: ipaddress.IPv4Address) -> dict:
     return {"status": status, "result": {"hops": hops, "timed_out": timed_out, "max_hops": TRACE_MAX_HOPS}}
 
 
-def execute_network_check(check: NetworkCheck, *, allowed: bool = True) -> dict:
+def loop_diagnostics(source: str | None) -> dict:
+    args = ["switches", "loops"]
+    if source:
+        args.append(f"--source={source}")
+    try:
+        result = run_netctl(args, timeout=15).get("loops")
+    except (NetctlError, OSError, UnicodeError):
+        return {"status": "unavailable", "result": {}}
+    if not isinstance(result, dict):
+        return {"status": "unavailable", "result": {}}
+    return {"status": result.get("status", "insufficient_data"), "result": result}
+
+
+def _iperf_check(check: IperfCheck) -> dict:
+    profile = load_probe_profiles().throughput.get(check.profile)
+    if profile is None:
+        return {"status": "not_found", "result": {}}
+    if not _throughput_lock.acquire(blocking=False):
+        return {"status": "busy", "result": {}}
+    try:
+        reading = run_throughput(
+            profile.peer, profile.port, check.direction,
+            duration_seconds=profile.duration_seconds, bitrate_mbps=profile.bitrate_mbps,
+        )
+        status = "measured" if reading["status"] == "ok" else reading["status"]
+        result = {
+            "point": "vpn_server",
+            **profile.model_dump(),
+            "direction": check.direction,
+            **(reading.get("result") or {}),
+        }
+        return {"status": status, "result": result}
+    finally:
+        _throughput_lock.release()
+
+
+def _capture_check(check: CaptureCheck, owner: str | None) -> dict:
+    profile = load_probe_profiles().capture.get(check.profile)
+    if profile is None or owner is None:
+        return {"status": "not_found", "result": {}}
+    return create_capture(owner, profile)
+
+
+def execute_network_check(check: NetworkCheck, *, allowed: bool = True, capture_owner: str | None = None) -> dict:
     if isinstance(check, SourceTestCheck):
         target = check.source
+    elif isinstance(check, IperfCheck):
+        target = f"{check.profile} · {check.direction}"
+    elif isinstance(check, CaptureCheck):
+        target = check.profile
+    elif isinstance(check, LoopCheck):
+        target = check.source or "Все коммутаторы"
     elif isinstance(check, AssetRouteCheck):
         target = f"{check.asset_key} → {check.destination}"
     else:
@@ -226,6 +309,12 @@ def execute_network_check(check: NetworkCheck, *, allowed: bool = True) -> dict:
         evidence = _asset_route(check)
     elif isinstance(check, TraceRouteCheck):
         evidence = trace_linux_route(check.destination)
+    elif isinstance(check, IperfCheck):
+        evidence = _iperf_check(check)
+    elif isinstance(check, CaptureCheck):
+        evidence = _capture_check(check, capture_owner)
+    elif isinstance(check, LoopCheck):
+        evidence = loop_diagnostics(check.source)
     else:
         evidence = _source_test(check)
     return {"check": check.check, "target": target, "checked_at": datetime.now(UTC).isoformat(), **evidence}
@@ -233,9 +322,11 @@ def execute_network_check(check: NetworkCheck, *, allowed: bool = True) -> dict:
 
 def run_audited_network_check(db: Session, request: Request, actor: str, check: NetworkCheck) -> dict:
     action = AUDIT_PREFIX + check.check
-    active = isinstance(check, (SourceTestCheck, TraceRouteCheck))
-    allowed = not active or acquire_network_action(db, actor, action, datetime.now(UTC)).accepted
-    result = execute_network_check(check, allowed=allowed)
+    active = isinstance(check, (SourceTestCheck, TraceRouteCheck, IperfCheck, CaptureCheck))
+    owner = ("service:" if request.url.path.startswith("/api/v1/") else "user:") + actor
+    throttle_action = f"{action}:{check.profile}:{check.direction}" if isinstance(check, IperfCheck) else action
+    allowed = not active or acquire_network_action(db, owner, throttle_action, datetime.now(UTC)).accepted
+    result = execute_network_check(check, allowed=allowed, capture_owner=owner)
     write_audit(db, request, actor, action, result["status"], result["target"])
     return result
 

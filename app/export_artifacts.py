@@ -19,14 +19,14 @@ _lock = threading.Lock()
 
 
 @contextmanager
-def _storage_lock(root):
+def storage_lock(root, *, timeout=5):
     if (root/'.storage.lock').is_symlink():
         raise ExportLimit('Некорректный файл блокировки экспорта')
     descriptor = os.open(root/'.storage.lock',os.O_RDWR|os.O_CREAT,0o600)
     with os.fdopen(descriptor,'r+b') as file:
         # Windows permits locking a range beyond EOF. Reading/initializing the
         # sentinel before acquisition would race with another process's lock.
-        deadline = time.monotonic()+5
+        deadline = time.monotonic()+timeout
         while True:
             try:
                 if os.name == 'nt':
@@ -68,18 +68,21 @@ def cleanup_exports():
     root = export_root()
     if not root.exists() or root.is_symlink():
         return
-    with _lock,_storage_lock(root):
+    with _lock,storage_lock(root):
         _purge(root)
 
 
 def start_cleanup(app):
     stop = threading.Event()
     def run():
+        from .network_capture_store import purge_captures
+
         while not stop.is_set():
             try:
                 cleanup_exports()
             except (OSError,ExportLimit):
                 pass  # Next tick retries; expired files cannot be downloaded.
+            purge_captures()
             if stop.wait(60):
                 break
     thread = threading.Thread(target=run,name='export-artifact-cleanup',daemon=True)
@@ -160,7 +163,7 @@ def store_export(payload):
     with _lock:
         root = export_root()
         _private_directory(root)
-        with _storage_lock(root):
+        with storage_lock(root):
             return _store_locked(root,payload)
 
 

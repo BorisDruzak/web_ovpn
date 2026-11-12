@@ -58,6 +58,8 @@ Do not paste employee search results, credentials or full logs into unrelated di
 - `openvpn_network_run_check` runs `linux_route`, `asset_route`, `trace_route` or `source_test`. The trace uses a monitored IPv4 target. Report the selected point of observation and distinguish a kernel route lookup, a calculated RouterOS path and observed traceroute hops.
 - `openvpn_network_check_runs` lists recent runs for the authenticated actor.
 - `openvpn_network_interface_history` shows traffic and port errors over the last 24 hours, plus STP changes for switches.
+- Use `iperf3` and `pcap_capture` in `openvpn_network_run_check` with a configured profile. Use `openvpn_network_loop_diagnostics` to read switch MAC-movement and STP evidence, including coverage.
+- `openvpn_network_capture_list` lists the actor's unexpired captures. `openvpn_network_download_pcap` retrieves a capture by ID into the local Codex network-captures directory.
 
 ## Tool Map
 

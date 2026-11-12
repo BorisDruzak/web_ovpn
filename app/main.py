@@ -44,10 +44,12 @@ from .models import (
 )
 from .netctl_client import NetctlError, run_netctl
 from .network_actions import acquire_network_action
+from .network_capture_store import download_capture, list_captures
 from .network_checks import (
     CHECKS, CHECK_STATUS_LABELS, NETWORK_CHECK_INPUT, host_availability_action_error,
     interface_history_args, list_network_check_runs, run_audited_network_check,
 )
+from .network_probe_profiles import probe_catalog
 from .endpoint_agent_network import (
     attach_endpoint_agent_statuses,
     endpoint_agent_refresh_status,
@@ -2569,6 +2571,8 @@ def render_network_checks(request: Request, db: Session, *, result=None, values=
         "result": result,
         "runs": list_network_check_runs(db, user.username, 12) if user else [],
         "check_titles": {item["check"]: item["title"] for item in CHECKS},
+        "probe_profiles": probe_catalog() if can_run else {},
+        "captures": list_captures("user:" + user.username) if can_run and user else [],
         "values": values or {},
         "status_labels": CHECK_STATUS_LABELS,
         "error": error,
@@ -2595,6 +2599,12 @@ async def run_network_check(request: Request, db: Session = Depends(get_db)):
         )
     result = await run_in_threadpool(run_audited_network_check, db, request, user.username, payload)
     return await run_in_threadpool(render_network_checks, request, db, values=values, result=result)
+
+
+@app.get("/network/diagnostics/captures/{capture_id}")
+def network_capture_download(capture_id: uuid.UUID, request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    return download_capture(capture_id, "user:" + user.username)
 
 
 @app.get("/network/routes", response_class=HTMLResponse)

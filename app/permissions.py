@@ -59,6 +59,8 @@ def required_permission(path: str, method: str) -> str | None:
     if path.startswith(("/clients", "/connections", "/openvpn", "/settings/openvpn", "/networks", "/vipnet-nets", "/network-templates", "/site-routes")):
         return "vpn:manage" if write else "vpn:read"
     if path.startswith(("/network", "/context")):
+        if path == "/network/diagnostics/captures" or path.startswith("/network/diagnostics/captures/"):
+            return "network:diagnose"
         if "export" in path:
             return "network:export"
         if write:

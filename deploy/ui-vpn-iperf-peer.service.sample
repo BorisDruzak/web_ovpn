@@ -1,0 +1,23 @@
+[Unit]
+Description=UI VPN controlled iperf3 peer
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+DynamicUser=yes
+ExecStart=/usr/bin/iperf3 --server --bind @PEER_IPV4@ --port @PORT@ --one-off --idle-timeout 20 --server-bitrate-limit @SERVER_MAX_MBPS@M
+Restart=always
+RestartSec=250ms
+RuntimeMaxSec=35
+IPAddressDeny=any
+IPAddressAllow=@VPN_IPV4@/32
+RestrictAddressFamilies=AF_INET AF_UNIX
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

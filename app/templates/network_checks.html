@@ -39,6 +39,37 @@
       </tbody>
     </table>
   </div>
+  {% elif result.check == 'iperf3' and result.result.sender_mbps is defined %}
+  <dl>
+    <dt>Точка измерения</dt><dd>VPN-сервер ↔ {{ result.result.label }} ({{ result.result.peer }})</dd>
+    <dt>Направление</dt><dd>{{ 'С VPN-сервера' if result.result.direction == 'send' else 'К VPN-серверу' }}</dd>
+    <dt>Отправитель / получатель, Мбит/с</dt>
+    <dd>{{ '%.2f' | format(result.result.sender_mbps) }} / {{ '%.2f' | format(result.result.receiver_mbps) }}</dd>
+    <dt>Повторные передачи TCP</dt><dd>{{ result.result.retransmits if result.result.retransmits is not none else '—' }}</dd>
+    <dt>Профиль замера</dt><dd>{{ result.result.duration_seconds }} с · предел {{ result.result.bitrate_mbps }} Мбит/с</dd>
+  </dl>
+  {% elif result.check == 'pcap_capture' and result.result.capture_id is defined %}
+  <p>Пакетов {{ result.result.packets }} · {{ result.result.size_bytes }} байт</p>
+  <a class="button" href="/network/diagnostics/captures/{{ result.result.capture_id }}">Скачать PCAP</a>
+  {% elif result.check == 'loop_check' and result.result %}
+  <p>Окно наблюдений {{ result.result.since }} — {{ result.result.until }}</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Коммутатор</th><th>Оценка</th><th>Охват FDB / STP</th><th>Порты и VLAN</th></tr></thead>
+      <tbody>
+        {% for device in result.result.sources %}
+        <tr><td>{{ device.source }}</td><td>{{ status_labels.get(device.status, device.status) }}</td>
+          <td>{{ device.coverage.fdb.status }} / {{ device.coverage.stp.status }}</td>
+          <td>
+            {% for item in device.evidence %}
+            <div>{{ item.ports | join(' ↔ ') }} · VLAN {{ item.vlan_id }} · {{ item.mac }}</div>
+            {% else %}—{% endfor %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
   {% endif %}
   {% if result.result %}
   <details>
@@ -49,6 +80,7 @@
 </section>
 {% endif %}
 {% if can_run %}
+{% include "_network_probe_forms.html" %}
 <section class="card">
   <h2>Маршрут VPN-сервера</h2>
   <p>Показывает, какой интерфейс и шлюз выберет ядро для указанного адреса.</p>
@@ -113,6 +145,19 @@
 </section>
 {% else %}
 <p>Для запуска проверок нужно право «Диагностика и сбор данных».</p>
+{% endif %}
+{% if captures %}
+<section class="card">
+  <h2>Сохранённые захваты PCAP</h2>
+  <ul>
+    {% for capture in captures %}
+    <li>
+      <a href="/network/diagnostics/captures/{{ capture.capture_id }}">{{ capture.label }}</a>
+      · {{ capture.packets }} пакетов · доступен до {{ capture.expires_at }}
+    </li>
+    {% endfor %}
+  </ul>
+</section>
 {% endif %}
 {% if runs %}
 <section class="card">

@@ -693,6 +693,8 @@ def test_mcp_network_diagnostic_tools_call_api(monkeypatch):
         ("openvpn_network_interface_history", {"source": "mikrotik-main", "interface": "ether1"}),
         ("openvpn_network_diagnostic_checks", {}),
         ("openvpn_network_check_runs", {"limit": 5}),
+        ("openvpn_network_loop_diagnostics", {"source": "switch-1"}),
+        ("openvpn_network_capture_list", {}),
         ("openvpn_network_run_check", {"check": "linux_route", "destination": "192.0.2.1"}),
         ("openvpn_network_routes", {"source": "mikrotik-main"}),
         ("openvpn_network_observations", {"host": "192.168.100.10"}),
@@ -720,6 +722,8 @@ def test_mcp_network_diagnostic_tools_call_api(monkeypatch):
         ("GET", "/api/v1/network/diagnostics/interfaces?source=mikrotik-main&interface=ether1", None),
         ("GET", "/api/v1/network/diagnostics/checks", None),
         ("GET", "/api/v1/network/diagnostics/runs?limit=5", None),
+        ("GET", "/api/v1/network/diagnostics/loops?source=switch-1", None),
+        ("GET", "/api/v1/network/diagnostics/captures", None),
         ("POST", "/api/v1/network/diagnostics/checks", {"check": "linux_route", "destination": "192.0.2.1"}),
         ("GET", "/api/v1/network/routes?source=mikrotik-main", None),
         ("GET", "/api/v1/network/observations?host=192.168.100.10", None),
@@ -727,6 +731,41 @@ def test_mcp_network_diagnostic_tools_call_api(monkeypatch):
         ("GET", "/api/v1/network/backups", None),
         ("GET", "/api/v1/network/logs?n=30", None),
     ]
+
+
+def test_mcp_download_pcap_saves_the_binary_under_codex(tmp_path, monkeypatch):
+    from email.message import Message
+    from pathlib import Path
+
+    import mcp.openvpn_mcp_server as server
+
+    capture_id = "bb90f6e4-0b96-47c2-a660-2b8cf279275d"
+    pcap = b"\xd4\xc3\xb2\xa1" + bytes(20)
+
+    class Response:
+        headers = Message()
+        headers["Content-Type"] = "application/vnd.tcpdump.pcap"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, size):
+            return pcap[:size]
+
+    def urlopen(request, **kwargs):
+        assert request.full_url.endswith("/api/v1/network/diagnostics/captures/" + capture_id)
+        assert request.headers["Accept"] == "application/vnd.tcpdump.pcap"
+        return Response()
+
+    monkeypatch.setenv(server.TOKEN_ENV, "test-token")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(server, "_open_capture", urlopen)
+    result = server.call_tool("openvpn_network_download_pcap", {"capture_id": capture_id})
+    assert Path(result["data"]["path"]).read_bytes() == pcap
+    assert Path(result["data"]["path"]).parent == tmp_path / ".codex/network-captures"
 
 
 def test_mcp_diagnostic_snapshot_aggregates_read_only_checks(monkeypatch):

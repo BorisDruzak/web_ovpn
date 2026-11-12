@@ -2386,6 +2386,77 @@ def test_network_active_check_uses_shared_throttle(tmp_path, monkeypatch):
     assert targets == ["192.0.2.20"]
 
 
+def test_network_probe_catalog_run_and_download_permissions(tmp_path, monkeypatch):
+    client, headers = make_client(tmp_path, monkeypatch)
+    from app import network_capture_store, network_checks, network_probe_profiles
+    from app.config import reset_settings_cache
+
+    profiles = network_probe_profiles.ProbeProfiles.model_validate({
+        "throughput": {"lan": {"label": "LAN test", "peer": "192.0.2.20", "port": 5201,
+                              "duration_seconds": 4, "bitrate_mbps": 5}},
+        "capture": {"lan": {"label": "LAN PCAP", "peer": "192.0.2.20", "port": 5201, "interface": "ens18",
+                           "protocol": "tcp", "duration_seconds": 20, "max_packets": 100, "max_kib": 128}},
+    })
+    monkeypatch.setattr(network_probe_profiles, "load_probe_profiles", lambda: profiles)
+    monkeypatch.setattr(network_checks, "load_probe_profiles", lambda: profiles)
+    monkeypatch.setattr(network_checks, "run_throughput", lambda peer, port, direction, **limits: {
+        "status": "ok", "result": {"sender_mbps": 5.0, "receiver_mbps": 4.8, "retransmits": 0},
+    })
+    directory = tmp_path / "captures"
+    directory.mkdir(mode=0o700)
+    monkeypatch.setattr(network_capture_store, "CAPTURE_DIRECTORY", directory)
+    pcap = b"\xd4\xc3\xb2\xa1" + bytes(20)
+
+    def capture(output, **kwargs):
+        output.write_bytes(pcap)
+        return {"status": "ok", "packets": 0, "size_bytes": len(pcap)}
+
+    monkeypatch.setattr(network_capture_store, "capture_packets", capture)
+    base = "/api/v1/network/diagnostics"
+    catalog = client.get(base + "/checks", headers=headers).json()["data"]
+    assert catalog["profiles"]["throughput"][0]["id"] == "lan"
+    bad = client.post(base + "/checks", headers=headers, json={
+        "check": "iperf3", "profile": "lan", "peer": "192.0.2.99",
+    })
+    assert bad.status_code == 422
+    measured = client.post(base + "/checks", headers=headers, json={
+        "check": "iperf3", "profile": "lan", "direction": "receive",
+    }).json()["data"]
+    assert measured["status"] == "measured" and measured["result"]["receiver_mbps"] == 4.8
+    result = client.post(base + "/checks", headers=headers, json={
+        "check": "pcap_capture", "profile": "lan",
+    }).json()["data"]
+    assert result["status"] == "empty_capture"
+    capture_id = result["result"]["capture_id"]
+    service_path = base + "/captures/" + capture_id
+    download = client.get(service_path, headers=headers)
+    assert download.content == pcap and download.headers["content-type"] == "application/vnd.tcpdump.pcap"
+    login(client)
+    assert client.get("/network/diagnostics/captures/" + capture_id).status_code == 404
+    monkeypatch.setenv("OPENVPN_WEB_API_PERMISSIONS", "network:read")
+    reset_settings_cache()
+    assert client.get(service_path, headers=headers).status_code == 403
+
+
+def test_loop_evidence_shared_by_api_and_panel(tmp_path, monkeypatch):
+    client, headers = make_client(tmp_path, monkeypatch)
+    from app import network_checks
+
+    def netctl(args, **kwargs):
+        assert args == ["switches", "loops", "--source=switch-1"]
+        return {"loops": {"status": "no_evidence", "since": "start", "until": "end", "sources": []}}
+
+    monkeypatch.setattr(network_checks, "run_netctl", netctl)
+    response = client.get("/api/v1/network/diagnostics/loops?source=switch-1", headers=headers)
+    assert response.json()["data"]["status"] == "no_evidence"
+    csrf = login(client)
+    response = client.post("/network/diagnostics/checks", data={
+        "csrf_token": csrf, "check": "loop_check", "source": "switch-1",
+    })
+    assert response.status_code == 200
+    assert "Признаки петли не выявлены" in response.text
+
+
 def test_sources_page_renders_unknown_without_collect_control(tmp_path, monkeypatch):
     client, headers = make_client(tmp_path, monkeypatch)
     login(client)

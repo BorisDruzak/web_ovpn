@@ -31,10 +31,12 @@ from .endpoint_platform_client import (
 from .netctl_client import NetctlError, run_netctl
 from .netopsctl_client import NetworkControlError, run_network_control
 from .models import NetworkChangeIdempotency, utcnow
+from .network_capture_store import download_capture, list_captures
 from .network_checks import (
     CHECKS, SOURCE_PATTERN, NetworkCheck, interface_history_args,
-    list_network_check_runs, run_audited_network_check,
+    list_network_check_runs, loop_diagnostics, run_audited_network_check,
 )
+from .network_probe_profiles import probe_catalog
 from .network_observer import list_from as network_list_from, merge_unified_hosts, normalize_netctl_host
 from .network_paths_adapter import get_network_path, list_network_paths
 from .routeros_backups import list_routeros_backups
@@ -1418,7 +1420,28 @@ def api_network_interface_history(
 
 @router.get("/network/diagnostics/checks")
 def api_network_checks(actor: str = Depends(require_api_actor)):
-    return api_response({"checks": CHECKS})
+    return api_response({"checks": CHECKS, "profiles": probe_catalog()})
+
+
+@router.get("/network/diagnostics/loops")
+def api_network_loop_diagnostics(
+    source: str | None = Query(default=None, max_length=128, pattern=SOURCE_PATTERN),
+    actor: str = Depends(require_api_actor),
+):
+    return api_response(loop_diagnostics(source))
+
+
+@router.get("/network/diagnostics/captures")
+def api_network_capture_list(actor: str = Depends(require_api_actor)):
+    return api_response({"captures": list_captures("service:" + actor)})
+
+
+@router.get(
+    "/network/diagnostics/captures/{capture_id}", response_class=Response,
+    responses={200: {"content": {"application/vnd.tcpdump.pcap": {"schema": {"type": "string", "format": "binary"}}}}},
+)
+def api_network_capture_download(capture_id: UUID, actor: str = Depends(require_api_actor)):
+    return download_capture(capture_id, "service:" + actor)
 
 
 @router.get("/network/diagnostics/runs")

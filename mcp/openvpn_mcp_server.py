@@ -10,6 +10,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from pathlib import Path
 from typing import Any, Callable
 
 BASE_URL_ENV = "OPENVPN_WEB_BASE_URL"
@@ -219,16 +220,28 @@ TOOLS: dict[str, dict[str, Any]] = {
         {"limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}},
     ),
     "openvpn_network_run_check": tool_schema(
-        "Run a registered network check. linux_route and trace_route require destination (trace_route accepts monitored IPv4 hosts). asset_route requires asset_key and destination. source_test requires a configured source.",
+        "Run a registered network check. iperf3 and pcap_capture use a profile from the catalog. iperf3 accepts send/receive. loop_check optionally takes a switch source.",
         {
-            "check": {"type": "string", "enum": ["linux_route", "asset_route", "trace_route", "source_test"]},
+            "check": {"type": "string", "enum": ["linux_route", "asset_route", "trace_route", "source_test", "iperf3", "pcap_capture", "loop_check"]},
             "destination": {"type": "string", "description": "Destination IPv4 or IPv6 address"},
             "asset_key": {"type": "string"},
             "protocol": {"type": "string", "enum": ["tcp", "udp", "icmp"]},
             "port": {"type": "integer", "minimum": 1, "maximum": 65535},
             "source": {"type": "string"},
+            "profile": {"type": "string", "description": "Configured diagnostic profile ID"},
+            "direction": {"type": "string", "enum": ["send", "receive"]},
         },
         ["check"],
+    ),
+    "openvpn_network_loop_diagnostics": tool_schema(
+        "Read recent MAC movement and STP evidence for possible L2 loops.",
+        {"source": {"type": "string"}},
+    ),
+    "openvpn_network_capture_list": tool_schema("List the current service actor's available PCAP files."),
+    "openvpn_network_download_pcap": tool_schema(
+        "Download the current actor's PCAP to the local Codex network-captures directory and return the path.",
+        {"capture_id": {"type": "string", "format": "uuid"}},
+        ["capture_id"],
     ),
     "openvpn_network_routes": tool_schema(
         "List observed router routes, optionally filtered by source.",
@@ -436,6 +449,17 @@ def _workstations_call(name, arguments):
 def api_request(method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
     if path == WORKSTATIONS_API or path.startswith(WORKSTATIONS_API + "/"):
         return _workstations_request(method, path, payload)
+    request = _legacy_api_request(method, path, payload)
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            data = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"API {method} {path} failed: HTTP {exc.code}: {detail}") from exc
+    return json.loads(data or "{}")
+
+
+def _legacy_api_request(method, path, payload=None, *, accept="application/json"):
     base_url = os.environ.get(BASE_URL_ENV, "http://192.168.100.30:8088").rstrip("/")
     token = os.environ.get(TOKEN_ENV, "")
     token_file = os.environ.get(TOKEN_FILE_ENV, "")
@@ -444,18 +468,62 @@ def api_request(method: str, path: str, payload: dict[str, Any] | None = None) -
     if not token:
         raise RuntimeError(f"{TOKEN_ENV} or {TOKEN_FILE_ENV} is required")
     body = None
-    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    headers = {"Authorization": f"Bearer {token}", "Accept": accept}
     if payload is not None:
         body = json.dumps(payload).encode("utf-8")
         headers["Content-Type"] = "application/json"
-    request = urllib.request.Request(f"{base_url}{path}", data=body, headers=headers, method=method)
+    return urllib.request.Request(f"{base_url}{path}", data=body, headers=headers, method=method)
+
+
+class _RejectRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _open_capture(request):
+    return urllib.request.build_opener(_RejectRedirect()).open(request, timeout=20)
+
+
+def _download_pcap(capture_id: str) -> dict:
+    capture_id = str(uuid.UUID(capture_id))
+    path = f"/api/v1/network/diagnostics/captures/{capture_id}"
+    media_type = "application/vnd.tcpdump.pcap"
+    request = _legacy_api_request("GET", path, accept=media_type)
+    maximum = 2048 * 1024
     try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            data = response.read().decode("utf-8")
+        with _open_capture(request) as response:
+            if response.headers.get_content_type() != media_type:
+                raise RuntimeError("API did not return a PCAP file")
+            payload = response.read(maximum + 1)
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"API {method} {path} failed: HTTP {exc.code}: {detail}") from exc
-    return json.loads(data or "{}")
+        raise RuntimeError(f"PCAP download failed: HTTP {exc.code}") from exc
+    if not 24 <= len(payload) <= maximum or payload[:4] not in {
+        b"\xd4\xc3\xb2\xa1", b"\xa1\xb2\xc3\xd4", b"\x4d\x3c\xb2\xa1", b"\xa1\xb2\x3c\x4d",
+    }:
+        raise RuntimeError("API returned an invalid PCAP file")
+    directory = Path.home() / ".codex" / "network-captures"
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    info = directory.lstat()
+    if not stat.S_ISDIR(info.st_mode) or (
+        os.name != "nt" and (info.st_uid != os.geteuid() or info.st_mode & 0o077)
+    ):
+        raise RuntimeError("Local PCAP directory must be private")
+    output = directory / f"network-{capture_id}.pcap"
+    try:
+        fd = os.open(output, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        info = output.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_size != len(payload)
+                or output.read_bytes() != payload):
+            raise RuntimeError("Local PCAP filename is occupied") from None
+    else:
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(payload)
+        except OSError:
+            output.unlink(missing_ok=True)
+            raise
+    return {"status": "ok", "data": {"capture_id": capture_id, "path": str(output), "size_bytes": len(payload)}}
 
 
 def _client_path(client: str, suffix: str = "") -> str:
@@ -778,6 +846,12 @@ def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         return api_request("GET", _query_path("/api/v1/network/diagnostics/runs", [("limit", arguments.get("limit", 20))]))
     if name == "openvpn_network_run_check":
         return api_request("POST", "/api/v1/network/diagnostics/checks", arguments)
+    if name == "openvpn_network_loop_diagnostics":
+        return api_request("GET", _query_path("/api/v1/network/diagnostics/loops", [("source", arguments.get("source", ""))]))
+    if name == "openvpn_network_capture_list":
+        return api_request("GET", "/api/v1/network/diagnostics/captures")
+    if name == "openvpn_network_download_pcap":
+        return _download_pcap(arguments.get("capture_id", ""))
     if name == "openvpn_network_routes":
         return api_request("GET", _query_path("/api/v1/network/routes", [("source", arguments.get("source", ""))]))
     if name == "openvpn_network_observations":

@@ -1,0 +1,23 @@
+{
+  "throughput": {
+    "lan-test": {
+      "label": "Управляемая тестовая точка",
+      "peer": "192.0.2.20",
+      "port": 5201,
+      "duration_seconds": 4,
+      "bitrate_mbps": 5
+    }
+  },
+  "capture": {
+    "lan-test-tcp": {
+      "label": "Тестовый поток iperf3",
+      "interface": "ens18",
+      "peer": "192.0.2.20",
+      "port": 5201,
+      "protocol": "tcp",
+      "duration_seconds": 20,
+      "max_packets": 2000,
+      "max_kib": 256
+    }
+  }
+}
