@@ -4023,6 +4023,14 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     assert match["basis"] == "guest_mac" and match["switchPort"] == "xe3"
     assert match["physicalPair"] == {"hostPort": "ens7", "switchPort": "xe3",
                                       "source": "netctl FDB + Proxmox", "checkedAt": stamp}
+    browser_endpoint = "/network/infrastructure/snapshot"
+    assert client.get(browser_endpoint, follow_redirects=False).status_code == 303
+    login = client.get("/login")
+    csrf = re.search(r'name="csrf_token" value="([^"]+)"', login.text).group(1)
+    client.post("/login", data={"csrf_token": csrf, "username": "admin", "password": "admin-pass"},
+                follow_redirects=False)
+    browser = client.get(browser_endpoint).json()["infrastructure"]
+    assert browser["guestAttachments"] == {"vm": guest}
     raw["links"][1]["portEvidence"][0]["virtual"]["uplinks"] = ["eno1"]
     match, = read()["guests"][0]["interfaces"][0]["switchObservations"]
     assert "physicalPair" not in match

@@ -1693,7 +1693,7 @@ def network_runtime_health(request: Request, db: Session = Depends(get_db)):
 @app.get("/network/infrastructure", response_class=HTMLResponse)
 def network_infrastructure(request: Request, db: Session = Depends(get_db)):
     require_user(request, db)
-    graph = load_infrastructure_map(get_settings().infrastructure_map_snapshot_path, db=db)
+    graph = load_infrastructure_map(get_settings().infrastructure_map_snapshot_path, db=db, include_guest_attachments=True)
     response = render(request, "network_infrastructure.html", {"graph": graph}, db)
     response.headers["Cache-Control"] = "no-store"
     return response
@@ -1702,7 +1702,7 @@ def network_infrastructure(request: Request, db: Session = Depends(get_db)):
 @app.get("/network/infrastructure/snapshot")
 def network_infrastructure_snapshot(request: Request, db: Session = Depends(get_db)):
     require_user(request, db)
-    graph = load_infrastructure_map(get_settings().infrastructure_map_snapshot_path, db=db)
+    graph = load_infrastructure_map(get_settings().infrastructure_map_snapshot_path, db=db, include_guest_attachments=True)
     return JSONResponse({"infrastructure": graph}, headers={"Cache-Control": "no-store"})
 
 

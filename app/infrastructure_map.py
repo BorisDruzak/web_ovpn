@@ -1180,28 +1180,19 @@ def summarize_topology(graph: dict) -> dict:
                                         "pending": [pending[key] for key in sorted(pending)[:64]]}}
 
 
-def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
-    nodes = {node["id"]: node for node in graph["nodes"]}
-    anchor = nodes.get(node_id)
+def _attachment_node(node: dict) -> dict:
+    return {key: node[key] for key in ("id", "name", "kind", "vmid", "mapStatus") if node.get(key) is not None}
 
-    def describe(node):
-        return {key: node[key] for key in ("id", "name", "kind", "vmid", "mapStatus") if node.get(key) is not None}
 
-    guest_ids = set()
-    if anchor and anchor["guest"]:
-        guest_ids.add(node_id)
-    elif anchor and anchor["kind"] == "Сервис":
-        guest_ids.update(edge["a"] for edge in graph["links"] if edge["b"] == node_id
-                         and edge["confirmed"] and edge["kind"] in {"Размещение", "Цель проверки"}
-                         and nodes[edge["a"]]["guest"])
-
+def _guest_attachments(nodes: dict, links: list[dict], guest_ids: list[str]) -> dict:
     placements = defaultdict(list)
     physical = defaultdict(list)
-    for edge in graph["links"]:
+    selected_guests = set(guest_ids)
+    for edge in links:
         if not edge["confirmed"]:
             continue
         a, b = edge["a"], edge["b"]
-        if edge["kind"] == "Размещение ВМ" and b in guest_ids and nodes[a]["kind"] == "Гипервизор":
+        if edge["kind"] == "Размещение ВМ" and b in selected_guests and nodes[a]["kind"] == "Гипервизор":
             placements[b].append(edge)
         elif edge["kind"] == "Сетевое соединение":
             if nodes[a]["kind"] == "Гипервизор" and nodes[b]["kind"] == NETWORK_KINDS[0]:
@@ -1218,17 +1209,17 @@ def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
                         "source": report["source"], "checkedAt": report["at"],
                     })
 
-    guests = []
-    for guest_id in sorted(guest_ids)[:12]:
+    guests = {}
+    for guest_id in guest_ids:
         candidates = placements[guest_id]
-        guest = {"guest": describe(nodes[guest_id]), "hypervisor": None, "interfaces": [],
+        guest = {"guest": _attachment_node(nodes[guest_id]), "hypervisor": None, "interfaces": [],
                  "placement": "ambiguous" if len(candidates) > 1 else "unconfirmed"}
-        guests.append(guest)
+        guests[guest_id] = guest
         if len(candidates) != 1:
             continue
         edge, = candidates
         host_id = edge["a"]
-        guest.update(hypervisor=describe(nodes[host_id]), placement="confirmed")
+        guest.update(hypervisor=_attachment_node(nodes[host_id]), placement="confirmed")
         for report in edge["portEvidence"]:
             virtual = report.get("virtual")
             if not report["confirmed"] or not virtual or not report["b"]:
@@ -1248,7 +1239,7 @@ def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
                 if not match["port"]:
                     continue
                 switch_id = match["id"]
-                observation = {"basis": basis, "switch": describe(nodes[switch_id]), "switchPort": match["port"],
+                observation = {"basis": basis, "switch": _attachment_node(nodes[switch_id]), "switchPort": match["port"],
                                "checkedAt": match["at"]}
                 if match.get("vlan") is not None:
                     observation["vlan"] = match["vlan"]
@@ -1261,10 +1252,24 @@ def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
                     if len({port_label_key(pair["hostPort"]) for pair in pairs}) == 1:
                         observation["physicalPair"] = max(pairs, key=lambda pair: pair["checkedAt"])
                 interface["switchObservations"].append(observation)
+    return guests
 
+
+def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
+    nodes = {node["id"]: node for node in graph["nodes"]}
+    anchor = nodes.get(node_id)
+    guest_ids = set()
+    if anchor and anchor["guest"]:
+        guest_ids.add(node_id)
+    elif anchor and anchor["kind"] == "Сервис":
+        guest_ids.update(edge["a"] for edge in graph["links"] if edge["b"] == node_id
+                         and edge["confirmed"] and edge["kind"] in {"Размещение", "Цель проверки"}
+                         and nodes[edge["a"]]["guest"])
+
+    guests = _guest_attachments(nodes, graph["links"], sorted(guest_ids)[:12])
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
-    return {**metadata, "attachment": {"node": describe(anchor) if anchor else None,
-                                       "guestTotal": len(guest_ids), "guests": guests}}
+    return {**metadata, "attachment": {"node": _attachment_node(anchor) if anchor else None,
+                                       "guestTotal": len(guest_ids), "guests": list(guests.values())}}
 
 
 def summarize_services(graph: dict) -> dict:
@@ -1360,12 +1365,13 @@ def _summarize_guest_agents(nodes: dict, keys: dict, identities: list[dict], now
 
 def load_infrastructure_map(
     path: Path, now: datetime | None = None, *, db: Session | None = None,
-    agent_identities: list[dict] | None = None,
+    agent_identities: list[dict] | None = None, include_guest_attachments: bool = False,
 ) -> dict:
     now = now or datetime.now(timezone.utc)
     empty = {
         "availability": "missing", "snapshotAt": None, "nodes": [], "links": [],
         "clusterId": "", "nodeOrder": [], "overviewGuests": [], "switchKinds": list(NETWORK_KINDS), "git": "",
+        **({"guestAttachments": {}} if include_guest_attachments else {}),
     }
     try:
         with path.open("rb") as handle:
@@ -1539,4 +1545,6 @@ def load_infrastructure_map(
         **({"collectionIssues": issues} if issues else {}),
         **({"agentAudit": _summarize_guest_agents(nodes, agent_keys, agent_identities, now)}
            if agent_identities is not None else {}),
+        **({"guestAttachments": _guest_attachments(nodes, links, [key for key, node in nodes.items() if node["guest"]])}
+           if include_guest_attachments else {}),
     }

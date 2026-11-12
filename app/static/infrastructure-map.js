@@ -467,6 +467,46 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     control?.focus();
   }
 
+  function renderGuestAttachment(attachment) {
+    if (!attachment?.interfaces.length) return null;
+    const panel = make('details', null, 'map-port-panel');
+    panel.dataset.section = 'guest-attachment';
+    panel.open = attachment.interfaces.some(iface => iface.switchObservations.some(item => item.physicalPair));
+    const list = make('ul', null, 'map-detail-list');
+    const labels = {
+      guest_mac: 'MAC гостя замечен',
+      bridge_uplink: 'Аплинк моста наблюдался',
+      configured_bridge: 'Привязка по конфигурации',
+    };
+    for (const iface of attachment.interfaces) {
+      const row = make('li');
+      row.append(make('strong', [iface.guestPort, iface.bridge, attachment.hypervisor.name].filter(Boolean).join(' → ')));
+      const state = iface.linkDisabled ? 'Адаптер отключён' : iface.bridgeActive === false ? 'Мост неактивен' : '';
+      if (state) row.append(make('small', state));
+      if (!iface.switchObservations.length) row.append(make('small', 'Порт коммутатора не подтверждён'));
+      for (const observation of iface.switchObservations) {
+        const {basis, physicalPair, switch: target, switchPort, checkedAt} = observation;
+        const targetPort = physicalPair?.switchPort ?? switchPort;
+        if (physicalPair) row.append(make('small', 'Интерфейс хоста ' + physicalPair.hostPort + ' ↔'));
+        const open = make('button', target.name + ' ' + targetPort);
+        open.type = 'button';
+        open.addEventListener('click', () => {
+          const port = byId.get(target.id)?.ports?.find(item => portKeys(item).includes(portKey(targetPort)));
+          select(target.id);
+          if (port && selected === target.id) selectPort(target.id, port.name);
+        });
+        row.append(open);
+        const vlan = observation.vlan ?? iface.vlan;
+        row.append(make('small', [labels[basis], vlan && 'VLAN ' + vlan, formatTime(checkedAt)].filter(Boolean).join(' · ')));
+        if (physicalPair) row.append(make('small',
+          ['Физическая пара подтверждена', physicalPair.source, formatTime(physicalPair.checkedAt)].join(' · ')));
+      }
+      list.append(row);
+    }
+    panel.append(make('summary', 'Сетевой путь'), list);
+    return panel;
+  }
+
   function renderSelection(id, reveal, port=null) {
     buttons.get(selected)?.setAttribute('aria-pressed','false');
     selected = id;
@@ -571,6 +611,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         if (host?.guest) resourceHost = host;
       }
     }
+    const guestAttachment = renderGuestAttachment(data.guestAttachments?.[resourceHost.id]);
+    if (guestAttachment) propertiesSection.append(guestAttachment);
     if (resourceHost.resources) {
       const {cpuRatio, logicalCpus, memoryUsedBytes, memoryTotalBytes, rootUsedBytes, rootTotalBytes,
         uptimeSeconds, checkedAt} = resourceHost.resources;
