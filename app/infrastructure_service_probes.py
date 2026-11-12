@@ -17,6 +17,7 @@ import subprocess
 import uuid
 import zlib
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from datetime import datetime, timezone
 from time import monotonic, sleep, time
 
@@ -25,7 +26,9 @@ import dns.flags
 import dns.message
 import dns.query
 import dns.rcode
+import ldap3
 from cryptography import x509
+from ldap3.core.exceptions import LDAPException
 
 TIMEOUT = 3
 HTTP_BODY_LIMIT = 32 * 1024
@@ -33,7 +36,7 @@ SIP_OPTIONS_WAIT = (0.5, 1.0, 1.5)
 IPMI_PORT = 623
 RMCP_ASF_HEADER = bytes.fromhex("0600ff06000011be")
 PROBE_METHODS = {
-    "http": "HTTP", "https": "HTTPS", "dns": "DNS", "ldap": "LDAP", "smb": "SMB2",
+    "http": "HTTP", "https": "HTTPS", "dns": "DNS", "ldap": "LDAP", "ldaps": "LDAPS RootDSE", "smb": "SMB2",
     "tcp_connect": "TCP",
     "smb_mount": "SMB Mount", "zabbix_api": "Zabbix API", "postgresql": "PostgreSQL SSLRequest",
     "openvpn_management": "OpenVPN Management", "openvpn_tunnel": "OpenVPN TUN",
@@ -43,6 +46,7 @@ PROBE_METHODS = {
     "mongodb_ping": "MongoDB ping", "amqp_start": "AMQP Connection.Start", "redis_ping": "Redis PING",
 }
 DEPENDENCY_PROTOCOLS = {"mongodb_ping", "amqp_start", "redis_ping"}
+LDAP_NAMING_CONTEXT = re.compile(r"DC=[a-z0-9-]+(?:,DC=[a-z0-9-]+)+", re.IGNORECASE)
 
 
 def _http_path(path: object) -> str:
@@ -434,7 +438,7 @@ def _dns(spec: dict, *, source: str | None = None) -> dict:
 
 def _ldap(ip: str, port: int, spec: dict) -> str:
     naming_context = spec.get("naming_context")
-    if not isinstance(naming_context, str) or not re.fullmatch(r"(?i)DC=[a-z0-9-]+(?:,DC=[a-z0-9-]+)+", naming_context):
+    if not isinstance(naming_context, str) or not LDAP_NAMING_CONTEXT.fullmatch(naming_context):
         raise ValueError("invalid LDAP probe contract")
     authority = f"[{ip}]" if ":" in ip else ip
     result = subprocess.run([
@@ -447,6 +451,69 @@ def _ldap(ip: str, port: int, spec: dict) -> str:
     expected = ("defaultNamingContext: " + naming_context).lower().encode()
     answers = {line.strip().lower() for line in result.stdout.splitlines()}
     return "reachable" if result.returncode == 0 and expected in answers else "unknown"
+
+
+class _LdapsProbeTls(ldap3.Tls):
+    """Verify the configured DNS name even when connecting to a fixed IP."""
+
+    def __init__(self, context: ssl.SSLContext, server_name: str) -> None:
+        super().__init__(validate=ssl.CERT_REQUIRED)
+        self.context = context
+        self.server_name = server_name
+
+    def wrap_socket(self, connection, do_handshake=False):
+        connection.socket = self.context.wrap_socket(
+            connection.socket, server_hostname=self.server_name, do_handshake_on_connect=do_handshake,
+        )
+        return True
+
+
+def _ldaps(spec: dict) -> dict:
+    port, expected = spec.get("port"), spec.get("naming_context")
+    name, ca_file = spec.get("tls_server_name"), spec.get("tls_ca_file")
+    invalid = {"state": "unknown", "reason": "probe_configuration"}
+    if (type(port) is not int or not 1 <= port <= 65535
+            or not isinstance(expected, str) or not LDAP_NAMING_CONTEXT.fullmatch(expected)
+            or not _valid_http_hostname(name) or not isinstance(ca_file, str) or not os.path.isabs(ca_file)):
+        return invalid
+    try:
+        address = str(ipaddress.ip_address(spec.get("ip")))
+        context = ssl.create_default_context(cafile=ca_file)
+    except (OSError, ValueError):
+        return invalid
+    server = ldap3.Server(address, port=port, use_ssl=True, tls=_LdapsProbeTls(context, name),
+                          get_info=ldap3.NONE, connect_timeout=TIMEOUT)
+    connection = ldap3.Connection(server, auto_referrals=False, read_only=True, receive_timeout=TIMEOUT)
+    unknown = {"state": "unknown", "reason": "ldaps_response_unconfirmed"}
+    try:
+        connection.open(read_server_info=False)
+        complete = connection.search(
+            "", "(objectClass=*)", search_scope=ldap3.BASE, attributes=["defaultNamingContext"],
+            size_limit=1, time_limit=TIMEOUT,
+        )
+        if not complete or connection.result.get("result") != 0 or len(connection.response) != 1:
+            return unknown
+        entry, = connection.response
+        if entry.get("type") != "searchResEntry" or entry.get("dn") != "":
+            return unknown
+        contexts = entry.get("attributes", {}).get("defaultNamingContext")
+        if not isinstance(contexts, list) or len(contexts) != 1 or not isinstance(contexts[0], str):
+            return unknown
+        if contexts[0].casefold() != expected.casefold():
+            return {"state": "unreachable", "reason": "ldaps_naming_context_mismatch"}
+        return {"state": "reachable"}
+    except ssl.SSLCertVerificationError:
+        return {"state": "unreachable", "reason": "ldaps_tls_certificate"}
+    except ConnectionRefusedError:
+        return {"state": "unreachable", "reason": "ldaps_connection_refused"}
+    except (LDAPException, OSError):
+        return {"state": "unknown", "reason": "ldaps_transport_unconfirmed"}
+    finally:
+        with suppress(LDAPException, OSError):
+            if not connection.closed:
+                connection.unbind()
+            elif connection.socket is not None:
+                connection.socket.close()
 
 
 def _smb(spec: dict) -> dict:
@@ -1521,6 +1588,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 details = _ftp_features(spec)
             elif protocol == "tls_certificate":
                 details = _tls_certificate(spec)
+            elif protocol == "ldaps":
+                details = _ldaps(spec)
             elif protocol == "ssh_identification":
                 details = _ssh_identification(spec)
             elif protocol == "tcp_connect":
@@ -1557,7 +1626,7 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 "path": spec.get("path") if protocol in {"http", "https", "zabbix_api", "rtsp_options"} else None,
                 "target": spec.get("ip") if not skip_reason and (
                     protocol in {"icmp", "vlan_transit", "sip_options", "ipmi_lan", "rtsp_options", "ssh_identification", "ftp_features",
-                                 "zabbix_api", "postgresql", "dns", "ldap", "smb", "tls_certificate", "tcp_connect"}
+                                 "zabbix_api", "postgresql", "dns", "ldap", "ldaps", "smb", "tls_certificate", "tcp_connect"}
                     or protocol in DEPENDENCY_PROTOCOLS or "probeTargetIP" in node
                     or (protocol in {"http", "https"} and spec.get("report_target") is True
                         and details.get("reason") != "http_configuration")

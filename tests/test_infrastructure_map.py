@@ -5840,6 +5840,67 @@ def test_tls_certificate_verifies_name_and_chain_for_configured_address(monkeypa
     connect.assert_not_called()
 
 
+def test_ldaps_requires_complete_root_dse_response_on_verified_peer(monkeypatch, tmp_path):
+    from unittest.mock import MagicMock
+
+    import ldap3
+
+    from app import infrastructure_service_probes as probes
+    from app.infrastructure_map import _public_service_check
+
+    context = MagicMock()
+    create_context = MagicMock(return_value=context)
+    monkeypatch.setattr(probes.ssl, "create_default_context", create_context)
+    server, create_connection = MagicMock(), MagicMock()
+    monkeypatch.setattr(ldap3, "Server", server)
+    monkeypatch.setattr(ldap3, "Connection", create_connection)
+    connection = create_connection.return_value
+    connection.closed = False
+    connection.result = {"result": 0}
+    connection.search.return_value = True
+    context_name = "DC=example,DC=test"
+    entry = {"type": "searchResEntry", "dn": "", "attributes": {"defaultNamingContext": [context_name]}}
+    connection.response = [entry]
+    ca_file = str(tmp_path / "domain-ca.pem")
+    spec = {"type": "ldaps", "ip": "192.0.2.4", "port": 3269, "component": True,
+            "naming_context": context_name, "tls_server_name": "ad.example.test", "tls_ca_file": ca_file}
+
+    def probe():
+        node = {"id": "catalog", "kind": "Сервис", "probeTargetIP": "192.0.2.4"}
+        probes.apply_service_probes([node], {"catalog": [spec]})
+        raw, = node["serviceChecks"]
+        return _public_service_check(raw, datetime.now(timezone.utc))
+
+    result = probe()
+    assert (result["state"], result["method"], result["port"], result["target"], result["component"]) == (
+        "reachable", "LDAPS RootDSE", 3269, "192.0.2.4", True,
+    )
+    create_context.assert_called_once_with(cafile=ca_file)
+    assert server.call_args.args == ("192.0.2.4",)
+    tls = server.call_args.kwargs["tls"]
+    tls.wrap_socket(connection, do_handshake=True)
+    assert context.wrap_socket.call_args.kwargs["server_hostname"] == "ad.example.test"
+    assert create_connection.call_args.kwargs["auto_referrals"] is False
+    connection.open.assert_called_once_with(read_server_info=False)
+    assert connection.search.call_args.kwargs["search_scope"] == ldap3.BASE
+    assert connection.search.call_args.kwargs["attributes"] == ["defaultNamingContext"]
+    connection.unbind.assert_called_once()
+
+    connection.response = [{**entry, "attributes": {"defaultNamingContext": ["DC=other,DC=test"]}}]
+    result = probe()
+    assert (result["state"], result["reason"]) == ("unreachable", "ldaps_naming_context_mismatch")
+    connection.response = [entry]
+    connection.result = {"result": 4}
+    result = probe()
+    assert (result["state"], result["reason"]) == ("unknown", "ldaps_response_unconfirmed")
+    connection.search.reset_mock()
+    connection.open.side_effect = probes.ssl.SSLCertVerificationError("wrong server name")
+    connection.closed = True
+    result = probe()
+    assert (result["state"], result["reason"]) == ("unreachable", "ldaps_tls_certificate")
+    connection.search.assert_not_called()
+
+
 def test_ftp_probe_requires_complete_feature_reply(monkeypatch):
     from app import infrastructure_service_probes as probes
     from app.infrastructure_map import _public_service_check

@@ -860,6 +860,11 @@ def _public_service_check(check: dict, now: datetime) -> dict:
                       "tls_certificate_verification_failed", "tls_connection_refused",
                       "timeout", "transport_error"}:
             result["reason"] = reason
+    if result["method"] == "LDAPS RootDSE" and reason in {
+        "probe_configuration", "ldaps_response_unconfirmed", "ldaps_naming_context_mismatch",
+        "ldaps_tls_certificate", "ldaps_connection_refused", "ldaps_transport_unconfirmed",
+    }:
+        result["reason"] = reason
     if result["method"] == "FTP FEAT":
         reply = check.get("ftpReply")
         if type(reply) is int and 100 <= reply <= 599:
