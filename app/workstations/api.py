@@ -342,6 +342,12 @@ def apply(plan_id: Annotated[str, Field(pattern=r'^setup-(?:component-)?[0-9a-f]
                 raise HTTPException(403, 'workstations_permission_denied')
             require_endpoint_install_operator(request, db, owner)
             params = plan_record.parameters_json
+            installation_id = params.get('inventory_installation_id')
+            assignment_prefix = f"inventory-{params['_inventory_asset_id']}-{params['machine_uuid']}-"
+            if not isinstance(installation_id, str) or not re.fullmatch(
+                re.escape(assignment_prefix) + r'[0-9a-f]{32}', installation_id,
+            ):
+                raise HTTPException(409, 'workstations_endpoint_installation_assignment_required')
             if endpoint_install_target(db, params['_inventory_asset_id']) != params['machine_uuid']:
                 raise HTTPException(409, 'workstations_endpoint_target_unconfirmed')
     return start('plans.apply', body, owner, plan_id=plan_id)

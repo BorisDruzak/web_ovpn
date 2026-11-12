@@ -253,3 +253,20 @@ def test_gateway_deadline_reaps_bounded_transport_child(monkeypatch):
         ad_transport.bounded_run(['synthetic-read'], environment={})
     assert child.killed
     assert exc.value.code == 'ad_timeout'
+
+
+def test_gateway_accepts_inventory_assignment_only_for_matching_endpoint_machine():
+    from alt_deploy.workstations_gateway import validate
+
+    asset, machine, other_machine = (str(uuid.uuid4()) for _ in range(3))
+    params = {'machine_uuid': machine, 'component_id': 'software.endpoint_agent'}
+    assignment = f'inventory-{asset}-{machine}-' + 'a' * 32
+    validate('component_plans.create', {**params, 'inventory_installation_id': assignment})
+    for changed in (
+        params,
+        {**params, 'machine_uuid': other_machine, 'inventory_installation_id': assignment},
+        {**params, 'component_id': 'software.browser', 'inventory_installation_id': assignment},
+    ):
+        with pytest.raises(ControlError) as error:
+            validate('component_plans.create', changed)
+        assert error.value.code == 'endpoint_installation_assignment_invalid'

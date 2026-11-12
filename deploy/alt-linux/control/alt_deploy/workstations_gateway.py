@@ -23,6 +23,7 @@ from .setup import SetupService
 from .setup_assignments import DomainAssignmentStore
 from .setup_jobs import SetupJobRepository, service_uid, unresolved_legacy_reservations
 from .setup_jobs_view import SetupJobsService
+from .endpoint_installation import validate_inventory_installation
 from .setup_plans import canonical, digest
 from .workstations_projection import fields, project, public_machine
 from .workstations_receipts import GatewayReceiptStore, request_uuid
@@ -35,7 +36,7 @@ OPERATIONS = {
     'directory.identity': (('kind', 'object_guid'), ()),
     'directory.snapshot': (('source',), ()), 'assignments.show': (('machine_uuid',), ()),
     'plans.create': (('machine_uuid', 'user_login', 'user_guid', 'user_sid', 'ou_id', 'software_profile'), ('remote_access_profile',)),
-    'component_plans.create': (('machine_uuid', 'component_id'), ()),
+    'component_plans.create': (('machine_uuid', 'component_id'), ('inventory_installation_id',)),
     'plans.apply': (('plan_id', 'sha256', 'kind'), ()), 'jobs.list': ((), ('machine_uuid', 'offset', 'limit')),
     'jobs.status': (('job_id',), ()), 'jobs.events': (('job_id',), ('after', 'limit')),
     'jobs.verify': (('job_id',), ()), 'jobs.cancel': (('job_id', 'sha256'), ()),
@@ -95,6 +96,9 @@ def validate(operation, parameters):
         raise fail('workstations_parameters_invalid', 'Directory source is invalid')
     if operation == 'directory.identity' and parameters['kind'] not in ('user', 'computer'):
         raise fail('workstations_parameters_invalid', 'Directory identity kind is invalid')
+    if operation == 'component_plans.create':
+        validate_inventory_installation(parameters['component_id'], parameters['machine_uuid'],
+                                        parameters.get('inventory_installation_id'))
     if operation == 'plans.apply':
         prefix = {'full_setup': 'setup-', 'component': 'setup-component-'}.get(parameters['kind'])
         if prefix is None or parameters['plan_id'] != prefix + parameters['sha256']:
@@ -183,7 +187,8 @@ class ControllerBackend:
                 raise fail('workstations_user_changed', 'Selected employee identity changed; search again')
             return result
         if operation == 'component_plans.create':
-            return ComponentSetupService(settings, setup=self._setup()).plan(p['machine_uuid'], p['component_id'])
+            assignment = {'inventory_installation_id': p['inventory_installation_id']} if 'inventory_installation_id' in p else {}
+            return ComponentSetupService(settings, setup=self._setup()).plan(p['machine_uuid'], p['component_id'], **assignment)
         if operation == 'plans.apply':
             return (ComponentSetupService(settings).apply(p['plan_id'], p['sha256']) if p['kind'] == 'component'
                     else SetupService(settings).apply(p['plan_id'], p['sha256'], detach=True))

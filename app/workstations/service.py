@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import json
 import re
+import secrets
 import uuid
 from datetime import datetime, timezone
 
@@ -43,8 +44,13 @@ class WorkstationsService:
                 if existing.actor != actor or existing.intent_sha256 != digest:
                     return {'status': 'conflict', 'error_code': 'workstations_request_conflict', 'request_id': request_id}
                 return self._public(existing)
+            stored_parameters = parameters
+            if action == 'component_plans.create' and '_inventory_asset_id' in parameters:
+                asset = valid_uuid(parameters['_inventory_asset_id'])
+                machine = valid_uuid(parameters['machine_uuid'])
+                stored_parameters = dict(parameters, inventory_installation_id=f'inventory-{asset}-{machine}-{secrets.token_hex(16)}')
             row = WorkstationRequest(id=request_id, actor=actor, action=action, permission=ACTIONS[action],
-                intent_sha256=digest, status='registered', parameters_json=parameters,
+                intent_sha256=digest, status='registered', parameters_json=stored_parameters,
                 phases_json=[{'stage': 'registered', 'status': 'running', 'timestamp': datetime.now(timezone.utc).isoformat()}])
             db.add(row)
             try:

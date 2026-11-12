@@ -384,6 +384,11 @@ class ComponentExecutor:
             'domain_test_user': payload['user']['upn'], 'software_profile': payload['profile']['id'],
             'remote_access_profile': payload['binding']['remote_access_profile'],
             'setup_component_result_file': str(result_path)}
+        from .endpoint_installation import validate_inventory_installation
+        assignment = payload.get('inventory_installation_id')
+        validate_inventory_installation(component['id'], job.machine_uuid, assignment)
+        if assignment is not None:
+            variables['setup_inventory_installation_id'] = assignment
         from .configure import KRFB_ANSIBLE_CONFIRMATION_VARIABLE, KRFB_NETWORK_CONFIRMATION_VARIABLE
         if component['id'] == 'remote.krfb':
             if os.environ.get(KRFB_NETWORK_CONFIRMATION_VARIABLE) != 'true':

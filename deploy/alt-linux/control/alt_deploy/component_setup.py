@@ -10,6 +10,7 @@ import stat
 
 from .ad_directory import fail
 from .component_catalog import ComponentCatalog
+from .endpoint_installation import validate_inventory_installation
 from .component_probe import ComponentProbe, ssh_binding
 from .component_verification import VerificationEngine, valid_evidence, package_health_ready
 from .setup import SetupService
@@ -98,12 +99,15 @@ class ComponentSetupService:
                 return {'ready': False, 'error_code': 'component_secret_unavailable'}
         return {'ready': True}
 
-    def _snapshot(self, identifier, component_id, *, own_job_id=None, expected_plan=None, after_job=None, read_only=False):
+    def _snapshot(self, identifier, component_id, *, own_job_id=None, expected_plan=None, after_job=None,
+                  read_only=False, inventory_installation_id=None):
         catalog = self.catalog or ComponentCatalog.load(self.settings.ansible_project_dir)
         component = catalog.component(component_id)
         if component['verification']['recipe']=='final_dns' and not read_only:
             raise fail('full_workflow_required','Final DNS runs only as the last phase of the complete workstation workflow')
         machine = self.setup.machines.resolve(identifier)
+        if not read_only:
+            validate_inventory_installation(component_id, machine.uuid, inventory_installation_id)
         predecessor = None
         if after_job is not None:
             from .setup_retry import predecessor as inspect_predecessor
@@ -191,14 +195,18 @@ class ComponentSetupService:
                 'ssh_binding': ssh_binding(self.settings, machine), 'preflight': preflight,
                 'source_sha256': source_fingerprint(self.settings.ansible_project_dir, Path(__file__).parent),
                 'action': action, 'execution_budget_seconds': 5400}
+        if inventory_installation_id is not None:
+            payload['inventory_installation_id'] = inventory_installation_id
         if predecessor is not None:
             payload['predecessor_job'] = predecessor
         if network_confirmed is not None:
             payload['network_restriction_confirmed'] = network_confirmed
         return payload
 
-    def plan(self, identifier: str, component_id: str, *, after_job=None) -> dict:
-        return self.plans.create(self._snapshot(identifier, component_id, after_job=after_job))
+    def plan(self, identifier: str, component_id: str, *, after_job=None, inventory_installation_id=None) -> dict:
+        return self.plans.create(self._snapshot(
+            identifier, component_id, after_job=after_job, inventory_installation_id=inventory_installation_id,
+        ))
 
     def verify(self, identifier: str, component_id: str) -> dict:
         from .component_acceptance import project_acceptance
@@ -220,7 +228,8 @@ class ComponentSetupService:
         """Allow the expected installed facts to change, never the identity/source."""
         before = plan['payload']
         current = self._snapshot(before['machine']['uuid'], before['component']['id'],
-                                 own_job_id=own_job_id, expected_plan=plan, after_job=before.get('predecessor_job', {}).get('job_id'))
+                                 own_job_id=own_job_id, expected_plan=plan, after_job=before.get('predecessor_job', {}).get('job_id'),
+                                 inventory_installation_id=before.get('inventory_installation_id'))
         for key in ('machine', 'user', 'computer', 'ou_identity', 'binding', 'profile',
                     'catalog_version', 'catalog_sha256', 'component', 'components',
                     'ssh_binding', 'source_sha256'):
@@ -232,7 +241,8 @@ class ComponentSetupService:
         plan = self.plans.load(plan_id, sha256)
         before = plan['payload']
         current = self._snapshot(before['machine']['uuid'], before['component']['id'],
-                                 own_job_id=own_job_id, expected_plan=plan, after_job=before.get('predecessor_job', {}).get('job_id'))
+                                 own_job_id=own_job_id, expected_plan=plan, after_job=before.get('predecessor_job', {}).get('job_id'),
+                                 inventory_installation_id=before.get('inventory_installation_id'))
         projection = lambda p: {key: value for key, value in p.items() if key != 'observed_at'}
         if projection(before) != projection(current):
             raise fail('component_plan_drift', 'Component identity, source or observed state changed; create a new plan')

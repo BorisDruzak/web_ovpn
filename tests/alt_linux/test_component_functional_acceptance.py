@@ -36,7 +36,8 @@ def test_acceptance_never_applies_missing_software_or_accepts_nonfunctional_comp
 
 def test_manual_acceptance_cannot_replace_endpoint_registration_evidence(component_service):
     service, *_ = component_service
-    plan = service.plan(UUID, 'software.endpoint_agent')
+    plan = service.plan(UUID, 'software.endpoint_agent',
+                        inventory_installation_id=f'inventory-00000000-0000-4000-8000-000000000010-{UUID}-' + 'a' * 32)
     assert plan['payload']['action'] == 'noop'
     with pytest.raises(ControlError) as error:
         service.accept(plan['plan_id'], plan['sha256'], confirmed=True)

@@ -91,13 +91,20 @@ the independently trusted publisher key. The controller checks the digest
 before workstation contact and the role checks it again on the target before
 extraction. The existing native coordinator installs the two RPMs together.
 
-The target needs protected staging config, CA and the exact approved staging
-drop-in before apply. The current role requires an installation ID of the form
-`inventory-<controller-machine-uuid>-<32 lowercase hex digits>`. Existing or
-partially installed packages require review. The role invokes native Setup
-once and keeps its retained receipts. A locally installed pair is recorded
-as requiring Endpoint verification. Manual controller acceptance cannot
-substitute for the Endpoint registration and heartbeat.
+The panel generates a private installation ID in the form
+`inventory-<asset-uuid>-<controller-machine-uuid>-<32 lowercase hex digits>`.
+Repeating the same request reuses its ID. The controller includes it in the
+confirmed plan SHA and checks it at apply. The plan expires after 30 minutes.
+The ID correlates the installation with its inventory asset and carries no
+Endpoint enrollment authorization.
 
-Issuing the one-time installation assignment tied to the inventory asset and
-consuming its authoritative registration receipt remain staging work.
+The target needs the protected staging CA and the exact approved staging
+drop-in before apply. The role creates a root-owned configuration in an empty
+slot and checks that any existing protected configuration carries the exact
+installation ID and staging origin. Existing or partially installed packages
+require review. The role invokes native Setup once and keeps its local
+receipts. A locally installed pair requires verification through Endpoint
+registration and heartbeat.
+
+Endpoint-side assignment enforcement, an authoritative registration receipt
+for inventory and a corresponding Windows assignment remain staging work.

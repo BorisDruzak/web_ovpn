@@ -4,7 +4,32 @@
     that:
       - setup_component_id | default('') == 'software.endpoint_agent'
       - machine_uuid is match('^[0-9a-f-]{36}$')
+      - >-
+        (setup_inventory_installation_id | default('')) is match(
+          '^inventory-[0-9a-f-]{36}-' ~ machine_uuid ~ '-[0-9a-f]{32}$')
     fail_msg: ALT_PREFLIGHT_FAILURE:endpoint_native_component_required
+
+- name: Check the protected staging configuration directories
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+    get_checksum: false
+  loop:
+    - /etc/endpoint-agent
+    - /etc/systemd/system/endpoint-agent.service.d
+  register: endpoint_native_config_dirs
+
+- name: Require root-owned staging configuration directories
+  ansible.builtin.assert:
+    that:
+      - item.stat.isdir | default(false)
+      - not (item.stat.islnk | default(false))
+      - item.stat.uid == 0 and item.stat.gid == 0
+      - item.stat.mode is match('^07[05][05]$')
+    fail_msg: ALT_PREFLIGHT_FAILURE:endpoint_native_staging_prerequisites_missing
+  loop: "{{ endpoint_native_config_dirs.results }}"
+  loop_control:
+    label: "{{ item.item }}"
 
 - name: Read protected native staging prerequisites
   ansible.builtin.stat:
@@ -12,7 +37,6 @@
     follow: false
     get_checksum: false
   loop:
-    - {path: /etc/endpoint-agent/config.yaml, mode: "0600"}
     - {path: /etc/endpoint-agent/ca.crt, mode: "0600"}
     - {path: /etc/systemd/system/endpoint-agent.service.d/staging.conf, mode: "0644"}
   register: endpoint_native_prerequisites
@@ -31,18 +55,14 @@
   loop_control:
     label: "{{ item.item.path }}"
 
-- name: Read the prepared native config and staging scope
+- name: Read the protected staging scope
   ansible.builtin.slurp:
-    src: "{{ item }}"
-  loop:
-    - /etc/endpoint-agent/config.yaml
-    - /etc/systemd/system/endpoint-agent.service.d/staging.conf
-  register: endpoint_native_config
+    src: /etc/systemd/system/endpoint-agent.service.d/staging.conf
+  register: endpoint_native_staging_scope
   no_log: true
 
-- name: Require staging origin and a prepared machine-specific installation ID
+- name: Require the exact staging origin and approval markers
   vars:
-    native_config: "{{ endpoint_native_config.results[0].content | b64decode | from_yaml }}"
     staging_dropin: |
       [Service]
       Environment=ENDPOINT_AGENT_DEPLOYMENT_ENVIRONMENT=staging
@@ -51,12 +71,27 @@
       Environment=ENDPOINT_AGENT_ORIGIN=https://endpoint-staging.sosnadmin.local
   ansible.builtin.assert:
     that:
-      - native_config.gateway.endpoint == 'https://endpoint-staging.sosnadmin.local'
-      - native_config.gateway.ca_file == '/etc/endpoint-agent/ca.crt'
-      - native_config.provisioning.installation_id is match('^inventory-' ~ machine_uuid ~ '-[0-9a-f]{32}$')
-      - (endpoint_native_config.results[1].content | b64decode) == staging_dropin
+      - (endpoint_native_staging_scope.content | b64decode) == staging_dropin
     fail_msg: ALT_PREFLIGHT_FAILURE:endpoint_native_staging_scope_invalid
   no_log: true
+
+- name: Inspect the existing native configuration slot
+  ansible.builtin.stat:
+    path: /etc/endpoint-agent/config.yaml
+    follow: false
+    get_checksum: false
+  register: endpoint_native_config_slot
+
+- name: Require any existing native configuration to be protected
+  ansible.builtin.assert:
+    that:
+      - endpoint_native_config_slot.stat.isreg | default(false)
+      - not (endpoint_native_config_slot.stat.islnk | default(false))
+      - endpoint_native_config_slot.stat.uid == 0 and endpoint_native_config_slot.stat.gid == 0
+      - endpoint_native_config_slot.stat.mode == '0600'
+      - 0 < endpoint_native_config_slot.stat.size <= 65536
+    fail_msg: ALT_PREFLIGHT_FAILURE:endpoint_native_config_slot_invalid
+  when: endpoint_native_config_slot.stat.exists
 
 - name: Inspect both Endpoint RPM slots
   ansible.builtin.command:
@@ -109,6 +144,49 @@
         src: "{{ endpoint_native_tmp.path }}/kit.tar.gz"
         dest: "{{ endpoint_native_tmp.path }}"
         remote_src: true
+
+    - name: Prepare native configuration only in a fresh slot
+      ansible.builtin.copy:
+        dest: /etc/endpoint-agent/config.yaml
+        owner: root
+        group: root
+        mode: "0600"
+        force: false
+        content: |
+          schema_version: 1
+          gateway:
+            endpoint: "https://endpoint-staging.sosnadmin.local"
+            ca_file: "/etc/endpoint-agent/ca.crt"
+          provisioning:
+            installation_id: "{{ setup_inventory_installation_id }}"
+            systemd_claim_credential_name: "endpoint-enrollment-claim"
+            permanent_credential_file: "/var/lib/endpoint-agent/device-credential"
+          runtime:
+            data_dir: "/var/lib/endpoint-agent"
+            log_dir: "/var/log/endpoint-agent"
+            install_root: "/opt/endpoint-agent"
+          context_profiles:
+            scheduled: [baseline_v1, health_v1, network_v1]
+            diagnostic_manual_only: true
+      when: not endpoint_native_config_slot.stat.exists
+      no_log: true
+
+    - name: Read the native configuration for this signed plan
+      ansible.builtin.slurp:
+        src: /etc/endpoint-agent/config.yaml
+      register: endpoint_native_config
+      no_log: true
+
+    - name: Require the exact installation assignment before native execution
+      vars:
+        native_config: "{{ endpoint_native_config.content | b64decode | from_yaml }}"
+      ansible.builtin.assert:
+        that:
+          - native_config.gateway.endpoint == 'https://endpoint-staging.sosnadmin.local'
+          - native_config.gateway.ca_file == '/etc/endpoint-agent/ca.crt'
+          - native_config.provisioning.installation_id == setup_inventory_installation_id
+        fail_msg: ALT_PREFLIGHT_FAILURE:endpoint_native_installation_assignment_changed
+      no_log: true
 
     - name: Run the existing Endpoint native coordinator
       vars:

@@ -143,3 +143,21 @@ def test_existing_assignment_cannot_bypass_current_approved_ou(component_service
     with pytest.raises(ControlError) as caught:
         service.plan(UUID, 'software.onlyoffice')
     assert caught.value.code == 'setup_ou_not_approved'
+
+
+def test_endpoint_component_plan_keeps_assignment_in_signed_payload_and_out_of_browser(component_service):
+    from alt_deploy.workstations_projection import public_plan
+
+    service, _, machine, *_ = component_service
+    asset = '00000000-0000-4000-8000-000000000010'
+    first = f'inventory-{asset}-{machine.uuid}-' + 'a' * 32
+    second = f'inventory-{asset}-{machine.uuid}-' + 'b' * 32
+
+    original = service.plan(machine.uuid, 'software.endpoint_agent', inventory_installation_id=first)
+    another = service.plan(machine.uuid, 'software.endpoint_agent', inventory_installation_id=second)
+    assert original['sha256'] != another['sha256']
+    assert service.validate(original['plan_id'], original['sha256'])['inventory_installation_id'] == first
+    assert 'inventory_installation_id' not in public_plan(original)
+    with pytest.raises(ControlError) as error:
+        service.plan(machine.uuid, 'software.endpoint_agent')
+    assert error.value.code == 'endpoint_installation_assignment_invalid'

@@ -284,7 +284,8 @@ def test_inventory_endpoint_plan_uses_only_the_fresh_exact_workstation(tmp_path,
         user = db.scalar(select(WebUser).where(WebUser.username == "admin"))
         db.add(WorkstationRequest(actor=f"user:{user.id}", action="component_plans.create",
             permission="workstations:plan", intent_sha256="b" * 64, status="succeeded",
-            parameters_json=calls[0][1], data_json={"plan_id": plan_id}))
+            parameters_json=dict(calls[0][1], inventory_installation_id=f"inventory-{asset_id}-{machine}-" + "a" * 32),
+            data_json={"plan_id": plan_id}))
     apply_url = f"/api/v1/workstations/plans/{plan_id}/apply"
     apply_body = {"request_id": str(uuid.uuid4()), "sha256": sha, "kind": "component"}
     stale = True
@@ -294,3 +295,33 @@ def test_inventory_endpoint_plan_uses_only_the_fresh_exact_workstation(tmp_path,
     stale = False
     assert client.post(apply_url, json=apply_body, headers=headers).status_code == 200
     assert calls[-1] == ("plans.apply", {"plan_id": plan_id})
+
+
+def test_inventory_installation_id_is_created_once_and_kept_out_of_operation_projection(database):
+    import re
+
+    from app.panel_operations import execution_future
+    from app.workstations.models import WorkstationRequest
+    from app.workstations.service import WorkstationsService
+
+    asset, machine, request_id = (str(uuid.uuid4()) for _ in range(3))
+    native_calls = []
+
+    class Controller:
+        def call(self, action, parameters, **kwargs):
+            native_calls.append((action, parameters))
+            return {'plan_id': 'setup-component-' + 'a' * 64}
+
+    service = WorkstationsService(client=Controller(), session_factory=database)
+    params = {'machine_uuid': machine, 'component_id': 'software.endpoint_agent', '_inventory_asset_id': asset}
+    result = service.start('component_plans.create', params, actor='user:fixture', request_id=request_id)
+    execution_future(result['operation_id']).result(timeout=5)
+    with database() as db:
+        stored = db.get(WorkstationRequest, request_id).parameters_json['inventory_installation_id']
+    assert re.fullmatch(f'inventory-{asset}-{machine}-[0-9a-f]{{32}}', stored)
+    assert native_calls == [('component_plans.create', {'machine_uuid': machine, 'component_id': 'software.endpoint_agent',
+                                                        'inventory_installation_id': stored})]
+    replay = service.start('component_plans.create', params, actor='user:fixture', request_id=request_id)
+    assert replay['operation_id'] == result['operation_id']
+    assert stored not in json.dumps(replay)
+    assert len(native_calls) == 1

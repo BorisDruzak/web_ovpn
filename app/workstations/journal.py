@@ -15,7 +15,7 @@ from .sources import SourceError, timestamp
 
 MAX_EVENTS = 10000
 PRIVATE = frozenset(('dn', 'computer_ou', 'stdout', 'stderr', 'raw', 'raw_output', 'raw_xml', 'traceback', 'request',
-    'payload', 'ssh_binding', 'record_path', 'password', 'vault_password', 'secret', 'token', 'private_key', 'diagnostics'))
+    'payload', 'ssh_binding', 'inventory_installation_id', 'record_path', 'password', 'vault_password', 'secret', 'token', 'private_key', 'diagnostics'))
 
 
 def public_payload(value):
