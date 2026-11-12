@@ -2473,6 +2473,48 @@ def test_route_availability_exposes_linux_neighbor_in_api_and_ui(tmp_path, monke
     assert "ARP 192.0.2.1 · разрешение не удалось" in page.text
 
 
+def test_route_ipsec_phase_and_unavailable_reason_in_history_and_ui(tmp_path, monkeypatch):
+    client, headers = make_client(tmp_path, monkeypatch)
+    from app import network_checks, network_probe_profiles, network_route_matrix
+
+    profiles = network_probe_profiles.ProbeProfiles.model_validate({"routes": {
+        "archive": {"label": "Archive", "probes": [
+            {"id": "central", "expected_path": "IPsec", "target": "192.0.2.1", "protocol": "icmp",
+             "router_source": "central-router", "source_address": "198.51.100.1", "ipsec": True},
+            {"id": "archive", "expected_path": "IPsec", "target": "198.51.100.1", "protocol": "icmp",
+             "router_source": "archive-router", "source_address": "192.0.2.1", "ipsec": True},
+        ]},
+    }})
+    monkeypatch.setattr(network_checks, "load_probe_profiles", lambda: profiles)
+    monkeypatch.setattr(network_probe_profiles, "load_probe_profiles", lambda: profiles)
+
+    def netctl(args, **kwargs):
+        if args[:2] == ["path", "probe"]:
+            return {"probe": {"status": "timeout"}}
+        if args[-1] == "--source=archive-router":
+            return {"sources": [{"source": "archive-router", "status": "error"}]}
+        return {"sources": [{"source": "central-router", "status": "warn", "policies": [{
+            "src_address": "198.51.100.0/24", "dst_address": "192.0.2.0/24", "action": "encrypt",
+            "established": False, "ph2_count": 0,
+        }]}]}
+
+    monkeypatch.setattr(network_route_matrix, "run_netctl", netctl)
+    payload = {"check": "route_availability", "profile": "archive"}
+    endpoint = "/api/v1/network/diagnostics"
+    run = client.post(f"{endpoint}/checks", headers=headers, json=payload)
+    assert run.status_code == 200
+    history = client.get(f"{endpoint}/route-runs", headers=headers, params={"profile": "archive"})
+    central, archive = history.json()["data"]["runs"][0]["result"]["probes"]
+    assert central["ipsec"]["phase2_count"] == 0
+    assert archive["ipsec"]["reason"] == "source_error"
+
+    csrf = login(client)
+    page = client.post("/network/diagnostics/checks", data={"csrf_token": csrf, **payload})
+    assert page.status_code == 200
+    assert "IPsec не активен" in page.text and "Phase 2: 0" in page.text
+    assert "источник вернул ошибку опроса" in page.text
+
+
 def test_https_speed_uses_profile_and_records_result_in_api_and_ui(tmp_path, monkeypatch):
     client, headers = make_client(tmp_path, monkeypatch)
     from app import network_checks, network_probe_profiles

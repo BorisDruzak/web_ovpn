@@ -1,6 +1,7 @@
 import ipaddress
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from subprocess import TimeoutExpired
 
 from .network_probe_profiles import RouteProbe, RouteProfile
 from .network_route_local import probe_local_route
@@ -12,17 +13,21 @@ PROBE_STATUSES = {"reachable", "unreachable", "timeout", "unavailable", "failed"
 
 def _read_ipsec(source: str) -> dict:
     try:
-        result = run_netctl(["ipsec", "status", f"--source={source}"], timeout=12)
-    except (NetctlError, OSError, UnicodeError):
-        return {}
+        result = run_netctl(["ipsec", "status", "--allow-source-errors", f"--source={source}"], timeout=12)
+    except NetctlError as exc:
+        return {"reason": "collector_timeout" if isinstance(exc.__cause__, TimeoutExpired) else "collector_failed"}
+    except (OSError, UnicodeError):
+        return {"reason": "collector_failed"}
     row = next((row for row in result.get("sources", []) if row.get("source") == source), None)
-    return {**row, "checked_at": datetime.now(UTC).isoformat()} if row else {}
+    return {**row, "checked_at": datetime.now(UTC).isoformat()} if row else {"reason": "source_not_reported"}
 
 
 def _ipsec_evidence(snapshot: dict, probe: RouteProbe) -> dict:
     observed = {"status": "unavailable", "checked_at": snapshot.get("checked_at")}
-    if not snapshot or snapshot.get("status") == "error":
-        return observed
+    if reason := snapshot.get("reason"):
+        return {**observed, "reason": reason}
+    if snapshot.get("status") == "error":
+        return {**observed, "reason": "source_error"}
     matches = []
     for policy in snapshot.get("policies", []):
         if (policy.get("disabled") or policy.get("action") != "encrypt"
@@ -36,9 +41,9 @@ def _ipsec_evidence(snapshot: dict, probe: RouteProbe) -> dict:
         if ipaddress.IPv4Address(probe.source_address) in source and ipaddress.IPv4Address(probe.target) in target:
             matches.append((source, target, policy))
     if not matches:
-        if not snapshot.get("errors"):
-            observed["status"] = "no_matching_policy"
-        return observed
+        if snapshot.get("errors"):
+            return {**observed, "reason": "source_report_incomplete"}
+        return {**observed, "status": "no_matching_policy"}
     if len(matches) != 1:
         return {**observed, "status": "ambiguous_policy", "matching_policies": len(matches)}
     source, target, policy = matches[0]

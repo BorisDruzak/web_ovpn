@@ -161,7 +161,7 @@ def test_ipsec_policy_and_peer_sa_bytes_are_independent_of_echo_reply(monkeypatc
     def netctl(args, **kwargs):
         if args[:2] == ["path", "probe"]:
             return {"probe": {"status": "unreachable", "evidence": {"received": 0}}}
-        assert args == ["ipsec", "status", "--source=mikrotik-main"]
+        assert args == ["ipsec", "status", "--allow-source-errors", "--source=mikrotik-main"]
         return {"sources": [{"source": "mikrotik-main", "status": "ok", "errors": [], "policies": [{
             "src_address": "198.51.100.0/24", "dst_address": "192.0.2.0/24", "action": "encrypt",
             "disabled": False, "established": True, "ph2_count": 1,
@@ -179,3 +179,31 @@ def test_ipsec_policy_and_peer_sa_bytes_are_independent_of_echo_reply(monkeypatc
     assert row["ipsec"]["peer_sa_counters"] == {
         "outgoing": {"associations": 1, "bytes": 42}, "incoming": {"associations": 1, "bytes": 10},
     }
+
+
+@pytest.mark.parametrize("failure", ["collector_timeout", "source_error"])
+def test_ipsec_observation_failure_is_separate_from_ping_status(monkeypatch, failure):
+    from subprocess import TimeoutExpired
+
+    from app import network_route_matrix
+    from app.netctl_client import NetctlError
+
+    profile = network_probe_profiles.RouteProfile.model_validate({"label": "Archive", "probes": [{
+        "id": "from-archive", "expected_path": "Tunnel", "target": "192.0.2.20", "protocol": "icmp",
+        "router_source": "archive-router", "source_address": "198.51.100.10", "ipsec": True,
+    }]})
+
+    def netctl(args, **kwargs):
+        if args[:2] == ["path", "probe"]:
+            return {"probe": {"status": "timeout"}}
+        if failure == "collector_timeout":
+            raise NetctlError("netctl timeout", stdout="internal output") from TimeoutExpired(args, 12)
+        return {"sources": [{"source": "archive-router", "status": "error", "errors": [{"message": "internal output"}]}]}
+
+    monkeypatch.setattr(network_route_matrix, "run_netctl", netctl)
+    row = network_route_matrix.run_route_matrix("archive", profile)["result"]["probes"][0]
+
+    assert row["status"] == "timeout"
+    assert row["ipsec"]["status"] == "unavailable"
+    assert row["ipsec"]["reason"] == failure
+    assert "internal output" not in repr(row)
