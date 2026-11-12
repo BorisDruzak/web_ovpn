@@ -1138,8 +1138,12 @@ def _local_arp_diagnostic(address: str, expected_mac: str) -> dict:
         if _ping(address, source_ip=source, interface=interface).returncode not in (0, 1):
             return {}
         neighbor = _ipv4_neighbor(address, interface)
-        if neighbor.get("state") == ["INCOMPLETE"]:
+        state = neighbor.get("state")
+        if state == ["INCOMPLETE"]:
             sleep(1.25)
+            neighbor = _ipv4_neighbor(address, interface)
+        elif state in (["DELAY"], ["PROBE"]):
+            sleep(6)
             neighbor = _ipv4_neighbor(address, interface)
     except (OSError, ValueError, subprocess.SubprocessError):
         return {}

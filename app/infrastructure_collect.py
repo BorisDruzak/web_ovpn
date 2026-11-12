@@ -54,7 +54,7 @@ from .infrastructure_map import (
     project_hypervisor_disks, project_hypervisor_lvm_thin, project_hypervisor_zfs,
 )
 from .infrastructure_port_ssh import collect_proxmox_port_states
-from .infrastructure_service_probes import apply_service_probes, probe_icmp
+from .infrastructure_service_probes import _local_arp_diagnostic, apply_service_probes, probe_icmp
 from .netctl_client import NetctlError, run_netctl
 from .server_health_view import build_server_health_view
 
@@ -559,16 +559,26 @@ def _collect_asset_mac_probes(context: dict, sources: list[dict], configured: di
     return checks
 
 
+LOCAL_GUEST_ARP_METHOD = "Локальный ARP"
+
+
 def _collect_guest_arp_probes(pve: dict, network: dict, configured: dict, now: datetime,
-                              router_sources: dict | None = None, *, auto_on_link: bool = False) -> dict:
+                              router_sources: dict | None = None, *, auto_on_link: bool = False,
+                              local_macs: dict | None = None) -> dict:
     configs = pve.get("configs", {})
     counts = Counter(mac for config in configs.values() for mac in _guest_macs(config))
     arp_rows = network.get("arp", [])
     arp = _arp_mappings(arp_rows, now)
+    fresh_arp_ips = {row["ip"] for row in arp_rows if isinstance(row.get("ip"), str)
+                     and MAC.fullmatch(str(row.get("mac") or ""))
+                     and observation_is_fresh(row.get("last_seen_at"), now)}
+    configured_ips = Counter(address for address in configured.values() if isinstance(address, str))
+    guest_ids = Counter(str(guest["vmid"]) for guest in pve.get("guests", []))
+    pve_fresh = observation_is_fresh(pve.get("at"), now)
     candidates = []
     automatic = []
     addresses_by_mac = {}
-    if auto_on_link and observation_is_fresh(pve.get("at"), now):
+    if auto_on_link and pve_fresh:
         for address, (mac, _) in arp.items():
             try:
                 address = str(ipaddress.IPv4Address(address))
@@ -585,20 +595,29 @@ def _collect_guest_arp_probes(pve: dict, network: dict, configured: dict, now: d
             matches = {(address, mac) for mac in usable for address in addresses_by_mac.get(mac, ())}
             if len(matches) == 1:
                 address, mac = matches.pop()
-                automatic.append((vmid, address, mac))
+                automatic.append((vmid, address, mac, False))
             continue
         try:
             address = str(ipaddress.IPv4Address(configured[vmid]))
         except (TypeError, ValueError):
             continue
         if address not in arp:
+            local_mac = (local_macs or {}).get(vmid)
+            if (pve_fresh and guest_ids[vmid] == 1 and address not in fresh_arp_ips
+                    and configured_ips[address] == 1 and isinstance(local_mac, str) and local_mac.lower() in usable):
+                candidates.append((vmid, address, local_mac.lower(), True))
             continue
         mac, _ = arp[address]
         if mac in usable:
-            candidates.append((vmid, address, mac))
+            candidates.append((vmid, address, mac, False))
 
     def check(candidate):
-        vmid, address, mac = candidate
+        vmid, address, mac, local = candidate
+        if local:
+            if _local_arp_diagnostic(address, mac).get("state") == "matched":
+                return mac, address, _observation("reachable", "UI_VPN", LOCAL_GUEST_ARP_METHOD,
+                                                  datetime.now(timezone.utc).isoformat())
+            return None
         if _probe_on_link_mac(address, mac):
             return mac, address, _observation("reachable", "UI_VPN", "ICMP · ARP", datetime.now(timezone.utc).isoformat())
         name = (router_sources or {}).get(vmid) if vmid in configured else None
@@ -2217,10 +2236,19 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                         service["reachability"] = _observation("stopped", "Proxmox", "Состояние ВМ", pve_at)
                     address = bindings.get("guest_probe_ips", {}).get(str(vmid))
                     arp = arp_mappings.get(address)
-                    if (status == "ok" and arp and arp[0] == mac
+                    identity_at = arp[1] if arp and arp[0] == mac else None
+                    if not arp and str(bindings.get("guest_local_arp_macs", {}).get(str(vmid), "")).lower() == mac:
+                        identity_at = max(
+                            (datetime.fromisoformat(check["checkedAt"])
+                             for ip, check in arp_checks.get(mac, [])
+                             if ip == address and check.get("method") == LOCAL_GUEST_ARP_METHOD
+                             and observation_is_fresh(check.get("checkedAt"), now)),
+                            default=None,
+                        )
+                    if (status == "ok" and identity_at
                             and any(nic_mac == mac and not disabled for _, _, disabled, nic_mac in interfaces.values())):
                         service["probeTargetIP"] = address
-                        service["probeTargetIdentityAt"] = min(datetime.fromisoformat(pve_at), arp[1]).isoformat()
+                        service["probeTargetIdentityAt"] = min(datetime.fromisoformat(pve_at), identity_at).isoformat()
             if not guest.get("template") and guest.get("status") == "stopped":
                 item["reachability"] = _observation("stopped", "Proxmox", "Состояние ВМ", pve_at)
             elif prelaunch and not guest.get("template") and observation_is_fresh(pve_at, now):
@@ -3091,6 +3119,7 @@ def main() -> int:
                 pve, network, bindings.get("guest_probe_ips", {}), datetime.now(timezone.utc),
                 bindings.get("guest_router_arp_sources"),
                 auto_on_link=bindings.get("guest_auto_arp_probes") is True,
+                local_macs=bindings.get("guest_local_arp_macs"),
             )
             network.setdefault("guest_fdb", []).extend(asyncio.run(
                 _collect_guest_attachment_fdb(pve, network, bindings, datetime.now(timezone.utc))

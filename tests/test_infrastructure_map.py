@@ -1422,6 +1422,58 @@ def test_guest_service_requires_matching_mac_and_arp_to_enable_probe(monkeypatch
     assert [e["kind"] for e in graph["links"] if e["b"] == "zabbix-api"] == ["Зависимость сервиса"]
 
 
+def test_guest_service_uses_fresh_explicit_local_arp_without_router_entry(monkeypatch):
+    from app import infrastructure_collect as collector
+
+    now = datetime.now(timezone.utc)
+    mac, address = "02:00:00:00:00:03", "192.0.2.21"
+    pve = {
+        "at": now.isoformat(), "cluster": [], "nodes": [],
+        "guests": [{"vmid": 108, "node": "pve1", "type": "qemu", "status": "running"}],
+        "configs": {"108": {"net0": f"virtio={mac},bridge=vmbr0"}},
+    }
+    bindings = {
+        "guest_probe_ips": {"108": address},
+        "guest_local_arp_macs": {"108": mac},
+        "guest_services": {"panel": {"label": "Панель", "vmid": 108, "mac": mac}},
+    }
+    calls = []
+    answers = ["matched"]
+
+    def probe(ip, expected_mac):
+        calls.append((ip, expected_mac))
+        return {"state": answers[-1]}
+
+    monkeypatch.setattr(collector, "_local_arp_diagnostic", probe, raising=False)
+    network = {"arp": []}
+
+    def collect():
+        network["guest_arp_probes"] = collector._collect_guest_arp_probes(
+            pve, network, bindings["guest_probe_ips"], now, local_macs=bindings["guest_local_arp_macs"],
+        )
+        graph = collector.build_graph({}, network, {}, pve, bindings, datetime.now(timezone.utc))
+        return next(n for n in graph["nodes"] if n["id"] == "panel")
+
+    service = collect()
+    assert service["probeTargetIP"] == address
+    assert service["probeTargetIdentityAt"] == now.isoformat()
+    assert calls == [(address, mac)]
+
+    answers.append("no_reply")
+    assert collect()["probeTargetIP"] is None
+
+    calls.clear()
+    answers.append("matched")
+    network["arp"] = [{"ip": address, "mac": "02:00:00:00:00:09", "last_seen_at": now.isoformat()}]
+    assert collect()["probeTargetIP"] is None
+    assert calls == []
+
+    network["arp"] = []
+    pve["configs"]["108"]["net0"] += ",link_down=1"
+    assert collect()["probeTargetIP"] is None
+    assert calls == []
+
+
 def test_port_evidence_keeps_direction_and_parallel_links(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map
