@@ -784,6 +784,15 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         sessions = check.get("sessionCount")
         if type(configured_port) is int and 1 <= configured_port <= 65535:
             result["configuredPort"] = configured_port
+        binding = check.get("localUdpSocket")
+        if "configuredPort" in result and not result["stale"] and isinstance(binding, dict):
+            state, addresses = binding.get("state"), binding.get("addresses")
+            if state in ("unbound", "unknown"):
+                result["localUdpSocket"] = {"state": state}
+            elif state == "bound" and isinstance(addresses, list) and 1 <= len(addresses) <= 8:
+                clean = ["*" if address == "*" else _network_address(address) for address in addresses]
+                if all(address and "/" not in address for address in clean):
+                    result["localUdpSocket"] = {"state": state, "addresses": clean}
         if (result["checkedAt"] and type(sessions) is int and 0 <= sessions <= 4096
                 and type(check.get("daemonReady")) is bool):
             result.update(sessionCount=sessions, daemonReady=check["daemonReady"])
@@ -2276,7 +2285,8 @@ def summarize_services(graph: dict) -> dict:
              **{key: check[key] for key in ("source", "checkedAt", "stale", "reason", "path", "port", "target",
                                             "pppoe", "rtspStatus", "ftpReply", "tlsExpiresAt", "tlsVersion",
                                             "dns", "localRoute", "vlanTransit", "identityCheckedAt", "errorSource",
-                                            "responseCode", "attempts", "ipsecPolicy")
+                                            "responseCode", "attempts", "ipsecPolicy", "configuredPort", "localUdpSocket",
+                                            "sessionCount", "daemonReady")
                 if key in check and check[key] is not None and check[key] != ""}}
             for check in node["serviceChecks"] if check.get("required") or (
                 state == "unknown" and check.get("supplemental") and check["state"] != "reachable"

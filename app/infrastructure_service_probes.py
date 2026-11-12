@@ -596,6 +596,26 @@ def _openvpn_management() -> dict:
     return {"state": "unknown"}
 
 
+def _openvpn_udp_socket(port: int) -> dict:
+    try:
+        listing = subprocess.check_output(["/usr/bin/ss", "-H", "-lun", f"sport = :{port}"], timeout=TIMEOUT)
+        addresses = set()
+        for line in listing.decode("ascii").splitlines():
+            fields = line.split()
+            if not fields:
+                continue
+            if len(fields) < 5 or fields[0] != "UNCONN":
+                return {"state": "unknown"}
+            host, _, observed_port = fields[3].rpartition(":")
+            if observed_port != str(port):
+                return {"state": "unknown"}
+            host = host.removeprefix("[").removesuffix("]")
+            addresses.add("*" if host == "*" else str(ipaddress.ip_address(host)))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return {"state": "unknown"}
+    return {"state": "bound", "addresses": sorted(addresses)[:8]} if addresses else {"state": "unbound"}
+
+
 def _openvpn_tunnel(spec: dict) -> dict:
     name, address = spec.get("interface"), spec.get("address")
     unknown = {"state": "unknown", "reason": "openvpn_tunnel_probe"}
@@ -1464,7 +1484,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 details = (_dns_over_vlan(spec, vlan) if protocol == "dns"
                            else {"state": "unknown", "reason": "vlan_probe_error"})
             elif protocol == "openvpn_management" and valid_port is not None:
-                details = {**_openvpn_management(), "configuredPort": valid_port}
+                details = {**_openvpn_management(), "configuredPort": valid_port,
+                           "localUdpSocket": _openvpn_udp_socket(valid_port)}
                 valid_port = None
             elif protocol == "openvpn_tunnel":
                 details = _openvpn_tunnel(spec)

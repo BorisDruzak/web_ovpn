@@ -1533,6 +1533,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           check.daemonReady === true && 'демон CONNECTED',
           check.sessionCount !== undefined && 'клиентских сессий: ' + check.sessionCount,
         ].filter(Boolean).map(value => ' · ' + value).join('');
+        const udp = check.localUdpSocket;
         const source = check.source ? ' · ' + check.source : '';
         const time = check.checkedAt ? ' · ' + formatTime(check.checkedAt) : '';
         const identity = check.identityCheckedAt ? ' · Адрес сверён ' + formatTime(check.identityCheckedAt) : '';
@@ -1578,6 +1579,12 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           title.addEventListener('click', () => select(guests[0].id));
         }
         row.append(title, make('small', result + http + rtsp + ftp + certificate + postgresql + smb + (reason ? ' · ' + reason + errorSource : '') + backup + policy + dns + rtt + attempts + gateway + egress + management + scope + source + time + identity + (check.stale ? ' · устарело' : '')));
+        if (udp) {
+          const addresses = udp.addresses?.map(address => address.includes(':') ? `[${address}]` : address).join(', ');
+          const label = {bound: 'Открыт локальный UDP-сокет', unbound: 'Локальный UDP-сокет отсутствует',
+            unknown: 'Локальный UDP-сокет не проверен'}[udp.state];
+          row.append(make('small', [label, `UDP/${check.configuredPort}`, addresses].filter(Boolean).join(' · ')));
+        }
         for (const direction of check.ipsecPolicy?.directions ?? []) {
           const status = direction.state === 'reachable' ? 'Фаза 2 установлена' : reasons[direction.reason];
           row.append(make('small', [direction.source, status, direction.checkedAt && formatTime(direction.checkedAt)]
