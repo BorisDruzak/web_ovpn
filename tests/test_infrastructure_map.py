@@ -2889,6 +2889,44 @@ def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_pa
     assert mismatch["portB"] == "enp2s0" and mismatch["observedPaths"] == []
 
 
+def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(tmp_path, monkeypatch):
+    from app import api
+
+    path = tmp_path / "infrastructure.json"
+    monkeypatch.setenv("INFRASTRUCTURE_MAP_SNAPSHOT_PATH", str(path))
+    at = datetime.now(timezone.utc).isoformat()
+    keys = ("mac-020000000001", "mac-020000000002")
+    path.write_text(json.dumps({"schema": 1, "snapshotAt": at, "nodes": [
+        {"id": f"vm:{index}", "name": f"VM {index}", "guest": True, "vmid": index,
+         "kind": "Виртуальная машина", "agentMatchKeys": [key],
+         "sources": [{"name": "Proxmox", "status": "ok", "at": at, "label": "Запущена"}]}
+        for index, key in enumerate(keys, 1)
+    ]}), encoding="utf-8")
+
+    class Adapter:
+        def list_agent_network_identities(self):
+            return [{"id": str(index), "baseline_mac_keys": [key], "online": True,
+                     "last_seen_at": at, "baseline_collected_at": at}
+                    for index, key in enumerate([keys[0], keys[1], keys[1]])]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(api, "get_endpoint_context_adapter", Adapter)
+    client, headers, _ = make_client(tmp_path, monkeypatch)
+    regular = client.get("/api/v1/network/infrastructure", headers=headers).json()["infrastructure"]
+    assert all(n["mapStatus"] == "unknown" and "agentMatchKeys" not in n for n in regular["nodes"])
+    response = client.get("/api/v1/network/infrastructure?view=agents", headers=headers)
+    assert response.status_code == 200
+    assert all(key not in response.text for key in keys)
+    result = response.json()["infrastructure"]["agentAudit"]
+    assert (result["eligible"], result["matched"], result["ambiguous"]) == (2, 1, 1)
+    matched, ambiguous = result["guests"]
+    assert matched == {"id": "vm:1", "name": "VM 1", "vmid": 1, "state": "matched",
+                       "registrations": 1, "presence": "online", "lastSeenAt": at}
+    assert ambiguous["state"] == "ambiguous" and "lastSeenAt" not in ambiguous
+
+
 def test_missing_infrastructure_snapshot_has_explicit_empty_state(tmp_path, monkeypatch):
     monkeypatch.setenv("INFRASTRUCTURE_MAP_SNAPSHOT_PATH", str(tmp_path / "missing.json"))
     client, headers, _ = make_client(tmp_path, monkeypatch)

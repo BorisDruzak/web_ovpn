@@ -1039,11 +1039,28 @@ def api_network_dashboard(actor: str = Depends(require_api_actor)):
 
 @router.get("/network/infrastructure")
 def api_network_infrastructure(
-    view: Literal["topology"] | None = None,
+    view: Literal["topology", "agents"] | None = None,
     actor: str = Depends(require_api_actor),
     db: Session = Depends(get_db),
 ):
-    graph = load_infrastructure_map(get_settings().infrastructure_map_snapshot_path, db=db)
+    path = get_settings().infrastructure_map_snapshot_path
+    if view == "agents":
+        adapter = None
+        identities = None
+        try:
+            adapter = get_endpoint_context_adapter()
+            identities = adapter.list_agent_network_identities()
+        except EndpointPlatformServiceError:
+            pass
+        finally:
+            if adapter is not None:
+                adapter.close()
+        graph = load_infrastructure_map(path, agent_identities=identities)
+        graph = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues", "agentAudit")
+                 if key in graph}
+        graph.setdefault("agentAudit", {"sourceState": "unavailable"})
+    else:
+        graph = load_infrastructure_map(path, db=db)
     return JSONResponse(
         {"status": "ok", "infrastructure": summarize_topology(graph) if view == "topology" else graph},
         headers={"Cache-Control": "no-store"},

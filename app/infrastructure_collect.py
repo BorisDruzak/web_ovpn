@@ -1361,6 +1361,14 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             interfaces = guest_interfaces.get(str(vmid), {})
             configured_nics = {name for name in config if re.fullmatch(r"net[0-9]+", name)}
             if observation_is_fresh(pve_at, now):
+                if status == "ok":
+                    keys = sorted({
+                        "mac-" + mac.replace(":", "") for _, _, disabled, mac in interfaces.values()
+                        if mac and not disabled and mac_counts[mac] == interface_mac_counts[mac] == 1
+                        and declared_devices_by_mac.get(mac, set()) <= {key}
+                    })
+                    if keys:
+                        item["agentMatchKeys"] = keys
                 lock = guest.get("lock")
                 if isinstance(lock, str) and re.fullmatch(r"[a-z][a-z0-9-]{0,31}", lock):
                     item["properties"]["Блокировка Proxmox"] = {"backup": "Резервное копирование"}.get(lock, lock)
