@@ -609,6 +609,10 @@ def _public_service_check(check: dict, now: datetime) -> dict:
             result["rtspStatus"] = rtsp
         if reason == "rtsp_connection_refused" or (rtsp == 401 and reason == "rtsp_auth_required"):
             result["reason"] = reason
+    if result["method"] == "SSH" and result["source"] == "UI_VPN" and reason in {
+        "timeout", "transport_error", "ssh_connection_refused", "ssh_identification_invalid",
+    }:
+        result["reason"] = reason
     attempts = check.get("attempts")
     if result["method"] == "SIP OPTIONS (UDP)" and type(attempts) is int and 1 <= attempts <= 3:
         result["attempts"] = attempts

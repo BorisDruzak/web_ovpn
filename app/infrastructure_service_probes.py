@@ -33,6 +33,7 @@ PROBE_METHODS = {
     "openvpn_management": "OpenVPN Management", "openvpn_tunnel": "OpenVPN TUN",
     "sip_options": "SIP OPTIONS (UDP)", "icmp": "ICMP", "vlan_transit": "ICMP · VLAN",
     "wireguard_policy": "Маршрут · WireGuard", "ipmi_lan": "IPMI LAN (UDP)", "rtsp_options": "RTSP OPTIONS",
+    "ssh_identification": "SSH",
 }
 
 
@@ -505,6 +506,47 @@ def _udp_failure(connection: socket.socket, option: tuple[int, int] | None,
             return {"state": "unreachable", "reason": "icmp_port_unreachable", "errorSource": offender}
         return {"state": "unknown", "reason": "icmp_rejected", "errorSource": offender}
     return fallback
+
+
+def _ssh_identification(spec: dict) -> dict:
+    port = spec.get("port")
+    if type(port) is not int or not 1 <= port <= 65535:
+        return {"state": "unknown"}
+    try:
+        address = str(ipaddress.ip_address(spec.get("ip")))
+    except ValueError:
+        return {"state": "unknown"}
+
+    invalid = {"state": "unknown", "reason": "ssh_identification_invalid"}
+    buffer = b""
+    budget = 1024
+    deadline = monotonic() + TIMEOUT
+    try:
+        with socket.create_connection((address, port), timeout=TIMEOUT) as connection:
+            while budget:
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    return {"state": "unknown", "reason": "timeout"}
+                connection.settimeout(remaining)
+                chunk = connection.recv(budget)
+                if not chunk:
+                    break
+                budget -= len(chunk)
+                buffer += chunk
+                while b"\n" in buffer:
+                    line, _, buffer = buffer.partition(b"\n")
+                    if line.startswith(b"SSH-"):
+                        valid = len(line) < 255 and re.fullmatch(
+                            rb"SSH-(?:2\.0|1\.99)-[\x21-\x2c\x2e-\x7e]+(?: [ -~]*)?\r?", line
+                        )
+                        return {"state": "reachable"} if valid else invalid
+    except TimeoutError:
+        return {"state": "unknown", "reason": "timeout"}
+    except ConnectionRefusedError:
+        return {"state": "unreachable", "reason": "ssh_connection_refused"}
+    except OSError:
+        return {"state": "unknown", "reason": "transport_error"}
+    return invalid
 
 
 def _rtsp_options(spec: dict) -> dict:
@@ -1004,6 +1046,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 details = _ipmi_lan(spec)
             elif protocol == "rtsp_options":
                 details = _rtsp_options(spec)
+            elif protocol == "ssh_identification":
+                details = _ssh_identification(spec)
             elif protocol == "dns":
                 details = _dns(spec)
             elif protocol == "icmp":
@@ -1033,7 +1077,7 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 "port": valid_port,
                 "path": spec.get("path") if protocol in {"http", "https", "zabbix_api", "rtsp_options"} else None,
                 "target": spec.get("ip") if not skip_reason and (
-                    protocol in {"icmp", "vlan_transit", "sip_options", "ipmi_lan", "rtsp_options",
+                    protocol in {"icmp", "vlan_transit", "sip_options", "ipmi_lan", "rtsp_options", "ssh_identification",
                                  "zabbix_api", "postgresql", "dns", "smb"}
                     or "probeTargetIP" in node
                 ) else None,

@@ -4223,6 +4223,59 @@ def test_icmp_diagnostics_distinguish_echo_silence_and_probe_error(monkeypatch):
     assert "raw output" not in json.dumps(checks)
 
 
+def test_ssh_identification_confirms_only_a_bounded_protocol_response(monkeypatch):
+    from app import infrastructure_service_probes as probes
+    from app.infrastructure_map import _public_service_check
+
+    ip = "192.0.2.20"
+    chunks = []
+    connections = []
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def settimeout(self, timeout):
+            assert 0 < timeout <= probes.TIMEOUT
+
+        def recv(self, size):
+            return chunks.pop(0)[:size] if chunks else b""
+
+    def connect(destination, *, timeout):
+        assert destination == (ip, 22) and 0 < timeout <= probes.TIMEOUT
+        connections.append(destination)
+        if chunks and isinstance(chunks[0], OSError):
+            raise chunks.pop(0)
+        return Connection()
+
+    monkeypatch.setattr(probes.socket, "create_connection", connect)
+
+    def check(*response, target=ip):
+        chunks[:] = response
+        node = {"id": "ssh", "kind": "Сервис", "probeTargetIP": target}
+        probes.apply_service_probes([node], {"ssh": [{"type": "ssh_identification", "ip": ip, "port": 22}]})
+        return _public_service_check(node["serviceChecks"][0], datetime.now(timezone.utc))
+
+    success = check(b"NOTICE\r\nSSH-", b"2.0-example private-text\r\n\x00\x01")
+    assert (success["method"], success["state"], success["target"], success["port"]) == ("SSH", "reachable", ip, 22)
+    assert "private-text" not in json.dumps(success)
+    assert check(b"SSH-1.99-example\n")["state"] == "reachable"
+    assert check(b"SSH-2.0-example\n")["state"] == "reachable"
+    for banner in (b"HTTP/1.1 200 OK\r\n", b"SSH-2.0-" + b"x" * 250 + b"\r\n", b"SSH-2.0-example", b"x" * 1024):
+        failed = check(banner)
+        assert (failed["state"], failed["reason"]) == ("unknown", "ssh_identification_invalid")
+    refused = check(ConnectionRefusedError())
+    assert (refused["state"], refused["reason"]) == ("unreachable", "ssh_connection_refused")
+    expired = check(TimeoutError())
+    assert (expired["state"], expired["reason"]) == ("unknown", "timeout")
+    previous = len(connections)
+    assert check(target="192.0.2.21")["reason"] == "probe_target_mismatch"
+    assert len(connections) == previous
+
+
 def test_rtsp_options_confirms_the_authenticated_service_without_opening_a_stream(monkeypatch):
     from app import infrastructure_service_probes as probes
     from app.infrastructure_map import _public_node

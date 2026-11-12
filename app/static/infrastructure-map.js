@@ -1097,6 +1097,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         smb_mount_read: 'Чтение метаданных каталога завершилось ошибкой',
         smb_mount_changed: 'Подключение сменилось во время проверки',
         postgresql_tls_handshake: 'Не удалось согласовать TLS',
+        ssh_connection_refused: 'SSH-порт отклонил подключение',
+        ssh_identification_invalid: 'Нет корректного ответа SSH',
         icmp_identity_unconfirmed: 'Принадлежность адреса этому узлу не подтверждена',
         route_other_gateway: 'Активен другой шлюз', route_inactive: 'Маршрут через ожидаемый шлюз неактивен',
         route_rejecting: 'Активный маршрут отбрасывает трафик',
