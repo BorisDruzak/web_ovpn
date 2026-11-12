@@ -798,10 +798,12 @@ def _public_service_check(check: dict, now: datetime) -> dict:
                 clean = ["*" if address == "*" else _network_address(address) for address in addresses]
                 if all(address and "/" not in address for address in clean):
                     result["localUdpSocket"] = {"state": state, "addresses": clean}
-        if (result["method"] == "OpenVPN Management" and result["checkedAt"]
-                and type(sessions) is int and 0 <= sessions <= 4096
-                and type(check.get("daemonReady")) is bool):
-            result.update(sessionCount=sessions, daemonReady=check["daemonReady"])
+        if result["method"] == "OpenVPN Management" and result["checkedAt"]:
+            if type(sessions) is int and 0 <= sessions <= 4096 and type(check.get("daemonReady")) is bool:
+                result.update(sessionCount=sessions, daemonReady=check["daemonReady"])
+            if reason in ("openvpn_management_unavailable", "openvpn_management_incomplete",
+                          "openvpn_daemon_unconfirmed", "openvpn_no_active_sessions"):
+                result["reason"] = reason
     if result["method"] == "OpenVPN TUN":
         name, address = check.get("tunnelInterface"), check.get("tunnelAddress")
         if isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", name):

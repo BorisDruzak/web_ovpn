@@ -3927,11 +3927,24 @@ def test_openvpn_requires_connected_daemon_and_active_session(monkeypatch):
     assert "sample" not in json.dumps(observed) and "private-second" not in json.dumps(observed)
     empty = check(ready + header + b"END\n", "reachable")
     assert empty["state"] == "unknown" and empty["sessionCount"] == 0 and empty["daemonReady"] is True
-    assert "sessionCount" not in check(ready + header + client, "reachable")
+    assert empty["reason"] == "openvpn_no_active_sessions"
+    daemon = check(header + client + b"END\n", "reachable")
+    assert daemon["state"] == "unknown" and daemon["reason"] == "openvpn_daemon_unconfirmed"
+    incomplete = check(ready + header + client, "reachable")
+    assert incomplete["reason"] == "openvpn_management_incomplete"
+    assert "sessionCount" not in incomplete
     socket_listing = b""
     assert check(ready + header + b"END\n", "unreachable")["localUdpSocket"] == {"state": "unbound"}
     socket_listing = b"UNCONN 0 0 192.0.2.30:1195 0.0.0.0:*\n"
     assert check(ready + header + b"END\n", "unknown")["localUdpSocket"] == {"state": "unknown"}
+
+    def unavailable(path):
+        raise PermissionError("private socket details")
+
+    monkeypatch.setattr(connection, "connect", unavailable)
+    blocked = check(b"", "unknown")
+    assert blocked["state"] == "unknown" and blocked["reason"] == "openvpn_management_unavailable"
+    assert "sessionCount" not in blocked and "private socket details" not in json.dumps(blocked)
 
 
 def test_smb_mount_checks_the_configured_live_share_without_local_fallback(monkeypatch):

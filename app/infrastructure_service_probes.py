@@ -563,9 +563,10 @@ def _smb_mount(spec: dict) -> dict:
 
 
 def _openvpn_management() -> dict:
+    unavailable = {"state": "unknown", "reason": "openvpn_management_unavailable"}
     family = getattr(socket, "AF_UNIX", None)
     if family is None:
-        return {"state": "unknown"}
+        return unavailable
     deadline = monotonic() + TIMEOUT
     try:
         with socket.socket(family) as connection:
@@ -584,16 +585,20 @@ def _openvpn_management() -> dict:
                     if not line or len(line) > 4096:
                         break
                     if line.strip() == b"END" and session_table:
-                        return {"state": "reachable" if connected and sessions else "unknown",
-                                "daemonReady": connected, "sessionCount": sessions}
+                        observation = {"daemonReady": connected, "sessionCount": sessions}
+                        if not connected:
+                            return {**observation, "state": "unknown", "reason": "openvpn_daemon_unconfirmed"}
+                        if not sessions:
+                            return {**observation, "state": "unknown", "reason": "openvpn_no_active_sessions"}
+                        return {**observation, "state": "reachable"}
                     fields = line.split(b",", 3)
                     connected |= len(fields) == 4 and fields[0].isdigit() and fields[1:3] == [b"CONNECTED", b"SUCCESS"]
                     session_table |= line.startswith(b"HEADER\tCLIENT_LIST\t")
                     if session_table and line.startswith(b"CLIENT_LIST\t"):
                         sessions += 1
     except OSError:
-        pass
-    return {"state": "unknown"}
+        return unavailable
+    return {"state": "unknown", "reason": "openvpn_management_incomplete"}
 
 
 def _openvpn_udp_socket(port: int) -> dict:
