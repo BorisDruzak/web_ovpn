@@ -567,6 +567,40 @@ def test_css326_fixture_uses_legacy_fdb_and_one_to_one_physical_ports() -> None:
     ).outcome is SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT
 
 
+def test_css326_collects_stp_without_assigning_vlans_to_legacy_fdb() -> None:
+    from netctl.snmp.oids import (
+        DOT1D_STP_DESIGNATED_ROOT,
+        DOT1D_STP_PROTOCOL,
+        DOT1D_STP_ROOT_COST,
+        DOT1D_STP_ROOT_PORT,
+        DOT1D_STP_TOPOLOGY_CHANGES,
+    )
+
+    transport = _css326_fixture_transport()
+    for oid, kind, value in (
+        (DOT1D_STP_PROTOCOL, "integer", 3),
+        (DOT1D_STP_TOPOLOGY_CHANGES, "counter32", 2),
+        (DOT1D_STP_DESIGNATED_ROOT, "octet_string", bytes.fromhex("8000020000000001")),
+        (DOT1D_STP_ROOT_COST, "integer", 20004),
+        (DOT1D_STP_ROOT_PORT, "integer", 24),
+    ):
+        transport.results[oid] = CapabilityResult(
+            "",
+            SnmpOutcome.SUCCESS_WITH_ROWS,
+            (SnmpVarBind(oid, kind, value),),
+        )
+    snapshot = asyncio.run(collect_switch_snapshot({}, transport))
+    assert snapshot.stp == {
+        "protocol": "ieee8021d",
+        "root_bridge_mac": "02:00:00:00:00:01",
+        "root_port_raw": 24,
+        "root_port_key": "physical:24",
+        "root_path_cost": 20004,
+        "topology_changes": 2,
+    }
+    assert snapshot.fdb and all(entry.vlan_id is None for entry in snapshot.fdb)
+
+
 def test_empty_qbridge_uses_complete_nonempty_legacy_fdb() -> None:
     from netctl.snmp.oids import DOT1Q_FDB_PORT
 

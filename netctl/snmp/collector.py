@@ -520,7 +520,7 @@ async def collect_switch_snapshot(
                 )
                 capabilities[-len(vlan_results) :] = vlan_results
 
-    if profile.profile_id == "snr":
+    if profile.profile_id in {"snr", "css326"}:
         stp_results = (
             await transport.get(DOT1D_STP_PROTOCOL, capability="stp_protocol"),
             await transport.get(
