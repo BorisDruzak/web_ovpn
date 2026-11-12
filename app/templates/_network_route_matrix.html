@@ -43,6 +43,16 @@
           {% if row.kernel_route and row.kernel_route.status == 'route_found' %}
           <br>Выбор ядра {{ [row.kernel_route.result.dev, row.kernel_route.result.gateway] | select | join(' · ') }}
           {% endif %}
+          {% if row.evidence.linux_neighbor is defined %}
+          {% set neighbor = row.evidence.linux_neighbor %}
+          <br>ARP {{ neighbor.address }} · {{ {
+            'failed': 'разрешение не удалось', 'incomplete': 'разрешение не завершено',
+            'not_cached': 'нет записи в кэше', 'stale': 'устаревшая запись',
+            'reachable': 'сосед подтверждён', 'delay': 'ожидается проверка',
+            'probe': 'проверяется', 'noarp': 'ARP не требуется',
+            'permanent': 'постоянная запись', 'none': 'состояние не определено'
+          }.get(neighbor.state, neighbor.state) }}
+          {% endif %}
           {% if row.ipsec %}
           <br>IPsec {{ {'established': 'установлен', 'inactive': 'не активен', 'no_matching_policy': 'политика не найдена', 'ambiguous_policy': 'несколько политик'}.get(row.ipsec.status, 'нет данных') }}
           {% if row.ipsec.peer_sa_counters %}

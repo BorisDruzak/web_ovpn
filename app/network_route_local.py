@@ -35,6 +35,10 @@ ROUTE_FIELDS = (
     "metric",
 )
 DNS_TYPES = ("A", "AAAA", "CNAME", "SOA", "SRV", "TXT", "MX", "PTR")
+LINUX_NEIGHBOR_STATES = (
+    "incomplete", "reachable", "stale", "delay", "probe", "failed",
+    "noarp", "permanent", "none", "not_cached",
+)
 
 
 def _ipv4(value: str) -> None:
@@ -89,6 +93,55 @@ def _kernel_route(target: str, source_address: str | None) -> dict:
     if result.get("dst") != target:
         return {"status": "failed", "result": {}}
     return {"status": "route_found", "result": result}
+
+
+def linux_neighbor_target(route_fields: dict) -> tuple[str, str] | None:
+    address = route_fields.get("gateway", route_fields.get("dst"))
+    interface = route_fields.get("dev")
+    try:
+        _ipv4(address)
+    except ValueError:
+        return None
+    if not isinstance(interface, str) or not re.fullmatch(
+        r"[A-Za-z0-9_][A-Za-z0-9_.:@-]{0,31}", interface
+    ):
+        return None
+    return address, interface
+
+
+def _linux_neighbor(route: dict) -> dict | None:
+    if route["status"] != "route_found":
+        return None
+    neighbor = linux_neighbor_target(route["result"])
+    if neighbor is None:
+        return None
+    address, interface = neighbor
+    argv = ["/usr/sbin/ip", "-j", "-4", "neigh", "show", "to", address, "dev", interface]
+    try:
+        completed = _run_local(argv, 1.0)
+        if completed.returncode:
+            return None
+        rows = json.loads(completed.stdout)
+    except (OSError, subprocess.TimeoutExpired, ValueError, RecursionError):
+        return None
+    if rows == []:
+        state = "not_cached"
+    elif (
+        isinstance(rows, list)
+        and len(rows) == 1
+        and isinstance(rows[0], dict)
+        and rows[0].get("dst") == address
+        and rows[0].get("dev", interface) == interface
+    ):
+        state = rows[0].get("state")
+        if isinstance(state, list) and len(state) == 1:
+            state = state[0]
+        if not isinstance(state, str) or state.lower() not in LINUX_NEIGHBOR_STATES:
+            return None
+        state = state.lower()
+    else:
+        return None
+    return {"address": address, "interface": interface, "state": state}
 
 
 def _icmp(
@@ -451,4 +504,8 @@ def probe_local_route(
     except OSError as error:
         status, evidence["reason"] = _transport_error(error)
     evidence["duration_ms"] = round((monotonic() - started) * 1000, 2)
+    if status in ("timeout", "unreachable"):
+        neighbor = _linux_neighbor(route)
+        if neighbor is not None:
+            evidence["linux_neighbor"] = neighbor
     return {"status": status, "evidence": evidence, "kernel_route": route}

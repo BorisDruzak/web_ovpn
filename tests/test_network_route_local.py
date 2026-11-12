@@ -1,4 +1,5 @@
 import errno
+import json
 import socket
 import ssl
 import subprocess
@@ -70,6 +71,8 @@ def test_icmp_uses_configured_source_and_ipv4_df_payload(
 ):
     def run(argv, **kwargs):
         assert kwargs["timeout"] <= 3
+        if "neigh" in argv:
+            return subprocess.CompletedProcess(argv, 0, b"[]", b"")
         if argv[0] == "/usr/sbin/ip":
             assert argv[1:] == ["-j", "-4", "route", "get", TARGET, "from", SOURCE]
             return _route_result(argv)
@@ -107,6 +110,42 @@ def test_icmp_uses_configured_source_and_ipv4_df_payload(
         "status": "route_found",
         "result": {"dst": TARGET, "dev": "eth0", "prefsrc": SOURCE},
     }
+
+
+@pytest.mark.parametrize("gateway", [None, "192.0.2.1"])
+@pytest.mark.parametrize("state", ["FAILED", "STALE", None])
+def test_failed_probe_reads_only_next_hop_arp_after_ping(monkeypatch, gateway, state):
+    address = gateway or TARGET
+    route = {"dst": TARGET, "dev": "eth0.20"}
+    if gateway:
+        route["gateway"] = gateway
+    commands = []
+
+    def run(argv, **kwargs):
+        commands.append(argv)
+        if "route" in argv:
+            stdout = json.dumps([route]).encode()
+        elif "neigh" in argv:
+            assert argv == [
+                "/usr/sbin/ip", "-j", "-4", "neigh", "show",
+                "to", address, "dev", "eth0.20",
+            ]
+            rows = [{"dst": address, "state": [state]}] if state else []
+            stdout = json.dumps(rows).encode()
+        else:
+            return subprocess.CompletedProcess(argv, 1, b"", b"")
+        return subprocess.CompletedProcess(argv, 0, stdout, b"")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    result = probe_local_route(target=TARGET, protocol="icmp", source_address=SOURCE)
+
+    assert result["status"] == "timeout"
+    assert result["evidence"]["linux_neighbor"] == {
+        "address": address,
+        "interface": "eth0.20",
+        "state": state.lower() if state else "not_cached",
+    }
+    assert commands[1][0] == "/usr/bin/ping"
 
 
 @pytest.mark.parametrize(

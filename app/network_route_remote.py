@@ -15,7 +15,11 @@ from threading import Thread
 from time import monotonic
 
 from .network_probe_profiles import PROFILE_ID_PATTERN, load_probe_profiles
-from .network_route_local import probe_local_route
+from .network_route_local import (
+    LINUX_NEIGHBOR_STATES,
+    linux_neighbor_target,
+    probe_local_route,
+)
 
 ORIGINS_PATH = Path("/etc/openvpn-web/route-probe-origins.json")
 CREDENTIALS_DIR = Path("/etc/openvpn-web/route-probe-ssh")
@@ -260,6 +264,13 @@ def _sanitize_reply(output: bytes, digest: str, target: object) -> dict:
         for key in ("metric", "table"):
             if type(fields.get(key)) is int and 0 <= fields[key] <= 0xFFFFFFFF:
                 clean_route[key] = fields[key]
+        neighbor = evidence.get("linux_neighbor")
+        if isinstance(neighbor, dict) and (
+            neighbor.get("address"), neighbor.get("interface")
+        ) == linux_neighbor_target(clean_route) and neighbor.get("state") in LINUX_NEIGHBOR_STATES:
+            clean_evidence["linux_neighbor"] = {
+                key: neighbor[key] for key in ("address", "interface", "state")
+            }
     return {
         "status": status,
         "evidence": clean_evidence,

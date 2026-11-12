@@ -2439,6 +2439,35 @@ def test_network_active_check_uses_shared_throttle(tmp_path, monkeypatch):
     assert targets == ["192.0.2.20"]
 
 
+def test_route_availability_exposes_linux_neighbor_in_api_and_ui(tmp_path, monkeypatch):
+    client, headers = make_client(tmp_path, monkeypatch)
+    from app import network_checks, network_probe_profiles, network_route_matrix
+
+    profiles = network_probe_profiles.ProbeProfiles.model_validate({
+        "routes": {"lan": {"label": "LAN", "probes": [{
+            "id": "gateway", "expected_path": "VLAN20", "target": "192.0.2.1",
+            "protocol": "icmp",
+        }]}},
+    })
+    neighbor = {"address": "192.0.2.1", "interface": "eth0.20", "state": "failed"}
+    monkeypatch.setattr(network_probe_profiles, "load_probe_profiles", lambda: profiles)
+    monkeypatch.setattr(network_checks, "load_probe_profiles", lambda: profiles)
+    monkeypatch.setattr(network_route_matrix, "probe_local_route", lambda **kwargs: {
+        "status": "timeout",
+        "evidence": {"reason": "icmp_no_echo_reply", "linux_neighbor": neighbor},
+        "kernel_route": {"status": "route_found", "result": {"dev": "eth0.20"}},
+    })
+
+    payload = {"check": "route_availability", "profile": "lan"}
+    endpoint = "/api/v1/network/diagnostics/checks"
+    data = client.post(endpoint, headers=headers, json=payload).json()["data"]
+    assert data["result"]["probes"][0]["evidence"]["linux_neighbor"] == neighbor
+    csrf = login(client)
+    page = client.post("/network/diagnostics/checks", data={"csrf_token": csrf, **payload})
+    assert page.status_code == 200
+    assert "ARP 192.0.2.1 · разрешение не удалось" in page.text
+
+
 def test_network_probe_catalog_run_and_download_permissions(tmp_path, monkeypatch):
     client, headers = make_client(tmp_path, monkeypatch)
     from app import network_capture_store, network_checks, network_probe_profiles

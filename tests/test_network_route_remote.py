@@ -66,6 +66,10 @@ def test_controller_uses_pinned_ssh_and_filters_response(monkeypatch, origin_fil
             "evidence": {
                 "duration_ms": 5.5,
                 "round_trip_ms": 0.5,
+                "linux_neighbor": {
+                    "address": "192.0.2.4", "interface": "eth0",
+                    "state": "stale", "raw": "private neighbor details",
+                },
                 "raw": "private output",
             },
             "kernel_route": {
@@ -82,12 +86,49 @@ def test_controller_uses_pinned_ssh_and_filters_response(monkeypatch, origin_fil
         "test-origin", "test-profile", "test-probe", ARGUMENTS
     ) == {
         "status": "reachable",
-        "evidence": {"duration_ms": 5.5, "round_trip_ms": 0.5},
+        "evidence": {
+            "duration_ms": 5.5,
+            "round_trip_ms": 0.5,
+            "linux_neighbor": {
+                "address": "192.0.2.4", "interface": "eth0", "state": "stale",
+            },
+        },
         "kernel_route": {
             "status": "route_found",
             "result": {"dst": "192.0.2.4", "dev": "eth0"},
         },
     }
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"address": "192.0.2.4"},  # Target is behind the gateway.
+        {"interface": "eth1"},
+        {"state": "unexpected"},
+        {"state": ["failed"]},
+    ],
+)
+def test_controller_omits_neighbor_evidence_unrelated_to_route(override):
+    reply = {
+        "digest": DIGEST,
+        "result": {
+            "status": "timeout",
+            "evidence": {
+                "duration_ms": 5.5,
+                "linux_neighbor": {
+                    "address": "192.0.2.1", "interface": "eth0",
+                    "state": "failed", **override,
+                },
+            },
+            "kernel_route": {
+                "status": "route_found",
+                "result": {"dst": "192.0.2.4", "gateway": "192.0.2.1", "dev": "eth0"},
+            },
+        },
+    }
+    result = remote._sanitize_reply(json.dumps(reply).encode(), DIGEST, ARGUMENTS["target"])
+    assert result["evidence"] == {"duration_ms": 5.5}
 
 
 @pytest.mark.parametrize(
