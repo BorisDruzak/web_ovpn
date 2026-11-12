@@ -1015,6 +1015,17 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
             const state = [label, formatPortSpeed(port.speedBps), port.source ?? 'SNMP', formatTime(port.checkedAt)];
             state.push(...lldpCounts(port));
             li.append(make('small', `${device} ${port.name}: ${state.filter(Boolean).join(' · ')}`));
+            if (port.telemetry) {
+              const {rxBps, txBps, rxErrors, txErrors, rxDiscards, txDiscards, intervalSeconds, checkedAt} = port.telemetry;
+              const number = new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 2});
+              const rate = (value, label) => value === undefined ? '' : `${label} ${number.format(value / 1e6)} Мбит/с`;
+              const counters = [[rxErrors, 'ошибок RX'], [txErrors, 'ошибок TX'],
+                [rxDiscards, 'отброшено RX'], [txDiscards, 'отброшено TX']]
+                .filter(([value]) => value !== undefined).map(([value, label]) => `${label} ${number.format(value)}`);
+              const metrics = [rate(rxBps, 'RX'), rate(txBps, 'TX'), ...counters,
+                `${number.format(intervalSeconds)} с`, formatTime(checkedAt)];
+              li.append(make('small', `${port.name} · ${metrics.filter(Boolean).join(' · ')}`));
+            }
           }
           if (evidence.lacp?.aggregateState) {
             const {side, aggregateState} = evidence.lacp;

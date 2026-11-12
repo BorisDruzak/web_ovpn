@@ -54,6 +54,7 @@ KINDS = {
     "wireless_access_point": NETWORK_KINDS[2], "hypervisor": "Гипервизор",
     "endpoint": "Рабочая станция", "firewall_dns_host": "Межсетевой экран и DNS",
     "security_gateway": "Шлюз", "ip_pbx": "АТС", "fxs_gateway": "Телефонный шлюз",
+    "management_controller": "Контроллер управления",
 }
 HEALTH = {"success": "ok", "ok": "ok", "partial": "warn", "warn": "warn", "critical": "critical"}
 MAC = re.compile(r"(?i)(?:[0-9a-f]{2}:){5}[0-9a-f]{2}")
@@ -1039,7 +1040,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         if link.get("state", {}).get("intent") == "absent":
             continue
         a, b = link["endpoint_a"], link["endpoint_b"]
-        kind = "Размещение ВМ" if link.get("relation") == "virtualized_on" else "Сетевое соединение"
+        kind = {"virtualized_on": "Размещение ВМ", "management_for": "Управление оборудованием"}.get(
+            link.get("relation"), "Сетевое соединение")
         vlan = link.get("vlan")
         tagged_transit = isinstance(vlan, dict) and vlan.get("mode") == "tagged_transit" and link.get("relation") == "connected_to"
         if tagged_transit:
@@ -1768,6 +1770,12 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                     checked = min(checked, datetime.fromisoformat(pve_at))
                 edge(switch, asset, "Путь по MAC-таблице", provenance, details=address,
                      ports=(port_label(switch_source, port), remote_port), at=checked.isoformat(), vlan=row["vlan_id"])
+            if (asset_ip_checks.get(asset) == address and declared_devices_by_mac.get(mac) == {asset}
+                    and "probeTargetIdentityAt" not in nodes[asset]):
+                checked = min(arp_at, datetime.fromisoformat(max(live)),
+                              max(datetime.fromisoformat(row["observed_at"]) for row in observations))
+                nodes[asset].update(probeTargetIP=address, probeTargetIdentityAt=checked.isoformat(),
+                                    probeTargetIdentityMethod="ICMP · ARP + FDB")
     for spec in bindings.get("lacp_links", []):
         asset, aggregate = spec["asset"], spec["aggregate"]
         if asset not in nodes:

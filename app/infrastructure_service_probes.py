@@ -857,14 +857,17 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
         checks = []
         primary = []
         management_observation = None
-        identity_at = node.get("probeTargetIdentityAt") if node["kind"] == "Коммутатор" else None
+        identity_method = node.get("probeTargetIdentityMethod")
+        if identity_method != "ICMP · ARP + FDB":
+            identity_method = "ICMP · LLDP + ARP" if node["kind"] == "Коммутатор" else None
+        identity_at = node.get("probeTargetIdentityAt") if identity_method else None
         for spec in specs:
             protocol = spec["type"]
             method = PROBE_METHODS[protocol]
             supplemental = not service or spec.get("supplemental") is True
             component = not supplemental and spec.get("component") is True
             if node["kind"] != "Сервис":
-                method = "ICMP · LLDP + ARP" if identity_at else "ICMP адреса из инвентаря"
+                method = identity_method if identity_at else "ICMP адреса из инвентаря"
             port = spec.get("port")
             valid_port = port if type(port) is int and 1 <= port <= 65535 else None
             if skip_reason:

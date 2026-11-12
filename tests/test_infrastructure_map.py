@@ -3014,8 +3014,10 @@ def test_confirmed_attachment_requires_fdb_and_port_from_same_collection():
         assert query_confirmed_attachment_ports(conn) == []
 
 
-def test_configured_asset_fdb_path_is_scoped_and_requires_a_unique_live_port():
+def test_configured_asset_fdb_path_is_scoped_and_requires_a_unique_live_port(monkeypatch, tmp_path):
     from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+    from app.infrastructure_service_probes import apply_service_probes
 
     now = datetime.now(timezone.utc)
     at = now.isoformat()
@@ -3027,11 +3029,13 @@ def test_configured_asset_fdb_path_is_scoped_and_requires_a_unique_live_port():
                     {"id": 2, "name": "core", "driver": "snmp_switch", "enabled": True}],
         "arp": [{"ip": address, "mac": mac, "last_seen_at": at}],
         "ports": [{"source": "access", "port_key": "physical:23", "name": "Gi1/0/23",
-                   "oper_status": "up", "last_seen_at": at}],
+                   "oper_status": "up", "last_seen_at": at, "collector_run_id": 1}],
+        "port_telemetry": [{"source": "access", "port_key": "physical:23", "collector_run_id": 1,
+                            "observed_at": at, "sample_interval_seconds": 300, "in_errors_delta": 3}],
         "asset_fdb": [{"source_id": 1, "mac": mac, "port_key": "physical:23", "vlan_id": 1, "observed_at": at},
                       {"source_id": 2, "mac": mac, "port_key": "physical:47", "vlan_id": 1, "observed_at": at}],
     }
-    bindings = {"asset_fdb_paths": {"gateway": "access"}}
+    bindings = {"asset_fdb_paths": {"gateway": "access"}, "asset_ip_checks": {"gateway": address}}
 
     def links(at=now):
         return build_graph(context, network, {}, {}, bindings, at)["links"]
@@ -3041,6 +3045,19 @@ def test_configured_asset_fdb_path_is_scoped_and_requires_a_unique_live_port():
     assert path["kind"] == "Путь по MAC-таблице" and path["confirmed"]
     assert path["portEvidence"] == [{"a": "Gi1/0/23", "b": "", "source": "netctl FDB",
                                      "at": at, "confirmed": True, "vlan": 1}]
+    monkeypatch.setattr("app.infrastructure_service_probes._icmp_check", lambda ip: {"state": "reachable"})
+    graph = build_graph(context, network, {}, {}, bindings, now)
+    gateway = next(node for node in graph["nodes"] if node["id"] == "gateway")
+    apply_service_probes([gateway], {"gateway": [{"type": "icmp", "ip": address}]})
+    assert gateway["reachability"]["method"] == "ICMP · ARP + FDB"
+    assert gateway["serviceChecks"][0]["identityCheckedAt"] == at
+    snapshot = tmp_path / "map.json"
+    snapshot.write_text(json.dumps(graph), encoding="utf-8")
+    public = load_infrastructure_map(snapshot)
+    observed, = public["links"]
+    evidence, = observed["portEvidence"]
+    assert evidence["portStates"]["a"]["telemetry"]["rxErrors"] == 3
+    assert "pairEvidence" not in evidence
     assert links(now + timedelta(hours=1)) == []
     network["asset_fdb"].append({**network["asset_fdb"][0], "port_key": "physical:24"})
     assert links() == []
@@ -3050,6 +3067,8 @@ def test_configured_asset_fdb_path_is_scoped_and_requires_a_unique_live_port():
     network["ports"][0]["oper_status"] = "up"
     network["arp"][0]["mac"] = "02:00:00:00:00:24"
     assert links() == []
+    graph = build_graph(context, network, {}, {}, bindings, now)
+    assert "probeTargetIP" not in next(node for node in graph["nodes"] if node["id"] == "gateway")
 
 
 def test_hypervisor_fdb_path_reports_management_interface_without_claiming_direct_cable(tmp_path):

@@ -209,6 +209,8 @@ def _public_port(row: dict, now: datetime) -> dict:
         result["source"] = source
     if fresh and source in ("Proxmox", "Proxmox · sysfs") and type(row.get("proxmoxActive")) is bool:
         result["proxmoxActive"] = row["proxmoxActive"]
+    if telemetry := _public_port_telemetry(row.get("telemetry"), result, now):
+        result["telemetry"] = telemetry
     return result
 
 
@@ -370,10 +372,11 @@ def _public_service_check(check: dict, now: datetime) -> dict:
     if (check.get("skipped") is True and result["checkedAt"] and result["state"] == "unknown"
             and reason in ("probe_target_unconfirmed", "probe_target_mismatch")):
         return {**result, "target": "", "skipped": True, "reason": reason}
-    icmp = result["method"] in ("ICMP", "ICMP адреса из инвентаря", "ICMP · LLDP + ARP", "ICMP · VLAN")
+    identified_icmp = result["method"] in ("ICMP · LLDP + ARP", "ICMP · ARP + FDB")
+    icmp = identified_icmp or result["method"] in ("ICMP", "ICMP адреса из инвентаря", "ICMP · VLAN")
     if icmp:
         identity_at = check.get("identityCheckedAt")
-        if result["method"] == "ICMP · LLDP + ARP":
+        if identified_icmp:
             if observation_is_fresh(identity_at, now):
                 result["identityCheckedAt"] = _time(identity_at).isoformat()
             else:
@@ -697,9 +700,6 @@ def _public_node(row: dict, now: datetime) -> dict:
         if alias and port_label_key(alias) != port_label_key(port["name"]) and label_counts[port_label_key(alias)] == 1:
             port["aliases"] = [alias]
     for port, raw_port in zip(ports, port_rows):
-        telemetry = _public_port_telemetry(raw_port.get("telemetry"), port, now)
-        if telemetry:
-            port["telemetry"] = telemetry
         memberships = _public_port_vlans(raw_port.get("vlanMemberships"), port)
         if memberships:
             port["vlanMemberships"] = memberships
