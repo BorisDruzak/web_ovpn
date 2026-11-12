@@ -43,6 +43,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   };
   const formatTime = value => new Intl.DateTimeFormat('ru-RU', { timeZone:'Asia/Yekaterinburg', dateStyle:'short', timeStyle:'short' }).format(new Date(value));
   const formatPortSpeed = bps => bps ? (bps / 1e6).toLocaleString('ru-RU') + ' Мбит/с' : '';
+  const portLabels = {up: 'линк поднят', down: 'линк опущен', disabled: 'порт отключён'};
   const formatUptime = seconds => {
     const days = Math.floor(seconds / 86400);
     const hours = Math.floor(seconds / 3600) % 24;
@@ -137,15 +138,19 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       return make('span', name + ' · ' + (port || 'порт неизвестен'));
     };
     const pending = pendingPortPairs.map(({a, b, nameA, nameB, portA, portB, observedSources = [], lldpPortIds = [],
-      archivedPortSides = []}) => {
+      archivedPortSides = [], inventoryPortSides = [], portObservations = {}}) => {
       const item = make('li');
-      item.append(side(a, nameA, portA));
-      if (archivedPortSides.includes('a')) item.append(' (по архиву)');
-      item.append(' ↔ ', side(b, nameB, portB));
-      if (archivedPortSides.includes('b')) item.append(' (по архиву)');
+      const provenance = key => archivedPortSides.includes(key) ? ' (по архиву)' :
+        inventoryPortSides.includes(key) ? ' (по инвентарю)' : '';
+      item.append(side(a, nameA, portA), provenance('a'), ' ↔ ', side(b, nameB, portB), provenance('b'));
       const evidence = observedSources.map(source => source === 'netctl FDB' ? 'MAC на порту' : source);
       if (lldpPortIds.length) evidence.push('LLDP Port ID ' + lldpPortIds.join(', '));
       if (evidence.length) item.append(make('small', evidence.join(' · ')));
+      for (const port of Object.values(portObservations)) {
+        const reading = [port.name, portLabels[port.state], formatPortSpeed(port.speedBps), formatTime(port.checkedAt)];
+        if (port.rxSilence) reading.push(formatRxSilence(port.rxSilence));
+        item.append(make('small', reading.filter(Boolean).join(' · ')));
+      }
       return item;
     });
     const lacp = lacpPartnerInterfaceGaps.map(({name, switchId, aggregate, switchPort, partnerPort}) => {
@@ -1600,7 +1605,6 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     if (links.length || selectedPort) {
       const list = make('ul',null,'map-detail-list');
       const observations = make('ul',null,'map-detail-list');
-      const portLabels = {up: 'линк поднят', down: 'линк опущен', disabled: 'порт отключён'};
       const comparisonLabels = {
         both_up: 'Оба линка подняты', one_down: 'Один линк опущен или отключён',
         both_down: 'Оба линка опущены или отключены', speed_mismatch: 'Скорости линков различаются',

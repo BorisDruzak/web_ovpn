@@ -5953,6 +5953,11 @@ def test_attachment_view_includes_physical_service_hosts_and_distinguishes_port_
     learned_row = browser_graph["pendingPortPairs"][0]
     assert learned_row["observedSources"] == ["netctl FDB"]
     assert learned_row["lldpPortIds"] == ["bridgeLocal/ether2"]
+    configured_row = browser_graph["pendingPortPairs"][1]
+    assert configured_row["portObservations"]["a"] == {
+        "name": "xe1", "state": "up", "speedBps": 10**10, "checkedAt": stamp,
+    }
+    assert "b" not in configured_row["portObservations"]
     assert "pendingPortPairs" not in load_infrastructure_map(path)
     raw["nodes"][2]["ports"].pop()
     raw["links"][2]["portEvidence"].insert(0, cable)
@@ -5963,6 +5968,11 @@ def test_attachment_view_includes_physical_service_hosts_and_distinguishes_port_
     raw["links"][3]["observedAt"] = (datetime.fromisoformat(stamp) - timedelta(minutes=26)).isoformat()
     path.write_text(json.dumps(raw), encoding="utf-8")
     assert read("sw")["servicePorts"] == []
+    raw["links"][2]["portEvidence"][-1]["b"] = "eth2"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    browser_graph = load_infrastructure_map(path, include_guest_attachments=True)
+    row, = browser_graph["pendingPortPairs"]
+    assert row["inventoryPortSides"] == ["b"]
 
 
 def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path, monkeypatch):

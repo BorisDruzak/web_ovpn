@@ -1607,6 +1607,8 @@ def _topology_port_pairs(nodes: dict, links: list[dict], host_ids: set[str] | No
             lldp = {side: {"checkedAt": port["lldpCheckedAt"], "neighbors": port["lldpNeighbors"]}
                     for side, port in declared.get("portStates", {}).items() if port.get("lldpNeighbors")}
             reading = observations(declared)
+            inventory_only = [side for side in ("a", "b")
+                              if side not in reading and port_label_key(declared[side]) not in unnamed]
             remember_ports(a, b, declared["a"], declared["b"])
             pending[(a, b, declared["a"], declared["b"])] = {
                 "a": a, "b": b, "nameA": nodes[a]["name"], "nameB": nodes[b]["name"],
@@ -1618,6 +1620,7 @@ def _topology_port_pairs(nodes: dict, links: list[dict], host_ids: set[str] | No
                                                and port_key(link[side], path[path_port])
                                                == port_key(link[side], declared[side]) for path in related)],
                 **({"inventorySources": declared["inventorySources"]} if "inventorySources" in declared else {}),
+                **({"inventoryPortSides": inventory_only} if inventory_only else {}),
                 **({"portObservations": reading} if reading else {}),
                 **({"lldpObservations": lldp} if lldp else {}),
                 **({"lldpPeers": declared["lldpPeers"]} if "lldpPeers" in declared else {}),
@@ -2779,7 +2782,11 @@ def load_infrastructure_map(
                  "observedSources": sorted({reading["source"] for reading in row["observedPaths"]}),
                  "lldpPortIds": sorted({peer["portId"] for peers in row.get("lldpPeers", {}).values()
                                         for peer in peers if peer.get("portId")}),
-                 **({"archivedPortSides": row["archivedPortSides"]} if "archivedPortSides" in row else {})}
+                 "portObservations": {
+                     side: {key: port[key] for key in ("name", "state", "speedBps", "checkedAt", "rxSilence") if key in port}
+                     for side, port in row.get("portObservations", {}).items()
+                 },
+                 **{key: row[key] for key in ("archivedPortSides", "inventoryPortSides") if key in row}}
                 for row in pending[:64]
             ],
             lacpPartnerInterfaceGapTotal=len(lacp_gaps),
