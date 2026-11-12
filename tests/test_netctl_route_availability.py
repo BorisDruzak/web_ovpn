@@ -215,13 +215,20 @@ def test_gateway_arp_preserves_ping_and_uses_exact_interface(monkeypatch, reply,
                                "?address=192.0.2.50", "?interface=ether9", ""]
 
 
-def test_gateway_failure_checks_expected_address_and_dhcp(monkeypatch):
+@pytest.mark.parametrize("interface_name, running, disabled, expected_link", [
+    ("ether9", "true", "false", {"status": "observed", "state": "up"}),
+    ("ether9", "false", "false", {"status": "observed", "state": "down"}),
+    ("ether9", "false", "true", {"status": "observed", "state": "disabled"}),
+    ("other", "true", "false", {"status": "unavailable"}),
+])
+def test_gateway_failure_checks_expected_address_dhcp_and_link(monkeypatch, interface_name, running, disabled, expected_link):
     sock = fake_api(monkeypatch, [
         "!re", "=sent=3", "=received=0", "", "!done", "",
         "!re", "=address=192.0.2.50", "=interface=ether9", "=status=incomplete", "=complete=false", "",
         "!done", "",
         "!done", "",
         "!re", "=interface=ether9", "=status=searching...", "=disabled=false", "", "!done", "",
+        "!re", f"=name={interface_name}", f"=running={running}", f"=disabled={disabled}", "", "!done", "",
     ])
     result = run_probe(
         sources=[API_SOURCE], secrets=API_SECRETS, interface="ether9",
@@ -229,8 +236,10 @@ def test_gateway_failure_checks_expected_address_and_dhcp(monkeypatch):
     )
     assert result["status"] == "unreachable"
     assert result["evidence"]["gateway_source"] == {"status": "missing", "dhcp": "searching"}
-    assert sock.words[-4:] == [
+    assert result["evidence"]["gateway_link"] == expected_link
+    assert sock.words[-8:] == [
         "/ip/dhcp-client/print", "=.proplist=interface,status,disabled", "?interface=ether9", "",
+        "/interface/print", "=.proplist=name,running,disabled", "?name=ether9", "",
     ]
 
 

@@ -26,6 +26,13 @@
           <br>ARP шлюза · {{ {'observed': arp.state, 'missing': 'запись отсутствует', 'ambiguous': 'несколько записей', 'timeout': 'таймаут'}.get(arp.status, 'нет данных') }}
           {% if arp.resolved is sameas false %} · MAC не разрешён{% endif %}
           {% endif %}
+          {% if row.evidence.gateway_link is defined %}
+          {% set link = row.evidence.gateway_link %}
+          <br>Интерфейс на маршрутизаторе · {{ {
+            'up': 'активен', 'down': 'неактивен', 'disabled': 'отключён',
+            'timeout': 'таймаут опроса'
+          }.get(link.state if link.status == 'observed' else link.status, 'нет данных') }}
+          {% endif %}
           {% if row.evidence.gateway_source is defined and row.evidence.gateway_source.status == 'missing' %}
           <br>Исходный IPv4 не назначен на интерфейсе
           {% if row.evidence.gateway_source.dhcp is defined %} · DHCP {{ row.evidence.gateway_source.dhcp }}{% endif %}

@@ -284,6 +284,29 @@ def _observe_gateway_source(client: RouterOSApiClient, address: str, interface: 
     return result
 
 
+def _observe_gateway_link(client: RouterOSApiClient, interface: str, deadline: float) -> dict:
+    timeout = min(2.0, deadline - monotonic())
+    if client.sock is None or timeout <= 0:
+        return {"status": "unavailable"}
+    try:
+        client.sock.settimeout(timeout)
+        rows = client.call(["/interface/print", "=.proplist=name,running,disabled", f"?name={interface}"])
+    except TimeoutError:
+        return {"status": "timeout"}
+    except (OSError, RuntimeError, ValueError):
+        return {"status": "unavailable"}
+    matches = [row for row in rows if row.get("name") == interface]
+    if len(matches) != 1:
+        return {"status": "unavailable"}
+    row = matches[0]
+    if row.get("disabled") == "true":
+        return {"status": "observed", "state": "disabled"}
+    running = row.get("running")
+    if row.get("disabled") != "false" or running not in {"true", "false"}:
+        return {"status": "unavailable"}
+    return {"status": "observed", "state": "up" if running == "true" else "down"}
+
+
 def _trace_reply(rows: list[dict[str, str]], target: str, ttl: int) -> dict:
     for row in rows:
         if row.get("seq", "0") != "0":
@@ -473,6 +496,8 @@ def probe_router_route(
                                 first_hop["rtt_ms"] = first["rtt_ms"]
                         else:
                             first_hop.update(status="unknown", reason="no_ttl_exceeded" if trace["hops"] else trace["reason"])
+                if "gateway_source" in evidence:
+                    evidence["gateway_link"] = _observe_gateway_link(client, interface, deadline)
     except (subprocess.TimeoutExpired, TimeoutError):
         return result("timeout", f"{transport}_timeout")
     except FileNotFoundError:
