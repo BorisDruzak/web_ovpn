@@ -467,6 +467,46 @@ class InventoryEndpointService:
         db.flush()
         return row
 
+    def manual_selection_exclusions(self, db: Session, asset_id: str) -> set[str]:
+        return set(db.scalars(select(InventoryExternalBinding.external_id).where(
+            InventoryExternalBinding.source == SOURCE,
+            or_(
+                (InventoryExternalBinding.status == Status.CONFIRMED) & InventoryExternalBinding.ended_at.is_(None),
+                (InventoryExternalBinding.asset_id == asset_id)
+                & InventoryExternalBinding.status.in_((Status.ENDED, Status.REJECTED, Status.REPLACED)),
+            ),
+        )))
+
+    def confirm_manual_selection(
+        self, db: Session, asset_id: str, device_id: str, actor: str, now: datetime,
+    ) -> InventoryExternalBinding:
+        self._pc(db, asset_id)
+        actor = self._actor(actor)
+        self._unique(db, asset_id, device_id)
+        if device_id in self.manual_selection_exclusions(db, asset_id):
+            raise InventoryEndpointConflict("Endpoint binding conflicts with binding history")
+        row = db.scalar(select(InventoryExternalBinding).where(
+            InventoryExternalBinding.source == SOURCE,
+            InventoryExternalBinding.asset_id == asset_id,
+            InventoryExternalBinding.external_id == device_id,
+            InventoryExternalBinding.status == Status.CANDIDATE,
+            InventoryExternalBinding.ended_at.is_(None),
+        ))
+        now = _utc(now)
+        if row is None:
+            row = InventoryExternalBinding(
+                asset_id=asset_id, source=SOURCE, external_id=device_id,
+                first_seen_at=now, created_at=now, created_by=actor,
+            )
+            db.add(row)
+        row.status = Status.CONFIRMED
+        row.binding_method = "operator_selected"
+        row.confidence = 100
+        row.last_verified_at = row.updated_at = now
+        db.flush()
+        self._audit(db, row, "confirm_manual", actor, now)
+        return row
+
     def confirm_installation(
         self, db: Session, asset: InventoryAsset, device_id: str, expected_revision: int,
         now: datetime, *, request_id: str, registered_at: datetime, heartbeat_at: datetime,

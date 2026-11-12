@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -17,12 +18,12 @@ from ..permissions import check_user_permission, required_permission
 from ..config import get_settings
 from ..db import get_db
 from ..endpoint_context_adapter import get_endpoint_context_adapter
-from ..endpoint_platform_client import EndpointPlatformServiceDisabled, EndpointPlatformServiceScopeDenied
+from ..endpoint_platform_client import EndpointPlatformServiceDisabled, EndpointPlatformServiceError, EndpointPlatformServiceScopeDenied
 from ..netctl_client import run_netctl
 from .lookup import InventoryLookup, InventoryLookupError
 from .endpoint import InventoryEndpointConflict, InventoryEndpointService
 from .models import InventoryAsset, InventoryAssetPhoto, InventoryAssetRelation, InventoryAssetType, InventoryExternalBinding, InventoryExternalBindingStatus, InventoryLocation, InventoryObservationSource, InventoryPhotoType, InventorySession
-from .schemas import AssetLifecycleRequest, AssetPayload, AssetUpdate, EndpointDiscrepancyResolution, EndpointRefreshRequest, LocationCreate, LocationUpdate, LookupRequest, RelationCreate, SessionCheckCreate, WorkplaceCreate
+from .schemas import AssetLifecycleRequest, AssetPayload, AssetUpdate, EndpointDiscrepancyResolution, EndpointManualBinding, EndpointRefreshRequest, LocationCreate, LocationUpdate, LookupRequest, RelationCreate, SessionCheckCreate, WorkplaceCreate
 from . import lifecycle
 from .service import InventoryService, InventoryValidationError
 from .revision import InventoryRevisionConflict, InventoryRevisionRequired
@@ -181,6 +182,102 @@ def get_endpoint_candidates(asset_id: str, actor: str = Depends(require_endpoint
         InventoryExternalBinding.ended_at.is_(None),
     ).order_by(InventoryExternalBinding.last_verified_at.desc(), InventoryExternalBinding.id).limit(100))
     return {"status": "ok", "data": [_endpoint_binding_dict(row) for row in candidates]}
+
+
+@contextmanager
+def _endpoint_directory_adapter():
+    try:
+        adapter = get_endpoint_context_adapter()
+        try:
+            yield adapter
+        finally:
+            adapter.close()
+    except EndpointPlatformServiceError:
+        raise HTTPException(status_code=503, detail="endpoint_platform_unavailable") from None
+
+
+def _active_endpoint_directory() -> list[dict[str, Any]]:
+    with _endpoint_directory_adapter() as adapter:
+        return [device for device in adapter.list_devices()
+                if isinstance(device.get("id"), str) and device.get("retired_at") is None]
+
+
+def _manual_endpoint_preview(db, asset_id, device_id, unavailable):
+    if str(device_id) in unavailable:
+        raise HTTPException(status_code=409, detail="Endpoint device is no longer available")
+    with _endpoint_directory_adapter() as adapter:
+        details = adapter.get_device(device_id)
+    device = details["device"]
+    if device.get("id") != str(device_id) or device.get("retired_at") is not None:
+        raise HTTPException(status_code=409, detail="Endpoint device is no longer available")
+    baseline = next((item["sections"] for item in details["snapshots"]
+                     if item["profile"] == "baseline_v1"), {})
+    evidence = db.scalar(select(InventoryExternalBinding).where(
+        InventoryExternalBinding.asset_id == asset_id,
+        InventoryExternalBinding.source == "endpoint_platform",
+        InventoryExternalBinding.external_id == str(device_id),
+        InventoryExternalBinding.status == InventoryExternalBindingStatus.CANDIDATE,
+        InventoryExternalBinding.ended_at.is_(None),
+    ))
+    return {
+        "name": device.get("display_name"),
+        "hostname": device.get("device_identifier"),
+        "id": str(device_id),
+        "system": baseline.get("system", {}),
+        "hardware": baseline.get("hardware", {}),
+        "candidate_method": evidence.binding_method if evidence else None,
+    }
+
+
+@router.get("/assets/{asset_id}/endpoint-devices")
+def list_unbound_endpoint_devices(
+    asset_id: str, q: str = Query("", max_length=128), device_id: UUID | None = None,
+    actor: str = Depends(require_endpoint_actor), db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    asset = _endpoint_asset(db, asset_id)
+    if asset.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="inventory asset not found")
+    needle = q.strip().casefold()
+    unavailable = endpoint_service.manual_selection_exclusions(db, asset_id)
+    if device_id is not None:
+        return {"status": "ok", "data": _manual_endpoint_preview(db, asset_id, device_id, unavailable)}
+    choices = []
+    for device in _active_endpoint_directory():
+        device_id = device["id"]
+        if device_id in unavailable:
+            continue
+        name = device.get("display_name") or device.get("device_identifier") or device_id
+        if needle in name.casefold() or needle in device_id.casefold():
+            choices.append({"id": device_id, "display_name": name})
+    choices.sort(key=lambda item: (item["display_name"].casefold(), item["id"]))
+    return {"status": "ok", "data": choices[:100]}
+
+
+@router.post("/assets/{asset_id}/endpoint-devices")
+def confirm_selected_endpoint_device(
+    asset_id: str, payload: EndpointManualBinding, request: Request,
+    csrf: str | None = Header(default=None, alias="X-CSRF-Token"),
+    actor: str = Depends(require_endpoint_actor), db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _mutation(request, csrf)
+    asset = _endpoint_asset(db, asset_id)
+    if asset.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="inventory asset not found")
+    device_id = str(payload.device_id)
+    if not any(device["id"] == device_id for device in _active_endpoint_directory()):
+        raise HTTPException(status_code=409, detail="Endpoint device is no longer available")
+    try:
+        _claim_endpoint_revision(db, request, asset)
+        binding = endpoint_service.confirm_manual_selection(db, asset_id, device_id, actor, datetime.now(timezone.utc))
+    except (InventoryValidationError, IntegrityError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Endpoint binding conflicts with current or historical records") from exc
+    write_audit(db, request, actor, "inventory.endpoint.confirm_manual", "ok", "", target_client=asset_id, commit=False)
+    db.flush()
+    db.refresh(asset, attribute_names=["manual_revision"])
+    result = {"status": "ok", "data": _endpoint_binding_dict(binding), "manual_revision": asset.manual_revision}
+    db.commit()
+    return result
 
 
 def _endpoint_binding_action(db: Session, request: Request, actor: str, asset_id: str, binding_id: str, action: str) -> dict[str, Any]:

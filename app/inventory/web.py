@@ -139,6 +139,7 @@ def _render(request: Request, template: str, context: dict[str, Any], db: Sessio
             "flashes": list(request.session.get("flashes", [])),
             "form_draft": getattr(request.state, "form_draft", None),
             "can_link_inventory_people": user_has_permission(user, "workstations:link"),
+            "can_write_inventory": user_has_permission(user, "inventory:write"),
             "can_delete_inventory": user_has_permission(user, "inventory:delete"),
             "can_export_inventory": user_has_permission(user,"inventory:export"),
             "export_operation_key": uuid4().hex,

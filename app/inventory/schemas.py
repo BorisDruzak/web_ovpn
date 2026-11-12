@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -105,6 +106,12 @@ class EndpointRefreshRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     profile: SafeProfile = "baseline_v1"
+
+
+class EndpointManualBinding(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    device_id: UUID
 
 
 class EndpointDiscrepancyResolution(BaseModel):

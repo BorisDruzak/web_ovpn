@@ -48,6 +48,12 @@ if (inventoryManualForm) {
   });
 }
 
+document.addEventListener("change", (event) => {
+  if (event.target.matches("[data-endpoint-choice]")) {
+    event.target.closest("[data-endpoint-picker]").querySelector("[data-endpoint-details]").hidden = true;
+  }
+});
+
 document.addEventListener("click", async (event) => {
   const insert = event.target.closest("[data-endpoint-insert]");
   if (insert && !insert.disabled) {
@@ -111,12 +117,29 @@ document.addEventListener("click", async (event) => {
     feedback.scrollIntoView({ block: "nearest" });
     return;
   }
-  if (button.dataset.confirm && !window.confirm(button.dataset.confirm)) return;
+  const picker = card.querySelector("[data-endpoint-picker]");
+  const directory = button.hasAttribute("data-endpoint-directory");
+  const selecting = button.hasAttribute("data-endpoint-select");
+  const preview = button.hasAttribute("data-endpoint-preview");
+  const choice = picker?.querySelector("[data-endpoint-choice]");
+  if ((selecting || preview) && !choice?.value) {
+    feedback.textContent = "Выберите агента из списка.";
+    return;
+  }
+  const confirmation = selecting
+    ? "Подтвердить привязку агента «" + choice.selectedOptions[0].textContent + "» к этому ПК?"
+    : button.dataset.confirm;
+  if (confirmation && !window.confirm(confirmation)) return;
   const read = Boolean(button.dataset.endpointRead);
   const path = button.dataset.endpointRead || button.dataset.endpointAction;
   // Only the local Inventory API can be called by this UI.
   const url = new URL(path, window.location.origin);
   if (url.origin !== window.location.origin || !url.pathname.startsWith("/api/v1/inventory/assets/")) return;
+  if (preview) url.searchParams.set("device_id", choice.value);
+  if (directory) {
+    const search = picker.querySelector("[data-endpoint-search]").value.trim();
+    if (search) url.searchParams.set("q", search);
+  }
   const controls = Array.from(card.querySelectorAll("button"));
   const formSubmits = inventoryManualForm
     ? Array.from(inventoryManualForm.querySelectorAll("button[type='submit'], input[type='submit']")) : [];
@@ -127,12 +150,12 @@ document.addEventListener("click", async (event) => {
   formSubmits.forEach((control) => { control.disabled = true; });
   feedback.textContent = "Выполняется…";
   try {
-    const response = await fetch(url.pathname, {
+    const response = await fetch(url.pathname + url.search, {
       method: read ? "GET" : "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json", "X-CSRF-Token": card.dataset.csrf,
         "X-Inventory-Revision": card.dataset.manualRevision },
-      body: read ? undefined : JSON.stringify(button.dataset.resolution
+      body: read ? undefined : JSON.stringify(selecting ? { device_id: choice.value } : button.dataset.resolution
         ? { action: button.dataset.resolution, expected_revision: button.dataset.revision } : { profile: "baseline_v1" }),
     });
     const result = await response.json();
@@ -155,10 +178,32 @@ document.addEventListener("click", async (event) => {
         endpoint_platform_unavailable: "Endpoint временно недоступен. Сохранённые данные доступны.",
       };
       feedback.textContent = response.status === 409
-        ? "Данные расхождения изменились. Обновите карточку и проверьте новые значения перед решением."
-        : messages[result.code] || (response.status === 401
+        ? (selecting ? "Привязка конфликтует с текущими данными. Обновите карточку и проверьте выбранного агента."
+          : "Данные расхождения изменились. Обновите карточку и проверьте новые значения перед решением.")
+        : messages[result.code || result.detail] || (response.status === 401
         ? "Сессия завершена. Войдите снова."
         : "Действие не выполнено. Обновите карточку и проверьте актуальность привязки.");
+    } else if (preview) {
+      const data = result.data;
+      const details = picker.querySelector("[data-endpoint-details]");
+      const system = data.system || {};
+      const hardware = data.hardware || {};
+      const match = data.candidate_method
+        ? "Предложенное совпадение: " + data.candidate_method
+        : "Предложенного совпадения нет.";
+      details.textContent = [data.name, data.hostname, data.id, system.distribution || system.platform,
+        hardware.manufacturer, hardware.model, hardware.cpu_model, match].filter(Boolean).join(" · ");
+      details.hidden = choice.value !== data.id;
+      feedback.textContent = "";
+    } else if (directory) {
+      picker.querySelector("[data-endpoint-details]").hidden = true;
+      choice.replaceChildren(new Option("Выберите агента", ""));
+      for (const device of result.data) {
+        choice.add(new Option(device.display_name + " · " + device.id, device.id));
+      }
+      picker.hidden = false;
+      picker.querySelector("[data-endpoint-search]").focus();
+      feedback.textContent = result.data.length ? "" : "Свободные агенты не найдены.";
     } else if (response.status === 202) {
       feedback.textContent = "Обновление запрошено. Результат появится после плановой синхронизации; обновите карточку позже.";
     } else if (read && !result.data.length) {

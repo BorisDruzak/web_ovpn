@@ -9,7 +9,9 @@ import pytest
 def test_inventory_endpoint_code_has_no_agent_transport_or_direct_http() -> None:
     app_root = Path(__file__).resolve().parents[1] / "app"
     sources = [
-        *(app_root / "inventory").glob("*.py"),
+        # This separate integration calls Helpdesk, not Endpoint Platform.
+        *(path for path in (app_root / "inventory").glob("*.py")
+          if path.name != "helpdesk_status.py"),
         app_root / "endpoint_platform_client.py",
         app_root / "endpoint_context_adapter.py",
     ]

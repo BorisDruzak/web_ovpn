@@ -53,8 +53,18 @@
     <p>Ранее отвязанный Endpoint Device: {{ detached.external_id }}</p>
     {{ endpoint_action('endpoint-bindings/' ~ detached.id ~ '/reconnect', 'Восстановить привязку', confirm='Восстановить связь этого Endpoint Device с данным ПК? Данные обновятся при плановой синхронизации.') }}
     {% endfor %}
-    <p>Кандидаты обновляются при плановой синхронизации. Поиск показывает сохранённые совпадения.</p>
-    <button type="button" class="button secondary" data-endpoint-read="{{ api_root }}/endpoint-candidates">Привязать Endpoint Agent</button>
+    {% if not asset.deleted_at and can_write_inventory %}
+    <button type="button" class="button secondary" data-endpoint-read="{{ api_root }}/endpoint-devices" data-endpoint-directory>Привязать Endpoint Agent</button>
+    <div data-endpoint-picker hidden>
+      <label>Имя или UUID агента <input type="search" maxlength="128" data-endpoint-search></label>
+      <button type="button" class="button secondary" data-endpoint-read="{{ api_root }}/endpoint-devices" data-endpoint-directory>Найти</button>
+      <label>Свободные агенты <select data-endpoint-choice></select></label>
+      <button type="button" class="button secondary" data-endpoint-read="{{ api_root }}/endpoint-devices" data-endpoint-preview>Сведения об агенте</button>
+      <p data-endpoint-details hidden></p>
+      <button type="button" class="button secondary" data-endpoint-action="{{ api_root }}/endpoint-devices" data-endpoint-select>Подтвердить выбранного агента</button>
+    </div>
+    {% endif %}
+    <p>Предложенные совпадения обновляются при плановой синхронизации.</p>
     {% endif %}
     {% for candidate in endpoint_candidates %}
     <section class="inventory-endpoint-candidate">
@@ -231,6 +241,6 @@
 </section>
 {% endblock %}
 {% block page_scripts %}
-<script src="{{ url_for('static', path='inventory.js') }}?v=endpoint-8" defer></script>
+<script src="{{ url_for('static', path='inventory.js') }}?v=endpoint-9" defer></script>
 <script src="{{ url_for('static', path='inventory-drafts.js') }}?v=draft-2" defer></script>
 {% endblock %}

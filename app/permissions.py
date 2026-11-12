@@ -48,6 +48,8 @@ def required_permission(path: str, method: str) -> str | None:
     if path.startswith("/admin/users"):
         return "admin:users"
     if path.startswith("/inventory"):
+        if path.startswith("/inventory/assets/") and path.endswith("/endpoint-devices"):
+            return "inventory:write"
         if path.startswith("/inventory/deleted"):
             return "inventory:delete"
         if "export" in path:

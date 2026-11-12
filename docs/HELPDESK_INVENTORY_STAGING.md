@@ -75,9 +75,11 @@ production web installer is not the staging procedure.
 ## Endpoint Agent installation and linking
 
 Open **Привязать Endpoint Agent** from the assigned PC on the employee card.
-The inventory card shows saved candidates, their exact evidence and the
-existing confirm/reject workflow. Its server endpoint still checks current
-card revision and rejects conflicting links.
+Search the current Endpoint directory by name or UUID, inspect the device
+details, and confirm the selected device. The directory omits retired agents,
+agents bound to any card, and rejected or detached links for this card.
+Saved candidates and their evidence remain available for separate review.
+Confirmation checks the current card revision and records an operator audit.
 
 Open **Установить Endpoint Agent** from the PC card. For Windows staging,
 the page offers the exact signed Setup release and a private assignment

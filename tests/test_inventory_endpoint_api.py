@@ -106,6 +106,51 @@ def test_lookup_only_returns_active_confirmed_asset(api, monkeypatch):
     assert client.get(f"{ROOT}/by-endpoint/not-a-uuid", headers=headers).status_code == 422
 
 
+def test_operator_can_select_unbound_endpoint_without_automatic_match(api, monkeypatch):
+    client, headers = api
+    occupied, _ = seed()
+    asset, candidate = seed(candidate=True)
+    monkeypatch.setattr("app.inventory.api.get_endpoint_context_adapter", lambda: type("Adapter", (), {
+        "list_devices": lambda self: [
+            {"id": DEVICE, "display_name": "Occupied", "retired_at": None},
+            {"id": SECOND_DEVICE, "display_name": "Unassigned PC", "retired_at": None},
+        ],
+        "get_device": lambda self, device: {
+            "device": {"id": str(device), "display_name": "Unassigned PC", "device_identifier": "alt-pc"},
+            "snapshots": [{"profile": "baseline_v1", "sections": {
+                "system": {"platform": "linux"}, "hardware": {"model": "Synthetic PC"},
+            }}],
+        },
+        "close": lambda self: None,
+    })())
+    path = f"{ROOT}/assets/{asset}/endpoint-devices"
+    listed = client.get(path, headers=headers)
+    assert listed.status_code == 200
+    assert [row["id"] for row in listed.json()["data"]] == [SECOND_DEVICE]
+    preview = client.get(path, params={"device_id": SECOND_DEVICE}, headers=headers)
+    assert preview.status_code == 200
+    assert preview.json()["data"]["hostname"] == "alt-pc"
+    assert preview.json()["data"]["hardware"]["model"] == "Synthetic PC"
+    assert client.get(path, params={"device_id": DEVICE}, headers=headers).status_code == 409
+    assert client.get(f"{ROOT}/by-endpoint/{SECOND_DEVICE}", headers=headers).status_code == 404
+    old_revision = revision_header(asset)
+    assert client.post(path, headers=headers, json={"device_id": SECOND_DEVICE}).status_code == 428
+    assert client.post(path, headers=headers | old_revision, json={"device_id": DEVICE}).status_code == 409
+    accepted = client.post(path, headers=headers | old_revision, json={"device_id": SECOND_DEVICE})
+    assert accepted.status_code == 200
+    assert accepted.json()["data"]["binding_method"] == "operator_selected"
+    assert client.get(f"{ROOT}/by-endpoint/{SECOND_DEVICE}", headers=headers).json()["data"]["asset"]["id"] == asset
+    assert client.get(f"{ROOT}/by-endpoint/{DEVICE}", headers=headers).json()["data"]["asset"]["id"] == occupied
+    assert client.post(path, headers=headers | old_revision, json={"device_id": SECOND_DEVICE}).status_code == 409
+    from app.db import get_sessionmaker
+    from app.models import WebAuditLog
+    with get_sessionmaker()() as db:
+        assert db.get(InventoryExternalBinding, candidate).status == Status.CANDIDATE
+        assert any(row.data_json.get("action") == "confirm_manual"
+                   for row in db.scalars(select(InventoryObservation)))
+        assert db.scalar(select(WebAuditLog).where(WebAuditLog.action == "inventory.endpoint.confirm_manual"))
+
+
 def test_candidates_are_local_and_confirmation_then_detach_are_audited(api, monkeypatch):
     client, headers = api
     asset, binding = seed(candidate=True)
