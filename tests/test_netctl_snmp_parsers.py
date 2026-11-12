@@ -151,6 +151,9 @@ def test_counter_parser_retains_hc_width_and_interface_values() -> None:
             "in_octets": 9_000_000_000,
             "out_octets": 8_000_000_000,
             "octet_counter_bits": 64,
+            "in_broadcast_packets": None,
+            "out_broadcast_packets": None,
+            "counter_discontinuity_ticks": None,
         }
     ]
 
@@ -209,6 +212,9 @@ def test_collector_falls_back_to_32_bit_octets_when_hc_is_unsupported() -> None:
             "in_octets": 4_294_967_000,
             "out_octets": 100,
             "octet_counter_bits": 32,
+            "in_broadcast_packets": None,
+            "out_broadcast_packets": None,
+            "counter_discontinuity_ticks": None,
         }
     ]
 
