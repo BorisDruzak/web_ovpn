@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any, Literal
 from uuid import UUID
 
@@ -208,10 +209,12 @@ class EndpointContextAdapter:
         platform = system.get("platform")
         return platform if platform in {"linux", "windows"} else ""
 
-    def read_profiles(self, device_id: UUID) -> dict[str, dict[str, Any] | None]:
+    def read_profiles(self, device_id: UUID, names: Iterable[SafeProfile] = SAFE_PROFILES) -> dict[str, dict[str, Any] | None]:
         """Return only known safe profiles; absent profiles remain explicitly absent."""
         profiles: dict[str, dict[str, Any] | None] = {}
-        for profile in SAFE_PROFILES:
+        for profile in names:
+            if profile not in SAFE_PROFILES:
+                raise ValueError("unsupported context profile")
             snapshot = self._client.get_latest_context(device_id, profile)
             profiles[profile] = _project_snapshot(snapshot) if snapshot is not None else None
         return profiles

@@ -5443,6 +5443,12 @@ def test_guest_enrollment_fallback_requires_fresh_matching_proxmox_mac(tmp_path,
             calls.append(True)
             return [{"id": endpoint_id, "online": True, "retired_at": None, "last_seen_at": stamp}]
 
+        def read_profiles(self, device_id, profiles):
+            assert str(device_id) == endpoint_id
+            assert set(profiles) == {"health_v1", "network_v1", "inventory_v1"}
+            calls.append("profiles")
+            return {"health_v1": {"collected_at": stamp, "sections": {"resources": {"private": 1}}}}
+
         def close(self):
             pass
 
@@ -5457,11 +5463,12 @@ def test_guest_enrollment_fallback_requires_fresh_matching_proxmox_mac(tmp_path,
 
     entry = audit()
     assert (entry["state"], entry["presence"], entry["identitySource"]) == ("matched", "online", "verified_enrollment")
+    assert entry["contextProfiles"] == [{"profile": "health_v1", "collectedAt": stamp}]
     Adapter.identities = [{"id": "other", "baseline_mac_keys": ["mac-020000000016"]}]
     assert audit()["reason"] == "enrollment_registration_conflict"
     pve["configs"]["116"]["net0"] = "virtio=02:00:00:00:00:17,bridge=vmbr1"
     assert audit()["state"] == "unmatched"
-    assert len(calls) == 2
+    assert calls == [True, "profiles", True]
 
 
 def test_agent_audit_reports_duplicate_guest_macs_without_using_them_for_presence(tmp_path):

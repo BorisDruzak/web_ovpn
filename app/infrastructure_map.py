@@ -10,6 +10,7 @@ from collections.abc import Callable
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 from netctl.snmp.interfaces import BRIDGE_STP_PORT_STATES
 
@@ -1658,6 +1659,8 @@ def load_infrastructure_agent_audit(path: Path) -> dict:
         graph = load_infrastructure_map(
             path, agent_identities=identities,
             load_agent_presence=(lambda: adapter.list_device_presences()) if adapter is not None else None,
+            load_agent_profiles=(lambda device_id: adapter.read_profiles(device_id, GUEST_AGENT_PROFILES))
+            if adapter is not None else None,
         )
     finally:
         if adapter is not None:
@@ -1684,7 +1687,8 @@ def _guest_agent_exclusion(node: dict, snapshot_fresh: bool) -> str:
 
 
 def _summarize_guest_agents(nodes: dict, keys: dict, conflicts: set[str], identities: list[dict], now: datetime,
-                            *, snapshot_fresh: bool, enrollments: dict[str, str], device_presences: list[dict]) -> dict:
+                            *, snapshot_fresh: bool, enrollments: dict[str, str], device_presences: list[dict],
+                            load_agent_profiles: Callable[[UUID], dict] | None = None) -> dict:
     from .inventory.endpoint import CANDIDATE_MAX_AGE, STATE_MAX_AGE
 
     by_id = {row["id"]: row for row in identities if isinstance(row, dict)
@@ -1747,8 +1751,16 @@ def _summarize_guest_agents(nodes: dict, keys: dict, conflicts: set[str], identi
                 entry["presence"] = "online" if fresh and presence.get("online") is True else "unconfirmed"
                 if entry["presence"] == "online":
                     entry["lastSeenAt"] = last_seen.isoformat()
+                profile_rows = _rows(identity.get("profiles"), 5)
+                if explicit and identity_id not in by_id and load_agent_profiles is not None:
+                    try:
+                        snapshots = load_agent_profiles(UUID(identity_id))
+                    except EndpointPlatformServiceError:
+                        snapshots = {}
+                    profile_rows = [{"profile": name, "collected_at": snapshot.get("collected_at")}
+                                    for name, snapshot in snapshots.items() if isinstance(snapshot, dict)]
                 reports = defaultdict(set)
-                for row in _rows(identity.get("profiles"), 5):
+                for row in profile_rows:
                     profile = row.get("profile")
                     collected = _time(row.get("collected_at"))
                     if profile in GUEST_AGENT_PROFILES and collected is not None and collected <= now:
@@ -1768,6 +1780,7 @@ def load_infrastructure_map(
     path: Path, now: datetime | None = None, *, db: Session | None = None,
     agent_identities: list[dict] | None = None, include_guest_attachments: bool = False,
     load_agent_presence: Callable[[], list[dict]] | None = None,
+    load_agent_profiles: Callable[[UUID], dict] | None = None,
 ) -> dict:
     now = now or datetime.now(timezone.utc)
     empty = {
@@ -1978,7 +1991,7 @@ def load_infrastructure_map(
         **({"collectionIssues": issues} if issues else {}),
         **({"agentAudit": _summarize_guest_agents(
             nodes, agent_keys, agent_conflicts, agent_identities, now, snapshot_fresh=now - stamp <= MAX_AGE,
-            enrollments=agent_enrollments, device_presences=device_presences,
+            enrollments=agent_enrollments, device_presences=device_presences, load_agent_profiles=load_agent_profiles,
         )}
            if agent_identities is not None else {}),
         **({"guestAttachments": _guest_attachments(nodes, links, [key for key, node in nodes.items() if node["guest"]])}
