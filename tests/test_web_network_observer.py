@@ -2368,6 +2368,46 @@ def test_network_checks_read_scope_does_not_grant_execution(tmp_path, monkeypatc
     }).status_code == 403
 
 
+def test_route_availability_catalog_execution_and_history(tmp_path, monkeypatch):
+    client, headers = make_client(tmp_path, monkeypatch)
+    from app import network_checks, network_probe_profiles, network_route_matrix
+
+    profile_id = "central-wan"
+    profiles = network_probe_profiles.ProbeProfiles.model_validate({"routes": {profile_id: {
+        "label": "Central WAN comparison", "scheduled": True, "probes": [
+            {"id": "rtk", "expected_path": "RTK", "target": "192.0.2.20", "protocol": "icmp",
+             "router_source": "mikrotik-main", "routing_table": "isp1"},
+        ],
+    }}})
+    monkeypatch.setattr(network_probe_profiles, "load_probe_profiles", lambda: profiles)
+    monkeypatch.setattr(network_checks, "load_probe_profiles", lambda: profiles)
+    calls = []
+
+    def probe(args, **kwargs):
+        calls.append(args)
+        return {"probe": {"status": "reachable", "evidence": {"packet_loss_pct": 0}}}
+
+    monkeypatch.setattr(network_route_matrix, "run_netctl", probe)
+    base = "/api/v1/network/diagnostics"
+    endpoint = base + "/checks"
+    catalog = client.get(endpoint, headers=headers).json()["data"]
+    assert catalog["profiles"]["routes"][0]["id"] == profile_id
+    assert catalog["profiles"]["routes"][0]["scheduled"] is True
+    payload = {"check": "route_availability", "profile": profile_id}
+    assert client.post(endpoint, headers=headers, json={**payload, "target": "192.0.2.30"}).status_code == 422
+    data = client.post(endpoint, headers=headers, json=payload).json()["data"]
+    assert data["status"] == "reachable"
+    assert data["result"]["probes"][0]["path_status"] == "unconfirmed"
+    assert client.post(endpoint, headers=headers, json=payload).json()["data"]["status"] == "rate_limited"
+    history = client.get(base + "/route-runs", headers=headers, params={"profile": profile_id}).json()["data"]["runs"]
+    assert len(history) == 1 and history[0]["result"]["probes"] == data["result"]["probes"]
+    csrf = login(client)
+    response = client.post("/network/diagnostics/checks", data={"csrf_token": csrf, **payload})
+    assert response.status_code == 200
+    assert "Путь не подтверждён" in response.text and "mikrotik-main" in response.text
+    assert [call[:-1] for call in calls] == [["path", "probe", "--profile=central-wan", "--probe=rtk"]] * 2
+
+
 def test_network_active_check_uses_shared_throttle(tmp_path, monkeypatch):
     client, headers = make_client(tmp_path, monkeypatch)
     from app import network_checks

@@ -219,10 +219,14 @@ TOOLS: dict[str, dict[str, Any]] = {
         "List the authenticated actor's recent network diagnostic runs.",
         {"limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}},
     ),
+    "openvpn_network_route_runs": tool_schema(
+        "List route availability results with per-path evidence from scheduled runs and the current actor's manual runs.",
+        {"profile": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}},
+    ),
     "openvpn_network_run_check": tool_schema(
-        "Run a registered network check. iperf3 and pcap_capture use a profile from the catalog. iperf3 accepts send/receive. loop_check optionally takes a switch source.",
+        "Run a registered network check. route_availability compares configured paths in a catalog profile. iperf3 and pcap_capture also use profiles. iperf3 accepts send/receive. loop_check optionally takes a switch source.",
         {
-            "check": {"type": "string", "enum": ["linux_route", "asset_route", "trace_route", "source_test", "iperf3", "pcap_capture", "loop_check"]},
+            "check": {"type": "string", "enum": ["linux_route", "asset_route", "trace_route", "source_test", "iperf3", "pcap_capture", "loop_check", "route_availability"]},
             "destination": {"type": "string", "description": "Destination IPv4 or IPv6 address"},
             "asset_key": {"type": "string"},
             "protocol": {"type": "string", "enum": ["tcp", "udp", "icmp"]},
@@ -844,6 +848,10 @@ def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         return api_request("GET", "/api/v1/network/diagnostics/checks")
     if name == "openvpn_network_check_runs":
         return api_request("GET", _query_path("/api/v1/network/diagnostics/runs", [("limit", arguments.get("limit", 20))]))
+    if name == "openvpn_network_route_runs":
+        return api_request("GET", _query_path("/api/v1/network/diagnostics/route-runs", [
+            ("profile", arguments.get("profile", "")), ("limit", arguments.get("limit", 20)),
+        ]))
     if name == "openvpn_network_run_check":
         return api_request("POST", "/api/v1/network/diagnostics/checks", arguments)
     if name == "openvpn_network_loop_diagnostics":

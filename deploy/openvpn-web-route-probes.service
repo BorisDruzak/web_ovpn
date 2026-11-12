@@ -1,0 +1,16 @@
+[Unit]
+Description=Run configured route probes for OpenVPN Web Manager
+After=network-online.target openvpn-web.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=openvpn-web
+Group=openvpn-web
+WorkingDirectory=/opt/openvpn-web
+EnvironmentFile=/etc/openvpn-web/openvpn-web.env
+ExecStart=/opt/openvpn-web/.venv/bin/python -m app.network_route_history
+NoNewPrivileges=false
+PrivateTmp=true
+ProtectHome=true
+TimeoutStartSec=4min

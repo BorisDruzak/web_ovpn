@@ -1059,6 +1059,8 @@ def cmd_context_view(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
 
 
 def cmd_path(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    if args.path_command == "probe":
+        return cmd_path_probe(args)
     try:
         destination = str(ipaddress.ip_address(args.destination))
     except ValueError:
@@ -1077,6 +1079,34 @@ def cmd_path(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         return 0, ok(explanation=asdict(explanation))
     finally:
         conn.close()
+
+
+def cmd_path_probe(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    from app.network_probe_profiles import load_probe_profiles
+
+    from .route_availability import probe_router_route
+
+    profile = load_probe_profiles().routes.get(args.profile)
+    probe = next((row for row in profile.probes if row.id == args.probe and row.router_source), None) if profile else None
+    if probe is None:
+        return 1, err("router route probe not configured")
+    if probe.config_digest() != args.expected_config:
+        return 0, ok(probe={"status": "unavailable", "reason": "profile_mismatch", "evidence": {}})
+    conn = connect_read_only(args.db)
+    try:
+        source = get_source(conn, probe.router_source)
+    finally:
+        conn.close()
+    try:
+        measurement = probe_router_route(
+            source=probe.router_source, target=probe.target, source_address=probe.source_address,
+            interface=probe.interface, routing_table=probe.routing_table, mtu=probe.mtu,
+            expected_first_hop=probe.expected_first_hop,
+            sources=[source] if source else [], secrets=load_secrets() if source and source.get("enabled") else {},
+        )
+    except (OSError, ValueError):
+        return 1, err("router route probe unavailable")
+    return 0, ok(probe=measurement)
 
 
 def cmd_users(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
@@ -1880,6 +1910,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     path = sub.add_parser("path")
     path_sub = path.add_subparsers(dest="path_command", required=True)
+    path_probe = path_sub.add_parser("probe")
+    path_probe.add_argument("--profile", required=True)
+    path_probe.add_argument("--probe", required=True)
+    path_probe.add_argument("--expected-config", required=True)
     path_explain = path_sub.add_parser("explain")
     path_explain.add_argument("--asset-key", required=True)
     path_explain.add_argument("--destination", required=True)

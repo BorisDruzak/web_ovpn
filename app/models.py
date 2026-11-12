@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from sqlalchemy import Boolean, DateTime, Index, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from .db import Base
+from .db import Base, UTCDateTime
 
 
 def utcnow() -> datetime:
@@ -67,6 +67,20 @@ class NetworkActionThrottle(Base):
     actor: Mapped[str] = mapped_column(String(120), nullable=False)
     action: Mapped[str] = mapped_column(String(120), nullable=False)
     last_accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class NetworkRouteRun(Base):
+    __tablename__ = "network_route_runs"
+    __table_args__ = (
+        Index("ix_network_route_runs_owner_profile_checked_at", "owner", "profile", "checked_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner: Mapped[str] = mapped_column(String(128), nullable=False)
+    profile: Mapped[str] = mapped_column(String(48), nullable=False)
+    checked_at: Mapped[datetime] = mapped_column(UTCDateTime(), index=True, nullable=False)
+    stored_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    result_json: Mapped[str] = mapped_column(Text, nullable=False)
 
 
 class EndpointAgentNetworkLink(Base):

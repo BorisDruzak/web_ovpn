@@ -19,6 +19,8 @@ from .models import WebAuditLog
 from .network_actions import acquire_network_action
 from .network_capture_store import create_capture
 from .network_probe_profiles import ProfileId, load_probe_profiles
+from .network_route_history import persist_route_run
+from .network_route_matrix import run_route_matrix
 from .network_throughput import run_throughput
 from .netctl_client import NetctlError, run_netctl
 
@@ -31,6 +33,7 @@ TRACE_TIMEOUT_SECONDS = 18
 ROUTE_FIELDS = ("dst", "gateway", "dev", "prefsrc", "src", "table", "type", "metric")
 
 CHECKS = (
+    {"check": "route_availability", "title": "Доступность по маршрутам", "active": True},
     {"check": "linux_route", "title": "Маршрут VPN-сервера", "active": False},
     {"check": "asset_route", "title": "Маршрут от сетевого актива", "active": False},
     {"check": "trace_route", "title": "Трассировка до наблюдаемого узла", "active": True},
@@ -92,8 +95,14 @@ class LoopCheck(CheckInput):
     source: str | None = Field(default=None, max_length=128, pattern=SOURCE_PATTERN)
 
 
+class RouteAvailabilityCheck(CheckInput):
+    check: Literal["route_availability"]
+    profile: ProfileId
+
+
 NetworkCheck = Annotated[
-    LinuxRouteCheck | AssetRouteCheck | SourceTestCheck | TraceRouteCheck | IperfCheck | CaptureCheck | LoopCheck,
+    LinuxRouteCheck | AssetRouteCheck | SourceTestCheck | TraceRouteCheck | IperfCheck | CaptureCheck | LoopCheck
+    | RouteAvailabilityCheck,
     Field(discriminator="check"),
 ]
 NETWORK_CHECK_INPUT = TypeAdapter(NetworkCheck)
@@ -122,6 +131,8 @@ CHECK_STATUS_LABELS = {
     "no_evidence": "Признаки петли не выявлены в наблюдениях",
     "insufficient_data": "Для оценки петель недостаточно наблюдений",
     "no_sources": "Нет подходящих источников наблюдений",
+    "reachable": "Цель ответила",
+    "unreachable": "Цель не ответила или проверка сервиса не прошла",
 }
 
 
@@ -293,7 +304,7 @@ def execute_network_check(check: NetworkCheck, *, allowed: bool = True, capture_
         target = check.source
     elif isinstance(check, IperfCheck):
         target = f"{check.profile} · {check.direction}"
-    elif isinstance(check, CaptureCheck):
+    elif isinstance(check, (CaptureCheck, RouteAvailabilityCheck)):
         target = check.profile
     elif isinstance(check, LoopCheck):
         target = check.source or "Все коммутаторы"
@@ -315,6 +326,9 @@ def execute_network_check(check: NetworkCheck, *, allowed: bool = True, capture_
         evidence = _capture_check(check, capture_owner)
     elif isinstance(check, LoopCheck):
         evidence = loop_diagnostics(check.source)
+    elif isinstance(check, RouteAvailabilityCheck):
+        profile = load_probe_profiles().routes.get(check.profile)
+        evidence = run_route_matrix(check.profile, profile) if profile else {"status": "not_found", "result": {}}
     else:
         evidence = _source_test(check)
     return {"check": check.check, "target": target, "checked_at": datetime.now(UTC).isoformat(), **evidence}
@@ -322,11 +336,15 @@ def execute_network_check(check: NetworkCheck, *, allowed: bool = True, capture_
 
 def run_audited_network_check(db: Session, request: Request, actor: str, check: NetworkCheck) -> dict:
     action = AUDIT_PREFIX + check.check
-    active = isinstance(check, (SourceTestCheck, TraceRouteCheck, IperfCheck, CaptureCheck))
+    active = isinstance(check, (SourceTestCheck, TraceRouteCheck, IperfCheck, CaptureCheck, RouteAvailabilityCheck))
     owner = ("service:" if request.url.path.startswith("/api/v1/") else "user:") + actor
     throttle_action = f"{action}:{check.profile}:{check.direction}" if isinstance(check, IperfCheck) else action
+    if isinstance(check, RouteAvailabilityCheck):
+        throttle_action = f"{action}:{check.profile}"
     allowed = not active or acquire_network_action(db, owner, throttle_action, datetime.now(UTC)).accepted
     result = execute_network_check(check, allowed=allowed, capture_owner=owner)
+    if isinstance(check, RouteAvailabilityCheck) and result["result"].get("probes"):
+        persist_route_run(db, owner=owner, result=result)
     write_audit(db, request, actor, action, result["status"], result["target"])
     return result
 

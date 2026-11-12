@@ -50,6 +50,7 @@ from .network_checks import (
     interface_history_args, list_network_check_runs, run_audited_network_check,
 )
 from .network_probe_profiles import probe_catalog
+from .network_route_history import list_route_runs
 from .endpoint_agent_network import (
     attach_endpoint_agent_statuses,
     endpoint_agent_refresh_status,
@@ -2570,6 +2571,7 @@ def render_network_checks(request: Request, db: Session, *, result=None, values=
         "sources": [row for row in sources.get("sources", []) if row.get("enabled")],
         "result": result,
         "runs": list_network_check_runs(db, user.username, 12) if user else [],
+        "route_runs": list_route_runs(db, owner="user:" + user.username, profile=None, limit=12) if user else [],
         "check_titles": {item["check"]: item["title"] for item in CHECKS},
         "probe_profiles": probe_catalog() if can_run else {},
         "captures": list_captures("user:" + user.username) if can_run and user else [],

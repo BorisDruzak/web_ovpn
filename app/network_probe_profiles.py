@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import json
 import logging
@@ -8,7 +9,7 @@ import stat
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, field_validator, model_validator
 
 PROFILE_PATH = Path("/etc/openvpn-web/network-probes.json")
 PROFILE_ID_PATTERN = r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$"
@@ -54,11 +55,108 @@ class CaptureProfile(ProbeProfile):
         return value
 
 
+class RouteProbe(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    id: ProfileId
+    expected_path: str = Field(min_length=1, max_length=120)
+    target: str
+    protocol: Literal["icmp", "tcp", "tls", "http", "https", "dns"]
+    router_source: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+    agent_origin: ProfileId | None = None
+    source_address: str | None = None
+    interface: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}$")
+    routing_table: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}$")
+    expected_first_hop: str | None = None
+    mtu: int | None = Field(default=None, ge=68, le=9000)
+    port: int | None = Field(default=None, ge=1, le=65535)
+    server_name: str | None = Field(default=None, max_length=253, pattern=r"^[A-Za-z0-9][A-Za-z0-9.-]*$")
+    http_path: str | None = Field(default=None, max_length=160, pattern=r"^/(?:[A-Za-z0-9._-][A-Za-z0-9._/-]*)?$")
+    expected_http_status: int | None = Field(default=None, ge=200, le=599)
+    dns_name: str | None = Field(default=None, max_length=253, pattern=r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
+    dns_type: Literal["A", "AAAA", "CNAME", "SOA", "SRV", "TXT", "MX", "PTR"] | None = None
+    expected_dns_answers: list[Annotated[str, StringConstraints(min_length=1, max_length=255)]] = Field(
+        default_factory=list, max_length=8,
+    )
+
+    @field_validator("target", "source_address", "expected_first_hop")
+    @classmethod
+    def validate_ipv4(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        address = ipaddress.IPv4Address(value)
+        if address.is_multicast or address.is_unspecified or int(address) == 0xFFFFFFFF:
+            raise ValueError("route probes require IPv4 unicast")
+        return value
+
+    @model_validator(mode="after")
+    def validate_parameters(self):
+        if self.router_source and self.agent_origin:
+            raise ValueError("select one probe origin")
+        if self.router_source and self.protocol != "icmp":
+            raise ValueError("RouterOS route probes require ICMP")
+        if (self.interface or self.routing_table) and not self.router_source:
+            raise ValueError("interface and table selectors require RouterOS")
+        if self.expected_first_hop and (not self.router_source or self.expected_first_hop == self.target):
+            raise ValueError("a distinct first hop requires a RouterOS probe")
+        if self.protocol == "icmp" and self.port is not None or self.mtu is not None and self.protocol != "icmp":
+            raise ValueError("ICMP accepts MTU instead of a port")
+        if self.protocol == "tcp" and self.port is None:
+            raise ValueError("TCP requires a port")
+        if self.server_name and self.protocol not in {"tls", "http", "https"}:
+            raise ValueError("server name requires HTTP or TLS")
+        if self.protocol == "https" and not self.server_name:
+            raise ValueError("HTTPS requires a server name")
+        if (self.http_path is not None or self.expected_http_status is not None) and self.protocol not in {"http", "https"}:
+            raise ValueError("HTTP parameters require HTTP or HTTPS")
+        if self.protocol == "dns" and not self.dns_name:
+            raise ValueError("DNS requires a query name")
+        if (self.dns_name or self.dns_type or self.expected_dns_answers) and self.protocol != "dns":
+            raise ValueError("DNS parameters require DNS")
+        return self
+
+    def local_arguments(self) -> dict:
+        is_http = self.protocol in {"http", "https"}
+        return {
+            "target": self.target, "protocol": self.protocol, "source_address": self.source_address,
+            "port": self.port or {"http": 80, "https": 443, "tls": 443, "dns": 53}.get(self.protocol),
+            "server_name": self.server_name,
+            "http_path": (self.http_path or "/") if is_http else None,
+            "expected_http_status": (self.expected_http_status or 200) if is_http else None,
+            "dns_name": self.dns_name, "dns_type": (self.dns_type or "A") if self.protocol == "dns" else None,
+            "expected_dns_answers": tuple(self.expected_dns_answers), "mtu": self.mtu,
+        }
+
+    def config_digest(self) -> str:
+        return hashlib.sha256(self.model_dump_json().encode("utf-8")).hexdigest()
+
+
+class RouteProfile(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    label: str = Field(min_length=1, max_length=120)
+    scheduled: bool = False
+    probes: list[RouteProbe] = Field(min_length=1, max_length=8)
+
+    @model_validator(mode="after")
+    def unique_probe_ids(self):
+        if len({probe.id for probe in self.probes}) != len(self.probes):
+            raise ValueError("route profile has duplicate probe IDs")
+        return self
+
+
 class ProbeProfiles(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     throughput: dict[ProfileId, ThroughputProfile] = Field(default_factory=dict, max_length=32)
     capture: dict[ProfileId, CaptureProfile] = Field(default_factory=dict, max_length=32)
+    routes: dict[ProfileId, RouteProfile] = Field(default_factory=dict, max_length=16)
+
+    @model_validator(mode="after")
+    def limit_scheduled_profiles(self):
+        if sum(profile.scheduled for profile in self.routes.values()) > 4:
+            raise ValueError("at most four route profiles can be scheduled")
+        return self
 
 
 def _is_trusted_file(info: os.stat_result) -> bool:
@@ -91,4 +189,5 @@ def probe_catalog() -> dict:
     return {
         "throughput": [{"id": key, **profile.model_dump()} for key, profile in profiles.throughput.items()],
         "capture": [{"id": key, **profile.model_dump()} for key, profile in profiles.capture.items()],
+        "routes": [{"id": key, **profile.model_dump(exclude_none=True)} for key, profile in profiles.routes.items()],
     }

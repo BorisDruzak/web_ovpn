@@ -1,0 +1,10 @@
+[Unit]
+Description=Run route probes every five minutes
+
+[Timer]
+OnCalendar=*-*-* *:00/5:00
+AccuracySec=1s
+Unit=openvpn-web-route-probes.service
+
+[Install]
+WantedBy=timers.target

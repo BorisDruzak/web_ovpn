@@ -36,7 +36,8 @@ from .network_checks import (
     CHECKS, SOURCE_PATTERN, NetworkCheck, interface_history_args,
     list_network_check_runs, loop_diagnostics, run_audited_network_check,
 )
-from .network_probe_profiles import probe_catalog
+from .network_probe_profiles import PROFILE_ID_PATTERN, probe_catalog
+from .network_route_history import list_route_runs
 from .network_observer import list_from as network_list_from, merge_unified_hosts, normalize_netctl_host
 from .network_paths_adapter import get_network_path, list_network_paths
 from .routeros_backups import list_routeros_backups
@@ -1451,6 +1452,16 @@ def api_network_check_runs(
     db: Session = Depends(get_db),
 ):
     return api_response({"runs": list_network_check_runs(db, actor, limit)})
+
+
+@router.get("/network/diagnostics/route-runs")
+def api_network_route_runs(
+    profile: str | None = Query(default=None, pattern=PROFILE_ID_PATTERN),
+    limit: int = Query(default=20, ge=1, le=100),
+    actor: str = Depends(require_api_actor),
+    db: Session = Depends(get_db),
+):
+    return api_response({"runs": list_route_runs(db, owner="service:" + actor, profile=profile, limit=limit)})
 
 
 @router.post("/network/diagnostics/checks")

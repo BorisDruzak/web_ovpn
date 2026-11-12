@@ -10,9 +10,12 @@
 {% if error %}<div class="alert bad" role="alert">{{ error }}</div>{% endif %}
 {% if result %}
 <section class="card" aria-labelledby="network-check-result">
-  <h2 id="network-check-result">{{ status_labels.get(result.status, result.status) }}</h2>
+  <h2 id="network-check-result">{{ 'Результаты по маршрутам различаются' if result.check == 'route_availability' and result.status == 'partial' else status_labels.get(result.status, result.status) }}</h2>
   <p>{{ result.target }} · <time datetime="{{ result.checked_at }}">{{ result.checked_at }}</time></p>
-  {% if result.check == 'linux_route' and result.result %}
+  {% if result.check == 'route_availability' and result.result %}
+  <p>{{ result.result.label }}</p>
+  {% with route_probes = result.result.probes %}{% include "_network_route_matrix.html" %}{% endwith %}
+  {% elif result.check == 'linux_route' and result.result %}
   <dl>
     <dt>Интерфейс</dt><dd>{{ result.result.dev or '—' }}</dd>
     <dt>Шлюз</dt><dd>{{ result.result.gateway or '—' }}</dd>
@@ -80,6 +83,7 @@
 </section>
 {% endif %}
 {% if can_run %}
+{% include "_network_route_matrix.html" %}
 {% include "_network_probe_forms.html" %}
 <section class="card">
   <h2>Маршрут VPN-сервера</h2>
@@ -159,6 +163,20 @@
   </ul>
 </section>
 {% endif %}
+{% if route_runs %}
+<section class="card">
+  <h2>История доступности по маршрутам</h2>
+  {% for run in route_runs %}
+  <details>
+    <summary>{{ run.result.label }} · {{ 'Разные результаты' if run.status == 'partial' else status_labels.get(run.status, run.status) }} · {{ 'По расписанию' if run.trigger == 'scheduled' else 'Вручную' }}{% if run.result.path_changes %} · Сменился первый узел{% endif %} · <time datetime="{{ run.checked_at }}">{{ run.checked_at }}</time></summary>
+    {% for change in run.result.path_changes %}
+    <p>{{ change.probe_id }} · первый узел {{ change.from }} → {{ change.to }}</p>
+    {% endfor %}
+    {% with route_probes = run.result.probes %}{% include "_network_route_matrix.html" %}{% endwith %}
+  </details>
+  {% endfor %}
+</section>
+{% endif %}
 {% if runs %}
 <section class="card">
   <h2>Последние запуски</h2>
@@ -170,7 +188,7 @@
         <tr>
           <td><time datetime="{{ run.checked_at }}">{{ run.checked_at }}</time></td>
           <td>{{ check_titles[run.check] }}</td><td>{{ run.target }}</td>
-          <td>{{ status_labels.get(run.status, run.status) }}</td>
+          <td>{{ 'Разные результаты' if run.check == 'route_availability' and run.status == 'partial' else status_labels.get(run.status, run.status) }}</td>
         </tr>
         {% endfor %}
       </tbody>

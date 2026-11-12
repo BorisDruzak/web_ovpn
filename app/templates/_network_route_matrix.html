@@ -1,0 +1,54 @@
+{% if route_probes %}
+<div class="table-wrap">
+  <table>
+    <thead><tr><th scope="col">Откуда</th><th scope="col">Ожидаемый путь</th><th scope="col">Куда</th><th scope="col">Ответ</th><th scope="col">Наблюдение маршрута</th></tr></thead>
+    <tbody>
+      {% for row in route_probes %}
+      <tr>
+        <td>{{ 'VPN-сервер' if row.origin == 'vpn-server' else row.origin }}{% if row.source_address %}<br>{{ row.source_address }}{% endif %}</td>
+        <td>{{ row.expected_path }}{% if row.interface or row.routing_table %}<br>{{ [row.interface, row.routing_table] | select | join(' · ') }}{% endif %}</td>
+        <td>{{ row.target }} · {{ row.protocol | upper }}</td>
+        <td>
+          {{ status_labels.get(row.status, row.status) }}
+          {% if row.evidence.packet_loss_pct is defined %}<br>Потери {{ row.evidence.packet_loss_pct }}%{% endif %}
+          {% if row.evidence.rtt_ms is defined and row.evidence.rtt_ms.avg is defined %}<br>RTT {{ row.evidence.rtt_ms.avg }} мс{% endif %}
+          {% if row.evidence.duration_ms is defined %}<br>{{ row.evidence.duration_ms }} мс{% endif %}
+          {% if row.evidence.http_status is defined %}<br>HTTP {{ row.evidence.http_status }}{% endif %}
+          {% if row.evidence.dns_rcode is defined %}<br>DNS {{ row.evidence.dns_rcode }}{% endif %}
+          {% if row.evidence.dns_answers_match is sameas false %}<br>DNS-записи отличаются от ожидаемых{% endif %}
+        </td>
+        <td>
+          {% if row.observed_path %}
+          Первый узел {{ row.observed_path }}
+          {% if row.path_status == 'first_hop_matches' %}<br>Совпадает с ожидаемым{% endif %}
+          {% if row.path_status == 'first_hop_mismatch' %}<br>Ожидался {{ row.expected_first_hop }}{% endif %}
+          {% else %}Путь не подтверждён{% endif %}
+          {% if row.kernel_route and row.kernel_route.status == 'route_found' %}
+          <br>Выбор ядра {{ [row.kernel_route.result.dev, row.kernel_route.result.gateway] | select | join(' · ') }}
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<section class="card">
+  <h2>Доступность по маршрутам</h2>
+  {% if probe_profiles.routes %}
+  <form method="post" action="/network/diagnostics/checks">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <input type="hidden" name="check" value="route_availability">
+    <label for="route-matrix-profile">Профиль проверки</label>
+    <select id="route-matrix-profile" name="profile" required>
+      {% for profile in probe_profiles.routes %}
+      <option value="{{ profile.id }}"{% if values.check == 'route_availability' and values.profile == profile.id %} selected{% endif %}>{{ profile.label }}</option>
+      {% endfor %}
+    </select>
+    <button class="button" type="submit">Проверить доступность по маршрутам</button>
+  </form>
+  {% else %}
+  <p>Профили маршрутов пока не настроены.</p>
+  {% endif %}
+</section>
+{% endif %}

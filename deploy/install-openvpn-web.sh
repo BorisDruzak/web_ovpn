@@ -338,6 +338,8 @@ sudo_cmd -u netctl env PYTHONPATH="$APP" "$APP/.venv/bin/python" -c \
   'from netctl.config import DEFAULT_DB_URL; from netctl.db import connect; connection = connect(DEFAULT_DB_URL); connection.close()'
 
 sudo_cmd install -m 0644 "$SRC/deploy/openvpn-web.service" /etc/systemd/system/openvpn-web.service
+sudo_cmd install -m 0644 "$SRC/deploy/openvpn-web-route-probes.service" /etc/systemd/system/openvpn-web-route-probes.service
+sudo_cmd install -m 0644 "$SRC/deploy/openvpn-web-route-probes.timer" /etc/systemd/system/openvpn-web-route-probes.timer
 sudo_cmd install -m 0644 "$SRC/deploy/workstations-reconcile.service" /etc/systemd/system/workstations-reconcile.service
 sudo_cmd install -m 0644 "$SRC/deploy/workstations-reconcile.timer" /etc/systemd/system/workstations-reconcile.timer
 sudo_cmd install -m 0644 "$SRC/deploy/netctl-collect.service" /etc/systemd/system/netctl-collect.service
@@ -385,5 +387,6 @@ sudo_cmd systemctl enable vpn-policy.service
 sudo_cmd systemctl enable --now vpn-policy-reconcile.timer
 sudo_cmd systemctl enable --now vpn-runtime-health.timer
 sudo_cmd systemctl restart openvpn-web.service
+sudo_cmd systemctl enable --now openvpn-web-route-probes.timer
 sudo_cmd systemctl --no-pager --full status openvpn-web.service | sed -n '1,25p'
 printf '%s\n' 'OpenVPN Web Manager installed; credentials remain in the protected environment.'

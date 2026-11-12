@@ -8,6 +8,23 @@
       "bitrate_mbps": 5
     }
   },
+  "routes": {
+    "wan-comparison": {
+      "label": "Основной и резервный WAN",
+      "scheduled": false,
+      "probes": [
+        {"id": "primary", "expected_path": "Основной WAN", "target": "192.0.2.20", "protocol": "icmp", "router_source": "mikrotik-main", "routing_table": "isp1"},
+        {"id": "backup", "expected_path": "Резервный WAN", "target": "192.0.2.20", "protocol": "icmp", "router_source": "mikrotik-main", "routing_table": "isp2"}
+      ]
+    },
+    "service-from-vpn-server": {
+      "label": "Сервис с VPN-сервера",
+      "probes": [
+        {"id": "tcp", "expected_path": "Локальная сеть", "target": "192.0.2.20", "protocol": "tcp", "port": 443},
+        {"id": "https", "expected_path": "Локальная сеть", "target": "192.0.2.20", "protocol": "https", "server_name": "status.example.com", "http_path": "/health", "expected_http_status": 200}
+      ]
+    }
+  },
   "capture": {
     "lan-test-tcp": {
       "label": "Тестовый поток iperf3",

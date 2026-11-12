@@ -115,7 +115,7 @@ class MikroTikSshDriver(NetworkDriver):
         output = self._run_read(routeros_command)
         return parse_routeros_terse(output, interface_flags=terse and path == "/interface")
 
-    def _run_read(self, routeros_command: str) -> str:
+    def _run_read(self, routeros_command: str, *, timeout: float | None = None) -> str:
         target = f"{self.source['username']}@{self.source['host']}"
         completed = subprocess.run(
             [*self._ssh_base(), target, routeros_command],
@@ -123,7 +123,7 @@ class MikroTikSshDriver(NetworkDriver):
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            timeout=int(self.source.get("ssh_connect_timeout") or 8) + 10,
+            timeout=timeout if timeout is not None else int(self.source.get("ssh_connect_timeout") or 8) + 10,
             check=False,
         )
         if completed.returncode != 0:

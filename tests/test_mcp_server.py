@@ -9,6 +9,22 @@ from pathlib import Path
 import pytest
 
 
+def test_route_availability_mcp_uses_existing_http_check_and_history(monkeypatch):
+    from mcp import openvpn_mcp_server as server
+
+    calls = []
+    monkeypatch.setattr(server, "api_request", lambda *args: calls.append(args))
+    check = {"check": "route_availability", "profile": "central-wan"}
+    server.call_tool("openvpn_network_run_check", check)
+    server.call_tool("openvpn_network_route_runs", {"profile": "central-wan", "limit": 3})
+    assert calls == [
+        ("POST", "/api/v1/network/diagnostics/checks", check),
+        ("GET", "/api/v1/network/diagnostics/route-runs?profile=central-wan&limit=3"),
+    ]
+    schema = server.TOOLS["openvpn_network_run_check"]["inputSchema"]
+    assert "route_availability" in schema["properties"]["check"]["enum"]
+
+
 def test_complete_workflow_reference_and_tool_help_use_original_job():
     import mcp.openvpn_mcp_server as server
     tools=server.TOOLS
