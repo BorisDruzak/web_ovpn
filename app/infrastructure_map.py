@@ -2295,7 +2295,7 @@ def _guest_agent_exclusion(node: dict, snapshot_fresh: bool) -> str:
     return "no_enabled_network_adapter" if network["enabled"] == 0 else "no_unique_network_identity"
 
 
-def _guest_agent_health(snapshot: object, now: datetime) -> dict:
+def _guest_agent_health(snapshot: object, now: datetime, *, platform: str | None = None) -> dict:
     if not isinstance(snapshot, dict) or snapshot.get("profile") != "health_v1":
         return {}
     checked_at = snapshot.get("collected_at")
@@ -2309,6 +2309,11 @@ def _guest_agent_health(snapshot: object, now: datetime) -> dict:
         resources = {}
     metrics = {label: value for key, label in (("free_bytes", "memoryAvailableBytes"), ("uptime_seconds", "uptimeSeconds"))
                if type(value := resources.get(key)) is int and 0 < value < 2**53}
+    load = resources.get("load_1m")
+    warnings = snapshot.get("warnings", [])
+    if (platform == "linux" and type(load) in (int, float) and 0 <= load < 2**53
+            and isinstance(warnings, (list, tuple)) and "source_unavailable" not in warnings):
+        metrics["loadAverage1m"] = load
     reports = _rows(sections.get("services"), 64)
     services = []
     for name in GUEST_AGENT_SERVICE_NAMES:
@@ -2463,10 +2468,11 @@ def _summarize_guest_agents(nodes: dict, keys: dict, conflicts: set[str], identi
                             snapshots.update(load_agent_profiles(UUID(identity_id), (profile,)))
                         except (EndpointPlatformServiceError, ValueError):
                             continue
-                    if health := _guest_agent_health(snapshots.get("health_v1"), now):
-                        entry["health"] = health
-                    if operating_system := _guest_agent_os(snapshots.get("inventory_v1"), now):
+                    operating_system = _guest_agent_os(snapshots.get("inventory_v1"), now)
+                    if operating_system:
                         entry["operatingSystem"] = operating_system
+                    if health := _guest_agent_health(snapshots.get("health_v1"), now, platform=operating_system.get("platform")):
+                        entry["health"] = health
         guests.append(entry)
     counts = Counter(row["state"] for row in guests)
     return {"sourceState": "ready", "total": len(guests), "eligible": len(matches),

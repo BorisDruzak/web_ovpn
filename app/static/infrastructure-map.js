@@ -647,6 +647,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const memory = (health.memoryAvailableBytes / 2**30).toLocaleString('ru-RU', {maximumFractionDigits: 2});
         metrics.push(`Доступно в ОС ${memory} ГиБ`);
       }
+      if (health.loadAverage1m !== undefined) {
+        const load = health.loadAverage1m.toLocaleString('ru-RU', {maximumFractionDigits: 2});
+        metrics.push(`Нагрузка за 1 мин ${load}`);
+      }
       if (health.uptimeSeconds !== undefined) metrics.push('Время работы ОС ' + formatUptime(health.uptimeSeconds));
       row.append(make('small', [...metrics, formatTime(health.checkedAt)].join(' · ')));
       label.append(row);

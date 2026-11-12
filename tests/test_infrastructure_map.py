@@ -6388,6 +6388,8 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
         unavailable = False
         reads = []
         health_at = at
+        platform = "linux"
+        health_warnings = []
 
         def list_agent_network_identities(self):
             if self.unavailable:
@@ -6404,10 +6406,10 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
             self.reads.append((str(device_id), tuple(profiles)))
             if tuple(profiles) == ("inventory_v1",):
                 return {"inventory_v1": {"profile": "inventory_v1", "collected_at": at,
-                         "sections": {"system": {"platform": "linux", "os_name": "Ubuntu", "os_version": "24.04",
+                         "sections": {"system": {"platform": self.platform, "os_name": "Ubuntu", "os_version": "24.04",
                                                   "architecture": "x86_64", "hostname": "private-hostname"},
                                       "hardware": {"serial_number": "private-serial"}}}}
-            return {"health_v1": {"profile": "health_v1", "collected_at": self.health_at,
+            return {"health_v1": {"profile": "health_v1", "collected_at": self.health_at, "warnings": self.health_warnings,
                                   "sections": {"resources": {"uptime_seconds": 7200, "free_bytes": 2**31,
                                                              "load_1m": 0.0, "private": "excluded"},
                                                "services": [
@@ -6452,7 +6454,7 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
     system = {"collectedAt": at, "platform": "linux", "name": "Ubuntu", "version": "24.04",
               "architecture": "x86_64"}
     assert detail == {**matched, "operatingSystem": system, "health": {"checkedAt": at, "uptimeSeconds": 7200,
-                                             "memoryAvailableBytes": 2**31, "services": [
+                                             "memoryAvailableBytes": 2**31, "loadAverage1m": 0.0, "services": [
                                                  {"name": "sshd", "status": "active"},
                                                  {"name": "NetworkManager", "status": "inactive"},
                                              ]}}
@@ -6467,6 +6469,14 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
     stale = client.get("/api/v1/network/infrastructure?view=agents&node_id=vm:1", headers=headers)
     assert stale.json()["infrastructure"]["agentAudit"]["guests"] == [{**matched, "operatingSystem": system}]
     Adapter.health_at = at
+    Adapter.platform = "windows"
+    windows = client.get("/api/v1/network/infrastructure?view=agents&node_id=vm:1", headers=headers).json()
+    assert "loadAverage1m" not in windows["infrastructure"]["agentAudit"]["guests"][0]["health"]
+    Adapter.platform = "linux"
+    Adapter.health_warnings = ["source_unavailable"]
+    partial = client.get("/api/v1/network/infrastructure?view=agents&node_id=vm:1", headers=headers).json()
+    assert "loadAverage1m" not in partial["infrastructure"]["agentAudit"]["guests"][0]["health"]
+    Adapter.health_warnings = []
 
     browser_url = "/network/infrastructure/agents"
     assert client.get(browser_url, follow_redirects=False).status_code == 303
