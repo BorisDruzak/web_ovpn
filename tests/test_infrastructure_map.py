@@ -1706,8 +1706,9 @@ def test_reciprocal_switch_management_macs_verify_path_without_proving_direct_li
 
     now = datetime.now(timezone.utc)
     at = now.isoformat()
-    context = {"devices": [{"id": key, "name": key, "kind": "switch"} for key in ("core", "access")],
-               "links": [{"relation": "connected_to", "state": {"verified": False},
+    context = {"devices": [{"id": key, "name": key, "kind": "switch", "management_ip": f"192.0.2.{i}"}
+                           for i, key in enumerate(("core", "access"), 1)],
+               "links": [{"id": "core-to-access", "relation": "connected_to", "state": {"verified": False},
                           "endpoint_a": {"device": "core", "interface": "Gi1/0/18"},
                           "endpoint_b": {"device": "access", "interface": "Port5"}}]}
     sources = [{"id": i, "name": key, "driver": "snmp_switch", "driver_options": {"intent_stable_id": key}}
@@ -1717,22 +1718,36 @@ def test_reciprocal_switch_management_macs_verify_path_without_proving_direct_li
          "oper_status": "up", "last_seen_at": at},
         {"source": "access", "port_key": "physical:5", "name": "p5_uplink_IT_TP",
          "oper_status": "up", "last_seen_at": at},
+        {"source": "access", "port_key": "physical:7", "name": "Port7",
+         "oper_status": "up", "last_seen_at": at},
     ]
     sightings = [
         {"source_id": 1, "peer_source_id": 2, "port_key": "ifindex:49170", "observed_at": at},
         {"source_id": 2, "peer_source_id": 1, "port_key": "physical:5", "observed_at": at},
     ]
 
+    mac = "02:00:00:00:00:07"
+    sample = {"source": "core", "at": at, "macs": [mac],
+              "remote": {"source": "access", "readings": [{"mac": mac, "name": "Port7", "at": at}]}}
+
     def paths(when=now):
-        graph = build_graph(context, {"sources": sources, "ports": ports, "switch_management_fdb": sightings},
-                            {}, {}, {}, now)
+        graph = build_graph(context, {"sources": sources, "ports": ports, "switch_management_fdb": sightings,
+                                     "downstream_fdb": {"core-to-access": sample}},
+                            {}, {}, {"downstream_mac_links": ["core-to-access"]}, now)
         path = tmp_path / "snapshot.json"
         path.write_text(json.dumps(graph), encoding="utf-8")
         graph = load_infrastructure_map(path, when)
         assert not next(e for e in graph["links"] if e["kind"] == "Сетевое соединение")["confirmed"]
         access = next(node for node in graph["nodes"] if node["id"] == "access")
         assert access["ports"][0]["aliases"] == ["Port5"]
-        return [e for e in graph["links"] if e["kind"] == "Путь по MAC-таблице"]
+        paths = [e for e in graph["links"] if e["kind"] == "Путь по MAC-таблице"]
+        if any(path["confirmed"] for path in paths):
+            assert access["downstream"]["basis"] == "reciprocal_mac"
+            device, = access["downstream"]["devices"]
+            assert device["switchPort"]["name"] == "Port7"
+        else:
+            assert "downstream" not in access
+        return paths
 
     path, = paths()
     assert path["confirmed"]
@@ -2919,6 +2934,7 @@ def test_switch_port_telemetry_requires_matching_current_collection(tmp_path):
 
 def test_collection_reads_source_registry_without_syncing_config(monkeypatch):
     from app import infrastructure_collect as collector
+    from contextlib import contextmanager
 
     calls = []
 
@@ -2930,22 +2946,35 @@ def test_collection_reads_source_registry_without_syncing_config(monkeypatch):
         def close(self):
             calls.append("closed")
 
+    connection = ReadConnection()
+
+    @contextmanager
+    def snapshot(url):
+        calls.append("snapshot")
+        yield connection
+        connection.close()
+
+    def switch_page(kind, conn, *, limit, offset):
+        assert conn is connection and calls[0] == "snapshot" and "closed" not in calls
+        calls.append((kind, offset))
+        return {"items": [], "pagination": {"next_offset": 500 if kind == "ports" and offset == 0 else None}}
+
     def netctl(args, **kwargs):
         payloads = {
             ("switches", "status"): {"switches": []},
             ("topology", "links"): {"links": []},
             ("hosts", "export"): {"hosts": []},
-            ("switches", "ports"): {"ports": [], "pagination": {"next_offset": None}},
-            ("switches", "lldp"): {"lldp_neighbors": [], "pagination": {"next_offset": None}},
         }
         return payloads[tuple(args[:2])]
 
-    monkeypatch.setattr(collector, "connect_read_only", lambda url: ReadConnection())
+    monkeypatch.setattr(collector, "read_context_snapshot", snapshot)
+    monkeypatch.setattr(collector, "query_switch_ports", lambda conn, **kw: switch_page("ports", conn, **kw))
+    monkeypatch.setattr(collector, "query_switch_lldp_neighbors", lambda conn, **kw: switch_page("lldp", conn, **kw))
     monkeypatch.setattr(collector, "list_sources", lambda conn: [{"id": 1, "name": "test"}])
     monkeypatch.setattr(collector, "query_confirmed_attachment_ports", lambda conn: [])
     monkeypatch.setattr(collector, "run_netctl", netctl)
     assert collector.read_network()["sources"] == [{"id": 1, "name": "test"}]
-    assert calls == ["closed"]
+    assert calls == ["snapshot", ("ports", 0), ("ports", 500), ("lldp", 0), "closed"]
 
 
 def test_ipsec_phase_two_requires_expected_peers_and_both_policy_directions():

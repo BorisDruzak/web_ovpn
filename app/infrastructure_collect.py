@@ -16,7 +16,6 @@ import sys
 import tempfile
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -27,14 +26,17 @@ from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_ope
 
 from netctl.config import DEFAULT_DB_URL, load_secrets
 from netctl.context import load_context_bytes, load_schema, validate_context
-from netctl.db import connect_read_only, list_sources
+from netctl.db import list_sources, read_context_snapshot
 from netctl.drivers import legacy_driver_for
 from netctl.snmp.interfaces import read_interface_link
 from netctl.snmp.lacp import read_lacp_members
 from netctl.snmp.stp import read_stp_root_path
 from netctl.snmp.transport import SnmpTransport
 from netctl.source_identity import list_source_identities
-from netctl.switch_queries import FDB_PORT_MATCH, query_confirmed_attachment_ports, query_observed_mac_ports
+from netctl.switch_queries import (
+    FDB_PORT_MATCH, query_confirmed_attachment_ports, query_observed_mac_ports,
+    query_switch_lldp_neighbors, query_switch_ports,
+)
 
 from .infrastructure_backup import backup_policy, backup_service_checks, read_proxmox_backup
 from .infrastructure_map import (
@@ -927,7 +929,7 @@ def _downstream_links(context: dict, configured: object) -> dict:
     links = {}
     for link in context.get("links", []):
         if (link.get("id") not in configured[:8] or link.get("relation") != "connected_to"
-                or link.get("state", {}).get("verified") is not True or link["state"].get("intent") == "absent"):
+                or link.get("state", {}).get("intent") == "absent"):
             continue
         a, b = link["endpoint_a"], link["endpoint_b"]
         address = devices.get(a["device"], {}).get("management_ip")
@@ -1486,72 +1488,6 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         if (local, port_label_key(port_a)) not in shared_ports and (remote, port_label_key(port_b)) not in shared_ports:
             edge(local, remote, "Сетевое соединение", "LLDP · двустороннее", ports=(port_a, port_b), at=at)
 
-    downstream_links = _downstream_links(context, bindings.get("downstream_mac_links"))
-    if downstream_links:
-        addresses_by_mac = {}
-        for address, (mac, stamp) in arp_mappings.items():
-            addresses_by_mac.setdefault(mac, []).append((address, stamp))
-        for link_id, (_, local, remote) in downstream_links.items():
-            sample = network.get("downstream_fdb", {}).get(link_id, {})
-            upstream, asset = local["device"], remote["device"]
-            if (source_nodes.get(sample.get("source")) != upstream
-                    or not observation_is_fresh(sample.get("at"), now)):
-                continue
-            own_macs = {mac for mac in declared_macs[asset] if declared_devices_by_mac[mac] == {asset}}
-            learned = {mac.lower() for mac in sample["macs"] if MAC.fullmatch(mac)}
-            physical = edges.get((tuple(sorted((upstream, asset))), "Сетевое соединение"), {})
-            side, peer = ("a", "b") if physical.get("a") == upstream else ("b", "a")
-            local_ports = index_port_states(nodes[upstream].get("ports", []), now)
-            remote_ports = index_port_states(nodes[asset].get("ports", []), now)
-            local_label = port_label_key(local["interface"])
-            remote_label = port_label_key(remote["interface"])
-            upstream_port = local_ports.get(local_label, {}).get("name", local["interface"])
-            local_name = port_label_key(upstream_port)
-            remote_name = port_label_key(remote_ports.get(remote_label, {}).get("name", remote_label))
-            evidence = [row["at"] for row in physical.get("portEvidence", []) if row["confirmed"]
-                        and row["source"] in {"LLDP UI_VPN", "LLDP · двустороннее"}
-                        and port_label_key(row[side]) in {local_label, local_name}
-                        and port_label_key(row[peer]) in {remote_label, remote_name}
-                        and observation_is_fresh(row["at"], now)]
-            if not evidence:
-                continue
-            remote_sample = sample.get("remote", {})
-            sightings = {}
-            if source_nodes.get(remote_sample.get("source")) == asset:
-                for row in remote_sample["readings"]:
-                    if row["mac"] in learned and observation_is_fresh(row["at"], now):
-                        sightings.setdefault(row["mac"], set()).add((row["name"], row["at"]))
-            observed_ports = {}
-            for mac, readings in sightings.items():
-                if len(readings) != 1:
-                    continue
-                (name, at), = readings
-                key = port_label_key(name)
-                port = remote_ports.get(key, {})
-                if (key not in {remote_label, remote_name} and port.get("state") == "up"
-                        and datetime.fromisoformat(port["checkedAt"]) == datetime.fromisoformat(at)):
-                    observed_ports[mac] = {"name": name, "checkedAt": at}
-            if not own_macs.intersection(learned):
-                learned = set(observed_ports)
-            if not learned - own_macs:
-                continue
-            devices = []
-            for mac in sorted(learned - own_macs):
-                device = {"mac": mac}
-                if mac in observed_ports:
-                    device["switchPort"] = observed_ports[mac]
-                identities = addresses_by_mac.get(mac, [])
-                if len(identities) == 1:
-                    address, stamp = identities[0]
-                    device.update(ip=address, identityCheckedAt=stamp.isoformat())
-                    host = host_ips.get(address, {})
-                    if str(host.get("mac") or "").lower() == mac:
-                        device["reachability"] = _host_observation(host, now)
-                devices.append(device)
-            checked_at = min(datetime.fromisoformat(sample["at"]), max(map(datetime.fromisoformat, evidence)))
-            nodes[asset]["downstream"] = {"upstreamId": upstream, "port": upstream_port,
-                                          "checkedAt": checked_at.isoformat(), "devices": devices}
-
     for a, b, confirmed, ports, observed in fdb_reports:
         physical = edges.get((tuple(sorted((a, b))), "Сетевое соединение"))
         if physical:
@@ -1984,9 +1920,90 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         if local and remote and local != remote and observation_is_fresh(row["observed_at"], now):
             port = port_label(source_names[source_id], row["port_key"])
             management_sightings.setdefault((local, remote), []).append((port, datetime.fromisoformat(row["observed_at"])))
+    reciprocal_ports = {}
     for a, b, ports, at in list(_reciprocal_management_paths(edges.values(), nodes, management_sightings, now)):
+        pair = tuple(sorted((a, b)))
+        reciprocal_ports[pair] = {"a": ports[0], "b": ports[1], "at": at, "confirmed": True,
+                                  "source": RECIPROCAL_MAC_SOURCE}
         edge(a, b, "Путь по MAC-таблице", RECIPROCAL_MAC_SOURCE, ports=ports, at=at,
              details="Оба коммутатора видят MAC управления друг друга")
+    downstream_links = _downstream_links(context, bindings.get("downstream_mac_links"))
+    if downstream_links:
+        addresses_by_mac = {}
+        for address, (mac, stamp) in arp_mappings.items():
+            addresses_by_mac.setdefault(mac, []).append((address, stamp))
+        for link_id, (_, local, remote) in downstream_links.items():
+            sample = network.get("downstream_fdb", {}).get(link_id, {})
+            upstream, asset = local["device"], remote["device"]
+            if (source_nodes.get(sample.get("source")) != upstream
+                    or not observation_is_fresh(sample.get("at"), now)):
+                continue
+            own_macs = {mac for mac in declared_macs[asset] if declared_devices_by_mac[mac] == {asset}}
+            learned = {mac.lower() for mac in sample["macs"] if MAC.fullmatch(mac)}
+            pair = tuple(sorted((upstream, asset)))
+            physical = edges.get((pair, "Сетевое соединение"), {})
+            side, peer = ("a", "b") if physical.get("a") == upstream else ("b", "a")
+            local_ports = index_port_states(nodes[upstream].get("ports", []), now)
+            remote_ports = index_port_states(nodes[asset].get("ports", []), now)
+            local_label = port_label_key(local["interface"])
+            remote_label = port_label_key(remote["interface"])
+            upstream_port = local_ports.get(local_label, {}).get("name", local["interface"])
+            local_name = port_label_key(upstream_port)
+            remote_name = port_label_key(remote_ports.get(remote_label, {}).get("name", remote_label))
+            reports = [*physical.get("portEvidence", [])]
+            if pair in reciprocal_ports:
+                reports.append(reciprocal_ports[pair])
+            proof = {}
+            for row in reports:
+                if (not row["confirmed"] or port_label_key(row[side]) not in {local_label, local_name}
+                        or port_label_key(row[peer]) not in {remote_label, remote_name}
+                        or not observation_is_fresh(row["at"], now)):
+                    continue
+                stamp = datetime.fromisoformat(row["at"])
+                if row["source"] in {"LLDP UI_VPN", "LLDP · двустороннее"}:
+                    proof.setdefault("lldp", []).append(stamp)
+                elif row["source"] in {RECIPROCAL_MAC_SOURCE, "SNMP · двусторонний FDB"}:
+                    proof.setdefault("reciprocal_mac", []).append(stamp)
+            basis = next((key for key in ("lldp", "reciprocal_mac") if key in proof), "")
+            if not basis:
+                continue
+            remote_sample = sample.get("remote", {})
+            sightings = {}
+            if source_nodes.get(remote_sample.get("source")) == asset:
+                for row in remote_sample["readings"]:
+                    if row["mac"] in learned and observation_is_fresh(row["at"], now):
+                        sightings.setdefault(row["mac"], set()).add((row["name"], row["at"]))
+            observed_ports = {}
+            for mac, readings in sightings.items():
+                if len(readings) != 1:
+                    continue
+                (name, at), = readings
+                key = port_label_key(name)
+                port = remote_ports.get(key, {})
+                if (key not in {remote_label, remote_name} and port.get("state") == "up"
+                        and datetime.fromisoformat(port["checkedAt"]) == datetime.fromisoformat(at)):
+                    observed_ports[mac] = {"name": name, "checkedAt": at}
+            if basis == "reciprocal_mac" or not own_macs.intersection(learned):
+                learned = set(observed_ports)
+            if not learned - own_macs:
+                continue
+            devices = []
+            for mac in sorted(learned - own_macs):
+                device = {"mac": mac}
+                if mac in observed_ports:
+                    device["switchPort"] = observed_ports[mac]
+                identities = addresses_by_mac.get(mac, [])
+                if len(identities) == 1:
+                    address, stamp = identities[0]
+                    device.update(ip=address, identityCheckedAt=stamp.isoformat())
+                    host = host_ips.get(address, {})
+                    if str(host.get("mac") or "").lower() == mac:
+                        device["reachability"] = _host_observation(host, now)
+                devices.append(device)
+            checked_at = min(datetime.fromisoformat(sample["at"]), max(proof[basis]))
+            nodes[asset]["downstream"] = {"upstreamId": upstream, "port": upstream_port,
+                                          "checkedAt": checked_at.isoformat(), "basis": basis, "devices": devices}
+
     return {"schema": 1, "snapshotAt": now.isoformat(), "nodes": list(nodes.values()),
             "links": list(edges.values()), "clusterId": cluster_id, "nodeOrder": hypervisors,
             "overviewGuests": overview_guests}
@@ -2235,7 +2252,7 @@ def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | N
         "switches": (["switches", "status"], "switches"),
         "links": (["topology", "links"], "links"),
     }
-    with closing(connect_read_only(DEFAULT_DB_URL)) as connection:
+    with read_context_snapshot(DEFAULT_DB_URL) as connection:
         data = {"sources": list_sources(connection), "attachments": query_confirmed_attachment_ports(connection)}
         if downstream_links:
             data["downstream_fdb"] = _read_downstream_fdb(connection, data["sources"], downstream_links)
@@ -2342,25 +2359,25 @@ def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | N
                 """,
                 (json.dumps(sorted(transit_sources)),),
             )]
+        for name, query in (("ports", query_switch_ports), ("lldp", query_switch_lldp_neighbors)):
+            items = data[name] = []
+            offset = 0
+            for _ in range(20):
+                result = query(connection, limit=500, offset=offset)
+                items.extend(result["items"])
+                next_offset = result["pagination"]["next_offset"]
+                if next_offset is None:
+                    break
+                if type(next_offset) is not int or next_offset <= offset:
+                    raise ValueError("invalid switch inventory pagination")
+                offset = next_offset
+            else:
+                raise ValueError("switch inventory exceeds collection limit")
     data.update({name: run_netctl(args, timeout=15)[key] for name, (args, key) in commands.items()})
     try:
         data["hosts"] = run_netctl(["hosts", "export", "--status", "all"], timeout=25)["hosts"]
     except NetctlError:
         data["hosts"] = []
-    for query, key in (("ports", "ports"), ("lldp", "lldp_neighbors")):
-        items = data[query] = []
-        offset = 0
-        for _ in range(20):
-            result = run_netctl(["switches", query, "--limit", "500", "--offset", str(offset)], timeout=15)
-            items.extend(result[key])
-            next_offset = result["pagination"]["next_offset"]
-            if next_offset is None:
-                break
-            if type(next_offset) is not int or next_offset <= offset:
-                raise ValueError("invalid switch inventory pagination")
-            offset = next_offset
-        else:
-            raise ValueError("switch inventory exceeds collection limit")
     return data
 
 

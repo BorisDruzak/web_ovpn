@@ -728,7 +728,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       propertiesSection.append(make('h3', 'Резервирование LACP'), list);
     }
     if (node.downstream) {
-      const {upstreamId, port, checkedAt, deviceCount, devices} = node.downstream;
+      const {upstreamId, port, basis, checkedAt, deviceCount, devices} = node.downstream;
       const panel = make('details', null, 'map-port-panel');
       const list = make('ul', null, 'map-detail-list');
       const labels = {reachable: 'Доступен', unreachable: 'Недоступен', unknown: 'Нет подтверждения'};
@@ -744,7 +744,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         }
         list.append(row);
       }
-      const source = `${byId.get(upstreamId).name} ${port} · ${formatTime(checkedAt)}`;
+      const method = basis === 'reciprocal_mac' ? 'Путь по взаимным MAC' : 'Аплинк по LLDP';
+      const source = `${byId.get(upstreamId).name} ${port} · ${method} · ${formatTime(checkedAt)}`;
       const count = devices.length === deviceCount ? deviceCount : `${devices.length} из ${deviceCount}`;
       panel.append(make('summary', `Устройства за коммутатором (${count})`), make('small', source), list);
       propertiesSection.append(panel);

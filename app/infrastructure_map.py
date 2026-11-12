@@ -678,7 +678,8 @@ def _public_downstream(row: object, ports: list[dict], now: datetime) -> dict:
     if not isinstance(row, dict) or not observation_is_fresh(row.get("checkedAt"), now):
         return {}
     upstream, port = _text(row.get("upstreamId")), _text(row.get("port"), 64)
-    if not upstream or not port:
+    basis = row.get("basis", "lldp")
+    if not upstream or not port or basis not in ("lldp", "reciprocal_mac"):
         return {}
     devices = {}
     active_ports = {(port["name"], port["checkedAt"]) for port in ports if port["state"] == "up"}
@@ -699,7 +700,7 @@ def _public_downstream(row: object, ports: list[dict], now: datetime) -> dict:
             if observation_is_fresh(at, now) and (name, _time(at).isoformat()) in active_ports:
                 devices[mac]["switchPort"] = {"name": name, "checkedAt": _time(at).isoformat()}
     ordered = sorted(devices.values(), key=lambda item: (item.get("ip", "~"), item["mac"]))
-    return {"upstreamId": upstream, "port": port, "checkedAt": _time(row["checkedAt"]).isoformat(),
+    return {"upstreamId": upstream, "port": port, "basis": basis, "checkedAt": _time(row["checkedAt"]).isoformat(),
             "deviceCount": len(ordered), "devices": ordered}
 
 
