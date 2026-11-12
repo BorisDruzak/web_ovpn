@@ -892,6 +892,67 @@ def test_redfish_root_probe_reports_only_validated_api_version(monkeypatch):
     assert _http_probe({**spec, "type": "http"})["reason"] == "http_configuration"
 
 
+def test_oidc_jwks_probe_requires_a_usable_public_rs256_signing_key(monkeypatch):
+    import base64
+
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    from app import infrastructure_service_probes as probes
+    from app.infrastructure_map import _public_service_check
+
+    public = rsa.generate_private_key(public_exponent=65537, key_size=2048).public_key().public_numbers()
+
+    def encode(value):
+        return base64.urlsafe_b64encode(value.to_bytes((value.bit_length() + 7) // 8, "big")).rstrip(b"=").decode()
+
+    signing = {"kid": "signing", "kty": "RSA", "use": "sig", "alg": "RS256",
+               "n": encode(public.n), "e": encode(public.e)}
+    encryption = {**signing, "kid": "encryption", "use": "enc", "alg": "RSA-OAEP"}
+    document = {"keys": [encryption, signing]}
+    path = "/idp/realms/example/protocol/openid-connect/certs"
+
+    class Response:
+        status = 200
+
+        def getheader(self, name, default):
+            return "application/json" if name == "Content-Type" else default
+
+        def read(self, limit):
+            return json.dumps(document).encode()[:limit]
+
+    class Connection:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def request(self, method, target, headers):
+            assert (method, target) == ("GET", path)
+            assert "Authorization" not in headers
+
+        def getresponse(self):
+            return Response()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(probes.http.client, "HTTPSConnection", Connection)
+    spec = {"type": "https", "ip": "192.0.2.1", "port": 443, "path": path, "oidc_rs256_jwks": True}
+    assert probes._http_probe(spec) == {"state": "reachable", "httpStatus": 200}
+    for keys in ([encryption], [{**signing, "n": "AA"}], [{**signing, "d": "private"}], []):
+        document["keys"] = keys
+        result = probes._http_probe(spec)
+        assert result == {"state": "unreachable", "httpStatus": 200, "reason": "oidc_rs256_key_missing"}
+        public_result = _public_service_check(
+            {**result, "method": "HTTPS", "source": "UI_VPN", "path": path,
+             "checkedAt": datetime.now(timezone.utc).isoformat()},
+            datetime.now(timezone.utc),
+        )
+        assert public_result["reason"] == "oidc_rs256_key_missing"
+        assert "private" not in json.dumps(public_result)
+    document["keys"] = {"signing": signing}
+    assert probes._http_probe(spec)["reason"] == "http_payload_mismatch"
+    assert probes._http_probe({**spec, "type": "http"})["reason"] == "http_configuration"
+
+
 def test_http_probe_retries_one_connection_refusal_when_enabled(monkeypatch):
     from app import infrastructure_service_probes as probes
 

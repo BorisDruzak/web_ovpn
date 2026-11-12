@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import gzip
 import hashlib
 import http.client
@@ -28,6 +29,7 @@ import dns.query
 import dns.rcode
 import ldap3
 from cryptography import x509
+from cryptography.hazmat.primitives.asymmetric import rsa
 from ldap3.core.exceptions import LDAPException
 
 TIMEOUT = 3
@@ -84,6 +86,26 @@ def _redfish_root_version(document: dict) -> str | None:
     return version
 
 
+def _oidc_rs256_key(key: dict) -> bool:
+    kid = key.get("kid")
+    if (key.get("kty") != "RSA" or key.get("alg", "RS256") != "RS256" or key.get("use", "sig") != "sig"
+            or not isinstance(kid, str) or not kid.strip() or any(p in key for p in ("d", "p", "q", "dp", "dq", "qi", "oth"))):
+        return False
+    operations = key.get("key_ops")
+    if operations is not None and (not isinstance(operations, list) or "verify" not in operations):
+        return False
+    exponent, modulus = key.get("e"), key.get("n")
+    if not all(isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,1400}", value)
+               for value in (exponent, modulus)):
+        return False
+    try:
+        e, n = (int.from_bytes(base64.b64decode(value + "=" * (-len(value) % 4), altchars=b"-_", validate=True), "big")
+                for value in (exponent, modulus))
+        return n % 2 == 1 and rsa.RSAPublicNumbers(e, n).public_key().key_size >= 2048
+    except ValueError:
+        return False
+
+
 def _http(ip: str, port: int, spec: dict) -> dict:
     path = _http_path(spec.get("path"))
     body_expected = spec.get("body")
@@ -92,6 +114,7 @@ def _http(ip: str, port: int, spec: dict) -> dict:
     json_fields = spec.get("json_fields")
     json_unavailable = spec.get("json_unavailable")
     redfish_root = spec.get("redfish_service_root", False)
+    oidc_jwks = spec.get("oidc_rs256_jwks", False)
     allow_gzip = spec.get("allow_gzip", False)
     tls = spec["type"] == "https"
     if type(redfish_root) is not bool or (redfish_root and (
@@ -100,7 +123,13 @@ def _http(ip: str, port: int, spec: dict) -> dict:
         or content_type not in (None, "application/json")
     )):
         raise ValueError("invalid Redfish Service Root probe")
-    if redfish_root:
+    if type(oidc_jwks) is not bool or (oidc_jwks and (
+        not tls or redfish_root
+        or any(value is not None for value in (body_expected, body_marker, json_fields, json_unavailable))
+        or content_type not in (None, "application/json")
+    )):
+        raise ValueError("invalid OIDC JWKS probe")
+    if redfish_root or oidc_jwks:
         content_type = "application/json"
     if type(allow_gzip) is not bool:
         raise ValueError("allow_gzip requires a boolean")
@@ -194,7 +223,7 @@ def _http(ip: str, port: int, spec: dict) -> dict:
                 read = io.BytesIO(decoded).read
             elif encoding not in ("", "identity"):
                 return {**observed, "state": "unknown", "reason": "http_content_encoding"}
-        if json_fields is not None or redfish_root:
+        if json_fields is not None or redfish_root or oidc_jwks:
             payload = read(HTTP_BODY_LIMIT + 1)
             if len(payload) > HTTP_BODY_LIMIT:
                 return {**observed, "state": "unknown", "reason": "http_body_limit"}
@@ -208,6 +237,13 @@ def _http(ip: str, port: int, spec: dict) -> dict:
                 if version := _redfish_root_version(document):
                     return {**observed, "state": "reachable", "redfishVersion": version}
                 return {**observed, "state": "unknown", "reason": "http_payload_mismatch"}
+            if oidc_jwks:
+                keys = document.get("keys")
+                if not isinstance(keys, list) or not all(isinstance(key, dict) for key in keys):
+                    return {**observed, "state": "unknown", "reason": "http_payload_mismatch"}
+                if any(_oidc_rs256_key(key) for key in keys):
+                    return {**observed, "state": "reachable"}
+                return {**observed, "state": "unreachable", "reason": "oidc_rs256_key_missing"}
             if json_unavailable and _matches_json_fields(document, json_unavailable):
                 return {**observed, "state": "unreachable", "reason": "http_reported_unavailable"}
             matches = _matches_json_fields(document, json_fields)

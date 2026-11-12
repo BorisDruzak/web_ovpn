@@ -1479,6 +1479,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         http_invalid_json: 'Ответ не содержит ожидаемый объект JSON',
         http_reported_unavailable: 'Приложение сообщило о сбое',
         http_payload_mismatch: 'Содержимое ответа не совпало с ожидаемым',
+        oidc_rs256_key_missing: 'В JWKS нет пригодного публичного ключа подписи RS256',
         http_certificate_pin: 'Не совпал отпечаток сертификата',
         http_tls_certificate: 'Сертификат TLS не прошёл проверку', http_tls_error: 'Ошибка TLS',
         http_bad_response: 'Ответ HTTP неполный или некорректный',
