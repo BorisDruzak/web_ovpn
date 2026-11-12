@@ -142,6 +142,23 @@ if($n-le 9007199254740991){$r.snapshot_count=[long]$n;$r.snapshot_age_hours=$nul
 '''.splitlines())
 
 
+_WINDOWS_MEMORY_BODY = (
+    "try{$os=Get-CimInstance Win32_OperatingSystem -Property FreePhysicalMemory,TotalVisibleMemorySize -ErrorAction Stop;"
+    "if($null -ne $os.FreePhysicalMemory -and $null -ne $os.TotalVisibleMemorySize){"
+    "$report|Add-Member -NotePropertyName memory -NotePropertyValue @{"
+    "available_kib=[int64]$os.FreePhysicalMemory;visible_kib=[int64]$os.TotalVisibleMemorySize}}}catch{};"
+)
+_WINDOWS_REPORT_JSON = _WINDOWS_MEMORY_BODY + "$report|ConvertTo-Json -Compress"
+_LINUX_MEMORY_ENV = (
+    """GUEST_MEMORY="$(awk '$1=="MemAvailable:" && $2~/^[0-9]+$/ && $3=="kB" {a=$2} """
+    """$1=="MemTotal:" && $2~/^[0-9]+$/ && $3=="kB" {t=$2} """
+    r"""END {if(a!="" && t!="") printf "{\"available_kib\":%.0f,\"visible_kib\":%.0f}",a,t}' """
+    """/proc/meminfo 2>/dev/null)" """
+)
+_MEMORY_ROLES = {
+    "directum": "windows", "file_server": "windows", "active_directory": "windows",
+    "nextcloud": "linux", "onlyoffice": "linux",
+}
 _DIRECTUM_LISTENER_PROCESSES = {"mongo": "mongod", "rabbitmq": "erl", "redis": "redis-server"}
 _DIRECTUM_BODY = (
     "$running={param([string]$n)"
@@ -156,10 +173,6 @@ _DIRECTUM_BODY = (
     "services=@{directumrx=[bool]($directum -and $directum.Status -eq 'Running');"
     "mongo=[bool](& $running 'MongoDB');rabbitmq=[bool](& $running 'RabbitMQ');"
     "redis=[bool](& $running 'Redis');iis=[bool](& $running 'W3SVC');dns=[bool](& $running 'DNS')}};"
-    "try{$os=Get-CimInstance Win32_OperatingSystem -Property FreePhysicalMemory,TotalVisibleMemorySize -ErrorAction Stop;"
-    "if($null -ne $os.FreePhysicalMemory -and $null -ne $os.TotalVisibleMemorySize){"
-    "$report|Add-Member -NotePropertyName memory -NotePropertyValue @{"
-    "available_kib=[int64]$os.FreePhysicalMemory;visible_kib=[int64]$os.TotalVisibleMemorySize}}}catch{};"
 )
 
 
@@ -178,7 +191,7 @@ def _directum_probe(ports: dict[str, int]) -> str:
             "$listeners[$name]=[bool]$matching.Count};"
             "$report|Add-Member -NotePropertyName listeners -NotePropertyValue $listeners}catch{};"
         )
-    return _powershell_probe(_DIRECTUM_BODY + listeners + "$report|ConvertTo-Json -Compress", "directum")
+    return _powershell_probe(_DIRECTUM_BODY + listeners + _WINDOWS_REPORT_JSON, "directum")
 
 
 _ROLE_PROBES = {
@@ -188,9 +201,9 @@ _ROLE_PROBES = {
         "$running={param([string]$n)"
         "$s=Get-Service -Name $n -ErrorAction SilentlyContinue;[bool]($s -and $s.Status -eq 'Running')};"
         "$e=Get-CimInstance Win32_LogicalDisk -Filter 'DeviceID=\"E:\"' -ErrorAction Stop;"
-        "[pscustomobject]@{data_free_percent=[math]::Round(100*$e.FreeSpace/$e.Size,2);"
-        "services=@{sshd=[bool](& $running 'sshd');smb=[bool](& $running 'LanmanServer')}}|ConvertTo-Json "
-        "-Compress",
+        "$report=[pscustomobject]@{data_free_percent=[math]::Round(100*$e.FreeSpace/$e.Size,2);"
+        "services=@{sshd=[bool](& $running 'sshd');smb=[bool](& $running 'LanmanServer')}};"
+        + _WINDOWS_REPORT_JSON,
         "file_server",
     ),
     "directum": _directum_probe({}),
@@ -198,30 +211,33 @@ _ROLE_PROBES = {
         "$running={param([string]$n)"
         "$s=Get-Service -Name $n -ErrorAction SilentlyContinue;[bool]($s -and $s.Status -eq 'Running')};"
         "$c=Get-CimInstance Win32_LogicalDisk -Filter 'DeviceID=\"C:\"' -ErrorAction Stop;"
-        "[pscustomobject]@{free_percent=[math]::Round(100*$c.FreeSpace/$c.Size,2);"
+        "$report=[pscustomobject]@{free_percent=[math]::Round(100*$c.FreeSpace/$c.Size,2);"
         "services=@{dns=[bool](& $running 'DNS');"
         "ntds=[bool](& $running 'NTDS');adws=[bool](& $running 'ADWS')};"
         "internal_dns=[bool](Resolve-DnsName localhost -ErrorAction SilentlyContinue);external_dns="
-        "[bool](Resolve-DnsName example.com -ErrorAction SilentlyContinue)}|ConvertTo-Json -Compress",
+        "[bool](Resolve-DnsName example.com -ErrorAction SilentlyContinue)};"
+        + _WINDOWS_REPORT_JSON,
         "active_directory",
     ),
-    "nextcloud": (
+    "nextcloud": _LINUX_MEMORY_ENV + (
         "php -r '$s=json_decode(shell_exec(\"curl -kfsS https://127.0.0.1/status.php\"),true);"
         "$d=static function($p){return round(100*disk_free_space($p)/disk_total_space($p),2);};"
         "$a=static function($n){return trim(shell_exec(\"systemctl is-active $n\"))===\"active\";};"
         "$p=static function(){return trim(shell_exec(\"pgrep -f php-fpm\"))!==\"\";};"
         "echo json_encode([\"installed\"=>$s[\"installed\"],\"maintenance\"=>$s[\"maintenance\"],"
         "\"needsDbUpgrade\"=>$s[\"needsDbUpgrade\"],\"free_percent\"=>$d(\"/\"),"
-        "\"data_free_percent\"=>$d(\"/var/www/nextcloud\"),\"services\"=>[\"nginx\"=>$a(\"nginx\"),"
+        "\"data_free_percent\"=>$d(\"/var/www/nextcloud\"),\"memory\"=>json_decode(getenv(\"GUEST_MEMORY\")?:\"null\",true),"
+        "\"services\"=>[\"nginx\"=>$a(\"nginx\"),"
         "\"php\"=>$p(),\"postgresql\"=>$a(\"postgresql\"),\"redis\"=>$a(\"redis\")]]);' "
         "# server_observer:nextcloud"
     ),
-    "onlyoffice": (
-        "sh -c 'printf \"{\\\"free_percent\\\":%s,\\\"https_ok\\\":%s,\\\"services\\\":{\\\"docker\\\":%s,\\\"containerd\\\":%s}}\\n\" "
+    "onlyoffice": _LINUX_MEMORY_ENV + (
+        "sh -c 'printf \"{\\\"free_percent\\\":%s,\\\"https_ok\\\":%s,\\\"services\\\":{\\\"docker\\\":%s,\\\"containerd\\\":%s},\\\"memory\\\":%s}\\n\" "
         "\"$(set -- $(df -P / | tail -1); used=$(echo \"$5\" | tr -d %); echo $((100-used)))\" "
         "\"$(curl -kfsS https://127.0.0.1/healthcheck | grep -qx true && printf true || printf false)\" "
         "\"$(systemctl is-active --quiet docker && printf true || printf false)\" "
-        "\"$(systemctl is-active --quiet containerd && printf true || printf false)\"' "
+        "\"$(systemctl is-active --quiet containerd && printf true || printf false)\" "
+        "\"$(if [ -n \"$GUEST_MEMORY\" ]; then printf %s \"$GUEST_MEMORY\"; else printf null; fi)\"' "
         "# server_observer:onlyoffice"
     ),
     "opnsense_dns": (
@@ -662,7 +678,6 @@ def _checks_from_payload(
     elif role == "directum":
         _append_disk_check(checks, source, payload, "free_percent", "c_disk_free", latency_ms)
         _append_log_check(checks, source, payload, latency_ms)
-        _append_windows_memory_checks(checks, source, payload.get("memory"), latency_ms)
         for service, name in (
             ("directumrx", "directumrx_active"), ("mongo", "mongo_active"),
             ("rabbitmq", "rabbitmq_active"), ("redis", "redis_active"),
@@ -697,6 +712,8 @@ def _checks_from_payload(
         _append_boolean_check(checks, source, payload, "external_dns", "external_dns", latency_ms)
     if not checks:
         raise _ProbeFailure("unexpected_response")
+    if os_name := _MEMORY_ROLES.get(role):
+        _append_memory_checks(checks, source, os_name, payload.get("memory"), latency_ms)
     return checks
 
 
@@ -793,8 +810,8 @@ def _append_log_check(
                    "expected": 20 * 1024**3, "latency_ms": latency_ms})
 
 
-def _append_windows_memory_checks(
-    checks: list[dict[str, Any]], source: str, memory: object, latency_ms: float,
+def _append_memory_checks(
+    checks: list[dict[str, Any]], source: str, os_name: str, memory: object, latency_ms: float,
 ) -> None:
     if not isinstance(memory, dict):
         return
@@ -803,8 +820,8 @@ def _append_windows_memory_checks(
             or not 0 <= available <= visible < 2**43 or visible == 0):
         return
     for name, value in (
-        ("windows_memory_available_bytes", available * 1024),
-        ("windows_memory_available_percent", round(100 * available / visible, 2)),
+        (f"{os_name}_memory_available_bytes", available * 1024),
+        (f"{os_name}_memory_available_percent", round(100 * available / visible, 2)),
     ):
         checks.append({"name": name, "source": source, "status": "ok", "observed": value, "latency_ms": latency_ms})
 

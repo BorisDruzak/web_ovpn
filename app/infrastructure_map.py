@@ -59,6 +59,8 @@ OBSERVER_CHECK_LABELS = {
     "rxdata_log_bytes": "Размер журналов Directum",
     "windows_memory_available_bytes": "Доступно памяти в Windows",
     "windows_memory_available_percent": "Доля доступной памяти Windows",
+    "linux_memory_available_bytes": "Доступно памяти в Linux",
+    "linux_memory_available_percent": "Доля доступной памяти Linux",
     "directumrx_active": "Служба Directum RX",
     "iis_active": "Служба IIS",
     "mongo_active": "Служба MongoDB",
@@ -78,6 +80,8 @@ OBSERVER_METRIC_UNITS = {
     "rxdata_log_bytes": "bytes",
     "windows_memory_available_bytes": "bytes",
     "windows_memory_available_percent": "percent",
+    "linux_memory_available_bytes": "bytes",
+    "linux_memory_available_percent": "percent",
 }
 PUBLIC_PROPERTIES = {
     "Модель", "VMID", "Размещение по GitHub", "Источник сбора",

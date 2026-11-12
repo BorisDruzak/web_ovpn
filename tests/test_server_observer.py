@@ -428,12 +428,20 @@ def test_file_server_probe_checks_windows_e_volume_smb_and_ssh():
     ({"available_kib": False, "visible_kib": 9}, None),
     (None, None),
 ])
-def test_directum_memory_is_optional_and_uses_windows_visible_memory(memory, expected):
+@pytest.mark.parametrize("role,os_name", [
+    ("directum", "windows"), ("file_server", "windows"), ("active_directory", "windows"),
+    ("nextcloud", "linux"), ("onlyoffice", "linux"),
+])
+def test_guest_memory_is_optional_and_uses_os_visible_memory(role, os_name, memory, expected):
     config = runtime_config()
-    config["targets"] = [next(t for t in config["targets"] if t["role"] == "directum")]
+    config["targets"] = [next(t for t in config["targets"] if t["role"] == role)]
 
     def runner(command, **kwargs):
-        assert "Get-CimInstance Win32_OperatingSystem" in decode_windows_probe(command[-1])
+        probe = command[-1]
+        if os_name == "windows":
+            assert "Get-CimInstance Win32_OperatingSystem" in decode_windows_probe(probe)
+        else:
+            assert "/proc/meminfo" in probe and "MemAvailable" in probe and "MemTotal" in probe
         completed = healthy_runner(command, **kwargs)
         payload = json.loads(completed.stdout)
         payload["memory"] = memory
@@ -441,14 +449,14 @@ def test_directum_memory_is_optional_and_uses_windows_visible_memory(memory, exp
         return completed
 
     snapshot = collect(config, runner=runner, now=parse_utc("2026-07-18T20:00:00Z"))
-    directum = target(snapshot, "directum")
-    checks = [check for check in directum["checks"] if check["name"].startswith("windows_memory_")]
-    assert directum["status"] == "ok"
+    guest = target(snapshot, role)
+    checks = [check for check in guest["checks"] if check["name"].startswith(f"{os_name}_memory_")]
+    assert guest["status"] == "ok"
     if expected is None:
         assert not checks
     else:
         assert [(check["name"], check["observed"]) for check in checks] == [
-            ("windows_memory_available_bytes", expected[0]), ("windows_memory_available_percent", expected[1]),
+            (f"{os_name}_memory_available_bytes", expected[0]), (f"{os_name}_memory_available_percent", expected[1]),
         ]
         assert all("expected" not in check for check in checks)
 

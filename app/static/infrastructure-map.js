@@ -529,7 +529,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const value = measurement(check.unit, check.observed);
         const threshold = measurement(check.unit, check.warningThreshold);
         const limit = check.unit === 'hours' ? 'предел ' : 'порог предупреждения ';
-        const status = check.status === 'ok' && check.name.startsWith('windows_memory_') ? 'Измерено' : states[check.status];
+        const memoryMeasurement = /^(windows|linux)_memory_available_/.test(check.name);
+        const status = check.status === 'ok' && memoryMeasurement ? 'Измерено' : states[check.status];
         const notes = [status, errors[check.error], value, threshold && limit + threshold,
           check.required && 'обязательная проверка', check.checkedAt && formatTime(check.checkedAt),
           check.stale && 'устарело'];
