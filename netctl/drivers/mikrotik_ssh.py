@@ -99,13 +99,17 @@ class MikroTikSshDriver(NetworkDriver):
             command.extend(["-J", proxy_jump])
         return command
 
-    def _run_print(self, path: str, *, terse: bool = True) -> list[dict[str, str]]:
+    def _run_print(self, path: str, *, terse: bool = True, stats: bool = False) -> list[dict[str, str]]:
         if path not in set(self.COLLECT_PATHS.values()) | set(self.IPSEC_PATHS.values()):
             raise ValueError("RouterOS SSH driver only allows known read-only print paths")
+        if stats and path != "/interface":
+            raise ValueError("RouterOS SSH statistics are only supported for interfaces")
         target = f"{self.source['username']}@{self.source['host']}"
         routeros_command = f"{path} print"
+        if stats:
+            routeros_command += " stats"
         if terse:
-            routeros_command += " terse"
+            routeros_command += " terse without-paging" if stats else " terse"
         completed = subprocess.run(
             [*self._ssh_base(), target, routeros_command],
             shell=False,
@@ -117,7 +121,14 @@ class MikroTikSshDriver(NetworkDriver):
         )
         if completed.returncode != 0:
             raise RuntimeError((completed.stderr or completed.stdout or "ssh command failed").strip())
-        return parse_routeros_terse(completed.stdout, interface_flags=terse and path == "/interface")
+        output = completed.stdout
+        if stats:
+            output = re.sub(
+                r"(?<!\S)((?:rx|tx)-(?:byte|packet)=)([0-9]+(?: [0-9]{3})+)(?![0-9])",
+                lambda match: match[1] + match[2].replace(" ", ""),
+                output,
+            )
+        return parse_routeros_terse(output, interface_flags=terse and path == "/interface")
 
     def test(self) -> dict[str, Any]:
         identity = self._run_print("/system identity", terse=False)
@@ -184,10 +195,20 @@ class MikroTikSshDriver(NetworkDriver):
                 if key not in MikroTikApiDriver.PATH_FACT_KEYS:
                     raise
                 failed_path_fact_keys.add(key)
+        interfaces = raw.get("interfaces", [])
+        if any("rx-byte" not in row or "tx-byte" not in row for row in interfaces):
+            try:
+                stats = {row["name"]: row for row in self._run_print("/interface", stats=True) if row.get("name")}
+            except (OSError, subprocess.SubprocessError, RuntimeError, ValueError):
+                stats = {}
+            for row in interfaces:
+                reading = stats.get(row.get("name"), {})
+                row.update({key: reading[key] for key in ("rx-byte", "tx-byte", "rx-packet", "tx-packet")
+                            if key in reading})
         snapshot = {
             "system_resource": raw.get("system_resource", []),
             "identity": raw.get("identity", []),
-            "interfaces": MikroTikApiDriver.normalize_interface_rows(raw.get("interfaces", [])),
+            "interfaces": MikroTikApiDriver.normalize_interface_rows(interfaces),
             "routes": MikroTikApiDriver.normalize_route_rows(raw.get("routes", [])),
             "arp": MikroTikApiDriver.normalize_arp_rows(raw.get("arp", [])),
             "dhcp_leases": MikroTikApiDriver.normalize_dhcp_rows(raw.get("dhcp_leases", [])),

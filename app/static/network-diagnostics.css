@@ -1,0 +1,6 @@
+.network-diagnostics { margin: 0 0 1rem; }
+.network-diagnostics summary { cursor: pointer; }
+.network-diagnostics .table-wrap { max-height: 24rem; overflow: auto; }
+.network-diagnostics canvas { display: block; width: 100%; height: 15rem; }
+.network-rx { color: #0369a1; }
+.network-tx { color: #9a3412; }

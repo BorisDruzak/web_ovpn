@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+
 from .snmp.models import SwitchCounterSample
 
 
@@ -102,3 +104,34 @@ def derive_port_telemetry(
         "out_discards_delta": counter_deltas[3],
         "telemetry_state": "ok",
     }
+
+
+def counter_sample_from_row(row: sqlite3.Row) -> SwitchCounterSample:
+    return SwitchCounterSample(
+        port_key=str(row["port_key"]),
+        if_index=int(row["if_index"]) if row["if_index"] is not None else None,
+        sys_uptime_ticks=(
+            int(row["sys_uptime_ticks"])
+            if row["sys_uptime_ticks"] is not None
+            else None
+        ),
+        in_errors=int(row["in_errors"]) if row["in_errors"] is not None else None,
+        in_discards=(
+            int(row["in_discards"]) if row["in_discards"] is not None else None
+        ),
+        out_errors=(
+            int(row["out_errors"]) if row["out_errors"] is not None else None
+        ),
+        out_discards=(
+            int(row["out_discards"]) if row["out_discards"] is not None else None
+        ),
+        in_octets=int(row["in_octets"]) if row["in_octets"] is not None else None,
+        out_octets=(
+            int(row["out_octets"]) if row["out_octets"] is not None else None
+        ),
+        octet_counter_bits=(
+            int(row["octet_counter_bits"])
+            if row["octet_counter_bits"] is not None
+            else None
+        ),
+    )

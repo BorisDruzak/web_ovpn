@@ -40,7 +40,7 @@ from .path_engine import PathRequest
 from .path_query import DEFAULT_PATH_FACT_MAX_AGE_SECONDS, explain_asset_path
 from .context_import import import_context, load_active_snapshot, record_context_import_validation_error
 from .findings import list_context_findings
-from .db import context_revision_public, connect, connect_read_only, db_path_from_url, get_context_head, get_source, latest_context_revision, list_sources, record_context_revision, source_public, sync_config_sources, upsert_source
+from .db import context_revision_public, connect, connect_read_only, db_path_from_url, get_context_head, get_source, latest_context_revision, list_sources, read_context_snapshot, record_context_revision, source_public, sync_config_sources, upsert_source
 from .drivers import driver_for, legacy_driver_for, snmp_driver_for
 from .runtime_assets import (
     inspect_runtime_asset,
@@ -51,6 +51,7 @@ from .runtime_assets import (
 from .nmap.policy import FingerprintPolicyError, configured_fingerprint_profile, validate_target_ipv4
 from .nmap.runner import run_nmap_fingerprint
 from .nmap.store import ensure_fingerprint, fingerprint_status
+from .network_diagnostics import read_diagnostics
 from .printer_snmp import inspect_printer_snmp
 from .fingerprint.providers import replace_endpoint_agent_evidence
 from .store import add_device_tag, dashboard_summary, inspect_host, list_device_tags, related_for_host, remove_device_tag, save_collection, set_device_tags
@@ -1752,6 +1753,10 @@ def build_parser() -> argparse.ArgumentParser:
         list_parser = parent_sub.add_parser("list")
         list_parser.add_argument("--source", default="")
         list_parser.set_defaults(table=table, table_key=key)
+        if command == "interfaces":
+            diagnostics_parser = parent_sub.add_parser("diagnostics")
+            diagnostics_parser.add_argument("--source", required=True)
+            diagnostics_parser.add_argument("--interface", default="")
 
     address_lists = sub.add_parser("address-lists")
     address_lists_sub = address_lists.add_subparsers(dest="address_lists_command", required=True)
@@ -1995,6 +2000,12 @@ def dispatch(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         return cmd_update_posture(args)
     if args.command == "collector-status":
         return cmd_collector_status(args)
+    if args.command == "interfaces" and args.interfaces_command == "diagnostics":
+        try:
+            with read_context_snapshot(args.db) as conn:
+                return 0, ok(diagnostics=read_diagnostics(conn, args.source, args.interface))
+        except sqlite3.Error:
+            return 1, err("interface diagnostics unavailable")
     if hasattr(args, "table"):
         if getattr(args, "router_evidence", False):
             conn = prepare_conn(args)

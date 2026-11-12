@@ -19,7 +19,7 @@ from .snmp.models import (
     SnmpVarBind,
 )
 from .snmp.outcomes import SnmpOutcome
-from .switch_telemetry import derive_port_telemetry
+from .switch_telemetry import counter_sample_from_row, derive_port_telemetry
 
 
 _REPLACING_FDB_OUTCOMES = {
@@ -1314,6 +1314,14 @@ def _replace_optional_current_state(
             for name in _STP_CAPABILITIES
         ):
             conn.execute(
+                """
+                INSERT INTO switch_stp_events (source_id, observed_at, event_type, previous_observed_at)
+                SELECT source_id, ?, 'unavailable', observed_at
+                FROM current_switch_stp_state WHERE source_id = ? AND observed_at < ?
+                """,
+                (observed_at, source_id, observed_at),
+            )
+            conn.execute(
                 "DELETE FROM current_switch_stp_state WHERE source_id = ?",
                 (source_id,),
             )
@@ -1343,37 +1351,6 @@ def _replace_optional_current_state(
                     observed_at,
                 ),
             )
-
-
-def _sample_from_row(row: sqlite3.Row) -> SwitchCounterSample:
-    return SwitchCounterSample(
-        port_key=str(row["port_key"]),
-        if_index=int(row["if_index"]) if row["if_index"] is not None else None,
-        sys_uptime_ticks=(
-            int(row["sys_uptime_ticks"])
-            if row["sys_uptime_ticks"] is not None
-            else None
-        ),
-        in_errors=int(row["in_errors"]) if row["in_errors"] is not None else None,
-        in_discards=(
-            int(row["in_discards"]) if row["in_discards"] is not None else None
-        ),
-        out_errors=(
-            int(row["out_errors"]) if row["out_errors"] is not None else None
-        ),
-        out_discards=(
-            int(row["out_discards"]) if row["out_discards"] is not None else None
-        ),
-        in_octets=int(row["in_octets"]) if row["in_octets"] is not None else None,
-        out_octets=(
-            int(row["out_octets"]) if row["out_octets"] is not None else None
-        ),
-        octet_counter_bits=(
-            int(row["octet_counter_bits"])
-            if row["octet_counter_bits"] is not None
-            else None
-        ),
-    )
 
 
 def _upsert_telemetry_row(
@@ -1481,7 +1458,7 @@ def _persist_counter_telemetry(
             """,
             (source_id, sample.port_key),
         ).fetchone()
-        previous = _sample_from_row(previous_row) if previous_row is not None else None
+        previous = counter_sample_from_row(previous_row) if previous_row is not None else None
         elapsed_seconds = (
             (observed_time - _parse_started_at(previous_row["observed_at"])).total_seconds()
             if previous_row is not None
@@ -1492,8 +1469,8 @@ def _persist_counter_telemetry(
             INSERT INTO switch_port_counter_samples (
                 source_id, collector_run_id, port_key, if_index, observed_at,
                 sys_uptime_ticks, octet_counter_bits, in_octets, out_octets,
-                in_errors, out_errors, in_discards, out_discards
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                in_errors, out_errors, in_discards, out_discards, speed_bps
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 source_id,
@@ -1509,6 +1486,7 @@ def _persist_counter_telemetry(
                 sample.out_errors,
                 sample.in_discards,
                 sample.out_discards,
+                speeds[sample.port_key],
             ),
         )
         telemetry = derive_port_telemetry(

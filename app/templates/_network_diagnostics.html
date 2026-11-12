@@ -1,0 +1,111 @@
+{% if selected_source %}
+<section class="card network-diagnostics">
+  <h2>История трафика</h2>
+  {% if diagnostics.unavailable %}
+  <p>Хранилище сетевых наблюдений недоступно.</p>
+  {% elif not diagnostics.source %}
+  <p>Источник недоступен или отключён.</p>
+  {% else %}
+    {% set status_text = {'error': 'Ошибка опроса', 'failed': 'Ошибка опроса', 'partial': 'Частичный сбор'}.get(diagnostics.source.last_status) %}
+    {% if diagnostics.source.last_collect_at or status_text %}
+    <p>
+      {% if status_text %}{{ status_text }}{% endif %}
+      {% if diagnostics.source.last_collect_at %}
+        {% if status_text %} · {% endif %}Последний сбор источника
+        <time datetime="{{ diagnostics.source.last_collect_at }}">{{ diagnostics.source.last_collect_at }}</time>
+      {% endif %}
+    </p>
+    {% endif %}
+    {% if diagnostics.interfaces %}
+    <form class="toolbar" method="get" action="/network/interfaces">
+      <input type="hidden" name="source" value="{{ selected_source }}">
+      <label for="history-interface">Интерфейс</label>
+      <select id="history-interface" name="interface" required>
+        <option value="">Выберите интерфейс</option>
+        {% for port in diagnostics.interfaces %}
+        <option value="{{ port.key }}"{% if diagnostics.selected and diagnostics.selected.key == port.key %} selected{% endif %}>{{ port.name or port.key }}{% if port.description %} · {{ port.description }}{% endif %}</option>
+        {% endfor %}
+      </select>
+      <button class="button secondary" type="submit">Показать 24 часа</button>
+    </form>
+    {% else %}
+    <p>У источника пока нет наблюдаемых интерфейсов.</p>
+    {% endif %}
+    {% if diagnostics.selected %}
+      {% if diagnostics.points | rejectattr("rx_bps", "none") | list %}
+      <p>Средний трафик между опросами, Мбит/с · время UTC · <span class="network-rx">RX входящий</span> · <span class="network-tx">TX исходящий</span></p>
+      <canvas id="interface-history-chart" role="img" aria-label="График трафика за 24 часа в Мбит/с. Значения доступны в таблице измерений."></canvas>
+      <script type="application/json" id="interface-history-data">{{ {"since": diagnostics.since, "until": diagnostics.until, "points": diagnostics.points} | tojson }}</script>
+      {% else %}
+      <p>Недостаточно данных для графика.
+        {% if diagnostics.points | length < 2 %}Для расчёта нужны два последовательных опроса со счётчиками трафика.
+        {% else %}За этот период нет интервалов, по которым можно надёжно вычислить скорость.{% endif %}
+      </p>
+      {% endif %}
+      {% if diagnostics.points %}
+      <details>
+        <summary>Таблица измерений</summary>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Время</th><th>Интервал, с</th><th>RX, Мбит/с</th><th>TX, Мбит/с</th>
+                {% if diagnostics.source.driver == 'snmp_switch' %}
+                <th>Ошибки RX / TX</th><th>Отброшено RX / TX</th>
+                {% endif %}
+              </tr>
+            </thead>
+            <tbody>
+              {% for point in diagnostics.points | reverse %}
+              <tr>
+                <td><time datetime="{{ point.observed_at }}">{{ point.observed_at }}</time></td>
+                <td>{{ point.interval_seconds | int if point.interval_seconds is not none else '—' }}</td>
+                <td>{{ '%.3f' | format(point.rx_bps / 1000000) if point.rx_bps is not none else '—' }}</td>
+                <td>{{ '%.3f' | format(point.tx_bps / 1000000) if point.tx_bps is not none else '—' }}</td>
+                {% if diagnostics.source.driver == 'snmp_switch' %}
+                <td>{{ point.in_errors_delta if point.in_errors_delta is not none else '—' }} / {{ point.out_errors_delta if point.out_errors_delta is not none else '—' }}</td>
+                <td>{{ point.in_discards_delta if point.in_discards_delta is not none else '—' }} / {{ point.out_discards_delta if point.out_discards_delta is not none else '—' }}</td>
+                {% endif %}
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </details>
+      {% endif %}
+    {% endif %}
+    {% if diagnostics.source.driver == 'snmp_switch' %}
+    <h3>Изменения STP за 24 часа</h3>
+      {% if diagnostics.stp %}
+      <p>Последнее наблюдение <time datetime="{{ diagnostics.stp.observed_at }}">{{ diagnostics.stp.observed_at }}</time>
+        · корневой мост {{ diagnostics.stp.root_bridge_mac }} · порт {{ diagnostics.stp.root_port_key or '—' }}
+      </p>
+      {% else %}
+      <p>Источник пока не предоставил данные STP.</p>
+      {% endif %}
+      {% if diagnostics.stp_events %}
+      {% if diagnostics.stp_truncated %}<p>Показаны последние {{ diagnostics.stp_events | length }} записей.</p>{% endif %}
+      <ul>
+        {% for event in diagnostics.stp_events %}
+        <li>
+          <time datetime="{{ event.observed_at }}">{{ event.observed_at }}</time>
+          {% if event.event_type == 'observed' %} · получены данные STP
+          {% elif event.event_type == 'unavailable' %} · опрос вернул пустое состояние STP
+          {% else %}
+          {% if event.counter_decreased %} · счётчик уменьшился
+          {% elif event.changes_delta %} · изменений топологии +{{ event.changes_delta }}
+          {% endif %}
+          {% if event.old_root_bridge_mac != event.root_bridge_mac %} · корневой мост {{ event.old_root_bridge_mac }} → {{ event.root_bridge_mac }}{% endif %}
+          {% if event.old_root_port_key != event.root_port_key %} · корневой порт {{ event.old_root_port_key or '—' }} → {{ event.root_port_key or '—' }}{% endif %}
+          {% if event.old_root_path_cost != event.root_path_cost %} · стоимость пути {{ event.old_root_path_cost }} → {{ event.root_path_cost }}{% endif %}
+          {% if event.old_protocol != event.protocol %} · режим {{ event.old_protocol }} → {{ event.protocol }}{% endif %}
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p>За этот период записей об изменениях пока нет.</p>
+      {% endif %}
+    {% endif %}
+  {% endif %}
+</section>
+{% endif %}

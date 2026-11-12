@@ -2073,6 +2073,78 @@ def _migration_27(conn: sqlite3.Connection) -> None:
         )
 
 
+def _migration_28(conn: sqlite3.Connection) -> None:
+    """Keep the inputs for router traffic charts and the observed STP changes."""
+    conn.execute("ALTER TABLE switch_port_counter_samples ADD COLUMN speed_bps INTEGER")
+    conn.execute("""
+        CREATE TABLE router_interface_counter_samples (
+            id INTEGER PRIMARY KEY,
+            source_id INTEGER NOT NULL REFERENCES network_sources(id) ON DELETE CASCADE,
+            interface_name TEXT NOT NULL,
+            observed_at TEXT NOT NULL,
+            interface_type TEXT NOT NULL,
+            mac TEXT NOT NULL,
+            running INTEGER NOT NULL,
+            rx_bytes TEXT,
+            tx_bytes TEXT,
+            UNIQUE (source_id, interface_name, observed_at)
+        )
+    """)
+    conn.execute("CREATE INDEX router_interface_counter_samples_time_idx ON router_interface_counter_samples(observed_at)")
+    conn.execute("""
+        CREATE TABLE switch_stp_events (
+            id INTEGER PRIMARY KEY,
+            source_id INTEGER NOT NULL REFERENCES network_sources(id) ON DELETE CASCADE,
+            observed_at TEXT NOT NULL,
+            event_type TEXT NOT NULL DEFAULT 'changed' CHECK (event_type IN ('changed', 'observed', 'unavailable')),
+            previous_observed_at TEXT,
+            old_root_bridge_mac TEXT,
+            root_bridge_mac TEXT,
+            old_root_port_key TEXT,
+            root_port_key TEXT,
+            old_root_path_cost INTEGER,
+            root_path_cost INTEGER,
+            old_protocol TEXT,
+            protocol TEXT,
+            changes_delta INTEGER,
+            counter_decreased INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    conn.execute("CREATE INDEX switch_stp_events_source_time_idx ON switch_stp_events(source_id, observed_at)")
+    conn.execute("CREATE INDEX switch_stp_events_time_idx ON switch_stp_events(observed_at)")
+    conn.execute("""
+        CREATE TRIGGER record_switch_stp_observed AFTER INSERT ON current_switch_stp_state
+        BEGIN
+            INSERT INTO switch_stp_events (source_id, observed_at, event_type)
+            VALUES (NEW.source_id, NEW.observed_at, 'observed');
+        END
+    """)
+    conn.execute("""
+        CREATE TRIGGER record_switch_stp_change AFTER UPDATE ON current_switch_stp_state
+        WHEN NEW.observed_at > OLD.observed_at AND (
+            NEW.topology_changes != OLD.topology_changes OR
+            NEW.root_bridge_mac != OLD.root_bridge_mac OR
+            NEW.root_port_key != OLD.root_port_key OR
+            NEW.root_path_cost != OLD.root_path_cost OR NEW.protocol != OLD.protocol
+        )
+        BEGIN
+            INSERT INTO switch_stp_events (
+                source_id, observed_at, previous_observed_at,
+                old_root_bridge_mac, root_bridge_mac, old_root_port_key, root_port_key,
+                old_root_path_cost, root_path_cost, old_protocol, protocol,
+                changes_delta, counter_decreased
+            ) VALUES (
+                NEW.source_id, NEW.observed_at, OLD.observed_at,
+                OLD.root_bridge_mac, NEW.root_bridge_mac, OLD.root_port_key, NEW.root_port_key,
+                OLD.root_path_cost, NEW.root_path_cost, OLD.protocol, NEW.protocol,
+                CASE WHEN NEW.topology_changes >= OLD.topology_changes
+                    THEN NEW.topology_changes - OLD.topology_changes END,
+                NEW.topology_changes < OLD.topology_changes
+            );
+        END
+    """)
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1),
     (2, _migration_2),
@@ -2101,6 +2173,7 @@ MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (25, _migration_25),
     (26, _migration_26),
     (27, _migration_27),
+    (28, _migration_28),
 )
 
 

@@ -278,8 +278,8 @@ class MikroTikApiDriver(NetworkDriver):
                 "disabled": parse_bool(row.get("disabled")),
                 "mac": normalize_mac(row.get("mac-address")),
                 "comment": row.get("comment") or "",
-                "rx_bytes": parse_int(row.get("rx-byte")),
-                "tx_bytes": parse_int(row.get("tx-byte")),
+                "rx_bytes": parse_int(row.get("rx-byte"), default=None),
+                "tx_bytes": parse_int(row.get("tx-byte"), default=None),
                 "rx_packets": parse_int(row.get("rx-packet")),
                 "tx_packets": parse_int(row.get("tx-packet")),
             }

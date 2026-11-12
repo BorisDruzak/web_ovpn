@@ -2283,6 +2283,43 @@ def test_network_pages_render_sources_interfaces_routes_and_collect(tmp_path, mo
     assert "Сбор данных" in collect.text
 
 
+def test_network_interfaces_shows_history_for_selected_source(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, monkeypatch)
+    login(client)
+    from app import main
+    from netctl.cli import build_parser, dispatch
+    from netctl.db import connect
+
+    db_url = f"sqlite:///{(tmp_path / 'observer.sqlite').as_posix()}"
+    original = main.net_cli_call
+
+    def net_cli_call(request, args, **kwargs):
+        if args[:2] == ["interfaces", "diagnostics"]:
+            rc, result = dispatch(build_parser().parse_args(["--db", db_url, *args]))
+            assert rc == 0
+            return result, ""
+        return original(request, args, **kwargs)
+
+    monkeypatch.setattr(main, "net_cli_call", net_cli_call)
+    with connect(db_url) as conn:
+        conn.execute(
+            """INSERT INTO network_sources
+               (id, name, driver, host, port, username, secret_ref, site, created_at, updated_at)
+               VALUES (1, 'mikrotik-main', 'mikrotik_api', '127.0.0.1', 1, '', '', '', '', '')"""
+        )
+        conn.execute(
+            "INSERT INTO network_interfaces (source_id, name, type, comment) VALUES (1, 'ether1', 'ether', 'WAN')"
+        )
+        conn.execute("UPDATE network_sources SET last_status='failed' WHERE id=1")
+    conn.close()
+    page = client.get("/network/interfaces?source=mikrotik-main&interface=ether1")
+    assert page.status_code == 200
+    assert "История трафика" in page.text
+    assert "Недостаточно данных для графика" in page.text
+    assert "Ошибка опроса" in page.text
+    assert 'value="ether1" selected' in page.text
+
+
 def test_sources_page_renders_unknown_without_collect_control(tmp_path, monkeypatch):
     client, headers = make_client(tmp_path, monkeypatch)
     login(client)

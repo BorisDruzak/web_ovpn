@@ -16,6 +16,7 @@ from .context_classifier import (
 from .availability import bulk_project_host_availability
 from .dns_ptr import normalize_ptr_hostname, resolve_ptr_hostname
 from .normalizer import is_stale_noise_ip, normalize_hosts, normalize_mac
+from .network_diagnostics import record_router_samples
 from .path_facts import save_path_facts
 from .runtime_writer import (
     recompute_runtime_identity_findings,
@@ -374,6 +375,8 @@ def _save_collection(
     counts["context_classifier_fallback"] = classifier_fallback
     _clear_current(conn, source_id)
 
+    if status == "ok" and source.get("driver") in {"mikrotik_api", "mikrotik_ssh"}:
+        record_router_samples(conn, source_id, observed_at, snapshot.get("interfaces", []))
     for item in snapshot.get("interfaces", []):
         conn.execute(
             """

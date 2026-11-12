@@ -24,6 +24,8 @@ _PATH_CURRENT_TABLES = (
     "router_ipsec_policies",
 )
 _EVENT_TABLES = (
+    ("router_interface_counter_samples", "observed_at"),
+    ("switch_stp_events", "observed_at"),
     ("switch_fdb_events", "observed_at"),
     ("switch_link_events", "observed_at"),
     ("asset_attachment_events", "observed_at"),

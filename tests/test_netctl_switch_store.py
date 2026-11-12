@@ -887,6 +887,12 @@ def test_confirmed_empty_stp_clears_current_state(
     assert switch_conn.execute(
         "SELECT COUNT(*) FROM current_switch_stp_state"
     ).fetchone()[0] == 0
+    assert [tuple(row) for row in switch_conn.execute(
+        "SELECT event_type, observed_at, previous_observed_at FROM switch_stp_events ORDER BY id"
+    )] == [
+        ("observed", "2026-07-19T10:00:00Z", None),
+        ("unavailable", "2026-07-19T11:00:00Z", "2026-07-19T10:00:00Z"),
+    ]
 
 
 def test_malformed_stp_mapping_is_preserved_out_of_current_state(

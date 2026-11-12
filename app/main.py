@@ -2542,15 +2542,25 @@ async def network_source_collect(source: str, request: Request, db: Session = De
 def network_interfaces(request: Request, db: Session = Depends(get_db)):
     require_user(request, db)
     source = request.query_params.get("source") or ""
+    interface = request.query_params.get("interface", "")
+    if len(interface) > 256 or "\x00" in interface:
+        raise HTTPException(status_code=400, detail="Недопустимое имя интерфейса")
     args = ["interfaces", "list"]
     if source:
         args.extend(["--source", require_source_name(source)])
     data, error = net_cli_call(request, args)
     sources_data, sources_error = net_cli_call(request, ["sources", "list"])
+    diagnostics = {}
+    if source:
+        history, history_error = net_cli_call(
+            request, ["interfaces", "diagnostics", "--source", source, f"--interface={interface}"],
+        )
+        diagnostics = {"unavailable": True} if history_error else history.get("diagnostics", {})
     return render(
         request,
         "network_interfaces.html",
-        {"interfaces": data.get("interfaces", []), "sources": sources_data.get("sources", []), "selected_source": source, "error": error or sources_error},
+        {"interfaces": data.get("interfaces", []), "sources": sources_data.get("sources", []),
+         "selected_source": source, "diagnostics": diagnostics, "error": error or sources_error},
         db,
     )
 
