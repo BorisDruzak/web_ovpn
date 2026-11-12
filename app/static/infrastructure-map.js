@@ -118,6 +118,29 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       ([...list.querySelectorAll('a')].find(link => link.href === activeLink) ?? summary).focus({preventScroll: true});
     }
   }
+  function renderPortPairSummary() {
+    const panel = root.querySelector('#map-port-pairs');
+    const summary = panel.querySelector('summary');
+    const list = panel.querySelector('ul');
+    const more = panel.querySelector('small');
+    const {pendingPortPairTotal = 0, pendingPortPairs = []} = data;
+    panel.hidden = view !== 'switches' || !pendingPortPairTotal;
+    if (panel.hidden) return;
+    summary.textContent = 'Пары портов без подтверждения · ' + pendingPortPairTotal;
+    list.replaceChildren(...pendingPortPairs.map(({a, b, nameA, nameB, portA, portB}) => {
+      const side = (id, name, port) => {
+        if (port && byId.get(id)?.ports?.some(item => portKeys(item).includes(portKey(port)))) {
+          return switchPortButton(id, name, port);
+        }
+        return make('span', name + ' · ' + (port || 'порт неизвестен'));
+      };
+      const item = make('li');
+      item.append(side(a, nameA, portA), ' ↔ ', side(b, nameB, portB));
+      return item;
+    }));
+    more.hidden = pendingPortPairs.length >= pendingPortPairTotal;
+    more.textContent = `Показано ${pendingPortPairs.length} из ${pendingPortPairTotal}`;
+  }
   function renderSnapshotHeader() {
     source.replaceChildren();
     if (data.snapshotAt) source.append('Снимок · ' + formatTime(data.snapshotAt) + ' (ЕКБ)');
@@ -270,6 +293,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     groups.replaceChildren();
     buttons.clear();
     view = mode;
+    renderPortPairSummary();
     focusedRanks = focus ? focusedTopology(focus) : null;
     viewButtons.forEach(button => button.setAttribute('aria-pressed', String(button.dataset.view === mode)));
     if (!data.nodes.length) return;

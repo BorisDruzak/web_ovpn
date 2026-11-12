@@ -2461,7 +2461,8 @@ def load_infrastructure_map(
     empty = {
         "availability": "missing", "snapshotAt": None, "nodes": [], "links": [],
         "clusterId": "", "nodeOrder": [], "overviewGuests": [], "switchKinds": list(NETWORK_KINDS), "git": "",
-        **({"guestAttachments": {}, "servicePaths": {}, "servicePorts": {}} if include_guest_attachments else {}),
+        **({"guestAttachments": {}, "servicePaths": {}, "servicePorts": {},
+            "pendingPortPairTotal": 0, "pendingPortPairs": []} if include_guest_attachments else {}),
     }
     try:
         with path.open("rb") as handle:
@@ -2710,6 +2711,15 @@ def load_infrastructure_map(
             device_presences = load_agent_presence()
         except EndpointPlatformServiceError:
             pass
+    attachments = {}
+    if include_guest_attachments:
+        attachments = _map_attachments(nodes, links, now)
+        _, _, _, pending = _topology_port_pairs(nodes, links)
+        attachments.update(
+            pendingPortPairTotal=len(pending),
+            pendingPortPairs=[{key: row[key] for key in ("a", "b", "nameA", "nameB", "portA", "portB")}
+                              for row in pending[:64]],
+        )
     return {
         **empty, "availability": "stale" if now - stamp > MAX_AGE else "ready",
         "snapshotAt": stamp.isoformat(), "nodes": list(nodes.values()), "links": links,
@@ -2724,5 +2734,5 @@ def load_infrastructure_map(
             selected_node=agent_node_id,
         )}
            if agent_identities is not None else {}),
-        **(_map_attachments(nodes, links, now) if include_guest_attachments else {}),
+        **attachments,
     }

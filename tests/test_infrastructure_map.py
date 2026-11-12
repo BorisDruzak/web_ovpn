@@ -5895,6 +5895,15 @@ def test_attachment_view_includes_physical_service_hosts_and_distinguishes_port_
     audit = client.get("/api/v1/network/infrastructure?view=topology", headers=headers).json()["infrastructure"]["topologyAudit"]
     assert audit["pendingTotal"] == 2
     assert audit["pending"] == pending_without_cable
+    from app.infrastructure_map import load_infrastructure_map
+
+    browser_graph = load_infrastructure_map(path, include_guest_attachments=True)
+    assert browser_graph["pendingPortPairTotal"] == 2
+    assert browser_graph["pendingPortPairs"] == [
+        {key: row[key] for key in ("a", "b", "nameA", "nameB", "portA", "portB")}
+        for row in pending_without_cable
+    ]
+    assert "pendingPortPairs" not in load_infrastructure_map(path)
     raw["nodes"][2]["ports"].pop()
     raw["links"][2]["portEvidence"].insert(0, cable)
     raw["links"][1]["confirmed"] = True

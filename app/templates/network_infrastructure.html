@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Инфраструктура · OpenVPN Web{% endblock %}
 {% block page_title %}Инфраструктура{% endblock %}
-{% block page_styles %}<link rel="stylesheet" href="{{ url_for('static', path='infrastructure-map.css') }}?v=evidence-5">{% endblock %}
+{% block page_styles %}<link rel="stylesheet" href="{{ url_for('static', path='infrastructure-map.css') }}?v=evidence-6">{% endblock %}
 {% block content %}
 <section id="infra-map-review" aria-label="Карта инфраструктуры"
          data-snapshot-url="{{ url_for('network_infrastructure_snapshot').path }}"
@@ -21,7 +21,7 @@
     <li><i data-state="unknown"></i>Нет подтверждения</li>
     <li id="map-port-alert-legend" hidden><i class="map-port-alert" aria-hidden="true"></i>Сбой или расхождение портов</li>
   </ul>
-  <details id="map-port-counters" hidden>
+  <details id="map-port-counters" class="map-port-summary" hidden>
     <summary>Ошибки и отбросы на портах</summary>
     <ul></ul>
   </details>
@@ -31,6 +31,11 @@
     <button type="button" data-view="switches" aria-pressed="false">Коммутаторы</button>
     <button type="button" id="map-vr" hidden>Открыть в VR</button>
   </nav>
+  <details id="map-port-pairs" class="map-port-summary" hidden>
+    <summary>Пары портов без подтверждения</summary>
+    <ul></ul>
+    <small hidden></small>
+  </details>
   <p id="map-vr-status" role="status" hidden></p>
   <p id="map-availability" role="status" hidden></p>
   <div class="map-layout">
@@ -42,5 +47,5 @@
 <script id="infrastructure-data" type="application/json">{{ graph | tojson }}</script>
 {% endblock %}
 {% block page_scripts %}
-<script type="module" src="{{ url_for('static', path='infrastructure-map.js') }}?v=live-155"></script>
+<script type="module" src="{{ url_for('static', path='infrastructure-map.js') }}?v=live-156"></script>
 {% endblock %}
