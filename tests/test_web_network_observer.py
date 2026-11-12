@@ -2294,6 +2294,7 @@ def test_network_interfaces_shows_history_for_selected_source(tmp_path, monkeypa
     from app import api, main
     from netctl.cli import build_parser, dispatch
     from netctl.db import connect
+    from netctl.network_diagnostics import record_router_samples
 
     db_url = f"sqlite:///{(tmp_path / 'observer.sqlite').as_posix()}"
     original = main.net_cli_call
@@ -2317,6 +2318,13 @@ def test_network_interfaces_shows_history_for_selected_source(tmp_path, monkeypa
             "INSERT INTO network_interfaces (source_id, name, type, comment) VALUES (1, 'ether1', 'ether', 'WAN')"
         )
         conn.execute("UPDATE network_sources SET last_status='failed' WHERE id=1")
+        now = datetime.now(timezone.utc)
+        for minutes_ago, tx_errors, tx_drops in [(10, 4, 8), (5, 6, 9)]:
+            observed_at = (now - timedelta(minutes=minutes_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            record_router_samples(conn, 1, observed_at, [{
+                "name": "ether1", "type": "ether", "running": True, "link_downs": 0,
+                "in_errors": 0, "out_errors": tx_errors, "in_discards": 0, "out_discards": tx_drops,
+            }])
     conn.close()
     page = client.get("/network/interfaces?source=mikrotik-main&interface=ether1")
     assert page.status_code == 200
@@ -2324,6 +2332,11 @@ def test_network_interfaces_shows_history_for_selected_source(tmp_path, monkeypa
     assert "Недостаточно данных для графика" in page.text
     assert "Ошибка опроса" in page.text
     assert 'value="ether1" selected' in page.text
+    assert "Ошибки RX / TX" in page.text
+    assert "Отброшено RX / TX" in page.text
+    assert "<td>0 / 2</td>" in page.text
+    assert "<td>0 / 1</td>" in page.text
+    assert "Широковещание RX / TX" not in page.text
     response = client.get(
         "/api/v1/network/diagnostics/interfaces?source=mikrotik-main&interface=ether1", headers=headers,
     )

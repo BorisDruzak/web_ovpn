@@ -32,6 +32,8 @@
     <p>У источника пока нет наблюдаемых интерфейсов.</p>
     {% endif %}
     {% if diagnostics.selected %}
+      {% set is_switch = diagnostics.source.driver == 'snmp_switch' %}
+      {% set has_error_counters = is_switch or diagnostics.source.driver == 'mikrotik_api' %}
       {% if diagnostics.points | rejectattr("rx_bps", "none") | list %}
       <p>Средний трафик между опросами, Мбит/с · время UTC · <span class="network-rx">RX входящий</span> · <span class="network-tx">TX исходящий</span></p>
       <canvas id="interface-history-chart" role="img" aria-label="График трафика за 24 часа в Мбит/с. Значения доступны в таблице измерений."></canvas>
@@ -58,8 +60,11 @@
           <table>
             <thead>
               <tr><th>Время</th><th>Интервал, с</th><th>RX, Мбит/с</th><th>TX, Мбит/с</th>
-                {% if diagnostics.source.driver == 'snmp_switch' %}
-                <th>Ошибки RX / TX</th><th>Отброшено RX / TX</th><th>Широковещание RX / TX, пакетов/с</th>
+                {% if has_error_counters %}
+                <th>Ошибки RX / TX</th><th>Отброшено RX / TX</th>
+                {% endif %}
+                {% if is_switch %}
+                <th>Широковещание RX / TX, пакетов/с</th>
                 {% endif %}
               </tr>
             </thead>
@@ -70,9 +75,11 @@
                 <td>{{ point.interval_seconds | int if point.interval_seconds is not none else '—' }}</td>
                 <td>{{ '%.3f' | format(point.rx_bps / 1000000) if point.rx_bps is not none else '—' }}</td>
                 <td>{{ '%.3f' | format(point.tx_bps / 1000000) if point.tx_bps is not none else '—' }}</td>
-                {% if diagnostics.source.driver == 'snmp_switch' %}
+                {% if has_error_counters %}
                 <td>{{ point.in_errors_delta if point.in_errors_delta is not none else '—' }} / {{ point.out_errors_delta if point.out_errors_delta is not none else '—' }}</td>
                 <td>{{ point.in_discards_delta if point.in_discards_delta is not none else '—' }} / {{ point.out_discards_delta if point.out_discards_delta is not none else '—' }}</td>
+                {% endif %}
+                {% if is_switch %}
                 <td>{{ '%.2f' | format(point.in_broadcast_pps) if point.in_broadcast_pps is defined and point.in_broadcast_pps is not none else '—' }} /
                     {{ '%.2f' | format(point.out_broadcast_pps) if point.out_broadcast_pps is defined and point.out_broadcast_pps is not none else '—' }}</td>
                 {% endif %}
