@@ -565,9 +565,11 @@ def _sip_options(spec: dict) -> dict:
         return {"state": "unknown", "reason": "transport_error"}
 
 
-def _ping(ip: str, *, source_ip: str | None = None) -> subprocess.CompletedProcess:
+def _ping(ip: str, *, source_ip: str | None = None, interface: str | None = None) -> subprocess.CompletedProcess:
     ip = str(ipaddress.ip_address(ip))
-    bind = ["-I", str(ipaddress.ip_address(source_ip))] if source_ip is not None else []
+    bind = ["-I", interface] if interface else []
+    if source_ip is not None:
+        bind.extend(("-I", str(ipaddress.ip_address(source_ip))))
     return subprocess.run(["/usr/bin/ping", "-n", "-c", "1", "-W", "2", *bind, ip],
                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                           env={**os.environ, "LC_ALL": "C"}, timeout=TIMEOUT, check=False)
@@ -577,9 +579,9 @@ def probe_icmp(ip: str, *, source_ip: str | None = None) -> bool:
     return _ping(ip, source_ip=source_ip).returncode == 0
 
 
-def _icmp_check(ip: str) -> dict:
+def _icmp_check(ip: str, *, source_ip: str | None = None, interface: str | None = None) -> dict:
     try:
-        ping = _ping(ip)
+        ping = _ping(ip, source_ip=source_ip, interface=interface)
     except (OSError, ValueError, subprocess.TimeoutExpired):
         return {"state": "unknown", "reason": "icmp_probe_error"}
     if ping.returncode == 0:
@@ -601,6 +603,57 @@ def _icmp_check(ip: str) -> dict:
                 return {"state": "unknown", "reason": "icmp_unreachable", "errorSource": sender}
         return {"state": "unknown", "reason": "icmp_no_echo_reply"}
     return {"state": "unknown", "reason": "icmp_probe_error"}
+
+
+def _local_vlan_transit(spec: dict) -> dict:
+    name, vlan = spec.get("interface"), spec.get("vlan")
+    unknown = {"state": "unknown", "reason": "vlan_probe_error"}
+    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", name) or type(vlan) is not int or not 1 <= vlan <= 4094:
+        return unknown
+    try:
+        local = ipaddress.IPv4Interface(spec.get("address"))
+        peer = ipaddress.IPv4Address(spec.get("ip"))
+        if peer == local.ip or peer not in local.network:
+            return unknown
+        rows = json.loads(subprocess.check_output(
+            ["/usr/sbin/ip", "-j", "-d", "address", "show"], timeout=TIMEOUT, stderr=subprocess.DEVNULL,
+        ))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return unknown
+    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+        return unknown
+    target = {"vlanTransit": {"interface": name, "id": vlan, "localAddress": str(local)}}
+    matches = [row for row in rows if row.get("ifname") == name]
+    if not matches:
+        return {**target, "state": "unreachable", "reason": "vlan_interface_missing"}
+    if len(matches) != 1:
+        return {**target, **unknown}
+    link, = matches
+    flags, addresses, info = link.get("flags"), link.get("addr_info"), link.get("linkinfo")
+    if not isinstance(flags, list) or not isinstance(addresses, list) or not all(isinstance(row, dict) for row in addresses):
+        return {**target, **unknown}
+    vlan_data = info.get("info_data") if isinstance(info, dict) and info.get("info_kind") == "vlan" else None
+    if not isinstance(vlan_data, dict) or vlan_data.get("id") != vlan:
+        return {**target, "state": "unreachable", "reason": "vlan_id_mismatch"}
+    if "UP" not in flags or "LOWER_UP" not in flags:
+        return {**target, "state": "unreachable", "reason": "vlan_link_down"}
+    source, address = str(local.ip), str(peer)
+    if not any(row.get("family") == "inet" and row.get("local") == source
+               and row.get("prefixlen") == local.network.prefixlen for row in addresses):
+        return {**target, "state": "unreachable", "reason": "vlan_address_mismatch"}
+    try:
+        route = json.loads(subprocess.check_output(
+            ["/usr/sbin/ip", "-j", "-4", "route", "get", address, "from", source],
+            timeout=TIMEOUT, stderr=subprocess.DEVNULL,
+        ))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return {**target, **unknown}
+    if not isinstance(route, list) or len(route) != 1 or not isinstance(route[0], dict):
+        return {**target, **unknown}
+    row, = route
+    if row.get("dev") != name or row.get("gateway") or row.get("dst") != address or row.get("from") != source:
+        return {**target, "state": "unreachable", "reason": "vlan_route_mismatch"}
+    return {**target, **_icmp_check(address, source_ip=source, interface=name)}
 
 
 def _icmp_via_router(ip: str, gateway: object) -> dict:
@@ -717,7 +770,7 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                    "smb_mount": "SMB Mount",
                    "zabbix_api": "Zabbix API", "postgresql": "PostgreSQL SSLRequest",
                    "openvpn_management": "OpenVPN Management", "openvpn_tunnel": "OpenVPN TUN",
-                   "sip_options": "SIP OPTIONS (UDP)", "icmp": "ICMP"}
+                   "sip_options": "SIP OPTIONS (UDP)", "icmp": "ICMP", "vlan_transit": "ICMP · VLAN"}
         checks = []
         primary = []
         management_observation = None
@@ -745,6 +798,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
             elif protocol == "icmp":
                 details = (_icmp_via_router(spec.get("ip"), spec["route_via"]) if "route_via" in spec
                            else _icmp_check(spec.get("ip")))
+            elif protocol == "vlan_transit":
+                details = _local_vlan_transit(spec)
             elif protocol == "postgresql":
                 details = _postgresql(spec)
             elif protocol == "smb":
@@ -765,7 +820,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 "port": valid_port,
                 "path": spec.get("path") if protocol in {"http", "https", "zabbix_api"} else None,
                 "target": spec.get("ip") if not skip_reason and (
-                    protocol in {"icmp", "sip_options", "zabbix_api", "postgresql", "dns", "smb"} or "probeTargetIP" in node
+                    protocol in {"icmp", "vlan_transit", "sip_options", "zabbix_api", "postgresql", "dns", "smb"}
+                    or "probeTargetIP" in node
                 ) else None,
                 "checkedAt": datetime.now(timezone.utc).isoformat(),
             }

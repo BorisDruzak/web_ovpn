@@ -336,8 +336,10 @@ async def _check_confirmed_switch_ports(context: dict, network: dict, pve: dict,
                                if port_label_key(port["name"]) in by_name}
     checks = {}
     for link in context.get("links", []):
+        vlan = link.get("vlan")
         if (link.get("relation") != "connected_to" or link.get("state", {}).get("verified") is not True
-                or link.get("state", {}).get("intent") == "absent"):
+                or link.get("state", {}).get("intent") == "absent"
+                or (isinstance(vlan, dict) and vlan.get("mode") == "tagged_transit")):
             continue
         ends = [(switches.get(end["device"]), port_label_key(end.get("interface") or ""), end)
                 for end in (link["endpoint_a"], link["endpoint_b"])]
@@ -847,7 +849,41 @@ def _add_guest_switch_uplinks(links, nodes: dict, pve: dict, now: datetime) -> N
                 virtual["switchUplink"]["configuredOnly"] = True
 
 
-def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings: dict, now: datetime) -> dict:
+def _local_vlan_probe_specs(context: dict, configured: object) -> dict:
+    specs = {}
+    if not isinstance(configured, dict):
+        return specs
+    for link in context.get("links", []):
+        link_id = link.get("id")
+        if not isinstance(link_id, str):
+            continue
+        local = configured.get(link_id)
+        vlan = link.get("vlan", {})
+        state = link.get("state", {})
+        if (not local or link.get("relation") != "connected_to" or not isinstance(vlan, dict) or vlan.get("mode") != "tagged_transit"
+                or state.get("verified") is not True or state.get("intent") == "absent"):
+            continue
+        left, right = link["endpoint_a"], link["endpoint_b"]
+        here, peer = (right, left) if right["device"] == local else (left, right)
+        name, vlan_id = here.get("interface"), vlan.get("id")
+        if (here["device"] != local or here["device"] == peer["device"]
+                or not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", name)
+                or type(vlan_id) is not int or not 1 <= vlan_id <= 4094):
+            continue
+        try:
+            source = ipaddress.IPv4Interface(here.get("address"))
+            destination = ipaddress.IPv4Interface(peer.get("address"))
+        except ValueError:
+            continue
+        if source.ip != destination.ip and source.network == destination.network:
+            specs[f"transit:{link_id}"] = {"type": "vlan_transit", "interface": name, "vlan": vlan_id,
+                                          "address": str(source), "ip": str(destination.ip),
+                                          "localAsset": local, "peerAsset": peer["device"]}
+    return specs
+
+
+def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings: dict, now: datetime,
+                *, local_vlan_probes: dict | None = None) -> dict:
     nodes = {}
     edges = {}
 
@@ -969,6 +1005,10 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             continue
         a, b = link["endpoint_a"], link["endpoint_b"]
         kind = "Размещение ВМ" if link.get("relation") == "virtualized_on" else "Сетевое соединение"
+        vlan = link.get("vlan")
+        tagged_transit = isinstance(vlan, dict) and vlan.get("mode") == "tagged_transit" and link.get("relation") == "connected_to"
+        if tagged_transit:
+            kind = "Транзитный сегмент"
         ports = (a.get("interface") or "", b.get("interface") or "")
         verified = link.get("state", {}).get("verified") is True
         if (link.get("relation") == "connected_to" and ports[0]
@@ -976,12 +1016,18 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             shared_ports.add((a["device"], port_label_key(ports[0])))
             edge(a["device"], b["device"], SHARED_LLDP_KIND, "GitHub", False, ports=ports)
             continue
-        edge(a["device"], b["device"], kind, "GitHub", verified, ports=ports)
-        if verified and link.get("relation") == "connected_to":
+        edge(a["device"], b["device"], kind, "GitHub", verified, ports=ports,
+             vlan=vlan.get("id") if tagged_transit else None)
+        if verified and kind == "Сетевое соединение" and link.get("relation") == "connected_to":
             for switch, host in ((a, b), (b, a)):
                 if (nodes.get(switch["device"], {}).get("kind") == NETWORK_KINDS[0]
                         and nodes.get(host["device"], {}).get("kind") == "Гипервизор"):
                     verified_host_ports.add((host["device"], switch["device"], (switch.get("interface") or "").casefold()))
+    for service_id, spec in (local_vlan_probes or {}).items():
+        if spec["localAsset"] in nodes and spec["peerAsset"] in nodes:
+            node(service_id, f"Транзит VLAN {spec['vlan']}", "Сервис", nodes[spec["localAsset"]]["site"], "UI_VPN")
+            for endpoint in (spec["localAsset"], spec["peerAsset"]):
+                edge(endpoint, service_id, "Цель проверки", "Настройки карты")
 
     fresh_lldp = [row for row in network.get("lldp", []) if observation_is_fresh(row.get("observed_at"), now)]
     peers_by_port = {}
@@ -2150,14 +2196,16 @@ def main() -> int:
             collection_issues.append("server_observer_unavailable")
         elif server.get("freshness") == "stale":
             collection_issues.append("server_observer_stale")
-        graph = build_graph(context, network, server, pve, bindings, now)
+        local_vlan_probes = _local_vlan_probe_specs(context, bindings.get("local_vlan_transits"))
+        graph = build_graph(context, network, server, pve, bindings, now, local_vlan_probes=local_vlan_probes)
         if server.get("collected_at"):
             graph["serverObserverAt"] = server["collected_at"]
         probes = {**bindings.get("service_probes", {}),
                   **{asset: [{"type": "icmp", "ip": address}]
                      for asset, address in bindings.get("asset_ip_checks", {}).items()},
                   **{f"transit:{segment}": [{"type": "icmp", "ip": spec["peer"]}]
-                     for segment, spec in transit_links.items()}}
+                     for segment, spec in transit_links.items()},
+                  **{service_id: [spec] for service_id, spec in local_vlan_probes.items()}}
         apply_service_probes(graph["nodes"], probes)
         graph["snapshotAt"] = datetime.now(timezone.utc).isoformat()
         graph["git"] = args.git_revision

@@ -317,6 +317,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const path = document.createElementNS('http://www.w3.org/2000/svg','path');
         path.setAttribute('d',d);
         if (affectedPairs.has(pair)) path.classList.add('port-alert');
+        else if (edge.kind === 'Транзитный сегмент') path.setAttribute('stroke-dasharray', '2 3');
         else if (pathKinds.has(edge.kind)) path.setAttribute('stroke-dasharray', '5 4');
         if (active.has(pair)) path.classList.add('active');
         svg.append(path);
@@ -782,12 +783,19 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         backup_overdue: 'Копия старше порога',
         backup_schedule_missing: 'ВМ отсутствует в активном расписании',
         backup_untracked_schedule: 'Есть активное задание без настроенного порога',
+        vlan_probe_error: 'Не удалось проверить транзит',
+        vlan_interface_missing: 'Интерфейс VLAN отсутствует',
+        vlan_id_mismatch: 'Тип или номер VLAN не совпал',
+        vlan_link_down: 'Интерфейс VLAN не поднят',
+        vlan_address_mismatch: 'Локальный адрес не совпал',
+        vlan_route_mismatch: 'Маршрут к соседу проходит вне ожидаемого VLAN',
       };
       for (const check of node.serviceChecks) {
         const row = make('li');
         const backup = [check.backupCompletedAt && 'Завершено ' + formatTime(check.backupCompletedAt),
           check.backupMaxAgeHours && 'Порог ' + check.backupMaxAgeHours + ' ч'].filter(Boolean).map(text => ' · ' + text).join('');
-        const endpoint = [check.method, check.backupVmid && 'ВМ ' + check.backupVmid,
+        const vlan = check.vlanTransit;
+        const endpoint = [check.method, vlan?.id, check.backupVmid && 'ВМ ' + check.backupVmid,
           check.target, check.httpHost, check.port, check.path, check.dns?.name,
           check.dns?.record, check.tunnelInterface, check.tunnelAddress, check.smbShare].filter(Boolean).join(' ');
         const confirmed = ['Маршрут', 'OpenVPN TUN', 'SMB Mount', 'Копия Proxmox'].includes(check.method) ? 'Подтверждён' :
@@ -812,7 +820,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           .filter(Boolean).map(value => ' · ' + value).join('');
         const http = check.httpStatus ? ' · HTTP ' + check.httpStatus : '';
         const localRoute = check.localRoute;
-        const egress = localRoute?.interface
+        const egress = vlan ? ' · ' + vlan.interface + ' · ' + vlan.localAddress : localRoute?.interface
           ? ' · Выход UI_VPN: ' + [localRoute.sourceIP, localRoute.interface,
             localRoute.gateway && 'через ' + localRoute.gateway,
             localRoute.state === 'unreachable' && 'ожидался ' + localRoute.expectedGateway].filter(Boolean).join(' · ')

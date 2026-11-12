@@ -3144,6 +3144,69 @@ def test_icmp_via_expected_router_keeps_route_evidence_separate_from_echo(monkey
     assert calls == [target]
 
 
+def test_local_vlan_probe_requires_expected_link_address_and_route(monkeypatch):
+    from app import infrastructure_service_probes as probes
+    from app.infrastructure_map import _public_service_check
+
+    address = [{"ifname": "ens18.50", "flags": ["UP", "LOWER_UP"],
+                "linkinfo": {"info_kind": "vlan", "info_data": {"id": 50}},
+                "addr_info": [{"family": "inet", "local": "192.0.2.2", "prefixlen": 30}]}]
+    route = [{"dst": "192.0.2.1", "from": "192.0.2.2", "dev": "ens18.50"}]
+    pings = []
+    monkeypatch.setattr(probes.subprocess, "check_output",
+                        lambda args, **kwargs: json.dumps(address if "address" in args else route).encode())
+
+    def ping(ip, *, source_ip=None, interface=None):
+        pings.append((ip, source_ip, interface))
+        return probes.subprocess.CompletedProcess([], 0, stdout=b"64 bytes from 192.0.2.1: icmp_seq=1 ttl=64 time=0.3 ms")
+
+    monkeypatch.setattr(probes, "_ping", ping)
+    spec = {"type": "vlan_transit", "interface": "ens18.50", "vlan": 50, "address": "192.0.2.2/30", "ip": "192.0.2.1"}
+
+    def read():
+        node = {"id": "transit", "kind": "Сервис"}
+        probes.apply_service_probes([node], {"transit": [spec]})
+        return _public_service_check(node["serviceChecks"][0], datetime.now(timezone.utc))
+
+    check = read()
+    assert (check["state"], check["roundTripMs"], check["vlanTransit"]) == (
+        "reachable", 0.3, {"interface": "ens18.50", "id": 50, "localAddress": "192.0.2.2/30"},
+    )
+    assert pings == [("192.0.2.1", "192.0.2.2", "ens18.50")]
+    route[0]["dev"] = "ens18"
+    assert read()["reason"] == "vlan_route_mismatch"
+    address[0]["linkinfo"]["info_data"]["id"] = 51
+    assert read()["reason"] == "vlan_id_mismatch"
+    assert len(pings) == 1
+
+
+def test_tagged_transit_is_excluded_from_physical_topology_and_uses_canonical_endpoints(tmp_path):
+    from app.infrastructure_collect import _local_vlan_probe_specs, build_graph
+    from app.infrastructure_map import load_infrastructure_map, summarize_topology
+
+    now = datetime.now(timezone.utc)
+    transit = {"id": "policy", "relation": "connected_to", "state": {"verified": True},
+               "endpoint_a": {"device": "remote", "interface": "vlan02", "address": "192.0.2.1/30"},
+               "endpoint_b": {"device": "local", "interface": "ens18.50", "address": "192.0.2.2/30"},
+               "vlan": {"id": 50, "mode": "tagged_transit"}}
+    context = {"devices": [{"id": key, "name": key, "kind": "server"} for key in ("local", "remote")],
+               "links": [transit]}
+    specs = _local_vlan_probe_specs(context, {"policy": "local"})
+    assert specs["transit:policy"]["ip"] == "192.0.2.1"
+    graph = build_graph(context, {}, {}, {}, {}, now, local_vlan_probes=specs)
+    path = tmp_path / "map.json"
+    path.write_text(json.dumps(graph), encoding="utf-8")
+    public = load_infrastructure_map(path, now)
+    audit = summarize_topology(public)["topologyAudit"]
+    assert not any(audit["directLinks"].values())
+    link = next(edge for edge in public["links"] if edge["kind"] == "Транзитный сегмент")
+    proof, = link["portEvidence"]
+    assert (proof["a"], proof["b"], proof["vlan"]) == ("vlan02", "ens18.50", 50)
+    assert "pairEvidence" not in proof
+    transit["endpoint_b"]["address"] = "192.0.2.2/24"
+    assert _local_vlan_probe_specs(context, {"policy": "local"}) == {}
+
+
 def test_icmp_diagnostics_distinguish_echo_silence_and_probe_error(monkeypatch):
     from subprocess import CompletedProcess, TimeoutExpired
     from app import infrastructure_service_probes as probes

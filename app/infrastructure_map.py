@@ -353,7 +353,7 @@ def _public_service_check(check: dict, now: datetime) -> dict:
     if (check.get("skipped") is True and result["checkedAt"] and result["state"] == "unknown"
             and reason in ("probe_target_unconfirmed", "probe_target_mismatch")):
         return {**result, "target": "", "skipped": True, "reason": reason}
-    icmp = result["method"] in ("ICMP", "ICMP адреса из инвентаря", "ICMP · LLDP + ARP")
+    icmp = result["method"] in ("ICMP", "ICMP адреса из инвентаря", "ICMP · LLDP + ARP", "ICMP · VLAN")
     if icmp:
         identity_at = check.get("identityCheckedAt")
         if result["method"] == "ICMP · LLDP + ARP":
@@ -378,6 +378,20 @@ def _public_service_check(check: dict, now: datetime) -> dict:
             if isinstance(interface, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", interface):
                 details["interface"] = interface
             result["localRoute"] = details
+    if result["method"] == "ICMP · VLAN":
+        vlan = check.get("vlanTransit")
+        if isinstance(vlan, dict):
+            name, vlan_id = vlan.get("interface"), vlan.get("id")
+            try:
+                address = str(ipaddress.IPv4Interface(vlan.get("localAddress")))
+            except ValueError:
+                address = ""
+            if (isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", name)
+                    and type(vlan_id) is int and 1 <= vlan_id <= 4094 and address):
+                result["vlanTransit"] = {"interface": name, "id": vlan_id, "localAddress": address}
+        if reason in ("vlan_probe_error", "vlan_interface_missing", "vlan_id_mismatch",
+                      "vlan_link_down", "vlan_address_mismatch", "vlan_route_mismatch"):
+            result["reason"] = reason
     if result["method"] in ("HTTP", "HTTPS"):
         host = check.get("httpHost")
         if result["method"] == "HTTP" and isinstance(host, str) and re.fullmatch(r"[A-Za-z0-9.-]{1,253}", host):
