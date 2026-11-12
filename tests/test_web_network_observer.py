@@ -2387,6 +2387,7 @@ def test_route_availability_catalog_execution_and_history(tmp_path, monkeypatch)
         calls.append(args)
         return {"probe": {"status": "reachable", "evidence": {
             "packet_loss_pct": 0, "gateway_arp": {"status": "observed", "state": "reachable", "resolved": True},
+            "rtt_variation": {"mean_abs_delta_ms": 0.5, "pairs": 2},
         }}}
 
     monkeypatch.setattr(network_route_matrix, "run_netctl", probe)
@@ -2409,6 +2410,7 @@ def test_route_availability_catalog_execution_and_history(tmp_path, monkeypatch)
     assert response.status_code == 200
     assert "Путь не подтверждён" in response.text and "mikrotik-main" in response.text
     assert "ARP шлюза · reachable" in response.text
+    assert "Изменение RTT 0.5 мс · пар 2" in response.text
     assert [call[:-1] for call in calls] == [["path", "probe", "--profile=central-wan", "--probe=rtk"]] * 2
 
 

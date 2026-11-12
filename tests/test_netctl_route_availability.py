@@ -100,7 +100,29 @@ def test_router_probe_passes_the_requested_bindings_and_reports_metrics_without_
     }
     assert (evidence["sent"], evidence["received"], evidence["packet_loss_pct"]) == (3, 2, 33.33)
     assert evidence["rtt_ms"] == {"min": 1.045, "avg": 1.104, "max": 1.163}
+    assert "rtt_variation" not in evidence
     assert "/private/test-key" not in repr(result)
+
+
+def test_ssh_rtt_variation_uses_only_adjacent_echo_replies(monkeypatch):
+    fake_ssh(monkeypatch, stdout=(
+        "0 192.0.2.50 56 64 2ms\n"
+        "1 192.0.2.50 56 64 5ms\n"
+        "2 192.0.2.5 56 63 40ms ttl exceeded\n"
+        "sent=3 received=2 min-rtt=2ms avg-rtt=3ms500us max-rtt=5ms\n"
+    ))
+    assert run_probe()["evidence"]["rtt_variation"] == {"mean_abs_delta_ms": 3.0, "pairs": 1}
+
+
+def test_api_rtt_variation_uses_sequence_order(monkeypatch):
+    fake_api(monkeypatch, [
+        "!re", "=seq=1", "=host=192.0.2.50", "=time=7ms", "",
+        "!re", "=seq=0", "=host=192.0.2.50", "=time=2ms", "",
+        "!re", "=seq=2", "=host=192.0.2.50", "=time=4ms", "=status=echo reply", "=sent=3", "=received=3", "",
+        "!done", "",
+    ])
+    evidence = run_probe(sources=[API_SOURCE], secrets=API_SECRETS)["evidence"]
+    assert evidence["rtt_variation"] == {"mean_abs_delta_ms": 4.0, "pairs": 2}
 
 
 def test_no_icmp_replies_is_a_completed_probe_not_a_transport_timeout(monkeypatch):

@@ -76,7 +76,7 @@ def _error_evidence(sequence: str, label: str, reply_fields: list[str]) -> dict 
     return {"sequence": int(sequence), "status": PING_ERRORS[label], "responder": responder}
 
 
-def _metrics(summary: dict[str, str], errors: list[dict]) -> dict | None:
+def _metrics(summary: dict[str, str], errors: list[dict], samples: list[tuple[int, float]]) -> dict | None:
     received_text = summary.get("received", "")
     if summary.get("sent") != str(PROBE_COUNT) or received_text not in ("0", "1", "2", "3"):
         return None
@@ -88,10 +88,16 @@ def _metrics(summary: dict[str, str], errors: list[dict]) -> dict | None:
             metrics["rtt_ms"] = {"min": low, "avg": avg, "max": high}
     if errors:
         metrics["icmp_errors"] = errors[:PROBE_COUNT]
+    timings = dict(samples)
+    if len(timings) == len(samples) <= received:
+        deltas = [abs(timings[seq] - timings[seq - 1]) for seq in range(1, PROBE_COUNT)
+                  if seq in timings and seq - 1 in timings]
+        if deltas:
+            metrics["rtt_variation"] = {"mean_abs_delta_ms": round(sum(deltas) / len(deltas), 6), "pairs": len(deltas)}
     return metrics
 
 
-def _read_ssh_metrics(output: str) -> dict | None:
+def _read_ssh_metrics(output: str, target: str) -> dict | None:
     if len(output) > MAX_OUTPUT_LENGTH:
         return None
     lines = output.splitlines()
@@ -101,31 +107,44 @@ def _read_ssh_metrics(output: str) -> dict | None:
     sent, received, details = summaries[-1].groups()
     stats = dict(re.findall(r"\b((?:min|avg|max)-rtt)=([^\s]+)", details or ""))
     errors = []
+    samples = []
     for line in lines:
         fields = line.casefold().split(maxsplit=1)
         if len(fields) != 2:
             continue
         sequence, response = fields
+        parts = response.split()
+        if (sequence in ("0", "1", "2") and len(parts) == 4 and parts[0] == target
+                and parts[1].isdecimal() and parts[2].isdecimal()):
+            elapsed = _duration_ms(parts[3])
+            if elapsed is not None:
+                samples.append((int(sequence), elapsed))
         for label in PING_ERRORS:
             if response == label or response.endswith(" " + label):
                 error = _error_evidence(sequence, label, response.removesuffix(label).split())
                 if error:
                     errors.append(error)
                 break
-    return _metrics({"sent": sent, "received": received, **stats}, errors)
+    return _metrics({"sent": sent, "received": received, **stats}, errors, samples)
 
 
-def _read_api_metrics(rows: list[dict[str, str]]) -> dict | None:
+def _read_api_metrics(rows: list[dict[str, str]], target: str) -> dict | None:
     summary = next((row for row in reversed(rows) if "sent" in row or "received" in row), {})
     errors = []
+    samples = []
     for row in rows:
+        sequence, status = row.get("seq", ""), row.get("status", "").casefold()
+        if sequence in ("0", "1", "2") and status in ("", "echo reply") and row.get("host") == target:
+            elapsed = _duration_ms(row.get("time", ""))
+            if elapsed is not None:
+                samples.append((int(sequence), elapsed))
         error = _error_evidence(
-            row.get("seq", ""), row.get("status", "").casefold(),
+            sequence, status,
             [row.get(key, "") for key in ("host", "size", "ttl", "time")],
         )
         if error:
             errors.append(error)
-    return _metrics(summary, errors)
+    return _metrics(summary, errors, samples)
 
 
 def _rejected(output: str) -> bool:
@@ -320,7 +339,7 @@ def probe_router_route(
             output = driver._run_read(" ".join(command))
             if _rejected(output):
                 return result("unavailable", "routeros_rejected_probe")
-            metrics = _read_ssh_metrics(output)
+            metrics = _read_ssh_metrics(output, str(destination))
             if metrics is not None and first_hop is not None:
                 hop_command = ["/ping", *hop_arguments]
                 if mtu is not None:
@@ -339,7 +358,7 @@ def probe_router_route(
                 # Register socket cleanup before login, which may trap.
                 client = stack.push(MikroTikApiDriver(router, secrets)._client())
                 client = client.__enter__()
-                metrics = _read_api_metrics(client.call(words))
+                metrics = _read_api_metrics(client.call(words), str(destination))
                 if observe_neighbor:
                     evidence["gateway_arp"] = _observe_gateway_arp(client, str(destination), interface, deadline)
                 if metrics is not None and first_hop is not None:
