@@ -34,7 +34,9 @@ from netctl.snmp.interfaces import (
     read_snr_transceiver_power, read_snr_transceivers, read_switch_link_modes, read_switch_lldp_port_state,
 )
 from netctl.snmp.lacp import read_lacp_members
+from netctl.snmp.oids import SYS_UPTIME
 from netctl.snmp.stp import read_stp_designated_ports, read_stp_root_path
+from netctl.snmp.system import parse_system
 from netctl.snmp.transport import SnmpTransport
 from netctl.source_identity import list_source_identities
 from netctl.switch_queries import (
@@ -367,12 +369,16 @@ async def _collect_switch_port_diagnostics(network: dict, now: datetime) -> tupl
 
     async def read_lldp(source):
         name = source["name"]
+        ports, stamp, uptime = {}, None, None
         try:
             async with asyncio.timeout(6), SnmpTransport.from_source(source) as transport:
                 ports = await read_switch_lldp_port_state(transport, dgs=detected[name] == "dgs")
+                if ports:
+                    stamp = datetime.now(timezone.utc).isoformat()
+                    uptime = parse_system([await transport.get(SYS_UPTIME)]).sys_uptime_ticks
         except (TimeoutError, OSError, ValueError):
-            return name, {}
-        return name, {"ports": ports, "checkedAt": datetime.now(timezone.utc).isoformat()} if ports else {}
+            pass
+        return name, {"ports": ports, "checkedAt": stamp, "sysUptimeTicks": uptime} if ports else {}
 
     results, lldp = await asyncio.gather(
         asyncio.gather(*(read(source) for source in targets)),
@@ -1806,6 +1812,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 if lldp_current and port_name_counts[port_name] == 1:
                     if lldp_port := lldp_status["ports"].get(port_name):
                         port["lldpPort"] = {**lldp_port, "checkedAt": lldp_status["checkedAt"]}
+                        if type(uptime := lldp_status.get("sysUptimeTicks")) is int:
+                            port["lldpPort"].update(sourceId=row["id"], sysUptimeTicks=uptime)
                 scope = (name, latest_run, port["checkedAt"])
                 neighbors = peers_by_sample.get((name, port["key"], latest_run, port["checkedAt"]))
                 if neighbors and port["state"] == "up":
@@ -3198,6 +3206,45 @@ def _add_guest_io_rates(graph: dict, previous: dict) -> None:
             node["guestIo"] = {**rates, "checkedAt": current["checkedAt"], "intervalSeconds": round(interval, 2)}
 
 
+def _add_lldp_port_deltas(graph: dict, previous: dict) -> None:
+    prior = {node["id"]: node.get("ports", []) for node in previous.get("nodes", [])[:600]
+             if isinstance(node, dict) and isinstance(node.get("id"), str) and node.get("kind") == NETWORK_KINDS[0]}
+    for node in graph["nodes"]:
+        old_ports = prior.get(node["id"])
+        if node["kind"] != NETWORK_KINDS[0] or not isinstance(old_ports, list):
+            continue
+        by_key = defaultdict(list)
+        for old_port in old_ports[:500]:
+            if isinstance(old_port, dict) and isinstance(old_port.get("key"), str):
+                by_key[old_port["key"]].append(old_port)
+        for port in node.get("ports", []):
+            sample = port.get("lldpPort")
+            matches = by_key.get(port.get("key"), ())
+            if len(matches) != 1:
+                continue
+            old_port, = matches
+            old = old_port.get("lldpPort")
+            if (not isinstance(sample, dict) or not isinstance(old, dict) or port["name"] != old_port.get("name")
+                    or port["state"] != "up" or old_port.get("state") != "up"
+                    or type(sample.get("sourceId")) is not int or sample["sourceId"] != old.get("sourceId")
+                    or sample["admin"] != old.get("admin")):
+                continue
+            stamp = datetime.fromisoformat(sample["checkedAt"])
+            started = old.get("checkedAt")
+            if not observation_is_fresh(started, stamp, max_age=PORT_LINK_CHECK_MAX_AGE):
+                continue
+            interval = (stamp - datetime.fromisoformat(started)).total_seconds()
+            uptime, previous_uptime = sample.get("sysUptimeTicks"), old.get("sysUptimeTicks")
+            if (interval < 30 or type(uptime) is not int or type(previous_uptime) is not int
+                    or not 0 <= previous_uptime < uptime < 2**32
+                    or abs((uptime - previous_uptime) / 100 - interval) > 15):
+                continue
+            keys = ("rxFrames", "txFrames")
+            if all(type(old.get(key)) is int and type(sample.get(key)) is int
+                   and 0 <= old[key] <= sample[key] < 2**32 for key in keys):
+                sample["delta"] = {"startedAt": started, **{key: sample[key] - old[key] for key in keys}}
+
+
 def _retain_proxmox_inventory(graph: dict, previous: dict) -> None:
     if not previous:
         return
@@ -3370,6 +3417,7 @@ def main() -> int:
         if collection_issues:
             graph["collectionIssues"] = collection_issues
         previous = _previous_snapshot(args.output, graph["contextSha256"])
+        _add_lldp_port_deltas(graph, previous)
         if "proxmox" in collection_issues:
             _retain_proxmox_inventory(graph, previous)
         else:

@@ -2492,6 +2492,45 @@ def test_switch_lldp_port_state_checks_local_port_identity_and_preserves_zero():
     }
 
 
+def test_lldp_port_deltas_require_continuous_samples_from_the_same_port(tmp_path):
+    from copy import deepcopy
+
+    from app.infrastructure_collect import _add_lldp_port_deltas
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    earlier = (now - timedelta(seconds=120)).isoformat()
+    stamp = now.isoformat()
+    base = {"id": "snr", "name": "SNR", "kind": "Коммутатор", "ports": [
+        {"name": "xe1", "key": "ifindex:5025", "state": "up", "checkedAt": earlier,
+         "lldpPort": {"admin": "tx_rx", "checkedAt": earlier, "sourceId": 1,
+                      "sysUptimeTicks": 100000, "rxFrames": 0, "txFrames": 190}},
+    ]}
+    previous = {"nodes": [base]}
+    graph = {"schema": 1, "snapshotAt": stamp, "nodes": [deepcopy(base)]}
+    port = graph["nodes"][0]["ports"][0]
+    port["checkedAt"] = stamp
+    port["lldpPort"].update(checkedAt=stamp, sysUptimeTicks=112000, txFrames=194)
+    expected = {"startedAt": earlier, "intervalSeconds": 120, "rxFrames": 0, "txFrames": 4}
+
+    def read(change=None):
+        current = deepcopy(graph)
+        sample = current["nodes"][0]["ports"][0]["lldpPort"]
+        if change:
+            sample.update(change)
+        _add_lldp_port_deltas(current, previous)
+        path = tmp_path / "map.json"
+        path.write_text(json.dumps(current), encoding="utf-8")
+        return load_infrastructure_map(path, now)["nodes"][0]["ports"][0]["lldpPort"]
+
+    assert read() == {"checkedAt": stamp, "admin": "tx_rx", "rxFrames": 0, "txFrames": 194, "delta": expected}
+    for change in ({"sysUptimeTicks": 4000}, {"sysUptimeTicks": 100000}, {"txFrames": 189},
+                   {"admin": "tx_only"}, {"sourceId": 2}):
+        assert "delta" not in read(change)
+    port["state"] = "down"
+    assert "delta" not in read()
+
+
 def test_snr_transceiver_power_requires_ordered_alarm_limits():
     import asyncio
 

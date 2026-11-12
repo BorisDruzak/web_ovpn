@@ -314,6 +314,16 @@ def _public_port(row: dict, now: datetime) -> dict:
         result["lldpPort"] = {"checkedAt": _time(lldp["checkedAt"]).isoformat(), "admin": lldp["admin"],
                               **{key: value for key in ("rxFrames", "txFrames")
                                  if type(value := lldp.get(key)) is int and 0 <= value < 2**32}}
+        delta = lldp.get("delta")
+        if result["state"] == "up" and isinstance(delta, dict):
+            end, start = _time(lldp["checkedAt"]), _time(delta.get("startedAt"))
+            keys = ("rxFrames", "txFrames")
+            if (start and timedelta(seconds=30) <= end - start <= PORT_LINK_CHECK_MAX_AGE
+                    and all(type(delta.get(key)) is int and 0 <= delta[key] <= result["lldpPort"].get(key, -1)
+                            for key in keys)):
+                result["lldpPort"]["delta"] = {"startedAt": start.isoformat(),
+                                                "intervalSeconds": round((end - start).total_seconds(), 2),
+                                                **{key: delta[key] for key in keys}}
     neighbor_count = row.get("lldpNeighborCount")
     if result["state"] == "up" and type(neighbor_count) is int and 1 <= neighbor_count <= 65535:
         result["lldpNeighborCount"] = neighbor_count
