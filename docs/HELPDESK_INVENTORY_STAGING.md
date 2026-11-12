@@ -122,6 +122,30 @@ read-only receipt. During an unresolved directed installation, matching MAC
 observations stay as candidates. Existing manual decisions and conflicting
 bindings require operator review.
 
-The controller still needs to obtain the trusted hardware fingerprint and
-issue the assignment before native installation. A corresponding Windows
-Setup handoff and staging deployment remain pending.
+On ALT, the role extracts the original runtime from the verified core RPM
+in private temporary storage. The runtime's `--print-hardware-fingerprint`
+mode derives the expected value on the approved workstation over the same
+pinned SSH connection. The role gives that value to the controller issuer
+over protected task input. Endpoint must acknowledge a live assignment
+before the role writes the agent configuration or invokes native Setup.
+The coordinator receives the same explicit staging markers as the approved
+systemd drop-in.
+
+Before enabling the role on staging, prepare a root-managed Python 3.12+
+virtual environment at `/opt/alt-deploy-endpoint-sdk`. Verify and install
+the SDK wheel selected by `deploy/endpoint-platform-client.lock` with its
+dependencies. Install the staging CA at
+`/etc/alt-deploy-endpoint/staging-ca.pem` and the issuance token at
+`/etc/alt-deploy-endpoint/staging-assignments.token`. The token needs scope
+`enrollment.installation-assignments.issue`, owner/group `root:altserver`
+and mode `0640`. The CA is root-owned with mode `0644` or `0640`
+for group `altserver`. The issuer uses the fixed staging Endpoint origin.
+The plan checks the issuer's local SDK and credential files before it
+can be applied. The workstation needs `rpm2cpio`, `cpio` and `timeout`
+for the probe. The assignment must still cover the native coordinator's
+120-second enrollment notification budget. Retained identity or unfinished
+enrollment requires native recovery. The role cleans up its private
+temporary directory on exit.
+
+The Windows Setup handoff and integrated staging deployment remain
+pending.

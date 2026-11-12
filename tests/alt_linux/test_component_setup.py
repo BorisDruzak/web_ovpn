@@ -161,3 +161,23 @@ def test_endpoint_component_plan_keeps_assignment_in_signed_payload_and_out_of_b
     with pytest.raises(ControlError) as error:
         service.plan(machine.uuid, 'software.endpoint_agent')
     assert error.value.code == 'endpoint_installation_assignment_invalid'
+
+
+def test_endpoint_default_preflight_requires_the_staging_issuer(component_service, project, monkeypatch, tmp_path):
+    import hashlib
+
+    from alt_deploy import component_setup
+
+    service, *_ = component_service
+    component = ComponentCatalog.load(project).component("software.endpoint_agent")
+    kit = tmp_path / "kit.tgz"
+    kit.write_bytes(b"synthetic pinned kit")
+    service.catalog = SimpleNamespace(artifact=lambda _: {
+        "source": "archive", "artifact_path": str(kit), "sha256": hashlib.sha256(kit.read_bytes()).hexdigest(),
+    })
+    monkeypatch.setattr(component_setup, "assignment_issuer_available", lambda: False)
+    assert service._preflight(component) == {
+        "ready": False, "error_code": "component_endpoint_assignment_unavailable",
+    }
+    monkeypatch.setattr(component_setup, "assignment_issuer_available", lambda: True)
+    assert service._preflight(component) == {"ready": True}

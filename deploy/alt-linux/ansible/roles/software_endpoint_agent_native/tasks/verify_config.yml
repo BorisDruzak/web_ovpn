@@ -1,0 +1,36 @@
+---
+- name: Inspect the current configuration without following links
+  ansible.builtin.stat:
+    path: /etc/endpoint-agent/config.yaml
+    follow: false
+    get_checksum: false
+  register: endpoint_native_verified_config
+
+- name: Require a single root-owned configuration file
+  ansible.builtin.assert:
+    that:
+      - endpoint_native_verified_config.stat.isreg | default(false)
+      - not (endpoint_native_verified_config.stat.islnk | default(false))
+      - endpoint_native_verified_config.stat.uid == 0 and endpoint_native_verified_config.stat.gid == 0
+      - endpoint_native_verified_config.stat.mode == '0600'
+      - endpoint_native_verified_config.stat.nlink == 1
+      - 0 < endpoint_native_verified_config.stat.size <= 65536
+    fail_msg: ALT_PREFLIGHT_FAILURE:endpoint_native_config_slot_invalid
+  tags: [alt_setup_preflight]
+
+- name: Read the native configuration for this signed plan
+  ansible.builtin.slurp:
+    src: /etc/endpoint-agent/config.yaml
+  register: endpoint_native_config
+  no_log: true
+
+- name: Require the exact installation assignment before native execution
+  vars:
+    native_config: "{{ endpoint_native_config.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - native_config.gateway.endpoint == 'https://endpoint-staging.sosnadmin.local'
+      - native_config.gateway.ca_file == '/etc/endpoint-agent/ca.crt'
+      - native_config.provisioning.installation_id == setup_inventory_installation_id
+    fail_msg: ALT_PREFLIGHT_FAILURE:endpoint_native_installation_assignment_changed
+  no_log: true

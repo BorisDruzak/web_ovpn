@@ -245,3 +245,85 @@ def test_native_agent_role_refuses_unscoped_invocation(ansible_runtime):
     assert result.returncode != 0
     assert 'endpoint_native_component_required' in result.stdout + result.stderr
     assert 'changed=0' in result.stdout
+
+
+@pytest.mark.parametrize("case", ["live", "expired", "bad_fingerprint"])
+def test_real_ansible_endpoint_assignment_gate(ansible_runtime, tmp_path, case):
+    executable, project, env = ansible_runtime
+    role = SOURCE / "roles/software_endpoint_agent_native/tasks/main.yml"
+    block = next(task["block"] for task in yaml.safe_load(role.read_text()) if "block" in task)
+    start = next(i for i, task in enumerate(block) if task["name"] == "Read the fingerprint with the signed runtime")
+    end = next(i for i, task in enumerate(block) if task["name"] == "Require a live Endpoint installation assignment")
+    tasks = block[start:end + 1]
+    machine = "22222222-2222-4222-8222-222222222222"
+    installation_id = f"inventory-11111111-1111-4111-8111-111111111111-{machine}-" + "a" * 32
+    fingerprint = "sha256:" + "b" * 64
+    probe_result = "invalid-fingerprint" if case == "bad_fingerprint" else fingerprint
+    tasks[0]["ansible.builtin.command"]["argv"] = [sys.executable, "-c", f"print({probe_result!r})"]
+    invoked = tmp_path / "issuer-invoked"
+    native_reached = tmp_path / "native-reached"
+    fake = tmp_path / "fixture_issuer.py"
+    fake.write_text(
+        "from datetime import datetime, timedelta, timezone\n"
+        "from pathlib import Path\n"
+        "from types import SimpleNamespace\n"
+        "from alt_deploy import endpoint_assignment_issuer as issuer\n"
+        "issuer._require_file = lambda *args, **kwargs: None\n"
+        "class Client:\n"
+        "    def __init__(self, *args, **kwargs): pass\n"
+        "    def __enter__(self): return self\n"
+        "    def __exit__(self, *args): pass\n"
+        "    def issue_inventory_installation(self, installation_id, fingerprint, platform):\n"
+        f"        assert (installation_id, fingerprint, platform) == {(installation_id, fingerprint, 'linux')!r}\n"
+        f"        Path({str(invoked)!r}).touch()\n"
+        f"        expiry = datetime.now(timezone.utc) + timedelta(minutes={-1 if case == 'expired' else 10})\n"
+        "        return SimpleNamespace(expires_at=expiry)\n"
+        "raise SystemExit(issuer.main(client_factory=Client))\n",
+        encoding="utf-8",
+    )
+    tasks[2]["ansible.builtin.command"]["argv"] = [sys.executable, str(fake)]
+    tasks.append({"name": "Reach the simulated native mutation",
+                  "ansible.builtin.file": {"path": str(native_reached), "state": "touch"}})
+    play = project / "playbooks/synthetic-endpoint-assignment.yml"
+    play.write_text(yaml.safe_dump([{"hosts": "localhost", "gather_facts": False, "tasks": tasks}]))
+    variables = {"setup_inventory_installation_id": installation_id, "machine_uuid": machine,
+                 "ansible_connection": "local", "ansible_python_interpreter": sys.executable}
+    result = subprocess.run(
+        [str(executable), "-v", "-i", "localhost,", "-e", json.dumps(variables), str(play)],
+        cwd=project, env=env, text=True, capture_output=True, timeout=30,
+    )
+    output = result.stdout + result.stderr
+    assert (result.returncode == 0) == (case == "live"), output
+    assert invoked.exists() == (case != "bad_fingerprint")
+    assert native_reached.exists() == (case == "live")
+    if case == "expired":
+        assert "endpoint_native_assignment_unavailable" in output
+    if case == "bad_fingerprint":
+        assert "endpoint_native_fingerprint_unavailable" in output
+    assert fingerprint not in output and installation_id not in output
+
+
+def test_real_ansible_retained_identity_symlink_blocks_fresh_assignment(ansible_runtime, tmp_path):
+    executable, project, env = ansible_runtime
+    role = SOURCE / "roles/software_endpoint_agent_native/tasks/main.yml"
+    tasks = yaml.safe_load(role.read_text())
+    start = next(i for i, task in enumerate(tasks) if task["name"] == "Inspect retained Endpoint state directories without following links")
+    end = next(i for i, task in enumerate(tasks) if task["name"] == "Require an unused Endpoint identity before a directed installation")
+    tasks = tasks[start:end + 1]
+    data = tmp_path / "endpoint-agent"
+    data.mkdir()
+    broken = data / "enrollment-identity.json"
+    broken.symlink_to(data / "missing")
+    tasks[0]["loop"] = [str(data)]
+    tasks[2]["loop"] = [str(broken)]
+    play = project / "playbooks/synthetic-retained-endpoint-identity.yml"
+    play.write_text(yaml.safe_dump([{"hosts": "localhost", "gather_facts": False, "tasks": tasks}]))
+    result = subprocess.run(
+        [str(executable), "-i", "localhost,", "-e", json.dumps({
+            "ansible_connection": "local", "ansible_python_interpreter": sys.executable,
+        }), str(play)],
+        cwd=project, env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert result.returncode != 0
+    assert "endpoint_native_retained_identity_requires_review" in result.stdout + result.stderr
+    assert broken.is_symlink()

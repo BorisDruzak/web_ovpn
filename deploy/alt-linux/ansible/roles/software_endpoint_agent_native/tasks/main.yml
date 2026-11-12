@@ -49,6 +49,7 @@
       - not (item.stat.islnk | default(false))
       - item.stat.uid == 0 and item.stat.gid == 0
       - item.stat.mode == item.item.mode
+      - item.stat.nlink == 1
       - 0 < item.stat.size <= 65536
     fail_msg: ALT_PREFLIGHT_FAILURE:endpoint_native_staging_prerequisites_missing
   loop: "{{ endpoint_native_prerequisites.results }}"
@@ -82,16 +83,55 @@
     get_checksum: false
   register: endpoint_native_config_slot
 
-- name: Require any existing native configuration to be protected
+- name: Check an existing configuration before issuing Endpoint authority
+  ansible.builtin.include_tasks: verify_config.yml
+  when: endpoint_native_config_slot.stat.exists
+
+- name: Inspect retained Endpoint state directories without following links
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+    get_checksum: false
+  loop:
+    - /var/lib/endpoint-agent
+    - /var/lib/endpoint-agent-installation
+  register: endpoint_native_state_dirs
+  tags: [alt_setup_preflight]
+
+- name: Require real directories for any retained Endpoint state
   ansible.builtin.assert:
     that:
-      - endpoint_native_config_slot.stat.isreg | default(false)
-      - not (endpoint_native_config_slot.stat.islnk | default(false))
-      - endpoint_native_config_slot.stat.uid == 0 and endpoint_native_config_slot.stat.gid == 0
-      - endpoint_native_config_slot.stat.mode == '0600'
-      - 0 < endpoint_native_config_slot.stat.size <= 65536
-    fail_msg: ALT_PREFLIGHT_FAILURE:endpoint_native_config_slot_invalid
-  when: endpoint_native_config_slot.stat.exists
+      - not (item.stat.islnk | default(false))
+      - not item.stat.exists or (item.stat.isdir | default(false))
+    fail_msg: ALT_PREFLIGHT_FAILURE:endpoint_native_retained_identity_requires_review
+  loop: "{{ endpoint_native_state_dirs.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  tags: [alt_setup_preflight]
+
+- name: Check for a retained device identity or unfinished enrollment
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+    get_checksum: false
+  loop:
+    - /var/lib/endpoint-agent/device-credential
+    - /var/lib/endpoint-agent/enrollment-identity.json
+    - /var/lib/endpoint-agent-installation/fresh-enrollment-private.json
+    - /var/lib/endpoint-agent-installation/state.json
+  register: endpoint_native_retained_state
+  tags: [alt_setup_preflight]
+
+- name: Require an unused Endpoint identity before a directed installation
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists
+      - not (item.stat.islnk | default(false))
+    fail_msg: ALT_PREFLIGHT_FAILURE:endpoint_native_retained_identity_requires_review
+  loop: "{{ endpoint_native_retained_state.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  tags: [alt_setup_preflight]
 
 - name: Inspect both Endpoint RPM slots
   ansible.builtin.command:
@@ -145,6 +185,77 @@
         dest: "{{ endpoint_native_tmp.path }}"
         remote_src: true
 
+    - name: Create a private directory for the verified runtime probe
+      ansible.builtin.file:
+        path: "{{ endpoint_native_tmp.path }}/probe"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Extract only the approved runtime from the verified core RPM
+      ansible.builtin.shell:
+        executable: /bin/bash
+        chdir: "{{ endpoint_native_tmp.path }}/probe"
+        cmd: |
+          set -euo pipefail
+          /usr/bin/rpm2cpio "$ENDPOINT_NATIVE_CORE_RPM" |
+            /usr/bin/cpio --quiet --extract --make-directories --no-absolute-filenames --no-preserve-owner \
+              './opt/endpoint-agent/versions/3.2.183/endpoint-agent/*' 'opt/endpoint-agent/versions/3.2.183/endpoint-agent/*'
+          binary=./opt/endpoint-agent/versions/3.2.183/endpoint-agent/endpoint-agent
+          test -f "$binary" && test -x "$binary" && test ! -L "$binary"
+      environment:
+        ENDPOINT_NATIVE_CORE_RPM: "{{ endpoint_native_tmp.path }}/endpoint-alt-pilot-3.2.183-1/endpoint-agent-3.2.183-alt6.x86_64.rpm"
+      changed_when: false
+      no_log: true
+
+    - name: Read the fingerprint with the signed runtime
+      ansible.builtin.command:
+        expand_argument_vars: false
+        argv:
+          - /usr/bin/timeout
+          - --kill-after=5s
+          - 30s
+          - "{{ endpoint_native_tmp.path }}/probe/opt/endpoint-agent/versions/3.2.183/endpoint-agent/endpoint-agent"
+          - --print-hardware-fingerprint
+      register: endpoint_native_fingerprint
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Require a canonical fingerprint from the selected workstation
+      ansible.builtin.assert:
+        that:
+          - endpoint_native_fingerprint.rc == 0
+          - endpoint_native_fingerprint.stdout is match('^sha256:[0-9a-f]{64}$')
+        fail_msg: ALT_PREFLIGHT_FAILURE:endpoint_native_fingerprint_unavailable
+      tags: [alt_setup_preflight]
+
+    - name: Issue the installation assignment on the staging controller
+      ansible.builtin.command:
+        expand_argument_vars: false
+        argv:
+          - /opt/alt-deploy-endpoint-sdk/bin/python
+          - -I
+          - /opt/alt-deploy-control/alt_deploy/endpoint_assignment_issuer.py
+        stdin: >-
+          {{ {'installation_id': setup_inventory_installation_id,
+              'machine_uuid': machine_uuid,
+              'hardware_fingerprint': endpoint_native_fingerprint.stdout} | to_json }}
+      delegate_to: localhost
+      become: false
+      register: endpoint_native_assignment
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Require a live Endpoint installation assignment
+      ansible.builtin.assert:
+        that:
+          - endpoint_native_assignment.rc == 0
+        fail_msg: ALT_PREFLIGHT_FAILURE:endpoint_native_assignment_unavailable
+      tags: [alt_setup_preflight]
+
     - name: Prepare native configuration only in a fresh slot
       ansible.builtin.copy:
         dest: /etc/endpoint-agent/config.yaml
@@ -171,22 +282,8 @@
       when: not endpoint_native_config_slot.stat.exists
       no_log: true
 
-    - name: Read the native configuration for this signed plan
-      ansible.builtin.slurp:
-        src: /etc/endpoint-agent/config.yaml
-      register: endpoint_native_config
-      no_log: true
-
-    - name: Require the exact installation assignment before native execution
-      vars:
-        native_config: "{{ endpoint_native_config.content | b64decode | from_yaml }}"
-      ansible.builtin.assert:
-        that:
-          - native_config.gateway.endpoint == 'https://endpoint-staging.sosnadmin.local'
-          - native_config.gateway.ca_file == '/etc/endpoint-agent/ca.crt'
-          - native_config.provisioning.installation_id == setup_inventory_installation_id
-        fail_msg: ALT_PREFLIGHT_FAILURE:endpoint_native_installation_assignment_changed
-      no_log: true
+    - name: Verify the current native configuration before install
+      ansible.builtin.include_tasks: verify_config.yml
 
     - name: Run the existing Endpoint native coordinator
       vars:
@@ -202,6 +299,11 @@
           - "{{ kit }}/endpoint-agent-user-sensor-3.2.183-alt6.x86_64.rpm"
           - --public-key
           - "{{ kit }}/endpoint-rpm-release.asc"
+      environment:
+        ENDPOINT_AGENT_DEPLOYMENT_ENVIRONMENT: staging
+        CANARY_ENVIRONMENT: staging
+        CANARY_APPROVED: "true"
+        ENDPOINT_AGENT_ORIGIN: https://endpoint-staging.sosnadmin.local
       register: endpoint_native_result
       changed_when: endpoint_native_result.rc == 0
       failed_when: false

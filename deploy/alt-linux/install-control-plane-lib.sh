@@ -175,6 +175,8 @@ validate_source_layout() {
         "${ALT_ROOT}/control/alt_deploy/setup_waiting.py"
         "${ALT_ROOT}/control/alt_deploy/helper_diagnostics.py"
         "${ALT_ROOT}/control/alt_deploy/helper_diagnostic_target.py"
+        "${ALT_ROOT}/control/alt_deploy/endpoint_assignment_issuer.py"
+        "${ALT_ROOT}/ansible/roles/software_endpoint_agent_native/tasks/verify_config.yml"
         "${ALT_ROOT}/backup/alt_deploy_backup/setup_phase_admission.py"
         "${ALT_ROOT}/backup/alt_deploy_backup/setup_workflow_closed.py"
         "${ALT_ROOT}/backup/alt_deploy_backup/setup_workflow_maintenance.py"

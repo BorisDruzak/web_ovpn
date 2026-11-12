@@ -9,7 +9,8 @@ from pathlib import Path
 import stat
 
 from .ad_directory import fail
-from .component_catalog import ComponentCatalog
+from .component_catalog import ComponentCatalog, ENDPOINT_AGENT_COMPONENT
+from .endpoint_assignment_issuer import assignment_issuer_available
 from .endpoint_installation import validate_inventory_installation
 from .component_probe import ComponentProbe, ssh_binding
 from .component_verification import VerificationEngine, valid_evidence, package_health_ready
@@ -78,6 +79,8 @@ class ComponentSetupService:
                     raise ValueError
             except (OSError, ValueError):
                 return {'ready': False, 'error_code': 'component_artifact_unverified'}
+        if component['id'] == ENDPOINT_AGENT_COMPONENT and not assignment_issuer_available():
+            return {'ready': False, 'error_code': 'component_endpoint_assignment_unavailable'}
         if component['preflight']['recipe'] == 'krfb':
             from .configure import KRFB_NETWORK_CONFIRMATION_VARIABLE
             from .vault import VaultHealthChecker
