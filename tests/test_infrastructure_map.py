@@ -1262,11 +1262,59 @@ def test_live_snmp_poll_uses_confirmed_pairs_and_rechecks_ifindex_name(monkeypat
     }
     pve = {"physicalPorts": {"host": [{"name": f"eth{i}", "source": "Proxmox · sysfs"}
                                     for i in (1, 2, 3)]}}
-    asyncio.run(collector._check_switch_ends_of_proxmox_links(context, network, pve, now))
+    asyncio.run(collector._check_confirmed_switch_ports(context, network, pve, now))
     first, second, third = network["ports"]
     assert first["linkCheck"]["state"] == "up" and first["linkCheck"]["speedBps"] == 10**10
     assert "linkCheck" not in second and "linkCheck" not in third
     assert calls == [(*column, 5) for column in (IF_NAME, IF_ADMIN_STATUS, IF_OPER_STATUS, IF_HIGH_SPEED)] + [(*IF_NAME, 6)]
+
+
+def test_confirmed_switch_port_checks_require_two_observed_ends(monkeypatch):
+    import asyncio
+
+    from app import infrastructure_collect as collector
+
+    now = datetime.now(timezone.utc)
+    calls = []
+
+    class Transport:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+    async def read(transport, index, name):
+        calls.append((index, name))
+        return {"state": "up", "speedBps": 10**9}
+
+    monkeypatch.setattr(collector.SnmpTransport, "from_source", lambda _: Transport())
+    monkeypatch.setattr(collector, "read_interface_link", read)
+    context = {
+        "devices": [{"id": f"s{i}", "kind": "switch", "management_ip": f"192.0.2.{i}"} for i in (1, 2, 3)],
+        "links": [
+            {"relation": "connected_to", "state": {"verified": True},
+             "endpoint_a": {"device": "s1", "interface": "Port52"},
+             "endpoint_b": {"device": "s2", "interface": "ge21"}},
+            {"relation": "connected_to", "state": {"verified": True},
+             "endpoint_a": {"device": "s1", "interface": "Slot0/51"},
+             "endpoint_b": {"device": "s3", "interface": "ge1"}},
+            {"relation": "connected_to", "state": {"verified": False},
+             "endpoint_a": {"device": "s1", "interface": "Slot0/15"},
+             "endpoint_b": {"device": "s2", "interface": "ge22"}},
+        ],
+    }
+    network = {
+        "sources": [{"name": f"s{i}", "host": f"192.0.2.{i}", "driver": "snmp_switch", "enabled": True}
+                    for i in (1, 2, 3)],
+        "ports": [{"source": source, "name": name, "port_key": f"ifindex:{index}", "if_index": index,
+                   "collector_run_id": 1, "last_seen_at": now.isoformat()}
+                  for source, name, index in (("s1", "Slot0/52", 52), ("s2", "ge21", 5021),
+                                              ("s1", "Slot0/51", 51), ("s1", "Slot0/15", 15), ("s2", "ge22", 5022))],
+    }
+    asyncio.run(collector._check_confirmed_switch_ports(context, network, {}, now))
+    assert set(calls) == {(52, "Slot0/52"), (5021, "ge21")}
+    assert sum("linkCheck" in row for row in network["ports"]) == 2
 
 
 def test_proxmox_port_observer_verifies_target_and_only_updates_inventory_ports(tmp_path, monkeypatch):

@@ -303,42 +303,55 @@ async def _collect_stp_root_paths(sources: list[dict]) -> dict:
     return {source["name"]: observation for source, observation in zip(eligible, observations) if observation}
 
 
-async def _check_switch_ends_of_proxmox_links(context: dict, network: dict, pve: dict, now: datetime) -> None:
+async def _check_confirmed_switch_ports(context: dict, network: dict, pve: dict, now: datetime) -> None:
     host_ports = {(host, port["name"]) for host, ports in pve.get("physicalPorts", {}).items()
                   for port in ports if port.get("source") == "Proxmox · sysfs"}
     switches = {row["id"]: row.get("management_ip") for row in context.get("devices", []) if row["kind"] == "switch"}
-    names = {}
+    sources = [row for row in network.get("sources", []) if row.get("enabled") and row.get("driver") == "snmp_switch"]
+    address_counts = Counter(row.get("host") for row in sources)
+    sources = {row["host"]: row for row in sources if row.get("host") and address_counts[row["host"]] == 1}
+    rows_by_source = {}
+    for row in network.get("ports", []):
+        rows_by_source.setdefault(row["source"], []).append(row)
+    candidates = {}
+    for address, source in sources.items():
+        ports = rows_by_source.get(source["name"], [])
+        latest = max((row["collector_run_id"] for row in ports if type(row.get("collector_run_id")) is int), default=None)
+        if latest is None:
+            continue
+        current = [row for row in ports if row.get("collector_run_id") == latest]
+        indexes = Counter(row.get("if_index") for row in current)
+        labels = index_port_states([
+            {"name": row.get("name"), "key": row.get("port_key"), "checkedAt": row.get("last_seen_at")}
+            for row in current
+        ], now)
+        by_name = {
+            port_label_key(row["name"]): row for row in current
+            if row.get("name") and type(row.get("if_index")) is int and 1 <= row["if_index"] <= 2_147_483_647
+            and indexes[row["if_index"]] == 1
+        }
+        candidates[address] = {label: by_name[port_label_key(port["name"])] for label, port in labels.items()
+                               if port_label_key(port["name"]) in by_name}
+    checks = {}
     for link in context.get("links", []):
         if (link.get("relation") != "connected_to" or link.get("state", {}).get("verified") is not True
                 or link.get("state", {}).get("intent") == "absent"):
             continue
-        for local, peer in ((link["endpoint_a"], link["endpoint_b"]), (link["endpoint_b"], link["endpoint_a"])):
-            address = switches.get(local["device"])
-            if address and local.get("interface") and (peer["device"], peer.get("interface")) in host_ports:
-                names.setdefault(address, set()).add(port_label_key(local["interface"]))
-    sources = [row for row in network.get("sources", []) if row.get("enabled") and row.get("driver") == "snmp_switch"]
-    address_counts = Counter(row.get("host") for row in sources)
+        ends = [(switches.get(end["device"]), port_label_key(end.get("interface") or ""), end)
+                for end in (link["endpoint_a"], link["endpoint_b"])]
+        available = [candidates.get(address, {}).get(label) for address, label, _ in ends]
+        if all(row is not None or (end["device"], end.get("interface")) in host_ports
+               for row, (_, _, end) in zip(available, ends)):
+            for row, (address, _, _) in zip(available, ends):
+                if row is not None:
+                    checks.setdefault(address, {})[row["if_index"]] = row
 
-    async def check(source):
-        ports = [row for row in network.get("ports", []) if row["source"] == source["name"]]
-        latest = max((row["collector_run_id"] for row in ports if type(row.get("collector_run_id")) is int), default=None)
-        if latest is None:
-            return
-        current = [row for row in ports if row.get("collector_run_id") == latest]
-        indexes = Counter(row.get("if_index") for row in current)
-        labels = Counter(port_label_key(row.get("name") or "") for row in current)
-        wanted = names[source["host"]]
+    async def check(source, wanted):
         try:
             async with asyncio.timeout(6), SnmpTransport.from_source(source) as transport:
-                for row in current:
-                    name, index = row.get("name") or "", row.get("if_index")
-                    label = port_label_key(name)
-                    if (label not in wanted or labels[label] != 1 or type(index) is not int
-                            or not 1 <= index <= 2_147_483_647 or indexes[index] != 1
-                            or not observation_is_fresh(row.get("last_seen_at"), now)):
-                        continue
+                for index, row in wanted.items():
                     try:
-                        observation = await read_interface_link(transport, index, name)
+                        observation = await read_interface_link(transport, index, row["name"])
                     except ValueError:
                         continue
                     if observation:
@@ -346,7 +359,7 @@ async def _check_switch_ends_of_proxmox_links(context: dict, network: dict, pve:
         except (TimeoutError, OSError, ValueError):
             pass
 
-    await asyncio.gather(*(check(row) for row in sources if row.get("host") in names and address_counts[row["host"]] == 1))
+    await asyncio.gather(*(check(sources[address], wanted) for address, wanted in checks.items()))
 
 
 def _probe_on_link_guest(address: str, mac: str) -> bool:
@@ -2085,8 +2098,7 @@ def main() -> int:
             print(f"Network Observer inventory unavailable ({type(exc).__name__})", file=sys.stderr)
             network = {}
         else:
-            if bindings.get("proxmox_port_observer") is True:
-                asyncio.run(_check_switch_ends_of_proxmox_links(context, network, pve, datetime.now(timezone.utc)))
+            asyncio.run(_check_confirmed_switch_ports(context, network, pve, datetime.now(timezone.utc)))
             if lacp_links:
                 network["lacp"] = asyncio.run(_collect_lacp(network, lacp_links, datetime.now(timezone.utc)))
             network["stp_root_paths"] = asyncio.run(_collect_stp_root_paths(network["sources"]))
