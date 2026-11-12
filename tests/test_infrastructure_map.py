@@ -761,6 +761,52 @@ def test_http_probe_matches_json_health_fields_without_fixing_the_version():
     assert results == ["reachable", "unknown", "unreachable", "unknown", "unknown", "unreachable"]
 
 
+def test_redfish_root_probe_reports_only_validated_api_version(monkeypatch):
+    from app.infrastructure_service_probes import _http_probe
+
+    document = {"Id": "RootService", "RedfishVersion": "1.9.0",
+                "Managers": {"@odata.id": "/redfish/v1/Managers"},
+                "Systems": {"@odata.id": "/redfish/v1/Systems"}}
+    status = 200
+
+    class Response:
+        def __init__(self):
+            self.status = status
+
+        def getheader(self, name, default):
+            return "application/json" if name == "Content-Type" else default
+
+        def read(self, limit):
+            return json.dumps(document).encode()[:limit]
+
+    class Connection:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def request(self, method, path, headers):
+            assert method == "GET" and path == "/redfish/v1/"
+            assert "Authorization" not in headers
+
+        def getresponse(self):
+            return Response()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("app.infrastructure_service_probes.http.client.HTTPSConnection", Connection)
+    spec = {"type": "https", "ip": "192.0.2.1", "port": 443, "path": "/redfish/v1/",
+            "redfish_service_root": True}
+    assert _http_probe(spec) == {"state": "reachable", "httpStatus": 200, "redfishVersion": "1.9.0"}
+    document["RedfishVersion"] = "not a version"
+    assert _http_probe(spec) == {"state": "unknown", "httpStatus": 200, "reason": "http_payload_mismatch"}
+    document["RedfishVersion"] = "1.10.2"
+    document["Managers"]["@odata.id"] = "https://elsewhere.test/redfish/v1/Managers"
+    assert _http_probe(spec)["state"] == "unknown"
+    status = 401
+    assert _http_probe(spec) == {"state": "unknown", "httpStatus": 401, "reason": "http_status"}
+    assert _http_probe({**spec, "type": "http"})["reason"] == "http_configuration"
+
+
 def test_http_probe_accepts_only_bounded_complete_gzip_when_configured(monkeypatch):
     import gzip
     from io import BytesIO

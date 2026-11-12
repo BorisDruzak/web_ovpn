@@ -652,6 +652,11 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         status = check.get("httpStatus")
         if type(status) is int and 100 <= status <= 599:
             result["httpStatus"] = status
+        version = check.get("redfishVersion")
+        if (result["method"] == "HTTPS" and result["path"] == "/redfish/v1/" and status == 200
+                and result["state"] == "reachable" and not result["stale"]
+                and isinstance(version, str) and re.fullmatch(r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}", version)):
+            result["redfishVersion"] = version
         if reason in (
             "http_status", "http_content_type", "http_content_encoding", "http_body_limit", "http_invalid_json",
             "http_reported_unavailable", "http_payload_mismatch", "http_certificate_pin",

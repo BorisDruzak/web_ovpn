@@ -66,6 +66,19 @@ def _matches_json_fields(document: dict, fields: dict) -> bool:
     return True
 
 
+def _redfish_root_version(document: dict) -> str | None:
+    version = document.get("RedfishVersion")
+    if document.get("Id") != "RootService" or not isinstance(version, str) or not re.fullmatch(
+        r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}", version,
+    ):
+        return None
+    for collection in ("Managers", "Systems"):
+        link = document.get(collection)
+        if not isinstance(link, dict) or link.get("@odata.id") != f"/redfish/v1/{collection}":
+            return None
+    return version
+
+
 def _http(ip: str, port: int, spec: dict) -> dict:
     path = _http_path(spec.get("path"))
     body_expected = spec.get("body")
@@ -73,7 +86,17 @@ def _http(ip: str, port: int, spec: dict) -> dict:
     content_type = spec.get("content_type")
     json_fields = spec.get("json_fields")
     json_unavailable = spec.get("json_unavailable")
+    redfish_root = spec.get("redfish_service_root", False)
     allow_gzip = spec.get("allow_gzip", False)
+    tls = spec["type"] == "https"
+    if type(redfish_root) is not bool or (redfish_root and (
+        not tls or path != "/redfish/v1/"
+        or any(value is not None for value in (body_expected, body_marker, json_fields, json_unavailable))
+        or content_type not in (None, "application/json")
+    )):
+        raise ValueError("invalid Redfish Service Root probe")
+    if redfish_root:
+        content_type = "application/json"
     if type(allow_gzip) is not bool:
         raise ValueError("allow_gzip requires a boolean")
     if (not all(isinstance(value, (str, type(None))) for value in (body_expected, body_marker, content_type))
@@ -90,7 +113,6 @@ def _http(ip: str, port: int, spec: dict) -> dict:
             ):
                 raise ValueError("invalid HTTP JSON response fields")
         content_type = content_type or "application/json"
-    tls = spec["type"] == "https"
     http_host = spec.get("http_host")
     if http_host is not None and (tls or not _valid_http_hostname(http_host)):
         raise ValueError("invalid HTTP host")
@@ -154,7 +176,7 @@ def _http(ip: str, port: int, spec: dict) -> dict:
                 read = io.BytesIO(decoded).read
             elif encoding not in ("", "identity"):
                 return {**observed, "state": "unknown", "reason": "http_content_encoding"}
-        if json_fields is not None:
+        if json_fields is not None or redfish_root:
             payload = read(HTTP_BODY_LIMIT + 1)
             if len(payload) > HTTP_BODY_LIMIT:
                 return {**observed, "state": "unknown", "reason": "http_body_limit"}
@@ -164,6 +186,10 @@ def _http(ip: str, port: int, spec: dict) -> dict:
                 return {**observed, "state": "unknown", "reason": "http_invalid_json"}
             if not isinstance(document, dict):
                 return {**observed, "state": "unknown", "reason": "http_invalid_json"}
+            if redfish_root:
+                if version := _redfish_root_version(document):
+                    return {**observed, "state": "reachable", "redfishVersion": version}
+                return {**observed, "state": "unknown", "reason": "http_payload_mismatch"}
             if json_unavailable and _matches_json_fields(document, json_unavailable):
                 return {**observed, "state": "unreachable", "reason": "http_reported_unavailable"}
             matches = _matches_json_fields(document, json_fields)

@@ -1341,7 +1341,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const dns = [check.dns?.rcode, check.dns?.transport, check.dns?.addresses?.join(', '),
           responder && `Ответ от ${responder.address} · порт ${responder.port}`]
           .filter(Boolean).map(value => ' · ' + value).join('');
-        const http = check.httpStatus ? ' · HTTP ' + check.httpStatus : '';
+        const http = (check.httpStatus ? ' · HTTP ' + check.httpStatus : '')
+          + (check.redfishVersion ? ' · Redfish ' + check.redfishVersion : '');
         const rtsp = check.rtspStatus ? ' · RTSP ' + check.rtspStatus : '';
         const ftp = check.ftpReply ? ' · FTP ' + check.ftpReply : '';
         const certificate = check.tlsExpiresAt ? ' · ' + [check.tlsVersion,
