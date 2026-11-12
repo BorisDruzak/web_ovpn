@@ -3280,6 +3280,9 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
     def lacp_gaps(stamp=now):
         audit = summarize_topology(load_infrastructure_map(path, stamp))["topologyAudit"]
         assert audit["lacpPartnerInterfaceGapTotal"] == len(audit["lacpPartnerInterfaceGaps"])
+        browser = load_infrastructure_map(path, stamp, include_guest_attachments=True)
+        assert browser["lacpPartnerInterfaceGapTotal"] == audit["lacpPartnerInterfaceGapTotal"]
+        assert browser["lacpPartnerInterfaceGaps"] == audit["lacpPartnerInterfaceGaps"]
         return audit["lacpPartnerInterfaceGaps"]
 
     assert lacp_gaps() == [{"id": "pbs", "name": "PBS", "switchId": "snr", "aggregate": "po1",
@@ -5899,10 +5902,13 @@ def test_attachment_view_includes_physical_service_hosts_and_distinguishes_port_
 
     browser_graph = load_infrastructure_map(path, include_guest_attachments=True)
     assert browser_graph["pendingPortPairTotal"] == 2
-    assert browser_graph["pendingPortPairs"] == [
-        {key: row[key] for key in ("a", "b", "nameA", "nameB", "portA", "portB")}
-        for row in pending_without_cable
+    assert [tuple(row[key] for key in ("a", "b", "nameA", "nameB", "portA", "portB"))
+            for row in browser_graph["pendingPortPairs"]] == [
+        tuple(row[key] for key in ("a", "b", "nameA", "nameB", "portA", "portB")) for row in pending_without_cable
     ]
+    learned_row = browser_graph["pendingPortPairs"][0]
+    assert learned_row["observedSources"] == ["netctl FDB"]
+    assert learned_row["lldpPortIds"] == ["bridgeLocal/ether2"]
     assert "pendingPortPairs" not in load_infrastructure_map(path)
     raw["nodes"][2]["ports"].pop()
     raw["links"][2]["portEvidence"].insert(0, cable)

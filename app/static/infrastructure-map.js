@@ -123,23 +123,38 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const summary = panel.querySelector('summary');
     const list = panel.querySelector('ul');
     const more = panel.querySelector('small');
-    const {pendingPortPairTotal = 0, pendingPortPairs = []} = data;
-    panel.hidden = view !== 'switches' || !pendingPortPairTotal;
+    const {pendingPortPairTotal = 0, pendingPortPairs = [],
+      lacpPartnerInterfaceGapTotal = 0, lacpPartnerInterfaceGaps = []} = data;
+    const total = pendingPortPairTotal + lacpPartnerInterfaceGapTotal;
+    panel.hidden = view !== 'switches' || !total;
     if (panel.hidden) return;
     summary.textContent = 'Пары портов без подтверждения · ' + pendingPortPairTotal;
-    list.replaceChildren(...pendingPortPairs.map(({a, b, nameA, nameB, portA, portB}) => {
-      const side = (id, name, port) => {
-        if (port && byId.get(id)?.ports?.some(item => portKeys(item).includes(portKey(port)))) {
-          return switchPortButton(id, name, port);
-        }
-        return make('span', name + ' · ' + (port || 'порт неизвестен'));
-      };
+    if (lacpPartnerInterfaceGapTotal) summary.append(' · Интерфейсы LACP · ' + lacpPartnerInterfaceGapTotal);
+    const side = (id, name, port) => {
+      if (port && byId.get(id)?.ports?.some(item => portKeys(item).includes(portKey(port)))) {
+        return switchPortButton(id, name, port);
+      }
+      return make('span', name + ' · ' + (port || 'порт неизвестен'));
+    };
+    const pending = pendingPortPairs.map(({a, b, nameA, nameB, portA, portB, observedSources = [], lldpPortIds = []}) => {
       const item = make('li');
       item.append(side(a, nameA, portA), ' ↔ ', side(b, nameB, portB));
+      const evidence = observedSources.map(source => source === 'netctl FDB' ? 'MAC на порту' : source);
+      if (lldpPortIds.length) evidence.push('LLDP Port ID ' + lldpPortIds.join(', '));
+      if (evidence.length) item.append(make('small', evidence.join(' · ')));
       return item;
-    }));
-    more.hidden = pendingPortPairs.length >= pendingPortPairTotal;
-    more.textContent = `Показано ${pendingPortPairs.length} из ${pendingPortPairTotal}`;
+    });
+    const lacp = lacpPartnerInterfaceGaps.map(({name, switchId, aggregate, switchPort, partnerPort}) => {
+      const item = make('li');
+      item.append(side(switchId, byId.get(switchId)?.name || switchId, switchPort),
+        ` ↔ ${name} · LACP ${aggregate} · порт партнёра ${partnerPort}`,
+        make('small', 'Имя интерфейса на стороне партнёра неизвестно'));
+      return item;
+    });
+    list.replaceChildren(...pending, ...lacp);
+    const shown = pending.length + lacp.length;
+    more.hidden = shown >= total;
+    more.textContent = `Показано ${shown} из ${total}`;
   }
   function renderSnapshotHeader() {
     source.replaceChildren();

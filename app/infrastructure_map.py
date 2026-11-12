@@ -1651,6 +1651,16 @@ def _topology_port_pairs(nodes: dict, links: list[dict], host_ids: set[str] | No
     return counts, inventory_pairs, alerts, [pending[key] for key in sorted(pending)]
 
 
+def _lacp_partner_interface_gaps(nodes: dict) -> list[dict]:
+    return [
+        {"id": node["id"], "name": node["name"], "switchId": report["switchId"],
+         "aggregate": report["aggregate"], "switchPort": member["name"],
+         "partnerPort": member["partnerPort"], "checkedAt": member["checkedAt"]}
+        for node in nodes.values() for report in node.get("lacpHealth", []) for member in report["members"]
+        if member.get("partnerInterfaceState") == "unconfirmed"
+    ]
+
+
 def summarize_topology(graph: dict) -> dict:
     nodes = {node["id"]: node for node in graph["nodes"]}
     counts, inventory_pairs, alerts, pending = _topology_port_pairs(nodes, graph["links"])
@@ -1665,13 +1675,7 @@ def summarize_topology(graph: dict) -> dict:
     ]
     lacp = [{"id": node["id"], "name": node["name"], **report}
             for node in nodes.values() for report in node.get("lacpHealth", [])]
-    lacp_gaps = [
-        {"id": report["id"], "name": report["name"], "switchId": report["switchId"],
-         "aggregate": report["aggregate"], "switchPort": member["name"],
-         "partnerPort": member["partnerPort"], "checkedAt": member["checkedAt"]}
-        for report in lacp for member in report["members"]
-        if member.get("partnerInterfaceState") == "unconfirmed"
-    ]
+    lacp_gaps = _lacp_partner_interface_gaps(nodes)
     downstream = [{"id": node["id"], "name": node["name"], **node["downstream"]}
                   for node in nodes.values() if "downstream" in node]
     return {**metadata, "topologyAudit": {"directLinks": counts, "pendingTotal": len(pending),
@@ -2462,7 +2466,8 @@ def load_infrastructure_map(
         "availability": "missing", "snapshotAt": None, "nodes": [], "links": [],
         "clusterId": "", "nodeOrder": [], "overviewGuests": [], "switchKinds": list(NETWORK_KINDS), "git": "",
         **({"guestAttachments": {}, "servicePaths": {}, "servicePorts": {},
-            "pendingPortPairTotal": 0, "pendingPortPairs": []} if include_guest_attachments else {}),
+            "pendingPortPairTotal": 0, "pendingPortPairs": [],
+            "lacpPartnerInterfaceGapTotal": 0, "lacpPartnerInterfaceGaps": []} if include_guest_attachments else {}),
     }
     try:
         with path.open("rb") as handle:
@@ -2715,10 +2720,18 @@ def load_infrastructure_map(
     if include_guest_attachments:
         attachments = _map_attachments(nodes, links, now)
         _, _, _, pending = _topology_port_pairs(nodes, links)
+        lacp_gaps = _lacp_partner_interface_gaps(nodes)
         attachments.update(
             pendingPortPairTotal=len(pending),
-            pendingPortPairs=[{key: row[key] for key in ("a", "b", "nameA", "nameB", "portA", "portB")}
-                              for row in pending[:64]],
+            pendingPortPairs=[
+                {**{key: row[key] for key in ("a", "b", "nameA", "nameB", "portA", "portB")},
+                 "observedSources": sorted({reading["source"] for reading in row["observedPaths"]}),
+                 "lldpPortIds": sorted({peer["portId"] for peers in row.get("lldpPeers", {}).values()
+                                        for peer in peers if peer.get("portId")})}
+                for row in pending[:64]
+            ],
+            lacpPartnerInterfaceGapTotal=len(lacp_gaps),
+            lacpPartnerInterfaceGaps=lacp_gaps[:64],
         )
     return {
         **empty, "availability": "stale" if now - stamp > MAX_AGE else "ready",
