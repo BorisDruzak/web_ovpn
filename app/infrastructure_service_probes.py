@@ -25,12 +25,14 @@ import dns.rcode
 TIMEOUT = 3
 HTTP_BODY_LIMIT = 32 * 1024
 SIP_OPTIONS_WAIT = (0.5, 1.0, 1.5)
+IPMI_PORT = 623
+RMCP_ASF_HEADER = bytes.fromhex("0600ff06000011be")
 PROBE_METHODS = {
     "http": "HTTP", "https": "HTTPS", "dns": "DNS", "ldap": "LDAP", "smb": "SMB2",
     "smb_mount": "SMB Mount", "zabbix_api": "Zabbix API", "postgresql": "PostgreSQL SSLRequest",
     "openvpn_management": "OpenVPN Management", "openvpn_tunnel": "OpenVPN TUN",
     "sip_options": "SIP OPTIONS (UDP)", "icmp": "ICMP", "vlan_transit": "ICMP · VLAN",
-    "wireguard_policy": "Маршрут · WireGuard",
+    "wireguard_policy": "Маршрут · WireGuard", "ipmi_lan": "IPMI LAN (UDP)",
 }
 
 
@@ -473,8 +475,8 @@ def _enable_udp_error_queue(connection: socket.socket, family: int) -> tuple[int
     return level, option
 
 
-def _sip_udp_failure(connection: socket.socket, option: tuple[int, int] | None,
-                     family: int, ip: str, port: int, error: OSError) -> dict:
+def _udp_failure(connection: socket.socket, option: tuple[int, int] | None,
+                 family: int, ip: str, port: int, error: OSError) -> dict:
     fallback = {"state": "unknown", "reason": "connection_refused" if isinstance(error, ConnectionRefusedError)
                 else "transport_error"}
     if option is None:
@@ -503,6 +505,41 @@ def _sip_udp_failure(connection: socket.socket, option: tuple[int, int] | None,
             return {"state": "unreachable", "reason": "icmp_port_unreachable", "errorSource": offender}
         return {"state": "unknown", "reason": "icmp_rejected", "errorSource": offender}
     return fallback
+
+
+def _ipmi_lan(spec: dict) -> dict:
+    if spec.get("port") != IPMI_PORT or type(spec["port"]) is not int:
+        return {"state": "unknown"}
+    try:
+        ip = ipaddress.ip_address(spec.get("ip"))
+    except ValueError:
+        return {"state": "unknown"}
+    family = socket.AF_INET if ip.version == 4 else socket.AF_INET6
+    tag = uuid.uuid4().bytes[0]
+    request = RMCP_ASF_HEADER + bytes((0x80, tag, 0, 0))
+    reply_prefix = RMCP_ASF_HEADER + bytes((0x40, tag, 0, 16))
+    result = {"state": "unknown", "reason": "timeout"}
+    try:
+        with socket.socket(family, socket.SOCK_DGRAM) as connection:
+            connection.settimeout(TIMEOUT)
+            error_option = _enable_udp_error_queue(connection, family)
+            connection.connect((str(ip), IPMI_PORT))
+            try:
+                connection.sendall(request)
+                deadline = monotonic() + TIMEOUT
+                while (remaining := deadline - monotonic()) > 0:
+                    connection.settimeout(remaining)
+                    response = connection.recv(64)
+                    if len(response) == 28 and response.startswith(reply_prefix) and response[20] & 0x80:
+                        return {"state": "reachable"}
+                    result["reason"] = "unexpected_response"
+            except TimeoutError:
+                return result
+            except OSError as exc:
+                return _udp_failure(connection, error_option, family, str(ip), IPMI_PORT, exc)
+    except OSError:
+        return {"state": "unknown", "reason": "transport_error"}
+    return result
 
 
 def _sip_response_code(response: bytes, transaction: str) -> int | None:
@@ -575,7 +612,7 @@ def _sip_options(spec: dict) -> dict:
                 except TimeoutError:
                     continue
                 except OSError as exc:
-                    return {**_sip_udp_failure(connection, error_option, family, ip, port, exc), "attempts": attempts}
+                    return {**_udp_failure(connection, error_option, family, ip, port, exc), "attempts": attempts}
             return {**incomplete, "attempts": attempts}
     except TimeoutError:
         return {"state": "unknown", "reason": "timeout"}
@@ -881,6 +918,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 details = _openvpn_tunnel(spec)
             elif protocol == "sip_options":
                 details = _sip_options(spec)
+            elif protocol == "ipmi_lan":
+                details = _ipmi_lan(spec)
             elif protocol == "dns":
                 details = _dns(spec)
             elif protocol == "icmp":
@@ -910,7 +949,7 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 "port": valid_port,
                 "path": spec.get("path") if protocol in {"http", "https", "zabbix_api"} else None,
                 "target": spec.get("ip") if not skip_reason and (
-                    protocol in {"icmp", "vlan_transit", "sip_options", "zabbix_api", "postgresql", "dns", "smb"}
+                    protocol in {"icmp", "vlan_transit", "sip_options", "ipmi_lan", "zabbix_api", "postgresql", "dns", "smb"}
                     or "probeTargetIP" in node
                 ) else None,
                 "checkedAt": datetime.now(timezone.utc).isoformat(),

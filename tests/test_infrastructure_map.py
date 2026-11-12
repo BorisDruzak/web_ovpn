@@ -4063,6 +4063,60 @@ def test_icmp_diagnostics_distinguish_echo_silence_and_probe_error(monkeypatch):
     assert "raw output" not in json.dumps(checks)
 
 
+def test_ipmi_lan_requires_a_matching_rmcp_pong_with_ipmi_support(monkeypatch):
+    from app import infrastructure_service_probes as probes
+    from app.infrastructure_map import _public_node
+
+    address = "192.0.2.8"
+    responses = []
+    destinations = []
+
+    class Datagram:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def settimeout(self, timeout):
+            pass
+
+        def connect(self, destination):
+            destinations.append(destination)
+
+        def sendall(self, request):
+            assert request[:9] == bytes.fromhex("0600ff06000011be80")
+            assert request[10:] == b"\x00\x00"
+            self.tag = request[9]
+
+        def recv(self, size):
+            if not responses:
+                raise TimeoutError
+            tag_delta, supported_entities = responses.pop(0)
+            return (bytes.fromhex("0600ff06000011be40")
+                    + bytes(((self.tag + tag_delta) % 256, 0, 16))
+                    + bytes(8) + bytes((supported_entities,)) + bytes(7))
+
+    monkeypatch.setattr(probes.socket, "socket", lambda *args: Datagram())
+
+    def check(port=623, *, confirmed=True):
+        node = {"id": "bmc-ipmi", "kind": "Сервис", "probeTargetIP": address if confirmed else None}
+        probes.apply_service_probes([node], {node["id"]: [{"type": "ipmi_lan", "ip": address, "port": port}]})
+        return _public_node(node, datetime.now(timezone.utc))["serviceChecks"][0]
+
+    responses.extend([(1, 0x81), (0, 0x81)])
+    result = check()
+    assert (result["method"], result["state"], result["target"], result["port"]) == (
+        "IPMI LAN (UDP)", "reachable", address, 623,
+    )
+    assert check()["reason"] == "timeout"
+    responses.extend([(1, 0x81), (0, 0x01)])
+    assert check()["reason"] == "unexpected_response"
+    assert check(port=443)["state"] == "unknown"
+    assert check(confirmed=False)["reason"] == "probe_target_unconfirmed"
+    assert destinations == [(address, 623)] * 3
+
+
 def test_sip_options_validates_transaction_and_treats_silence_as_unknown(monkeypatch):
     import ipaddress
     import struct
