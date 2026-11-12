@@ -134,6 +134,31 @@ class MikroTikSshDriver(NetworkDriver):
         )
         return result.returncode == 0 and re.search(r"\bsent=1\s+received=1\b", result.stdout) is not None
 
+    def pppoe_interfaces(self) -> list[dict[str, Any]]:
+        # A full PPPoE print on RouterOS 6 can include credentials.
+        query = (
+            ':foreach i in=[/interface pppoe-client find] do={'
+            ':local n [/interface pppoe-client get $i name]; '
+            ':local p [/interface pppoe-client get $i interface]; '
+            ':put ($n . "|" . $p . "|" . [/interface get $i running] . "|" . [/interface get $i disabled])}'
+        )
+        target = f"{self.source['username']}@{self.source['host']}"
+        result = subprocess.run([*self._ssh_base(), target, query], capture_output=True, text=True,
+                                timeout=int(self.source.get("ssh_connect_timeout") or 8) + 3, check=False)
+        if result.returncode != 0:
+            raise RuntimeError("RouterOS PPPoE observation failed")
+        interfaces = []
+        for line in result.stdout.splitlines()[:64]:
+            parts = line.strip().split("|")
+            if len(parts) != 4:
+                continue
+            name, parent, running, disabled = parts
+            if (all(re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}", value) for value in (name, parent))
+                    and running in ("true", "false", "yes", "no") and disabled in ("true", "false", "yes", "no")):
+                interfaces.append({"name": name, "parent": parent, "running": running in ("true", "yes"),
+                                   "disabled": disabled in ("true", "yes")})
+        return interfaces
+
     def collect(self, include_connections: bool = False) -> dict[str, Any]:
         raw: dict[str, Any] = {}
         failed_path_fact_keys: set[str] = set()

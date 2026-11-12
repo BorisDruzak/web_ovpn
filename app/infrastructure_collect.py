@@ -43,8 +43,8 @@ from .infrastructure_map import (
     BACKUP_PROBE_METHOD, BACKUP_SERVICE_ID, GUEST_IO_MAX_AGE,
     CLUSTER_HEALTH_METHODS, CLUSTER_KIND, INTERFACE_NAME, MAX_DOWNSTREAM_SWITCHES, MAX_ROUTER_NEIGHBORS,
     MAX_SNAPSHOT_BYTES, NETWORK_KINDS,
-    PVE_DISK_DEVICE, PVE_STORAGE_ID, RECIPROCAL_MAC_SOURCE,
-    SHARED_LLDP_KIND, SHARED_LLDP_SOURCE, STP_ROOT_PATH_MAX_AGE,
+    PPPOE_METHOD, PPPOE_SOURCE, PVE_DISK_DEVICE, PVE_STORAGE_ID, RECIPROCAL_MAC_SOURCE,
+    SERVICE_PROBE_MAX_AGE, SHARED_LLDP_KIND, SHARED_LLDP_SOURCE, STP_ROOT_PATH_MAX_AGE,
     index_port_states, observation_is_fresh, port_label_key,
     project_hypervisor_disks, project_hypervisor_lvm_thin, project_hypervisor_zfs,
 )
@@ -659,6 +659,42 @@ def _bridge_attachment_port(address: str | None, source: str, bridge: str, netwo
         ))
         return port, observed.isoformat()
     return None
+
+
+def _pppoe_wans(context: dict) -> list[dict]:
+    return [wan for wan in context.get("wan", []) if wan.get("gateway") == "pppoe_peer"
+            and isinstance(wan.get("interface"), str) and INTERFACE_NAME.fullmatch(wan["interface"])
+            and wan.get("device")]
+
+
+def _collect_pppoe(context: dict, sources: list[dict]) -> dict:
+    devices = {wan["device"] for wan in _pppoe_wans(context)}
+    addresses = {row["management_ip"] for row in context.get("devices", [])
+                 if row["id"] in devices and row.get("management_ip")}
+    targets = []
+    for source in sources:
+        if not source.get("enabled") or source.get("driver") != "mikrotik_ssh":
+            continue
+        stable_id = (source.get("driver_options") or {}).get("intent_stable_id")
+        matches = stable_id in devices if stable_id else source.get("host") in addresses
+        if matches:
+            targets.append(source)
+    if not targets:
+        return {}
+    try:
+        secrets = load_secrets()
+    except (OSError, ValueError):
+        return {}
+
+    def read(source):
+        try:
+            interfaces = legacy_driver_for(source, secrets).pppoe_interfaces()
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+            return source["name"], {}
+        return source["name"], {"checkedAt": datetime.now(timezone.utc).isoformat(), "interfaces": interfaces}
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        return dict(pool.map(read, targets))
 
 
 def _collect_ipsec_policies(sources: list[dict], configured: dict) -> dict:
@@ -1380,6 +1416,25 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                                             stp["designatedPortId"]), [])
             if len(matches) == 1:
                 stp["designatedPortName"], stp["designatedPortCheckedAt"] = matches[0]
+    for wan in _pppoe_wans(context):
+        router, session = wan["device"], wan["interface"]
+        if router not in nodes:
+            continue
+        item = node("wan:" + wan["id"], f"PPPoE · {session}", "Сервис", nodes[router]["site"], "UI_VPN")
+        edge(router, item["id"], "Размещение", "GitHub")
+        readings = [(sample["checkedAt"], row) for name, sample in network.get("pppoe", {}).items()
+                    if source_nodes.get(name) == router
+                    and observation_is_fresh(sample.get("checkedAt"), now, max_age=SERVICE_PROBE_MAX_AGE)
+                    for row in sample["interfaces"] if row["name"] == session]
+        check = {**_observation("unknown", "UI_VPN", PPPOE_METHOD, now.isoformat()), "required": True}
+        if len(readings) == 1:
+            (checked_at, row), = readings
+            status = "disabled" if row["disabled"] else "connected" if row["running"] else "disconnected"
+            check.update(state="reachable" if status == "connected" else "unreachable", checkedAt=checked_at,
+                         pppoe={"session": session, "parent": row["parent"], "state": status})
+            edge(router, item["id"], "Цель проверки", PPPOE_SOURCE, ports=(row["parent"], session), at=checked_at)
+        item["serviceChecks"] = [check]
+        item["reachability"] = _observation(check["state"], "Проверка сервиса", PPPOE_METHOD, check["checkedAt"])
     features = {item["id"]: item for item in context.get("features", []) if item.get("kind") == "policy_based_ipsec"}
     segments = {item["id"]: item["cidr"] for item in context.get("segments", []) if item.get("cidr")}
     for feature_id, spec in bindings.get("ipsec_links", {}).items():
@@ -2664,6 +2719,7 @@ def main() -> int:
             network = {}
         else:
             asyncio.run(_check_declared_switch_ports(context, network, pve, datetime.now(timezone.utc)))
+            network["pppoe"] = _collect_pppoe(context, network["sources"])
             if lacp_links:
                 network["lacp"] = asyncio.run(_collect_lacp(network, lacp_links, datetime.now(timezone.utc)))
             network["stp_root_paths"], network["stp_designated_ports"] = asyncio.run(

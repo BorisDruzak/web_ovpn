@@ -27,6 +27,8 @@ STP_ROOT_PATH_MAX_AGE = timedelta(minutes=5)
 PORT_LINK_CHECK_MAX_AGE = timedelta(minutes=5)
 ROUTER_NEIGHBOR_MAX_AGE = timedelta(minutes=10)
 MAX_ROUTER_NEIGHBORS = 16
+PPPOE_METHOD = "Сессия PPPoE"
+PPPOE_SOURCE = "RouterOS · PPPoE"
 RESOURCE_CAPACITY_MAX_AGE = timedelta(minutes=5)
 GUEST_IO_MAX_AGE = timedelta(minutes=5)
 LACP_HEALTH_MAX_AGE = timedelta(minutes=5)
@@ -385,6 +387,12 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         "target": _network_address(check.get("target")), "via": _network_address(check.get("via")),
         "path": path if re.fullmatch(r"/[A-Za-z0-9._/-]{0,159}", path) and not path.startswith("//") else "",
     }
+    pppoe = check.get("pppoe")
+    if (result["method"] == PPPOE_METHOD and not result["stale"] and isinstance(pppoe, dict)
+            and pppoe.get("state") in ("connected", "disconnected", "disabled")):
+        session, parent = _text(pppoe.get("session"), 32), _text(pppoe.get("parent"), 32)
+        if INTERFACE_NAME.fullmatch(session) and INTERFACE_NAME.fullmatch(parent):
+            result["pppoe"] = {"session": session, "parent": parent, "state": pppoe["state"]}
     reason = check.get("reason")
     if reason == "probe_configuration" and result["source"] == "UI_VPN" and result["method"] == "Настройки проверки":
         result["reason"] = reason
@@ -1377,7 +1385,7 @@ def summarize_services(graph: dict) -> dict:
         checks.extend(
             {"check": check["method"], "status": check_status.get(check["state"], "unknown"),
              "required": check.get("required") is True,
-             **{key: check[key] for key in ("source", "checkedAt", "stale", "reason", "path", "port", "target")
+             **{key: check[key] for key in ("source", "checkedAt", "stale", "reason", "path", "port", "target", "pppoe")
                 if key in check and check[key] is not None and check[key] != ""}}
             for check in node["serviceChecks"] if check.get("required") or (
                 state == "unknown" and check.get("supplemental") and check["state"] != "reachable"
@@ -1543,7 +1551,8 @@ def load_infrastructure_map(
                     "a": _text(report.get("a"), 64), "b": _text(report.get("b"), 64), "source": source,
                     "at": observed.isoformat() if observed else None,
                     "confirmed": report.get("confirmed") is True and (
-                        source == "GitHub" or observation_is_fresh(report.get("at"), now)),
+                        source == "GitHub" or observation_is_fresh(
+                            report.get("at"), now, max_age=SERVICE_PROBE_MAX_AGE if source == PPPOE_SOURCE else MAX_AGE)),
                 })
                 paired = edge["kind"] == "Сетевое соединение" or source in {RECIPROCAL_MAC_SOURCE, "netctl FDB + Proxmox"}
                 observed_attachment = (source in {"netctl FDB", "MikroTik · ARP", "MikroTik · ARP + FDB"}
@@ -1610,7 +1619,9 @@ def load_infrastructure_map(
                                 **({"configuredOnly": True} if switch_uplink.get("configuredOnly") is True else {}),
                             }
             confirmed = row.get("confirmed") is True
-            if edge["source"] in {"netctl", "LLDP UI_VPN", "LLDP · двустороннее", "netctl FDB",
+            if edge["source"] == PPPOE_SOURCE:
+                confirmed = confirmed and observation_is_fresh(row.get("observedAt"), now, max_age=SERVICE_PROBE_MAX_AGE)
+            elif edge["source"] in {"netctl", "LLDP UI_VPN", "LLDP · двустороннее", "netctl FDB",
                                   "netctl FDB + Proxmox", "Proxmox", "SNMP LACP + ARP", "MikroTik · ARP",
                                   "MikroTik · ARP + FDB", RECIPROCAL_MAC_SOURCE, SHARED_LLDP_SOURCE} and row.get("observedAt"):
                 confirmed = confirmed and observation_is_fresh(row["observedAt"], now)

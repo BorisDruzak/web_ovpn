@@ -1079,6 +1079,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           check.backupMaxAgeHours && 'Порог ' + check.backupMaxAgeHours + ' ч'].filter(Boolean).map(text => ' · ' + text).join('');
         const vlan = check.vlanTransit;
         const wireguard = check.wireguardPolicy;
+        const pppoe = check.pppoe;
         const policy = wireguard ? [wireguard.ingress && 'Вход ' + wireguard.ingress,
           wireguard.mark !== undefined && 'метка 0x' + wireguard.mark.toString(16),
           wireguard.table && 'таблица ' + wireguard.table,
@@ -1090,13 +1091,17 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const confirmed = ['Маршрут', 'Маршрут · WireGuard', 'OpenVPN TUN', 'SMB Mount', 'Копия Proxmox']
           .includes(check.method) ? 'Подтверждён' :
           node.id === data.clusterId ? 'В норме' : 'Отвечает';
-        const result = check.skipped ? 'Не запущена' :
-          ({reachable:confirmed, unreachable:'Сбой проверки'}[check.state] ?? 'Нет подтверждения');
+        const sessionState = pppoe && {
+          connected: 'Сессия поднята', disconnected: 'Сессия разорвана', disabled: 'Сессия отключена',
+        }[pppoe.state];
+        const result = sessionState ?? (check.skipped ? 'Не запущена' :
+          ({reachable:confirmed, unreachable:'Сбой проверки'}[check.state] ?? 'Нет подтверждения'));
         const reason = check.responseCode ? 'SIP ' + check.responseCode : reasons[check.reason];
         const errorSource = check.errorSource ? ' от ' + check.errorSource : '';
         const gatewayLabel = check.method === 'Маршрут' && check.state !== 'reachable' ? 'ожидаемый шлюз' : 'через';
         let gateway = check.via ? ' · ' + gatewayLabel + ' ' + check.via : '';
         if (check.observedVia) gateway = ' ' + check.observedVia + gateway;
+        if (pppoe?.parent) gateway += ' · Интерфейс ' + pppoe.parent;
         const management = [
           check.configuredPort && 'настроен UDP/' + check.configuredPort,
           check.daemonReady === true && 'демон CONNECTED',

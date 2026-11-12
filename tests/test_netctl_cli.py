@@ -3047,6 +3047,24 @@ def test_mikrotik_ssh_collection_preserves_interface_status_flags(monkeypatch):
     ]
 
 
+def test_mikrotik_ssh_pppoe_observation_requests_only_allowed_fields(monkeypatch):
+    import subprocess
+
+    from netctl.drivers.mikrotik_ssh import MikroTikSshDriver
+
+    def fake_run(command, **kwargs):
+        query = command[-1]
+        assert " print" not in query and "password" not in query and " user" not in query
+        assert "[/interface pppoe-client get $i interface]" in query
+        return subprocess.CompletedProcess(command, 0, stdout="pppoe-out1|ether1-wan|true|false\ninvalid row\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    driver = MikroTikSshDriver({"host": "192.0.2.1", "username": "observer"}, {})
+    assert driver.pppoe_interfaces() == [
+        {"name": "pppoe-out1", "parent": "ether1-wan", "running": True, "disabled": False},
+    ]
+
+
 def test_normalizer_never_assigns_online_from_router_dhcp_or_arp():
     """Letting any normalizer branch emit online would bypass the active-probe projection."""
     from netctl.normalizer import normalize_hosts

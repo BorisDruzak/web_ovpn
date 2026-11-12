@@ -3712,6 +3712,44 @@ def test_router_neighbor_table_is_scoped_to_one_live_port_and_never_confirms_a_p
     assert "routerNeighbors" not in expired["nodes"][0]["ports"][0]
 
 
+def test_pppoe_wan_uses_live_session_and_keeps_physical_confirmation_separate(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    context = {"devices": [{"id": "rb", "name": "Router", "kind": "router"}],
+               "wan": [{"id": "uplink", "device": "rb", "interface": "pppoe-out1", "gateway": "pppoe_peer"}]}
+    session = {"name": "pppoe-out1", "parent": "ether1-wan", "running": True, "disabled": False}
+    network = {"sources": [{"name": "router", "driver": "mikrotik_ssh", "enabled": True,
+                           "driver_options": {"intent_stable_id": "rb"}}],
+               "pppoe": {"router": {"checkedAt": at, "interfaces": [session]}}}
+    path = tmp_path / "map.json"
+
+    def read(public_at=now):
+        path.write_text(json.dumps(build_graph(context, network, {}, {}, {}, now)), encoding="utf-8")
+        result = load_infrastructure_map(path, public_at)
+        return next(n for n in result["nodes"] if n["id"] == "wan:uplink"), result["links"]
+
+    service, links = read()
+    assert service["mapStatus"] == "ok"
+    check, = service["serviceChecks"]
+    assert check["required"] and check["pppoe"] == {"session": "pppoe-out1", "parent": "ether1-wan", "state": "connected"}
+    assert any(r["a"] == "ether1-wan" and r["b"] == "pppoe-out1" for e in links for r in e["portEvidence"])
+    assert not any("pairEvidence" in r for e in links for r in e["portEvidence"])
+    session["running"] = False
+    assert read()[0]["mapStatus"] == "critical"
+    session["disabled"] = True
+    service, _ = read()
+    assert service["mapStatus"] == "critical"
+    assert service["serviceChecks"][0]["pppoe"]["state"] == "disabled"
+    service, links = read(now + timedelta(minutes=6))
+    assert service["mapStatus"] == "unknown"
+    assert not next(e for e in links if e["source"] == "RouterOS · PPPoE")["confirmed"]
+    network["pppoe"].clear()
+    assert read()[0]["mapStatus"] == "unknown"
+
+
 def test_route_evidence_is_scoped_and_does_not_mark_service_available():
     from app.infrastructure_collect import build_graph
 
