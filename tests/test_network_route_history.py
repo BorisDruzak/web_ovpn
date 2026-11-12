@@ -59,7 +59,7 @@ def test_history_preserves_evidence_and_isolates_manual_owners(db):
 
     assert [row["trigger"] for row in rows] == ["scheduled", "manual"]
     assert [{key: row[key] for key in own} for row in rows] == [
-        {**scheduled, "result": {**scheduled["result"], "path_changes": []}}, own,
+        {**scheduled, "result": {**scheduled["result"], "path_changes": [], "probe_changes": []}}, own,
     ]
     assert all("owner" not in row and datetime.fromisoformat(row["stored_at"]).tzinfo for row in rows)
     assert list_route_runs(db, owner="user:reader", profile="wan-a", limit=1) == rows[:1]
@@ -184,3 +184,29 @@ def test_scheduled_history_does_not_skip_past_incomparable_readings(
 
     [latest] = list_route_runs(db, owner="user:reader", profile="wan-a", limit=1)
     assert latest["result"]["path_changes"] == []
+
+
+def test_scheduled_history_records_probe_status_changes_with_unchanged_config(db):
+    from app.network_route_history import list_route_runs, persist_route_run
+
+    now = datetime.now(UTC)
+    for index, status, digest in [
+        (0, "reachable", "a" * 64), (1, "unreachable", "a" * 64), (2, "unreachable", "a" * 64),
+        (3, "timeout", "a" * 64), (4, "reachable", "b" * 64), (5, "unavailable", "b" * 64),
+    ]:
+        result = _first_hop_result("wan-a", now + timedelta(seconds=index), None,
+                                   status=status, config_digest=digest)
+        persist_route_run(db, owner="schedule:", result=result)
+    db.commit()
+    rows = list_route_runs(db, owner="user:reader", profile="wan-a", limit=10)
+    assert [row["result"]["probe_changes"] for row in rows] == [
+        [{"probe_id": "wan", "from": "reachable", "to": "unavailable",
+          "checked_at": (now + timedelta(seconds=5)).isoformat()}],
+        [],
+        [{"probe_id": "wan", "from": "unreachable", "to": "timeout",
+          "checked_at": (now + timedelta(seconds=3)).isoformat()}],
+        [],
+        [{"probe_id": "wan", "from": "reachable", "to": "unreachable",
+          "checked_at": (now + timedelta(seconds=1)).isoformat()}],
+        [],
+    ]

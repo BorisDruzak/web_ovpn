@@ -59,11 +59,12 @@ def _ipsec_evidence(snapshot: dict, probe: RouteProbe) -> dict:
 
 
 def _run_probe(profile_id: str, probe: RouteProbe) -> dict:
+    config_digest = probe.config_digest()
     try:
         if probe.router_source:
             measurement = run_netctl(
                 ["path", "probe", f"--profile={profile_id}", f"--probe={probe.id}",
-                 f"--expected-config={probe.config_digest()}"], timeout=22,
+                 f"--expected-config={config_digest}"], timeout=22,
             ).get("probe")
         elif probe.agent_origin:
             from .network_route_remote import probe_remote_route
@@ -84,6 +85,7 @@ def _run_probe(profile_id: str, probe: RouteProbe) -> dict:
         path_status = "first_hop_matches" if observed_path == probe.expected_first_hop else "first_hop_mismatch"
     return {
         "id": probe.id,
+        "config_digest": config_digest,
         "origin": probe.router_source or probe.agent_origin or "vpn-server",
         "target": probe.target,
         "protocol": probe.protocol,

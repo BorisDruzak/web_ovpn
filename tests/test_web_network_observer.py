@@ -2405,12 +2405,19 @@ def test_route_availability_catalog_execution_and_history(tmp_path, monkeypatch)
     assert client.post(endpoint, headers=headers, json=payload).json()["data"]["status"] == "rate_limited"
     history = client.get(base + "/route-runs", headers=headers, params={"profile": profile_id}).json()["data"]["runs"]
     assert len(history) == 1 and history[0]["result"]["probes"] == data["result"]["probes"]
+    from app import main
+
+    scheduled = {**data, "trigger": "scheduled", "result": {**data["result"], "probe_changes": [
+        {"probe_id": "rtk", "from": "unreachable", "to": "reachable", "checked_at": data["checked_at"]},
+    ]}}
+    monkeypatch.setattr(main, "list_route_runs", lambda *args, **kwargs: [scheduled])
     csrf = login(client)
     response = client.post("/network/diagnostics/checks", data={"csrf_token": csrf, **payload})
     assert response.status_code == 200
     assert "Путь не подтверждён" in response.text and "mikrotik-main" in response.text
     assert "ARP шлюза · reachable" in response.text
     assert "Изменение RTT 0.5 мс · пар 2" in response.text
+    assert "Изменились статусы проб" in response.text and "→ Цель ответила" in response.text
     assert [call[:-1] for call in calls] == [["path", "probe", "--profile=central-wan", "--probe=rtk"]] * 2
 
 

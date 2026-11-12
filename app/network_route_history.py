@@ -13,7 +13,7 @@ from .db import get_sessionmaker
 from .models import NetworkRouteRun, utcnow
 from .network_actions import NETWORK_ACTION_INTERVAL_SECONDS, acquire_network_action
 from .network_probe_profiles import load_probe_profiles
-from .network_route_matrix import run_route_matrix
+from .network_route_matrix import PROBE_STATUSES, run_route_matrix
 
 
 ROUTE_RUN_RETENTION = timedelta(days=14)
@@ -40,7 +40,7 @@ def _first_hop(probe: dict) -> str | None:
         return None
 
 
-def _scheduled_first_hop_changes(db: Session, result: dict, checked_at: datetime) -> list[dict]:
+def _scheduled_changes(db: Session, result: dict, checked_at: datetime) -> dict:
     db.flush()
     previous_json = db.scalar(
         select(NetworkRouteRun.result_json).where(
@@ -49,13 +49,11 @@ def _scheduled_first_hop_changes(db: Session, result: dict, checked_at: datetime
             NetworkRouteRun.checked_at <= checked_at,
         ).order_by(NetworkRouteRun.checked_at.desc(), NetworkRouteRun.id.desc()).limit(1)
     )
+    changes = {"path_changes": [], "probe_changes": []}
     if previous_json is None:
-        return []
+        return changes
 
-    previous_probes = {
-        probe.get("id"): probe for probe in json.loads(previous_json)["result"].get("probes", [])
-    }
-    changes = []
+    previous_probes = {probe.get("id"): probe for probe in json.loads(previous_json)["result"].get("probes", [])}
     for probe in result["result"].get("probes", []):
         probe_id = probe.get("id")
         previous = previous_probes.get(probe_id)
@@ -63,14 +61,15 @@ def _scheduled_first_hop_changes(db: Session, result: dict, checked_at: datetime
             previous.get(key) != probe.get(key) for key in _PROBE_SELECTORS
         ):
             continue
+        event = {"probe_id": probe_id, "checked_at": result["checked_at"]}
         old_hop, new_hop = _first_hop(previous), _first_hop(probe)
         if old_hop and new_hop and old_hop != new_hop:
-            changes.append({
-                "probe_id": probe_id,
-                "from": old_hop,
-                "to": new_hop,
-                "checked_at": result["checked_at"],
-            })
+            changes["path_changes"].append({**event, "from": old_hop, "to": new_hop})
+        old_status, new_status = previous.get("status"), probe.get("status")
+        digest = probe.get("config_digest")
+        if (digest and digest == previous.get("config_digest") and old_status != new_status
+                and old_status in PROBE_STATUSES and new_status in PROBE_STATUSES):
+            changes["probe_changes"].append({**event, "from": old_status, "to": new_status})
     return changes
 
 
@@ -80,8 +79,8 @@ def persist_route_run(db: Session, *, owner: str, result: dict) -> None:
     checked_at = datetime.fromisoformat(result["checked_at"])
     _purge_route_runs(db, stored_at)
     if owner == SCHEDULE_OWNER:
-        changes = _scheduled_first_hop_changes(db, result, checked_at)
-        result = {**result, "result": {**result["result"], "path_changes": changes}}
+        changes = _scheduled_changes(db, result, checked_at)
+        result = {**result, "result": {**result["result"], **changes}}
     row = NetworkRouteRun(
         owner=owner,
         profile=result["target"],
