@@ -52,6 +52,13 @@ Do not paste employee search results, credentials or full logs into unrelated di
 - For profile creation, run `openvpn_preview_client` before `openvpn_generate_client`.
 - Report the API/MCP result plainly and include any `status`, `client`, `profile`, `vpn_ip`, and error details returned by the tool.
 
+## Network checks
+
+- `openvpn_network_diagnostic_checks` lists the registered checks.
+- `openvpn_network_run_check` runs `linux_route`, `asset_route`, `trace_route` or `source_test`. The trace uses a monitored IPv4 target. Report the selected point of observation and distinguish a kernel route lookup, a calculated RouterOS path and observed traceroute hops.
+- `openvpn_network_check_runs` lists recent runs for the authenticated actor.
+- `openvpn_network_interface_history` shows traffic and port errors over the last 24 hours, plus STP changes for switches.
+
 ## Tool Map
 
 - `openvpn_status`: service and NAT status.

@@ -2284,9 +2284,9 @@ def test_network_pages_render_sources_interfaces_routes_and_collect(tmp_path, mo
 
 
 def test_network_interfaces_shows_history_for_selected_source(tmp_path, monkeypatch):
-    client, _ = make_client(tmp_path, monkeypatch)
+    client, headers = make_client(tmp_path, monkeypatch)
     login(client)
-    from app import main
+    from app import api, main
     from netctl.cli import build_parser, dispatch
     from netctl.db import connect
 
@@ -2301,6 +2301,7 @@ def test_network_interfaces_shows_history_for_selected_source(tmp_path, monkeypa
         return original(request, args, **kwargs)
 
     monkeypatch.setattr(main, "net_cli_call", net_cli_call)
+    monkeypatch.setattr(api, "call_netctl", lambda args, **kwargs: net_cli_call(None, args, **kwargs)[0])
     with connect(db_url) as conn:
         conn.execute(
             """INSERT INTO network_sources
@@ -2318,6 +2319,71 @@ def test_network_interfaces_shows_history_for_selected_source(tmp_path, monkeypa
     assert "Недостаточно данных для графика" in page.text
     assert "Ошибка опроса" in page.text
     assert 'value="ether1" selected' in page.text
+    response = client.get(
+        "/api/v1/network/diagnostics/interfaces?source=mikrotik-main&interface=ether1", headers=headers,
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["diagnostics"]["selected"]["key"] == "ether1"
+
+
+def test_network_diagnostics_api_and_ui_share_route_lookup(tmp_path, monkeypatch):
+    client, headers = make_client(tmp_path, monkeypatch)
+    from app import network_checks
+
+    monkeypatch.setattr(network_checks, "lookup_linux_route", lambda ip: {
+        "status": "route_found", "result": {"dev": "eth0", "prefsrc": "192.0.2.1"},
+    })
+    endpoint = "/api/v1/network/diagnostics/checks"
+    assert client.get(endpoint).status_code == 401
+    assert "linux_route" in [entry["check"] for entry in client.get(endpoint, headers=headers).json()["data"]["checks"]]
+    result = client.post(endpoint, headers=headers, json={"check": "linux_route", "destination": "192.0.2.20"})
+    assert result.status_code == 200
+    assert result.json()["data"]["result"]["dev"] == "eth0"
+    runs = client.get("/api/v1/network/diagnostics/runs", headers=headers).json()["data"]["runs"]
+    assert [(run["check"], run["status"], run["target"]) for run in runs] == [
+        ("linux_route", "route_found", "192.0.2.20"),
+    ]
+    bad = client.post(endpoint, headers=headers, json={"check": "linux_route", "destination": "--help"})
+    assert bad.status_code == 422
+    assert client.post(endpoint, headers=headers, json={"check": "shell", "command": "id"}).status_code == 422
+    csrf = login(client)
+    response = client.post("/network/diagnostics/checks", data={
+        "csrf_token": csrf, "operation_key": "test-intent", "check": "linux_route", "destination": "192.0.2.20",
+    })
+    assert response.status_code == 200
+    assert "Маршрут найден" in response.text and "eth0" in response.text
+    assert "Последние запуски" in response.text
+
+
+def test_network_checks_read_scope_does_not_grant_execution(tmp_path, monkeypatch):
+    client, headers = make_client(tmp_path, monkeypatch)
+    from app.config import reset_settings_cache
+
+    monkeypatch.setenv("OPENVPN_WEB_API_PERMISSIONS", "network:read")
+    reset_settings_cache()
+    endpoint = "/api/v1/network/diagnostics/checks"
+    assert client.get(endpoint, headers=headers).status_code == 200
+    assert client.post(endpoint, headers=headers, json={
+        "check": "linux_route", "destination": "192.0.2.20",
+    }).status_code == 403
+
+
+def test_network_active_check_uses_shared_throttle(tmp_path, monkeypatch):
+    client, headers = make_client(tmp_path, monkeypatch)
+    from app import network_checks
+
+    targets = []
+
+    def trace(target):
+        targets.append(str(target))
+        return {"status": "reached", "result": {}}
+
+    monkeypatch.setattr(network_checks, "trace_linux_route", trace)
+    endpoint = "/api/v1/network/diagnostics/checks"
+    payload = {"check": "trace_route", "destination": "192.0.2.20"}
+    assert client.post(endpoint, headers=headers, json=payload).json()["data"]["status"] == "reached"
+    assert client.post(endpoint, headers=headers, json=payload).json()["data"]["status"] == "rate_limited"
+    assert targets == ["192.0.2.20"]
 
 
 def test_sources_page_renders_unknown_without_collect_control(tmp_path, monkeypatch):

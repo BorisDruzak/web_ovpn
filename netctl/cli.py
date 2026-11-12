@@ -286,14 +286,16 @@ def cmd_sources(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
                     if source.get("driver") == "snmp_switch"
                     else str(exc)
                 )
-                conn.execute(
-                    "UPDATE network_sources SET last_status = ?, last_error = ? WHERE id = ?",
-                    ("error", message, source["id"]),
-                )
-                conn.commit()
+                if not args.no_update:
+                    conn.execute(
+                        "UPDATE network_sources SET last_status = ?, last_error = ? WHERE id = ?",
+                        ("error", message, source["id"]),
+                    )
+                    conn.commit()
                 return 1, err(message, source=args.source)
-            conn.execute("UPDATE network_sources SET last_status = ?, last_error = ? WHERE id = ?", ("ok", "", source["id"]))
-            conn.commit()
+            if not args.no_update:
+                conn.execute("UPDATE network_sources SET last_status = ?, last_error = ? WHERE id = ?", ("ok", "", source["id"]))
+                conn.commit()
             if source.get("driver") == "snmp_switch":
                 result = _sanitize_snmp_result(result)
             return 0, ok(source=args.source, result=result)
@@ -708,6 +710,12 @@ def cmd_retention(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
 
 
 def cmd_hosts(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    if args.hosts_command == "inspect" and args.availability_only:
+        with read_context_snapshot(args.db) as conn:
+            host = inspect_host(conn, args.host)
+        if host is None:
+            return 1, err("host not found", host=args.host)
+        return 0, ok(host={"ip": host["ip"], "availability": host.get("availability")})
     if args.hosts_command in {"list", "export", "snapshot-refresh", "snapshot-status"}:
         conn = None
         try:
@@ -1631,6 +1639,7 @@ def build_parser() -> argparse.ArgumentParser:
     inspect.add_argument("source")
     test = sources_sub.add_parser("test")
     test.add_argument("source")
+    test.add_argument("--no-update", action="store_true")
     discover = sources_sub.add_parser("discover")
     discover.add_argument("source")
     disable = sources_sub.add_parser("disable")
@@ -1726,6 +1735,7 @@ def build_parser() -> argparse.ArgumentParser:
     hosts_list.add_argument("--limit", type=int, default=100)
     hosts_inspect = hosts_sub.add_parser("inspect")
     hosts_inspect.add_argument("host")
+    hosts_inspect.add_argument("--availability-only", action="store_true")
 
     tags = sub.add_parser("tags")
     tags_sub = tags.add_subparsers(dest="tags_command", required=True)

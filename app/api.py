@@ -31,6 +31,10 @@ from .endpoint_platform_client import (
 from .netctl_client import NetctlError, run_netctl
 from .netopsctl_client import NetworkControlError, run_network_control
 from .models import NetworkChangeIdempotency, utcnow
+from .network_checks import (
+    CHECKS, SOURCE_PATTERN, NetworkCheck, interface_history_args,
+    list_network_check_runs, run_audited_network_check,
+)
 from .network_observer import list_from as network_list_from, merge_unified_hosts, normalize_netctl_host
 from .network_paths_adapter import get_network_path, list_network_paths
 from .routeros_backups import list_routeros_backups
@@ -1401,6 +1405,39 @@ def api_network_interfaces(actor: str = Depends(require_api_actor), source: str 
     if source:
         args.extend(["--source", source])
     return api_response(call_netctl(args))
+
+
+@router.get("/network/diagnostics/interfaces")
+def api_network_interface_history(
+    source: str = Query(min_length=1, max_length=128, pattern=SOURCE_PATTERN),
+    interface: str = Query(default="", max_length=256, pattern=r"^[^\x00]*$"),
+    actor: str = Depends(require_api_actor),
+):
+    return api_response(call_netctl(interface_history_args(source, interface), timeout=15))
+
+
+@router.get("/network/diagnostics/checks")
+def api_network_checks(actor: str = Depends(require_api_actor)):
+    return api_response({"checks": CHECKS})
+
+
+@router.get("/network/diagnostics/runs")
+def api_network_check_runs(
+    limit: int = Query(default=20, ge=1, le=100),
+    actor: str = Depends(require_api_actor),
+    db: Session = Depends(get_db),
+):
+    return api_response({"runs": list_network_check_runs(db, actor, limit)})
+
+
+@router.post("/network/diagnostics/checks")
+def api_run_network_check(
+    payload: NetworkCheck,
+    request: Request,
+    actor: str = Depends(require_api_actor),
+    db: Session = Depends(get_db),
+):
+    return api_response(run_audited_network_check(db, request, actor, payload))
 
 
 @router.get("/network/routes")

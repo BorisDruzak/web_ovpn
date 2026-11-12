@@ -207,6 +207,29 @@ TOOLS: dict[str, dict[str, Any]] = {
         "List observed router interfaces, optionally filtered by source.",
         {"source": {"type": "string", "default": ""}},
     ),
+    "openvpn_network_interface_history": tool_schema(
+        "Read traffic, port errors and STP changes for the last 24 hours. Without an interface, returns interface choices and STP changes.",
+        {"source": {"type": "string"}, "interface": {"type": "string"},
+         "limit": {"type": "integer", "minimum": 1, "maximum": 300, "default": 24}},
+        ["source"],
+    ),
+    "openvpn_network_diagnostic_checks": tool_schema("List registered network diagnostics and their check IDs."),
+    "openvpn_network_check_runs": tool_schema(
+        "List the authenticated actor's recent network diagnostic runs.",
+        {"limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}},
+    ),
+    "openvpn_network_run_check": tool_schema(
+        "Run a registered network check. linux_route and trace_route require destination (trace_route accepts monitored IPv4 hosts). asset_route requires asset_key and destination. source_test requires a configured source.",
+        {
+            "check": {"type": "string", "enum": ["linux_route", "asset_route", "trace_route", "source_test"]},
+            "destination": {"type": "string", "description": "Destination IPv4 or IPv6 address"},
+            "asset_key": {"type": "string"},
+            "protocol": {"type": "string", "enum": ["tcp", "udp", "icmp"]},
+            "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+            "source": {"type": "string"},
+        },
+        ["check"],
+    ),
     "openvpn_network_routes": tool_schema(
         "List observed router routes, optionally filtered by source.",
         {"source": {"type": "string", "default": ""}},
@@ -731,6 +754,30 @@ def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         return api_request("GET", "/api/v1/network/sources")
     if name == "openvpn_network_interfaces":
         return api_request("GET", _query_path("/api/v1/network/interfaces", [("source", arguments.get("source", ""))]))
+    if name == "openvpn_network_interface_history":
+        limit = arguments.get("limit", 24)
+        if type(limit) is not int or not 1 <= limit <= 300:
+            raise ValueError("limit must be an integer from 1 to 300")
+        if not arguments.get("source"):
+            raise ValueError("source is required")
+        response = api_request("GET", _query_path("/api/v1/network/diagnostics/interfaces", [
+            ("source", arguments["source"]), ("interface", arguments.get("interface", "")),
+        ]))
+        diagnostics = response.get("data", {}).get("diagnostics")
+        if isinstance(diagnostics, dict):
+            points = diagnostics.get("points", [])
+            events = diagnostics.get("stp_events", [])
+            diagnostics["available_points"] = len(points)
+            diagnostics["available_stp_events"] = len(events)
+            diagnostics["points"] = points[-limit:]
+            diagnostics["stp_events"] = events[:limit]
+        return response
+    if name == "openvpn_network_diagnostic_checks":
+        return api_request("GET", "/api/v1/network/diagnostics/checks")
+    if name == "openvpn_network_check_runs":
+        return api_request("GET", _query_path("/api/v1/network/diagnostics/runs", [("limit", arguments.get("limit", 20))]))
+    if name == "openvpn_network_run_check":
+        return api_request("POST", "/api/v1/network/diagnostics/checks", arguments)
     if name == "openvpn_network_routes":
         return api_request("GET", _query_path("/api/v1/network/routes", [("source", arguments.get("source", ""))]))
     if name == "openvpn_network_observations":

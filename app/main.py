@@ -12,9 +12,11 @@ from typing import Any
 from urllib.parse import quote
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -42,6 +44,10 @@ from .models import (
 )
 from .netctl_client import NetctlError, run_netctl
 from .network_actions import acquire_network_action
+from .network_checks import (
+    CHECKS, CHECK_STATUS_LABELS, NETWORK_CHECK_INPUT, host_availability_action_error,
+    interface_history_args, list_network_check_runs, run_audited_network_check,
+)
 from .endpoint_agent_network import (
     attach_endpoint_agent_statuses,
     endpoint_agent_refresh_status,
@@ -2207,18 +2213,6 @@ def canonical_host_ipv4(value: str) -> str:
     return str(address)
 
 
-def host_availability_action_error(host: object, valid_ip: str) -> tuple[int, str] | None:
-    if not isinstance(host, dict) or str(host.get("ip") or "") != valid_ip:
-        return 404, "host target not found"
-    availability = host.get("availability")
-    if (
-        not isinstance(availability, dict)
-        or str(availability.get("state") or "") == "not_monitored"
-    ):
-        return 403, "host target is not monitored"
-    return None
-
-
 @app.post("/network/hosts/{ip}/availability-check")
 async def network_host_availability_check(
     ip: str,
@@ -2553,7 +2547,7 @@ def network_interfaces(request: Request, db: Session = Depends(get_db)):
     diagnostics = {}
     if source:
         history, history_error = net_cli_call(
-            request, ["interfaces", "diagnostics", "--source", source, f"--interface={interface}"],
+            request, interface_history_args(source, interface), timeout=15,
         )
         diagnostics = {"unavailable": True} if history_error else history.get("diagnostics", {})
     return render(
@@ -2563,6 +2557,44 @@ def network_interfaces(request: Request, db: Session = Depends(get_db)):
          "selected_source": source, "diagnostics": diagnostics, "error": error or sources_error},
         db,
     )
+
+
+def render_network_checks(request: Request, db: Session, *, result=None, values=None, error="") -> HTMLResponse:
+    user = current_user(request, db)
+    can_run = user_has_permission(user, "network:diagnose")
+    sources, _ = net_cli_call(request, ["sources", "list"], timeout=10) if can_run else ({}, "")
+    return render(request, "network_checks.html", {
+        "can_run": can_run,
+        "sources": [row for row in sources.get("sources", []) if row.get("enabled")],
+        "result": result,
+        "runs": list_network_check_runs(db, user.username, 12) if user else [],
+        "check_titles": {item["check"]: item["title"] for item in CHECKS},
+        "values": values or {},
+        "status_labels": CHECK_STATUS_LABELS,
+        "error": error,
+    }, db, status_code=422 if error else 200)
+
+
+@app.get("/network/diagnostics", response_class=HTMLResponse)
+def network_checks(request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    return render_network_checks(request, db)
+
+
+@app.post("/network/diagnostics/checks", response_class=HTMLResponse)
+async def run_network_check(request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    form = await request.form()
+    values = {key: value for key, value in form.items() if key not in {"csrf_token", "operation_key"} and value != ""}
+    try:
+        payload = NETWORK_CHECK_INPUT.validate_python(values)
+    except ValidationError:
+        return await run_in_threadpool(
+            render_network_checks, request, db, values=values, error="Проверьте параметры выбранной проверки.",
+        )
+    result = await run_in_threadpool(run_audited_network_check, db, request, user.username, payload)
+    return await run_in_threadpool(render_network_checks, request, db, values=values, result=result)
 
 
 @app.get("/network/routes", response_class=HTMLResponse)

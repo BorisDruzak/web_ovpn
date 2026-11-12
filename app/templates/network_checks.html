@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% block title %}Сетевые проверки{% endblock %}
+{% block page_title %}Сетевые проверки{% endblock %}
+{% block content %}
+<nav class="toolbar" aria-label="Данные сети">
+  <a href="/network/interfaces">История интерфейсов</a>
+  <a href="/network/routes">Таблица маршрутов</a>
+  <a href="/network/paths">Пути VPN</a>
+</nav>
+{% if error %}<div class="alert bad" role="alert">{{ error }}</div>{% endif %}
+{% if result %}
+<section class="card" aria-labelledby="network-check-result">
+  <h2 id="network-check-result">{{ status_labels.get(result.status, result.status) }}</h2>
+  <p>{{ result.target }} · <time datetime="{{ result.checked_at }}">{{ result.checked_at }}</time></p>
+  {% if result.check == 'linux_route' and result.result %}
+  <dl>
+    <dt>Интерфейс</dt><dd>{{ result.result.dev or '—' }}</dd>
+    <dt>Шлюз</dt><dd>{{ result.result.gateway or '—' }}</dd>
+    <dt>Исходный адрес</dt><dd>{{ result.result.prefsrc or result.result.src or '—' }}</dd>
+  </dl>
+  {% elif result.check == 'asset_route' and result.result %}
+  <dl>
+    <dt>Источник данных</dt><dd>{{ result.result.enforcement_source or '—' }}</dd>
+    <dt>Таблица маршрутизации</dt><dd>{{ result.result.selected_routing_table or '—' }}</dd>
+    {% if result.result.unknown_reasons %}<dt>Причины неопределённости</dt>
+    <dd>{{ result.result.unknown_reasons | join(', ') }}</dd>{% endif %}
+  </dl>
+  {% elif result.check == 'trace_route' and result.result %}
+  {% if result.result.timed_out %}<p>Истекло время ожидания ответов.</p>{% endif %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Переход</th><th>Адрес</th><th>Задержка, мс</th></tr></thead>
+      <tbody>
+        {% for hop in result.result.hops %}
+        <tr><td>{{ hop.hop }}</td><td>{{ hop.address or 'Нет ответа' }}</td><td>{{ hop.rtt_ms if hop.rtt_ms is not none else '—' }}</td></tr>
+        {% else %}
+        <tr><td colspan="3">Ответов от промежуточных узлов нет.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+  {% if result.result %}
+  <details>
+    <summary>Данные проверки</summary>
+    <div class="table-wrap"><pre>{{ result.result | tojson(indent=2) }}</pre></div>
+  </details>
+  {% endif %}
+</section>
+{% endif %}
+{% if can_run %}
+<section class="card">
+  <h2>Маршрут VPN-сервера</h2>
+  <p>Показывает, какой интерфейс и шлюз выберет ядро для указанного адреса.</p>
+  <form method="post" action="/network/diagnostics/checks">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <input type="hidden" name="check" value="linux_route">
+    <label for="linux-destination">IP-адрес назначения</label>
+    <input id="linux-destination" name="destination" required maxlength="64" value="{{ values.destination if values.check == 'linux_route' else '' }}">
+    <button class="button" type="submit">Проверить маршрут сервера</button>
+  </form>
+</section>
+<section class="card">
+  <h2>Маршрут от сетевого актива</h2>
+  <p>Рассчитывает прямой путь по наблюдениям Network Observer и правилам RouterOS.</p>
+  <form method="post" action="/network/diagnostics/checks">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <input type="hidden" name="check" value="asset_route">
+    <label for="asset-key">Ключ актива</label>
+    <input id="asset-key" name="asset_key" required maxlength="255" value="{{ values.asset_key or '' }}">
+    <label for="asset-destination">IP-адрес назначения</label>
+    <input id="asset-destination" name="destination" required maxlength="64" value="{{ values.destination if values.check == 'asset_route' else '' }}">
+    <label for="route-protocol">Протокол</label>
+    <select id="route-protocol" name="protocol">
+      {% for protocol in ['tcp', 'udp', 'icmp'] %}
+      <option value="{{ protocol }}"{% if values.protocol == protocol %} selected{% endif %}>{{ protocol | upper }}</option>
+      {% endfor %}
+    </select>
+    <label for="route-port">Порт TCP или UDP</label>
+    <input id="route-port" name="port" type="number" min="1" max="65535" value="{{ values.port or '' }}">
+    <button class="button" type="submit">Рассчитать маршрут актива</button>
+  </form>
+</section>
+<section class="card">
+  <h2>Трассировка до наблюдаемого узла</h2>
+  <p>Показывает ответы на промежуточных переходах от VPN-сервера. Доступна для IPv4-узлов, включённых в мониторинг.</p>
+  <form method="post" action="/network/diagnostics/checks">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <input type="hidden" name="check" value="trace_route">
+    <label for="trace-destination">IPv4-адрес назначения</label>
+    <input id="trace-destination" name="destination" required maxlength="15" value="{{ values.destination if values.check == 'trace_route' else '' }}">
+    <button class="button" type="submit">Запустить трассировку</button>
+  </form>
+</section>
+<section class="card">
+  <h2>Связь с источником Network Observer</h2>
+  {% if sources %}
+  <form method="post" action="/network/diagnostics/checks">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <input type="hidden" name="check" value="source_test">
+    <label for="check-source">Источник</label>
+    <select id="check-source" name="source" required>
+      <option value="">Выберите источник</option>
+      {% for source in sources %}
+      <option value="{{ source.name }}"{% if values.source == source.name %} selected{% endif %}>{{ source.name }}</option>
+      {% endfor %}
+    </select>
+    <button class="button" type="submit">Проверить источник</button>
+  </form>
+  {% else %}
+  <p>Нет доступных источников для проверки.</p>
+  {% endif %}
+</section>
+{% else %}
+<p>Для запуска проверок нужно право «Диагностика и сбор данных».</p>
+{% endif %}
+{% if runs %}
+<section class="card">
+  <h2>Последние запуски</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Время</th><th>Проверка</th><th>Назначение</th><th>Результат</th></tr></thead>
+      <tbody>
+        {% for run in runs %}
+        <tr>
+          <td><time datetime="{{ run.checked_at }}">{{ run.checked_at }}</time></td>
+          <td>{{ check_titles[run.check] }}</td><td>{{ run.target }}</td>
+          <td>{{ status_labels.get(run.status, run.status) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+{% endblock %}
