@@ -78,7 +78,10 @@
           <td class="mono">{{ policy.src_address }}</td>
           <td class="mono">{{ policy.dst_address }}</td>
           <td>{{ policy.ph2_state or "-" }}{% if policy.ph2_count %} / {{ policy.ph2_count }}{% endif %}</td>
-          <td class="mono">{{ policy.sa_src_address or "-" }} -> {{ policy.sa_dst_address or "-" }}</td>
+          <td class="mono">{{ policy.sa_src_address or "-" }} -> {{ policy.sa_dst_address or "-" }}
+            {% if policy.local_sa_address_status == 'missing' %}<br>Локальный IPv4 для SA не назначен{% endif %}
+            {% if policy.local_sa_address_status == 'unavailable' %}<br>Назначение локального IPv4 для SA не проверено{% endif %}
+          </td>
           <td>{{ policy.comment or "-" }}</td>
         </tr>
         {% else %}

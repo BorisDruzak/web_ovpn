@@ -3012,6 +3012,41 @@ def test_mikrotik_api_policy_read_only_queries_policy(monkeypatch):
     assert queries == [(client, *driver.IPSEC_PATHS["policies"])]
 
 
+@pytest.mark.parametrize("address_read_fails", [False, True])
+def test_mikrotik_api_ipsec_report_checks_local_sa_address(monkeypatch, address_read_fails):
+    from contextlib import nullcontext
+
+    from netctl.drivers.mikrotik_api import MikroTikApiDriver
+
+    driver = MikroTikApiDriver({}, {})
+    client = object()
+    policies = [
+        {"tunnel": "true", "action": "encrypt", "sa-src-address": value}
+        for value in ("192.0.2.1", "192.0.2.2", "0.0.0.0")
+    ]
+
+    def query(api, path, fields):
+        if path == "/ip/ipsec/policy/print":
+            return policies
+        if path == "/ip/address/print":
+            assert fields == ["address", "disabled", "invalid"]
+            if address_read_fails:
+                raise TimeoutError("test timeout")
+            return [
+                {"address": "192.0.2.1/24", "disabled": "false", "invalid": "false"},
+                {"address": "192.0.2.2/24", "disabled": "true", "invalid": "false"},
+            ]
+        return []
+
+    monkeypatch.setattr(driver, "_client", lambda: nullcontext(client))
+    monkeypatch.setattr(driver, "_query", query)
+
+    report = driver.ipsec_status()
+
+    expected = ["unavailable", "unavailable", None] if address_read_fails else ["assigned", "missing", None]
+    assert [p.get("local_sa_address_status") for p in report["policies"]] == expected
+
+
 def test_mikrotik_ssh_driver_tests_routeros6_scalar_sections(monkeypatch):
     import subprocess
 

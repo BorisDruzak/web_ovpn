@@ -4,6 +4,7 @@ import ipaddress
 import re
 import socket
 import ssl
+from collections.abc import Iterable
 from typing import Any
 
 from netctl.config import secret_env_name
@@ -597,6 +598,36 @@ class MikroTikApiDriver(NetworkDriver):
             rows = self._query(api, path, props)
         return self.normalize_ipsec_policy_rows(rows)
 
+    def _observe_ipsec_local_addresses(self, api: RouterOSApiClient, policies: list[dict[str, Any]]) -> None:
+        endpoints = []
+        for policy in policies:
+            if policy["disabled"] or not policy["tunnel"] or policy["action"] != "encrypt":
+                continue
+            try:
+                address = ipaddress.IPv4Address(policy["sa_src_address"])
+            except ValueError:
+                continue
+            if not address.is_unspecified:
+                endpoints.append((policy, address))
+        if not endpoints:
+            return
+        try:
+            rows = self._query(api, "/ip/address/print", ["address", "disabled", "invalid"])
+        except (OSError, RuntimeError, ValueError):
+            for policy, _ in endpoints:
+                policy["local_sa_address_status"] = "unavailable"
+            return
+        assigned = set()
+        for row in rows:
+            if row.get("disabled") != "false" or row.get("invalid") == "true":
+                continue
+            try:
+                assigned.add(ipaddress.IPv4Interface(row.get("address", "")).ip)
+            except ValueError:
+                continue
+        for policy, address in endpoints:
+            policy["local_sa_address_status"] = "assigned" if address in assigned else "missing"
+
     def ipsec_status(self) -> dict[str, Any]:
         raw: dict[str, Any] = {}
         errors: list[dict[str, str]] = []
@@ -607,9 +638,11 @@ class MikroTikApiDriver(NetworkDriver):
                 except Exception as exc:
                     raw[key] = []
                     errors.append({"section": key, "message": str(exc)})
+            policies = self.normalize_ipsec_policy_rows(raw.get("policies", []))
+            self._observe_ipsec_local_addresses(api, policies)
         return {
             "active_peers": self.normalize_ipsec_active_peers(raw.get("active_peers", [])),
-            "policies": self.normalize_ipsec_policy_rows(raw.get("policies", [])),
+            "policies": policies,
             "installed_sas": self.normalize_ipsec_installed_sa_rows(raw.get("installed_sas", [])),
             "errors": errors,
         }

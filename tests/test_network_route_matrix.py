@@ -166,6 +166,7 @@ def test_ipsec_policy_and_peer_sa_bytes_are_independent_of_echo_reply(monkeypatc
             "src_address": "198.51.100.0/24", "dst_address": "192.0.2.0/24", "action": "encrypt",
             "disabled": False, "established": True, "ph2_count": 1,
             "sa_src_address": "203.0.113.1", "sa_dst_address": "203.0.113.2",
+            "local_sa_address_status": "assigned",
         }], "installed_sas": [
             {"src_address": "203.0.113.1", "dst_address": "203.0.113.2", "state": "mature", "current_bytes": 42},
             {"src_address": "203.0.113.2", "dst_address": "203.0.113.1", "state": "mature", "current_bytes": 10},
@@ -176,6 +177,7 @@ def test_ipsec_policy_and_peer_sa_bytes_are_independent_of_echo_reply(monkeypatc
     row = network_route_matrix.run_route_matrix("archive", profile)["result"]["probes"][0]
     assert row["status"] == "unreachable" and row["observed_path"] is None
     assert row["ipsec"]["status"] == "established"
+    assert row["ipsec"]["local_sa_address_status"] == "assigned"
     assert row["ipsec"]["peer_sa_counters"] == {
         "outgoing": {"associations": 1, "bytes": 42}, "incoming": {"associations": 1, "bytes": 10},
     }

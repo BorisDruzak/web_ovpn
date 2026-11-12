@@ -49,6 +49,8 @@ def _ipsec_evidence(snapshot: dict, probe: RouteProbe) -> dict:
     source, target, policy = matches[0]
     observed.update(status="established" if policy.get("established") else "inactive",
                     local_subnet=str(source), remote_subnet=str(target), phase2_count=policy.get("ph2_count"))
+    if policy.get("local_sa_address_status") in {"assigned", "missing", "unavailable"}:
+        observed["local_sa_address_status"] = policy["local_sa_address_status"]
     local_peer, remote_peer = policy.get("sa_src_address"), policy.get("sa_dst_address")
     if not local_peer or not remote_peer or local_peer == remote_peer or "0.0.0.0" in (local_peer, remote_peer):
         return observed
