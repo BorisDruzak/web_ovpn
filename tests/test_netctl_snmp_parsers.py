@@ -1327,12 +1327,49 @@ def test_collector_rejects_qbridge_table_mismatch_atomically() -> None:
     snapshot = asyncio.run(collect_switch_snapshot({}, transport))
 
     assert snapshot.fdb == ()
+    assert transport.walked.count(DOT1Q_FDB_PORT) == transport.walked.count(DOT1Q_FDB_STATUS) == 2
     final = next(cap for cap in snapshot.capabilities if cap.capability == "fdb")
     assert final.outcome is SnmpOutcome.PARSE_ERROR
     assert not any(
         cap.capability == "qbridge_fdb_rejected_rows"
         for cap in snapshot.capabilities
     )
+
+
+@pytest.mark.parametrize("second_empty", (False, True))
+def test_collector_retries_qbridge_column_churn_without_replacing_with_an_empty_snapshot(second_empty):
+    from netctl.snmp.collector import collect_switch_snapshot
+
+    first = (44, 0, 1, 2, 3, 4, 5)
+    learned = (44, 0, 1, 2, 3, 4, 6)
+    port_rows = [_vb(DOT1Q_FDB_PORT + first, 9), _vb(DOT1Q_FDB_PORT + learned, 9)]
+    status_rows = [_vb(DOT1Q_FDB_STATUS + index, 3) for index in (first, learned)]
+
+    class ChangingTable(_FixtureTransport):
+        async def walk(self, oid, *, capability=""):
+            result = await super().walk(oid, capability=capability)
+            if oid != DOT1Q_FDB_PORT:
+                return result
+            if self.walked.count(oid) == 1:
+                return _result(capability, port_rows[0])
+            return _result(capability, *([] if second_empty else port_rows))
+
+    transport = ChangingTable({
+        IF_INDEX: _result("if_index", _vb(IF_INDEX + (9,), 9)),
+        DOT1D_BASE_PORT_IFINDEX: _result("bridge_port_ifindex", _vb(DOT1D_BASE_PORT_IFINDEX + (9,), 9)),
+        DOT1Q_FDB_STATUS: _result("qbridge_status", *status_rows),
+    })
+    snapshot = asyncio.run(collect_switch_snapshot({}, transport))
+    assert transport.walked.count(DOT1Q_FDB_PORT) == 2
+    assert DOT1D_FDB_PORT not in transport.walked
+    assert len({cap.capability for cap in snapshot.capabilities}) == len(snapshot.capabilities)
+    final = next(cap for cap in snapshot.capabilities if cap.capability == "fdb")
+    if second_empty:
+        assert snapshot.fdb == () and final.outcome is SnmpOutcome.PARSE_ERROR
+    else:
+        assert transport.walked.count(DOT1Q_VLAN_FDB_ID) == 2
+        assert {row.mac for row in snapshot.fdb} == {"00:01:02:03:04:05", "00:01:02:03:04:06"}
+        assert final.outcome is SnmpOutcome.SUCCESS_WITH_ROWS
 
 
 def test_public_qbridge_parser_remains_strict_for_negative_port() -> None:

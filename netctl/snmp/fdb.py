@@ -19,6 +19,10 @@ from .profiles import PortProfile
 _FDB_STATUS = {1: "other", 2: "invalid", 3: "learned", 4: "self", 5: "mgmt"}
 
 
+class QBridgeIndexMismatch(ValueError):
+    """The port and status columns contain different FDB indexes."""
+
+
 async def read_learned_fdb_port(transport, mac: str) -> int | None:
     index = tuple(bytes.fromhex(mac.replace(":", "")))
     if len(index) != 6:
@@ -193,7 +197,7 @@ def _parse_qbridge_fdb(
     status_rows = _indexed_rows(status_result, DOT1Q_FDB_STATUS, suffix_length=7)
     vids_by_fid = _vids_by_fid(vlan_fdb_id_result)
     if set(port_rows) != set(status_rows):
-        raise ValueError("Q-BRIDGE FDB tables do not join")
+        raise QBridgeIndexMismatch("Q-BRIDGE FDB tables do not join")
     ports_by_ifindex = {
         port.if_index: port for port in ports if port.if_index is not None
     }

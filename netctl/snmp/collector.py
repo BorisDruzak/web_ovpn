@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from dataclasses import replace
 from typing import Protocol
 
 from .counters import parse_broadcast_column, parse_counter_samples
-from .fdb import parse_legacy_fdb, parse_qbridge_fdb_with_rejections
+from .fdb import QBridgeIndexMismatch, parse_legacy_fdb, parse_qbridge_fdb_with_rejections
 from .interfaces import parse_bridge_port_map, parse_interfaces
 from .lldp import parse_lldp_neighbors
 from .models import (
@@ -330,6 +331,43 @@ async def _collect_legacy_fdb(
     )
 
 
+async def _collect_qbridge_fdb(
+    transport: CollectorTransport,
+    port_result: CapabilityResult,
+    *,
+    profile: PortProfile,
+    ports: tuple[SwitchPort, ...],
+    bridge_to_ifindex: dict[int, int],
+) -> tuple[tuple[SwitchFdbEntry, ...], CapabilityResult, tuple[CapabilityResult, ...], int]:
+    malformed = _final_fdb_result(
+        SnmpOutcome.PARSE_ERROR, error_code="malformed_fdb", error_message="SNMP FDB rows are malformed",
+    )
+    if port_result.outcome is SnmpOutcome.SUCCESS_EMPTY:
+        # An empty retry after inconsistent nonempty data cannot authorize deletion.
+        return (), malformed, (port_result,), 0
+    if port_result.outcome is not SnmpOutcome.SUCCESS_WITH_ROWS:
+        return (), _propagate_fdb_failure(port_result), (port_result,), 0
+    status_result = await transport.walk(DOT1Q_FDB_STATUS, capability="qbridge_status")
+    results = (port_result, status_result)
+    if status_result.outcome not in _USABLE_REQUIRED_OUTCOMES:
+        return (), _propagate_fdb_failure(status_result), results, 0
+    vlan_result = await transport.walk(DOT1Q_VLAN_FDB_ID, capability="vlan_fdb_id")
+    results = (*results, vlan_result)
+    if vlan_result.outcome not in _USABLE_REQUIRED_OUTCOMES | {SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT}:
+        return (), _propagate_fdb_failure(vlan_result), results, 0
+    try:
+        fdb, rejected = parse_qbridge_fdb_with_rejections(
+            port_result, status_result, vlan_result, profile=profile, ports=ports, bridge_to_ifindex=bridge_to_ifindex,
+        )
+    except QBridgeIndexMismatch:
+        return (), replace(malformed, error_code="qbridge_index_mismatch",
+                           error_message="SNMP FDB port and status indexes differ"), results, 0
+    except ValueError:
+        return (), malformed, results, 0
+    final = _final_fdb_result(SnmpOutcome.SUCCESS_WITH_ROWS, rows=fdb) if fdb else malformed
+    return fdb, final, results, rejected
+
+
 async def collect_switch_snapshot(
     source: Mapping[str, object], transport: CollectorTransport
 ) -> SwitchSnapshot:
@@ -384,7 +422,8 @@ async def collect_switch_snapshot(
     ports = profile.normalize_ports(ports)
 
     qbridge_port = await transport.walk(DOT1Q_FDB_PORT, capability="qbridge_port")
-    capabilities.append(qbridge_port)
+    if qbridge_port.outcome is not SnmpOutcome.SUCCESS_WITH_ROWS:
+        capabilities.append(qbridge_port)
     fdb: tuple[SwitchFdbEntry, ...] = ()
     rejected_row_count = 0
 
@@ -399,53 +438,17 @@ async def collect_switch_snapshot(
         )
         capabilities.extend(legacy_results)
     elif qbridge_port.outcome is SnmpOutcome.SUCCESS_WITH_ROWS:
-        qbridge_status = await transport.walk(
-            DOT1Q_FDB_STATUS, capability="qbridge_status"
-        )
-        capabilities.append(qbridge_status)
-        if qbridge_status.outcome not in {
-            SnmpOutcome.SUCCESS_WITH_ROWS,
-            SnmpOutcome.SUCCESS_EMPTY,
-        }:
-            final_fdb = _propagate_fdb_failure(qbridge_status)
-        else:
-            vlan_fdb_id = await transport.walk(
-                DOT1Q_VLAN_FDB_ID, capability="vlan_fdb_id"
-            )
-            capabilities.append(vlan_fdb_id)
-            if vlan_fdb_id.outcome not in {
-                SnmpOutcome.SUCCESS_WITH_ROWS,
-                SnmpOutcome.SUCCESS_EMPTY,
-                SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT,
-            }:
-                final_fdb = _propagate_fdb_failure(vlan_fdb_id)
-            else:
-                try:
-                    fdb, rejected_row_count = parse_qbridge_fdb_with_rejections(
-                        qbridge_port,
-                        qbridge_status,
-                        vlan_fdb_id,
-                        profile=profile,
-                        ports=ports,
-                        bridge_to_ifindex=bridge_to_ifindex,
-                    )
-                except ValueError:
-                    fdb = ()
-                    final_fdb = _final_fdb_result(
-                        SnmpOutcome.PARSE_ERROR,
-                        error_code="malformed_fdb",
-                        error_message="SNMP FDB rows are malformed",
-                    )
-                else:
-                    final_fdb = (
-                        _final_fdb_result(SnmpOutcome.SUCCESS_WITH_ROWS, rows=fdb)
-                        if fdb
-                        else _final_fdb_result(
-                            SnmpOutcome.PARSE_ERROR,
-                            error_code="malformed_fdb",
-                            error_message="SNMP FDB rows are malformed",
-                        )
-                    )
+        args = {"profile": profile, "ports": ports, "bridge_to_ifindex": bridge_to_ifindex}
+        fdb, final_fdb, qbridge_results, rejected_row_count = await _collect_qbridge_fdb(transport, qbridge_port, **args)
+        if required_failure is None and final_fdb.error_code == "qbridge_index_mismatch":
+            # MACs may be learned or age out between the separate SNMP walks.
+            try:
+                async with asyncio.timeout(5):
+                    retry = await transport.walk(DOT1Q_FDB_PORT, capability="qbridge_port")
+                    fdb, final_fdb, qbridge_results, rejected_row_count = await _collect_qbridge_fdb(transport, retry, **args)
+            except TimeoutError:
+                pass
+        capabilities.extend(qbridge_results)
     elif qbridge_port.outcome is SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT:
         fdb, final_fdb, legacy_results = await _collect_legacy_fdb(
             transport,
