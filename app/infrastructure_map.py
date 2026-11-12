@@ -1160,9 +1160,14 @@ def summarize_topology(graph: dict) -> dict:
                                     **({"stpPaths": report["stpPaths"]} if "stpPaths" in report else {})})
             lldp = {side: {"checkedAt": port["lldpCheckedAt"], "neighbors": port["lldpNeighbors"]}
                     for side, port in declared.get("portStates", {}).items() if port.get("lldpNeighbors")}
+            observations = {
+                side: {key: port[key] for key in ("name", "state", "speedBps", "checkedAt", "source") if key in port}
+                for side, port in declared.get("portStates", {}).items() if port["state"] != "unknown"
+            }
             pending[(a, b, declared["a"], declared["b"])] = {
                 "a": a, "b": b, "nameA": nodes[a]["name"], "nameB": nodes[b]["name"],
                 "portA": declared["a"], "portB": declared["b"], "observedPaths": related[:8],
+                **({"portObservations": observations} if observations else {}),
                 **({"lldpObservations": lldp} if lldp else {}),
             }
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
@@ -1496,7 +1501,7 @@ def load_infrastructure_map(
                         polled = _time(report.get("lacpPolledAt"))
                         if "lacp" in evidence[-1] and observed and polled and observed <= polled <= now:
                             evidence[-1]["lacp"]["polledAt"] = polled.isoformat()
-                elif both_ports or source == SHARED_LLDP_SOURCE or observed_attachment:
+                elif edge["kind"] == "Сетевое соединение" or both_ports or source == SHARED_LLDP_SOURCE or observed_attachment:
                     states = {}
                     for side in ("a", "b"):
                         port = port_states.get(edge[side], {}).get(port_label_key(evidence[-1][side]))

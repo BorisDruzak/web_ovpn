@@ -1415,7 +1415,7 @@ def test_live_snmp_sample_compares_ports_without_redating_inventory(tmp_path):
     assert port["checkedAt"] == previous and "portComparison" not in pair
 
 
-def test_live_snmp_poll_uses_confirmed_pairs_and_rechecks_ifindex_name(monkeypatch):
+def test_live_snmp_poll_rechecks_ifindex_name_for_declared_ports(monkeypatch):
     import asyncio
 
     from app import infrastructure_collect as collector
@@ -1424,7 +1424,7 @@ def test_live_snmp_poll_uses_confirmed_pairs_and_rechecks_ifindex_name(monkeypat
     from netctl.snmp.outcomes import SnmpOutcome
 
     now = datetime.now(timezone.utc)
-    names = {5: b"xe1", 6: b"reused-index"}
+    names = {5: b"xe1", 6: b"reused-index", 7: b"xe3"}
     calls = []
 
     class Transport:
@@ -1458,14 +1458,15 @@ def test_live_snmp_poll_uses_confirmed_pairs_and_rechecks_ifindex_name(monkeypat
     }
     pve = {"physicalPorts": {"host": [{"name": f"eth{i}", "source": "Proxmox · sysfs"}
                                     for i in (1, 2, 3)]}}
-    asyncio.run(collector._check_confirmed_switch_ports(context, network, pve, now))
+    asyncio.run(collector._check_declared_switch_ports(context, network, pve, now))
     first, second, third = network["ports"]
     assert first["linkCheck"]["state"] == "up" and first["linkCheck"]["speedBps"] == 10**10
-    assert "linkCheck" not in second and "linkCheck" not in third
-    assert calls == [(*column, 5) for column in (IF_NAME, IF_ADMIN_STATUS, IF_OPER_STATUS, IF_HIGH_SPEED)] + [(*IF_NAME, 6)]
+    assert "linkCheck" not in second and third["linkCheck"]["state"] == "up"
+    assert calls == [(*column, index) for index in (5, 6, 7)
+                     for column in ((IF_NAME,) if index == 6 else (IF_NAME, IF_ADMIN_STATUS, IF_OPER_STATUS, IF_HIGH_SPEED))]
 
 
-def test_confirmed_switch_port_checks_require_two_observed_ends(monkeypatch):
+def test_declared_switch_port_checks_cover_unverified_sides_and_exclude_retired_paths(monkeypatch):
     import asyncio
 
     from app import infrastructure_collect as collector
@@ -1498,6 +1499,12 @@ def test_confirmed_switch_port_checks_require_two_observed_ends(monkeypatch):
             {"relation": "connected_to", "state": {"verified": False},
              "endpoint_a": {"device": "s1", "interface": "Slot0/15"},
              "endpoint_b": {"device": "s2", "interface": "ge22"}},
+            {"relation": "connected_to", "state": {"intent": "absent"},
+             "endpoint_a": {"device": "s1", "interface": "Slot0/13"},
+             "endpoint_b": {"device": "s2"}},
+            {"relation": "connected_to", "state": {}, "vlan": {"mode": "tagged_transit"},
+             "endpoint_a": {"device": "s1", "interface": "Slot0/14"},
+             "endpoint_b": {"device": "s2"}},
         ],
     }
     network = {
@@ -1506,11 +1513,12 @@ def test_confirmed_switch_port_checks_require_two_observed_ends(monkeypatch):
         "ports": [{"source": source, "name": name, "port_key": f"ifindex:{index}", "if_index": index,
                    "collector_run_id": 1, "last_seen_at": now.isoformat()}
                   for source, name, index in (("s1", "Slot0/52", 52), ("s2", "ge21", 5021),
-                                              ("s1", "Slot0/51", 51), ("s1", "Slot0/15", 15), ("s2", "ge22", 5022))],
+                                              ("s1", "Slot0/51", 51), ("s1", "Slot0/15", 15), ("s2", "ge22", 5022),
+                                              ("s1", "Slot0/13", 13), ("s1", "Slot0/14", 14))],
     }
-    asyncio.run(collector._check_confirmed_switch_ports(context, network, {}, now))
-    assert set(calls) == {(52, "Slot0/52"), (5021, "ge21")}
-    assert sum("linkCheck" in row for row in network["ports"]) == 2
+    asyncio.run(collector._check_declared_switch_ports(context, network, {}, now))
+    assert set(calls) == {(52, "Slot0/52"), (5021, "ge21"), (15, "Slot0/15"), (5022, "ge22")}
+    assert sum("linkCheck" in row for row in network["ports"]) == 4
 
 
 def test_proxmox_backup_checks_match_storage_and_guest_and_expire():
@@ -4133,7 +4141,11 @@ def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_pa
     now = datetime.now(timezone.utc).isoformat()
     path.write_text(json.dumps({
         "schema": 1, "snapshotAt": now,
-        "nodes": [{"id": "snr", "name": "SNR", "kind": "Коммутатор"},
+        "nodes": [{"id": "snr", "name": "SNR", "kind": "Коммутатор",
+                   "ports": [{"name": "ge12", "state": "down", "checkedAt": now},
+                             {"name": "ge15", "state": "up", "speedBps": 10**9, "checkedAt": now},
+                             {"name": "xe3", "state": "up", "checkedAt": "2026-01-01T00:00:00Z"}]},
+                  {"id": "recorder", "name": "Recorder", "kind": "Сервер"},
                   {"id": "pve", "name": "pve1", "kind": "Гипервизор", "ports": [{"name": "enp2s0"}]}],
         "links": [
             {"a": "snr", "b": "pve", "kind": "Сетевое соединение", "confirmed": True, "portEvidence": [
@@ -4145,6 +4157,9 @@ def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_pa
             {"a": "pve", "b": "snr", "kind": "Путь по MAC-таблице", "confirmed": True, "portEvidence": [
                 {"a": "enp134s0", "b": "ge12", "source": "netctl FDB + Proxmox", "confirmed": True, "at": now},
             ]},
+            {"a": "snr", "b": "recorder", "kind": "Сетевое соединение", "portEvidence": [
+                {"a": "ge15", "b": "", "source": "GitHub", "confirmed": False},
+            ]},
         ],
     }), encoding="utf-8")
     client, headers, _ = make_client(tmp_path, monkeypatch)
@@ -4153,13 +4168,18 @@ def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_pa
     graph = response.json()["infrastructure"]
     assert "nodes" not in graph and "links" not in graph
     audit = graph["topologyAudit"]
-    assert audit["directLinks"] == {"current": 1, "verifiedInventory": 0, "unconfirmed": 0}
-    assert audit["pendingTotal"] == 2
-    pending, mismatch = audit["pending"]
+    assert audit["directLinks"] == {"current": 1, "verifiedInventory": 0, "unconfirmed": 1}
+    assert audit["pendingTotal"] == 3
+    pending, mismatch, recorder = audit["pending"]
     assert (pending["a"], pending["b"], pending["portA"], pending["portB"]) == ("snr", "pve", "ge12", "management_1g")
     observed, = pending["observedPaths"]
     assert (observed["portA"], observed["portB"]) == ("ge12", "enp134s0")
+    assert pending["portObservations"] == {"a": {"name": "ge12", "state": "down", "checkedAt": now, "speedBps": None}}
     assert mismatch["portB"] == "enp2s0" and mismatch["observedPaths"] == []
+    assert "portObservations" not in mismatch
+    assert recorder["portB"] == "" and recorder["portObservations"] == {
+        "a": {"name": "ge15", "state": "up", "checkedAt": now, "speedBps": 10**9},
+    }
 
 
 def test_reciprocal_mac_path_shows_fresh_stp_evidence_without_confirming_cable(tmp_path):

@@ -310,7 +310,7 @@ async def _collect_stp_root_paths(sources: list[dict]) -> dict:
     return {source["name"]: observation for source, observation in zip(eligible, observations) if observation}
 
 
-async def _check_confirmed_switch_ports(context: dict, network: dict, pve: dict, now: datetime) -> None:
+async def _check_declared_switch_ports(context: dict, network: dict, pve: dict, now: datetime) -> None:
     host_ports = {(host, port["name"]) for host, ports in pve.get("physicalPorts", {}).items()
                   for port in ports if port.get("source") == "Proxmox · sysfs"}
     switches = {row["id"]: row.get("management_ip") for row in context.get("devices", []) if row["kind"] == "switch"}
@@ -340,20 +340,31 @@ async def _check_confirmed_switch_ports(context: dict, network: dict, pve: dict,
         candidates[address] = {label: by_name[port_label_key(port["name"])] for label, port in labels.items()
                                if port_label_key(port["name"]) in by_name}
     checks = {}
+    pending = {}
     for link in context.get("links", []):
         vlan = link.get("vlan")
-        if (link.get("relation") != "connected_to" or link.get("state", {}).get("verified") is not True
-                or link.get("state", {}).get("intent") == "absent"
+        state = link.get("state", {})
+        if (link.get("relation") != "connected_to" or state.get("intent") == "absent"
                 or (isinstance(vlan, dict) and vlan.get("mode") == "tagged_transit")):
             continue
         ends = [(switches.get(end["device"]), port_label_key(end.get("interface") or ""), end)
                 for end in (link["endpoint_a"], link["endpoint_b"])]
         available = [candidates.get(address, {}).get(label) for address, label, _ in ends]
-        if all(row is not None or (end["device"], end.get("interface")) in host_ports
-               for row, (_, _, end) in zip(available, ends)):
-            for row, (address, _, _) in zip(available, ends):
-                if row is not None:
-                    checks.setdefault(address, {})[row["if_index"]] = row
+        if state.get("verified") is True:
+            if not all(row is not None or (end["device"], end.get("interface")) in host_ports
+                       for row, (_, _, end) in zip(available, ends)):
+                continue
+            target = checks
+        else:
+            target = pending
+        for row, (address, _, _) in zip(available, ends):
+            if row is not None:
+                target.setdefault(address, {})[row["if_index"]] = row
+
+    for address, rows in pending.items():
+        wanted = checks.setdefault(address, {})
+        new_ports = [(index, row) for index, row in rows.items() if index not in wanted]
+        wanted.update(new_ports[:8])
 
     async def check(source, wanted):
         try:
@@ -2572,7 +2583,7 @@ def main() -> int:
             print(f"Network Observer inventory unavailable ({type(exc).__name__})", file=sys.stderr)
             network = {}
         else:
-            asyncio.run(_check_confirmed_switch_ports(context, network, pve, datetime.now(timezone.utc)))
+            asyncio.run(_check_declared_switch_ports(context, network, pve, datetime.now(timezone.utc)))
             if lacp_links:
                 network["lacp"] = asyncio.run(_collect_lacp(network, lacp_links, datetime.now(timezone.utc)))
             network["stp_root_paths"] = asyncio.run(_collect_stp_root_paths(network["sources"]))
