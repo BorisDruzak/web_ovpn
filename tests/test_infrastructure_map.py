@@ -5417,6 +5417,53 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
     assert client.get(browser_url).json()["infrastructure"]["agentAudit"] == {"sourceState": "unavailable"}
 
 
+def test_guest_enrollment_fallback_requires_fresh_matching_proxmox_mac(tmp_path, monkeypatch):
+    from app import infrastructure_map
+    from app.infrastructure_collect import build_graph
+
+    now = datetime.now(timezone.utc)
+    stamp = now.isoformat()
+    mac = "02:00:00:00:00:16"
+    endpoint_id = "946afddb-83b3-4416-830b-e0d3ec63e001"
+    path = tmp_path / "map.json"
+    pve = {"at": stamp, "cluster": [], "nodes": [],
+           "guests": [{"vmid": 116, "node": "pve1", "name": "FILESERVER", "type": "qemu", "status": "running"}],
+           "configs": {"116": {"net0": f"virtio={mac},bridge=vmbr1"}}}
+    context = {"devices": [{"id": "fileserver", "name": "FILESERVER", "kind": "server"}]}
+    bindings = {"guests": {"116": {"asset": "fileserver", "mac": mac, "endpoint_device_id": endpoint_id}}}
+    calls = []
+
+    class Adapter:
+        identities = []
+
+        def list_agent_network_identities(self):
+            return self.identities
+
+        def list_device_presences(self):
+            calls.append(True)
+            return [{"id": endpoint_id, "online": True, "retired_at": None, "last_seen_at": stamp}]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(infrastructure_map, "get_endpoint_context_adapter", Adapter)
+
+    def audit():
+        raw = build_graph(context, {}, {}, pve, bindings, now)
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        result = infrastructure_map.load_infrastructure_agent_audit(path)["agentAudit"]
+        assert endpoint_id not in json.dumps(result)
+        return result["guests"][0]
+
+    entry = audit()
+    assert (entry["state"], entry["presence"], entry["identitySource"]) == ("matched", "online", "verified_enrollment")
+    Adapter.identities = [{"id": "other", "baseline_mac_keys": ["mac-020000000016"]}]
+    assert audit()["reason"] == "enrollment_registration_conflict"
+    pve["configs"]["116"]["net0"] = "virtio=02:00:00:00:00:17,bridge=vmbr1"
+    assert audit()["state"] == "unmatched"
+    assert len(calls) == 2
+
+
 def test_agent_audit_reports_duplicate_guest_macs_without_using_them_for_presence(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map

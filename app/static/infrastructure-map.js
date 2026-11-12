@@ -508,6 +508,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       duplicate_guest_mac: 'Повторяющийся MAC в Proxmox',
       multiple_registrations: 'Несколько регистраций Endpoint',
       registration_matches_multiple_guests: 'Регистрация совпадает с несколькими ВМ',
+      enrollment_registration_conflict: 'Регистрация расходится с данными MAC',
+      enrollment_presence_unconfirmed: 'Состояние проверенной регистрации не подтверждено',
       no_matching_registration: 'Совпадений в Endpoint нет',
       guest_stopped: 'Гость выключен',
       guest_paused: 'Гость приостановлен',
@@ -522,6 +524,11 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     label.textContent = guest?.presence === 'online'
       ? 'На связи · ' + formatTime(guest.lastSeenAt)
       : reasons[guest?.reason] ?? (guest?.state === 'matched' ? 'Связь не подтверждена' : 'Привязка не подтверждена');
+    if (guest?.identitySource === 'verified_enrollment') {
+      const proof = make('div');
+      proof.append(make('small', 'Регистрация сверена на ВМ'));
+      label.append(proof);
+    }
     const profileLabels = {health_v1: 'Состояние', network_v1: 'Сеть', inventory_v1: 'Инвентарь'};
     for (const {profile, collectedAt} of guest?.contextProfiles ?? []) {
       if (Object.hasOwn(profileLabels, profile)) {

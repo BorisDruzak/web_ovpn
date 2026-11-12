@@ -41,7 +41,7 @@ from netctl.switch_queries import (
 
 from .infrastructure_backup import backup_policy, backup_service_checks, read_proxmox_backup
 from .infrastructure_map import (
-    BACKUP_PROBE_METHOD, BACKUP_SERVICE_ID, GUEST_IO_MAX_AGE,
+    BACKUP_PROBE_METHOD, BACKUP_SERVICE_ID, GUEST_ENROLLMENT_ID, GUEST_IO_MAX_AGE,
     CLUSTER_HEALTH_METHODS, CLUSTER_KIND, INTERFACE_NAME, MAX_DOWNSTREAM_SWITCHES, MAX_ROUTER_NEIGHBORS,
     MAX_SNAPSHOT_BYTES, NETWORK_KINDS, PORT_LINK_CHECK_MAX_AGE,
     PPPOE_INTERNET_METHOD, PPPOE_METHOD, PPPOE_SOURCE, PVE_DISK_DEVICE, PVE_STORAGE_ID, RECIPROCAL_MAC_SOURCE,
@@ -2122,6 +2122,11 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                     })
                     if keys:
                         item["agentMatchKeys"] = keys
+                    enrollment = binding.get("endpoint_device_id")
+                    if (matched and guest_ids[vmid] == 1 and not conflicting
+                            and "mac-" + bound_mac.lower().replace(":", "") in keys
+                            and isinstance(enrollment, str) and GUEST_ENROLLMENT_ID.fullmatch(enrollment)):
+                        item["agentEnrollmentId"] = enrollment
                 lock = guest.get("lock")
                 if isinstance(lock, str) and re.fullmatch(r"[a-z][a-z0-9-]{0,31}", lock):
                     item["properties"]["Блокировка Proxmox"] = {"backup": "Резервное копирование"}.get(lock, lock)

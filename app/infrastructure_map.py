@@ -6,6 +6,7 @@ import logging
 import math
 import re
 from collections import Counter, defaultdict, deque
+from collections.abc import Callable
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -31,6 +32,7 @@ TRANSCEIVER_MAX_AGE = timedelta(minutes=5)
 PORT_LINK_CHECK_MAX_AGE = timedelta(minutes=5)
 PORT_COUNTER_KEYS = ("rxErrors", "txErrors", "rxDiscards", "txDiscards")
 GUEST_AGENT_PROFILES = ("health_v1", "network_v1", "inventory_v1")
+GUEST_ENROLLMENT_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
 VLAN_AUDIT_MAX_AGE = timedelta(minutes=10)
 ROUTER_NEIGHBOR_MAX_AGE = timedelta(minutes=10)
 MAX_ROUTER_NEIGHBORS = 16
@@ -1652,10 +1654,14 @@ def load_infrastructure_agent_audit(path: Path) -> dict:
         identities = adapter.list_agent_network_identities()
     except EndpointPlatformServiceError:
         pass
+    try:
+        graph = load_infrastructure_map(
+            path, agent_identities=identities,
+            load_agent_presence=(lambda: adapter.list_device_presences()) if adapter is not None else None,
+        )
     finally:
         if adapter is not None:
             adapter.close()
-    graph = load_infrastructure_map(path, agent_identities=identities)
     return {**{key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph},
             "agentAudit": graph.get("agentAudit", {"sourceState": "unavailable"})}
 
@@ -1678,7 +1684,7 @@ def _guest_agent_exclusion(node: dict, snapshot_fresh: bool) -> str:
 
 
 def _summarize_guest_agents(nodes: dict, keys: dict, conflicts: set[str], identities: list[dict], now: datetime,
-                            *, snapshot_fresh: bool) -> dict:
+                            *, snapshot_fresh: bool, enrollments: dict[str, str], device_presences: list[dict]) -> dict:
     from .inventory.endpoint import CANDIDATE_MAX_AGE, STATE_MAX_AGE
 
     by_id = {row["id"]: row for row in identities if isinstance(row, dict)
@@ -1695,6 +1701,12 @@ def _summarize_guest_agents(nodes: dict, keys: dict, conflicts: set[str], identi
     conflicts = conflicts | {node_id for node_id, values in keys.items() if any(owners[key] > 1 for key in values)}
     matches = {node_id: set().union(*(by_mac[key] for key in values if owners[key] == 1))
                for node_id, values in keys.items()}
+    enrolled_ids = set(enrollments.values())
+    verified = {row["id"]: row for row in device_presences if isinstance(row, dict)
+                and isinstance(row.get("id"), str) and row["id"] in enrolled_ids and row.get("retired_at") is None}
+    for node_id, enrollment in enrollments.items():
+        if enrollment in verified:
+            matches.setdefault(node_id, set()).add(enrollment)
     for node_id in conflicts:
         matches.setdefault(node_id, set())
     guests_by_identity = Counter(identity_id for values in matches.values() for identity_id in values)
@@ -1708,10 +1720,13 @@ def _summarize_guest_agents(nodes: dict, keys: dict, conflicts: set[str], identi
             guests.append({**entry, "state": "not_eligible", "reason": _guest_agent_exclusion(node, snapshot_fresh)})
             continue
         entry.update(state="ambiguous", registrations=len(candidates))
+        enrollment = enrollments.get(node_id)
         if node_id in conflicts:
             entry["reason"] = "duplicate_guest_mac"
+        elif enrollment and candidates - {enrollment}:
+            entry["reason"] = "enrollment_registration_conflict"
         elif not candidates:
-            entry.update(state="unmatched", reason="no_matching_registration")
+            entry.update(state="unmatched", reason="enrollment_presence_unconfirmed" if enrollment else "no_matching_registration")
         elif len(candidates) > 1:
             entry["reason"] = "multiple_registrations"
         else:
@@ -1720,11 +1735,16 @@ def _summarize_guest_agents(nodes: dict, keys: dict, conflicts: set[str], identi
                 entry["reason"] = "registration_matches_multiple_guests"
             else:
                 entry["state"] = "matched"
-                identity = by_id[identity_id]
-                baseline, last_seen = _time(identity.get("baseline_collected_at")), _time(identity.get("last_seen_at"))
-                fresh = (baseline and timedelta(0) <= now - baseline <= CANDIDATE_MAX_AGE
+                explicit = identity_id == enrollment and identity_id in verified
+                identity = by_id.get(identity_id) or verified[identity_id]
+                if explicit:
+                    entry["identitySource"] = "verified_enrollment"
+                presence = verified[identity_id] if explicit else identity
+                baseline = _time(identity.get("baseline_collected_at"))
+                last_seen = _time(presence.get("last_seen_at"))
+                fresh = ((explicit or baseline and timedelta(0) <= now - baseline <= CANDIDATE_MAX_AGE)
                          and last_seen and timedelta(0) <= now - last_seen <= STATE_MAX_AGE)
-                entry["presence"] = "online" if fresh and identity.get("online") is True else "unconfirmed"
+                entry["presence"] = "online" if fresh and presence.get("online") is True else "unconfirmed"
                 if entry["presence"] == "online":
                     entry["lastSeenAt"] = last_seen.isoformat()
                 reports = defaultdict(set)
@@ -1747,6 +1767,7 @@ def _summarize_guest_agents(nodes: dict, keys: dict, conflicts: set[str], identi
 def load_infrastructure_map(
     path: Path, now: datetime | None = None, *, db: Session | None = None,
     agent_identities: list[dict] | None = None, include_guest_attachments: bool = False,
+    load_agent_presence: Callable[[], list[dict]] | None = None,
 ) -> dict:
     now = now or datetime.now(timezone.utc)
     empty = {
@@ -1775,6 +1796,7 @@ def load_infrastructure_map(
     endpoint_keys = {}
     agent_keys = {}
     agent_conflicts = set()
+    agent_enrollments = {}
     lacp_expectations = {}
     for row in _rows(raw.get("nodes"), 600):
         node = _public_node(row, now)
@@ -1797,6 +1819,9 @@ def load_infrastructure_map(
                     valid = {key for key in keys[:32] if isinstance(key, str) and re.fullmatch(r"mac-[0-9a-f]{12}", key)}
                     if valid:
                         agent_keys[node["id"]] = valid
+                        enrollment = row.get("agentEnrollmentId")
+                        if isinstance(enrollment, str) and GUEST_ENROLLMENT_ID.fullmatch(enrollment):
+                            agent_enrollments[node["id"]] = enrollment
     for node_id, node in nodes.items():
         root = node.get("stpRoot", {})
         root_id = root.get("rootDeviceId")
@@ -1938,6 +1963,12 @@ def load_infrastructure_map(
     if (observer_at and now - observer_at > SERVER_OBSERVER_MAX_AGE
             and not {"server_observer_stale", "server_observer_unavailable"}.intersection(issues)):
         issues.append("server_observer_stale")
+    device_presences = []
+    if agent_enrollments and load_agent_presence is not None:
+        try:
+            device_presences = load_agent_presence()
+        except EndpointPlatformServiceError:
+            pass
     return {
         **empty, "availability": "stale" if now - stamp > MAX_AGE else "ready",
         "snapshotAt": stamp.isoformat(), "nodes": list(nodes.values()), "links": links,
@@ -1947,6 +1978,7 @@ def load_infrastructure_map(
         **({"collectionIssues": issues} if issues else {}),
         **({"agentAudit": _summarize_guest_agents(
             nodes, agent_keys, agent_conflicts, agent_identities, now, snapshot_fresh=now - stamp <= MAX_AGE,
+            enrollments=agent_enrollments, device_presences=device_presences,
         )}
            if agent_identities is not None else {}),
         **({"guestAttachments": _guest_attachments(nodes, links, [key for key, node in nodes.items() if node["guest"]])}

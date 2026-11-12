@@ -182,6 +182,9 @@ class EndpointContextAdapter:
     def list_devices(self) -> list[dict[str, Any]]:
         return [_project_device(device) for device in self._client.list_devices()]
 
+    def list_device_presences(self) -> list[dict[str, Any]]:
+        return [_pick(device, ("id", "retired_at", "last_seen_at", "online")) for device in self._client.list_devices()]
+
     def list_agent_network_identities(self) -> list[dict[str, Any]]:
         return [
             _project_network_identity(identity)
