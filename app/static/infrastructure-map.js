@@ -539,7 +539,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       propertiesSection.append(panel);
     }
     const measurements = Object.entries(node.properties ?? {})
-      .filter(([name, value]) => value && !items[name]);
+      .filter(([name, value]) => value && !items[name]
+        && !(node.resources?.cpuRatio !== undefined && name === 'CPU по Proxmox')
+        && !(node.resources?.memoryTotalBytes !== undefined && ['Память по Proxmox', 'Память (выделено)'].includes(name)));
     if (node.guestNetwork) {
       const {configured, enabled, disabled} = node.guestNetwork;
       const unresolved = configured - enabled - disabled;
@@ -556,15 +558,28 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       }
       propertiesSection.append(make('h3', 'Параметры узла'), list);
     }
-    if (node.resources) {
+    let resourceHost = node;
+    if (node.kind === 'Сервис') {
+      const hosts = new Set((incident.get(id) ?? [])
+        .filter(edge => edge.b === id && edge.confirmed && ['Размещение', 'Цель проверки'].includes(edge.kind))
+        .map(edge => edge.a));
+      if (hosts.size === 1) {
+        const [hostId] = hosts;
+        const host = byId.get(hostId);
+        if (host?.guest) resourceHost = host;
+      }
+    }
+    if (resourceHost.resources) {
       const {cpuRatio, logicalCpus, memoryUsedBytes, memoryTotalBytes, rootUsedBytes, rootTotalBytes,
-        uptimeSeconds, checkedAt} = node.resources;
+        uptimeSeconds, checkedAt} = resourceHost.resources;
       const number = new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 1});
       const percent = ratio => number.format(ratio * 100) + '%';
       const usage = (used, total) => `${number.format(used / 2**30)} из ${number.format(total / 2**30)} ГиБ (${percent(used / total)})`;
       const list = make('dl');
       if (cpuRatio !== undefined) list.append(make('dt', 'CPU'), make('dd', percent(cpuRatio)));
-      if (logicalCpus !== undefined) list.append(make('dt', 'Логические CPU'), make('dd', number.format(logicalCpus)));
+      if (logicalCpus !== undefined) {
+        list.append(make('dt', resourceHost.guest ? 'vCPU' : 'Логические CPU'), make('dd', number.format(logicalCpus)));
+      }
       if (memoryTotalBytes !== undefined) list.append(make('dt', 'Память'), make('dd', usage(memoryUsedBytes, memoryTotalBytes)));
       if (rootTotalBytes !== undefined) list.append(make('dt', 'Корневой раздел /'), make('dd', usage(rootUsedBytes, rootTotalBytes)));
       if (uptimeSeconds !== undefined) {
@@ -575,7 +590,17 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         list.append(make('dt', 'Время работы'), make('dd', uptime));
       }
       list.append(make('dt', 'Опрос ресурсов'), make('dd', formatTime(checkedAt)));
-      propertiesSection.append(make('h3', 'Ресурсы Proxmox'), list);
+      const section = make('section');
+      section.dataset.section = 'proxmox-resources';
+      section.append(make('h3', resourceHost.guest ? 'Ресурсы ВМ' : 'Ресурсы Proxmox'));
+      if (resourceHost !== node) {
+        const button = make('button', resourceHost.name);
+        button.type = 'button';
+        button.addEventListener('click', () => select(resourceHost.id));
+        section.append(button);
+      }
+      section.append(list);
+      propertiesSection.append(section);
     }
     if (node.resourceCapacity) {
       const {root, swap, memory, thresholds, checkedAt, stale} = node.resourceCapacity;

@@ -1668,6 +1668,13 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             elif prelaunch:
                 status, label = "critical", "Гостевая ОС ещё не запущена"
             source(item, "Proxmox", status, pve_at, label)
+            if status == "ok" and guest_ids[vmid] == 1:
+                item["resources"] = {
+                    "checkedAt": pve.get("guestResourcesAt", pve_at),
+                    "cpuRatio": guest.get("cpu"), "logicalCpus": guest.get("maxcpu"),
+                    "memoryUsedBytes": guest.get("mem"), "memoryTotalBytes": guest.get("maxmem"),
+                    "uptimeSeconds": guest.get("uptime"),
+                }
             item.pop("reachability", None)
             config = pve.get("configs", {}).get(str(vmid), {})
             interfaces = guest_interfaces.get(str(vmid), {})
@@ -2058,6 +2065,7 @@ def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: set[s
 
     result = {"cluster": get("cluster/status"), "nodes": get("cluster/resources?type=node"),
               "guests": get("cluster/resources?type=vm"), "configs": {}, "bridges": {}}
+    result["guestResourcesAt"] = datetime.now(timezone.utc).isoformat()
     if any(not isinstance(result[key], list) or not all(isinstance(row, dict) for row in result[key])
            for key in ("cluster", "nodes", "guests")):
         raise ValueError("invalid Proxmox inventory")

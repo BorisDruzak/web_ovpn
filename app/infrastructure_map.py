@@ -530,7 +530,7 @@ def _public_service_check(check: dict, now: datetime) -> dict:
     return result
 
 
-def _public_hypervisor_resources(row: object, now: datetime) -> dict:
+def _public_proxmox_resources(row: object, now: datetime) -> dict:
     if not isinstance(row, dict) or not observation_is_fresh(row.get("checkedAt"), now):
         return {}
     values = {}
@@ -763,13 +763,15 @@ def _public_node(row: dict, now: datetime) -> dict:
     hardware_disks = {}
     zfs_pools = {}
     lvm_thin_pools = {}
-    if row.get("kind") == "Гипервизор" and any(s["name"] == "Proxmox" and s["status"] == "ok" for s in fresh):
-        resources = _public_hypervisor_resources(row.get("resources"), now)
-        if isinstance(resource_capacity := row.get("resourceCapacity"), dict):
-            capacity = _public_resource_capacity(resource_capacity, now)
-        hardware_disks = project_hypervisor_disks(row.get("hardwareDisks"), now)
-        zfs_pools = project_hypervisor_zfs(row.get("zfsPools"), now)
-        lvm_thin_pools = project_hypervisor_lvm_thin(row.get("lvmThinPools"), now)
+    if any(s["name"] == "Proxmox" and s["status"] == "ok" for s in fresh):
+        if row.get("guest") is True or row.get("kind") == "Гипервизор":
+            resources = _public_proxmox_resources(row.get("resources"), now)
+        if row.get("kind") == "Гипервизор":
+            if isinstance(resource_capacity := row.get("resourceCapacity"), dict):
+                capacity = _public_resource_capacity(resource_capacity, now)
+            hardware_disks = project_hypervisor_disks(row.get("hardwareDisks"), now)
+            zfs_pools = project_hypervisor_zfs(row.get("zfsPools"), now)
+            lvm_thin_pools = project_hypervisor_lvm_thin(row.get("lvmThinPools"), now)
     guest_storage = _public_guest_storage(row.get("guestStorage"), now) if row.get("guest") is True else {}
     guest_network = _public_guest_network(row.get("guestNetwork"), now) if row.get("guest") is True else {}
     backup_coverage = {}

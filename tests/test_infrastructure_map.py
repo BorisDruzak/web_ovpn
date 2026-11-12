@@ -382,6 +382,31 @@ def test_lvm_thin_capacity_warns_for_either_dimension(tmp_path):
     assert "lvmThinPools" not in read(now + timedelta(hours=1))
 
 
+def test_guest_resources_require_unique_running_guest_with_fresh_proxmox_data(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    guest = {"vmid": 103, "node": "pve1", "name": "Directum", "type": "qemu", "status": "running",
+             "cpu": 0.0, "maxcpu": 8, "mem": 3 * 2**30, "maxmem": 8 * 2**30, "uptime": 3600}
+    pve = {"at": now.isoformat(), "cluster": [], "nodes": [], "guests": [guest], "configs": {}}
+    path = tmp_path / "snapshot.json"
+
+    def read(when=now):
+        graph = build_graph({}, {}, {}, pve, {}, now)
+        path.write_text(json.dumps(graph), encoding="utf-8")
+        return next(node for node in load_infrastructure_map(path, when)["nodes"] if node["id"] == "pve-guest:103")
+
+    assert read()["resources"] == {"checkedAt": now.isoformat(), "cpuRatio": 0.0, "logicalCpus": 8,
+                                  "memoryUsedBytes": 3 * 2**30, "memoryTotalBytes": 8 * 2**30, "uptimeSeconds": 3600}
+    assert "resources" not in read(now + timedelta(minutes=26))
+    guest["status"] = "stopped"
+    assert "resources" not in read()
+    guest["status"] = "running"
+    pve["guests"].append({**guest, "node": "pve2"})
+    assert "resources" not in read()
+
+
 def test_hypervisor_resources_require_current_online_node_data(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map
