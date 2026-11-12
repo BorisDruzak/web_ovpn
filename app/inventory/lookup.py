@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 from netctl.nmap.policy import FingerprintPolicyError, validate_target_ipv4
 
-from .normalization import normalize_pc_details
+from .normalization import PC_OS_FAMILIES, normalize_pc_details
 
 
 NetctlCall = Callable[[list[str], int | None], dict[str, Any]]
@@ -117,7 +117,7 @@ class InventoryLookup:
                 os_name = str(match.get("name") or "").strip()
                 if os_name:
                     normalized_details = normalize_pc_details({"os_name": os_name}, strict=False)
-                    if normalized_details.get("os_name") in {"Windows", "Linux"}:
+                    if normalized_details.get("os_name") in PC_OS_FAMILIES:
                         suggestions["os_name"] = normalized_details["os_name"]
                         if normalized_details.get("os_version"):
                             suggestions["os_version"] = normalized_details["os_version"]

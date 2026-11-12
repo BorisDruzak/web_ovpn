@@ -406,7 +406,8 @@ def test_saved_mobile_asset_accepts_camera_photo(tmp_path, monkeypatch):
     assert "label.png" in client.get(f"/inventory/assets/{asset_id}").text
 
 
-def test_mobile_pc_form_persists_hardware_details(tmp_path, monkeypatch):
+@pytest.mark.parametrize("os_name", ["Windows", "ALT Linux"])
+def test_mobile_pc_form_persists_hardware_details(tmp_path, monkeypatch, os_name):
     """A mobile PC form must not discard RAM and OS while saving common asset fields."""
     client, csrf = _client(tmp_path, monkeypatch)
     client.post("/inventory/locations", data={"csrf_token": csrf, "name": "214"}, follow_redirects=False)
@@ -417,7 +418,7 @@ def test_mobile_pc_form_persists_hardware_details(tmp_path, monkeypatch):
             "csrf_token": _csrf(page.text), "draft_id": _draft_id(page.text),
             "asset_type": "PC",
             "custom_name": "PC-01",
-            "os_name": "Windows",
+            "os_name": os_name,
             "os_version": "11",
             "cpu_model": "Intel",
             "cpu_generation": "i5-11400",
@@ -431,6 +432,7 @@ def test_mobile_pc_form_persists_hardware_details(tmp_path, monkeypatch):
     detail = client.get(f"/inventory/assets/{asset_id}")
     assert 'name="ram_gb"' in detail.text
     assert 'value="16"' in detail.text
+    assert f'<option value="{os_name}" selected>{os_name}</option>' in detail.text
     assert 'name="os_version" value="11"' in detail.text
     assert '<select name="storage_type">' in detail.text
     assert '<option value="SSD" selected>SSD</option>' in detail.text

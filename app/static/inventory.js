@@ -27,6 +27,7 @@ const endpointInsertValue = (control, value) => {
   }
   if (control.name === "os_name") {
     if (normalized.includes("windows")) return "Windows";
+    if (/\balt\b|(?:^|\s)альт(?:\s|$)/.test(normalized)) return "ALT Linux";
     if (normalized.includes("linux")) return "Linux";
   }
   if (control.name === "storage_type") {

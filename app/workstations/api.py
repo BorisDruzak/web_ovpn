@@ -269,6 +269,8 @@ def endpoint_install_asset(db, asset_id):
         raise HTTPException(404, 'workstations_not_found')
     details = db.get(InventoryPCDetails, asset_id)
     os_name = details.os_name if details and details.os_name else ''
+    if os_name.casefold() == 'linux' and endpoint_install_platform(details.os_version or '') == 'alt':
+        os_name = 'ALT Linux'
     linked = db.scalar(select(InventoryExternalBinding.id).where(
         InventoryExternalBinding.asset_id == asset_id, InventoryExternalBinding.source == 'endpoint_platform',
         InventoryExternalBinding.status == InventoryExternalBindingStatus.CONFIRMED,

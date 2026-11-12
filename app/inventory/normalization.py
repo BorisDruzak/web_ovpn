@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from typing import Any
 
 
-PC_OS_FAMILIES = frozenset({"Windows", "Linux"})
+PC_OS_FAMILIES = frozenset({"Windows", "Linux", "ALT Linux"})
 PC_CPU_VENDORS = frozenset({"Intel", "AMD"})
 PC_RAM_TYPES = frozenset({"DDR3", "DDR4"})
 PC_STORAGE_TYPES = frozenset({"SSD", "M.2"})
@@ -64,6 +64,9 @@ def _normalize_os(values: dict[str, Any], *, strict: bool) -> None:
         values["os_version"] = version or raw_os[8:].strip()
     elif folded == "windows":
         values["os_name"] = "Windows"
+        values["os_version"] = version
+    elif folded == "alt linux":
+        values["os_name"] = "ALT Linux"
         values["os_version"] = version
     elif folded == "linux":
         values["os_name"] = "Linux"

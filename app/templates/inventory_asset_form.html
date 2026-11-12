@@ -159,7 +159,17 @@
     {% if asset_type.value == 'PC' %}
     <fieldset class="inventory-field-group">
       <legend>Операционная система</legend>
-      <label>ОС<select name="os_name"><option value="">Не указана</option><option value="Windows"{% if details.get('os_name') == 'Windows' %} selected{% endif %}>Windows</option><option value="Linux"{% if details.get('os_name') == 'Linux' %} selected{% endif %}>Linux</option></select></label>
+      {% set current_os = details.get('os_name') or '' %}
+      {% set os_options = ('Windows', 'Linux', 'ALT Linux') %}
+      <label>ОС<select name="os_name">
+        <option value="">Не указана</option>
+        {% for option in os_options %}
+        <option value="{{ option }}"{% if current_os == option %} selected{% endif %}>{{ option }}</option>
+        {% endfor %}
+        {% if current_os and current_os not in os_options %}
+        <option value="{{ current_os }}" selected>{{ current_os }}</option>
+        {% endif %}
+      </select></label>
       {{ endpoint_value('os_name') }}
       <label>Версия ОС<input name="os_version" value="{{ details.get('os_version') or '' }}"></label>
       {{ endpoint_value('os_version') }}

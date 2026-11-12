@@ -226,7 +226,12 @@ def test_running_operation_publishes_its_current_phase_before_remote_reply(datab
 from test_workstations_reconcile import database
 
 
-def test_inventory_endpoint_plan_uses_only_the_fresh_exact_workstation(tmp_path, monkeypatch):
+@pytest.mark.parametrize(("os_name", "os_version"), [
+    ("ALT Workstation K 11", None),
+    ("ALT Linux", "11.4"),
+    ("Linux", "ALT Linux KDE 11.4"),
+])
+def test_inventory_endpoint_plan_uses_only_the_fresh_exact_workstation(tmp_path, monkeypatch, os_name, os_version):
     from datetime import datetime, timezone
 
     from app.db import session_scope
@@ -241,7 +246,7 @@ def test_inventory_endpoint_plan_uses_only_the_fresh_exact_workstation(tmp_path,
     with session_scope() as db:
         db.add(InventoryAsset(id=asset_id, asset_type=InventoryAssetType.PC, custom_name="Synthetic ALT PC"))
         db.flush()
-        db.add(InventoryPCDetails(asset_id=asset_id, os_name="ALT Workstation K 11"))
+        db.add(InventoryPCDetails(asset_id=asset_id, os_name=os_name, os_version=os_version))
         db.flush()
         revision = db.get(InventoryAsset, asset_id, populate_existing=True).manual_revision
         db.add(SourceSnapshot(source="reconciliation", generation="fixture", batch_id=str(uuid.uuid4()), observed_at=datetime.now(timezone.utc),
