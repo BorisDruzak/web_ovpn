@@ -213,8 +213,11 @@ class ProbeProfiles(BaseModel):
 
     @model_validator(mode="after")
     def limit_scheduled_profiles(self):
-        if sum(profile.scheduled for profile in self.routes.values()) > 4:
-            raise ValueError("at most four route profiles can be scheduled")
+        scheduled = [profile for profile in self.routes.values() if profile.scheduled]
+        if len(scheduled) > 6:
+            raise ValueError("at most six route profiles can be scheduled")
+        if sum(any(probe.router_source or probe.agent_origin for probe in profile.probes) for profile in scheduled) > 4:
+            raise ValueError("at most four scheduled route profiles can use RouterOS or SSH origins")
         return self
 
 
