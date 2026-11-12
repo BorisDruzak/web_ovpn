@@ -1802,6 +1802,26 @@ def _guest_ipv4_observations(value: object, now: datetime) -> list[dict]:
     return observations
 
 
+def _attach_address_aliases(nodes: dict, links: list[dict]) -> None:
+    placements = defaultdict(list)
+    for edge in links:
+        if (edge["confirmed"] and edge["kind"] == "Размещение ВМ"
+                and nodes[edge["a"]]["kind"] == "Гипервизор" and nodes[edge["b"]]["guest"]):
+            placements[edge["b"]].append(edge)
+
+    for node_id, node in nodes.items():
+        addresses = []
+        management = node["properties"].get("Адрес управления")
+        if management and "/" not in management:
+            addresses.append(management)
+        if len(placements.get(node_id, ())) == 1:
+            placement, = placements[node_id]
+            addresses.extend(reading["address"] for report in placement["portEvidence"] if report["b"]
+                             for reading in report.get("virtual", {}).get("ipv4Observations", ()))
+        if addresses:
+            node["aliases"] = list(dict.fromkeys([*node["aliases"], *addresses]))
+
+
 def _attachment_vlan_memberships(interface: dict, match: dict, ports: dict, now: datetime) -> dict:
     if (vid := match.get("vlan")) is not None:
         basis = "guest_mac"
@@ -2877,6 +2897,7 @@ def load_infrastructure_map(
                           **({"portAlerts": alerts} if alerts else {})})
     if db is not None and endpoint_keys and now - stamp <= MAX_AGE:
         _attach_endpoint_presence(db, endpoint_keys, nodes, now)
+    _attach_address_aliases(nodes, links)
     if lacp_expectations:
         _attach_lacp_health(nodes, lacp_expectations, links, port_states, now)
     _attach_acti_backup_job(nodes, links)

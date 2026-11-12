@@ -6113,6 +6113,43 @@ def test_attachment_view_includes_physical_service_hosts_and_distinguishes_port_
     assert row["inventoryPortSides"] == ["b"]
 
 
+def test_node_search_aliases_follow_fresh_address_evidence(tmp_path):
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    stamp = now.isoformat()
+    old = (now - timedelta(hours=1)).isoformat()
+    nodes = [
+        {"id": "pve", "name": "Proxmox", "kind": "Гипервизор"},
+        {"id": "vm", "name": "VM", "guest": True, "kind": "Виртуальная машина", "aliases": ["VM alias"]},
+        {"id": "router", "name": "Router", "kind": "Маршрутизатор",
+         "properties": {"Адрес управления": "192.0.2.1"}},
+    ]
+
+    def interface(port, address, checked_at, **config):
+        return {"a": "vmbr1", "b": port, "source": "Proxmox · конфигурация ВМ", "at": stamp,
+                "confirmed": True, "virtual": {**config, "ipv4Observations": [{"address": address,
+                    "checkedAt": checked_at, "source": "UI_VPN", "method": "ICMP · ARP"}]}}
+
+    placement = {"a": "pve", "b": "vm", "kind": "Размещение ВМ", "source": "Proxmox", "confirmed": True,
+                 "observedAt": stamp, "portEvidence": [
+                     interface("net0", "192.0.2.10", stamp),
+                     interface("net1", "192.0.2.11", old),
+                     interface("net2", "192.0.2.12", stamp, linkDisabled=True),
+                 ]}
+    path = tmp_path / "infrastructure.json"
+
+    def read(at=now):
+        path.write_text(json.dumps({"schema": 1, "snapshotAt": stamp, "nodes": nodes, "links": [placement]}),
+                        encoding="utf-8")
+        return {node["id"]: node["aliases"] for node in load_infrastructure_map(path, at)["nodes"]}
+
+    assert read() == {"pve": [], "vm": ["VM alias", "192.0.2.10"], "router": ["192.0.2.1"]}
+    assert read(now + timedelta(hours=1))["vm"] == ["VM alias"]
+    placement["confirmed"] = False
+    assert read()["vm"] == ["VM alias"]
+
+
 def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path, monkeypatch):
     path = tmp_path / "infrastructure.json"
     monkeypatch.setenv("INFRASTRUCTURE_MAP_SNAPSHOT_PATH", str(path))
