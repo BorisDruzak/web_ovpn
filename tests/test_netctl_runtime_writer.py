@@ -44,6 +44,39 @@ def _seed_source(conn: sqlite3.Connection, source: dict[str, Any]) -> None:
     )
 
 
+def test_collection_reserves_write_transaction_before_reading_segment_rules(runtime_conn, monkeypatch):
+    from contextlib import closing
+
+    from netctl import store
+
+    source = _source(1, site="test")
+    _seed_source(runtime_conn, source)
+    runtime_conn.commit()
+    database = runtime_conn.execute("PRAGMA database_list").fetchone()["file"]
+    load_rules = store.load_active_segment_rules
+    competing_writes = []
+
+    def read_rules(conn):
+        rules = load_rules(conn)
+        with closing(sqlite3.connect(database, timeout=0)) as competitor:
+            try:
+                competitor.execute("UPDATE network_sources SET site = 'other' WHERE id = 1")
+                competitor.commit()
+            except sqlite3.OperationalError as error:
+                assert error.sqlite_errorcode == sqlite3.SQLITE_BUSY
+                competing_writes.append("wait")
+            else:
+                competing_writes.append("committed")
+        return rules
+
+    monkeypatch.setattr(store, "load_active_segment_rules", read_rules)
+    snapshot = {"interfaces": [{"name": "ether1", "type": "ether", "running": True}]}
+    counts = save_collection(runtime_conn, source, snapshot, "2026-07-18T01:00:00Z")
+    assert counts["interfaces"] == 1 and competing_writes == ["wait"]
+    assert runtime_conn.execute("SELECT running FROM network_interfaces").fetchone()[0] == 1
+    assert not runtime_conn.in_transaction
+
+
 def _host(
     ip: str,
     mac: str | None,

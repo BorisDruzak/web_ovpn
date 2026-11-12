@@ -333,9 +333,11 @@ def save_collection(
     status: str = "ok",
     message: str = "",
 ) -> dict[str, Any]:
-    conn.execute("SAVEPOINT save_collection")
-    try:
-        counts = _save_collection(
+    if not conn.in_transaction:
+        # Read the segment rules inside a write transaction so a competing WAL commit cannot invalidate the snapshot.
+        conn.execute("BEGIN IMMEDIATE")
+    with conn:
+        return _save_collection(
             conn,
             source,
             snapshot,
@@ -343,14 +345,6 @@ def save_collection(
             status=status,
             message=message,
         )
-        conn.execute("RELEASE SAVEPOINT save_collection")
-        conn.commit()
-        return counts
-    except Exception:
-        conn.execute("ROLLBACK TO SAVEPOINT save_collection")
-        conn.execute("RELEASE SAVEPOINT save_collection")
-        conn.rollback()
-        raise
 
 
 def _save_collection(
