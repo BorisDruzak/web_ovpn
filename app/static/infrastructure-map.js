@@ -693,21 +693,28 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const panel = make('section');
     panel.dataset.section = 'service-path';
     const list = make('ul', null, 'map-detail-list');
-    const rendered = new Set();
+    const groups = new Map();
     for (const path of paths) {
+      const attachment = path.routerAttachment ?? path.switchAttachment;
+      const key = JSON.stringify([path.method, path.target, path.port, path.gateway, path.guestId, path.guestPort,
+        path.hypervisorId, path.physicalPair?.hostPort, path.switchId, path.physicalPair?.switchPort,
+        attachment?.routerId, attachment?.switchId, attachment?.port]);
+      if (!groups.has(key)) groups.set(key, {path, resources: new Set()});
+      if (path.path) groups.get(key).resources.add(path.path);
+    }
+    for (const {path, resources} of groups.values()) {
       const endpoint = path.target + (path.port ? ':' + path.port : '');
       const label = [path.method, endpoint].join(' · ');
-      const key = [label, path.gateway].join('|');
-      if (rendered.has(key)) continue;
-      rendered.add(key);
+      const row = make('li');
+      row.append(make('strong', label));
+      if (resources.size) row.append(make('small', [...resources].join(' · ')));
       const attachment = path.routerAttachment ?? path.switchAttachment;
       if (attachment) {
         const {routerId, switchId, port, source, checkedAt} = attachment;
         const deviceId = routerId ?? switchId;
         const device = byId.get(deviceId)?.name ?? deviceId;
-        const row = make('li');
         const evidence = switchId ? 'ARP + FDB коммутатора' : source;
-        row.append(make('strong', label), make('small', [evidence, formatTime(checkedAt)].join(' · ')),
+        row.append(make('small', [evidence, formatTime(checkedAt)].join(' · ')),
           switchPortButton(deviceId, device, port));
         list.append(row);
         continue;
@@ -716,10 +723,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       const guest = byId.get(path.guestId)?.name ?? path.guestId;
       const host = byId.get(path.hypervisorId)?.name ?? path.hypervisorId;
       const target = byId.get(path.switchId)?.name ?? path.switchId;
-      const row = make('li');
       const connection = path.management ? `${host} ${hostPort} · интерфейс управления`
         : [`${guest} ${path.guestPort}`, path.bridge, `${host} ${hostPort}`].join(' → ');
-      row.append(make('strong', label), make('small', connection),
+      row.append(make('small', connection),
         switchPortButton(path.switchId, target, switchPort));
       if (path.gateway) {
         row.append(make('small', 'Вход через шлюз ' + path.gateway));
@@ -1851,7 +1857,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
               : [probe.passed && `прошли: ${probe.passed}`, probe.failed && `сбои: ${probe.failed}`,
                 probe.unconfirmed && `без подтверждения: ${probe.unconfirmed}`];
             row.append(make('small', [
-              [probe.method, probe.localListener ? '' : probe.transport].filter(Boolean).join(' '), `${address}:${probe.port}`, ...states,
+              [probe.method, probe.localListener ? '' : probe.transport].filter(Boolean).join(' '),
+              `${address}:${probe.port}${probe.path ?? ''}`, ...states,
             ].filter(Boolean).join(' · ')));
           }
           services.append(row);

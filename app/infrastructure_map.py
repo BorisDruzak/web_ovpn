@@ -2002,6 +2002,11 @@ def _attachment_service_checks(service: dict):
                            "method": "Локальный UDP-сокет", "localListener": True}
 
 
+def _attachment_probe_location(check: dict) -> dict:
+    return {"target": check["target"], "port": check["port"], "method": check["method"],
+            "checkedAt": check["checkedAt"], **({"path": check["path"]} if check.get("path") else {})}
+
+
 def _service_attachment_paths(service: dict, guests: dict) -> list[dict]:
     addresses = defaultdict(list)
     neighbors = defaultdict(list)
@@ -2057,8 +2062,7 @@ def _service_attachment_paths(service: dict, guests: dict) -> list[dict]:
         if len(observations) != 1:
             continue
         observation, = observations
-        paths.append({"target": target, "port": check["port"], "method": check["method"],
-                      "checkedAt": check["checkedAt"], "addressCheckedAt": address_at,
+        paths.append({**_attachment_probe_location(check), "addressCheckedAt": address_at,
                       "guestId": guest["guest"]["id"], "guestPort": adapter["guestPort"], "bridge": adapter["bridge"],
                       "hypervisorId": guest["hypervisor"]["id"], "switchId": observation["switch"]["id"],
                       "physicalPair": observation["physicalPair"],
@@ -2135,13 +2139,11 @@ def _management_service_paths(service: dict, host: str, management: dict, observ
             continue
         if matched := management.get((host, check["target"])):
             switch, pair = matched
-            paths.append({"target": check["target"], "port": check["port"], "method": check["method"],
-                          "checkedAt": check["checkedAt"], "addressCheckedAt": pair["checkedAt"],
+            paths.append({**_attachment_probe_location(check), "addressCheckedAt": pair["checkedAt"],
                           "management": True, "hypervisorId": host, "switchId": switch, "physicalPair": pair})
         elif check["port"] is not None and (attachment := observed_ports.get((host, check["target"]))):
             observation, = attachment.values()
-            paths.append({"target": check["target"], "port": check["port"], "method": check["method"],
-                          "checkedAt": check["checkedAt"], "addressCheckedAt": observation["checkedAt"], **attachment})
+            paths.append({**_attachment_probe_location(check), "addressCheckedAt": observation["checkedAt"], **attachment})
     return paths
 
 
@@ -2193,7 +2195,7 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime) -> dict:
     path_checks = defaultdict(set)
 
     def check_key(check):
-        return check.get("target"), check.get("port"), check["method"], check["checkedAt"]
+        return check.get("target"), check.get("port"), check["method"], check.get("path") or "", check["checkedAt"]
 
     def record(switch, port, service, basis):
         key = port_label_key(port)
@@ -2236,14 +2238,15 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime) -> dict:
         physical = "switch_mac" not in bases and bool(bases & {"host_mac", "host_lacp"})
         probes = {}
         for check in _attachment_service_checks(node):
-            target, number, method, checked_at = check_key(check)
+            target, number, method, path, checked_at = check_key(check)
             local = check.get("localListener") is True
             if (not target or number is None or not method or not checked_at or check["stale"] or check.get("skipped")
                     or check["source"] != "UI_VPN" or not ((physical and not local) or check_key(check) in selected)):
                 continue
             transport = "UDP" if local else check.get("dns", {}).get("transport", "")
-            probe = probes.setdefault((target, number, method, transport), {
+            probe = probes.setdefault((target, number, method, transport, path), {
                 "target": target, "port": number, "method": method,
+                **({"path": path} if path else {}),
                 **({"transport": transport} if transport else {}),
                 **({"localListener": True} if local else {}),
                 "passed": 0, "failed": 0, "unconfirmed": 0,

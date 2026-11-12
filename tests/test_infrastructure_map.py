@@ -4910,12 +4910,13 @@ def test_asset_service_can_require_current_fdb_and_arp_identity(monkeypatch, tmp
     graph = load_infrastructure_map(snapshot, include_guest_attachments=True)
     path, = summarize_guest_attachment(graph, "recorder-web")["attachment"]["servicePaths"]
     assert path["target"] == ip and path["port"] == 80
+    assert path["path"] == "/login"
     assert path["switchAttachment"] == {"switchId": "observer:switch", "port": "ge15",
                                         "source": "netctl FDB", "checkedAt": observed}
     assert "physicalPair" not in path and graph["servicePaths"]["recorder-web"] == [path]
     group, = summarize_guest_attachment(graph, "observer:switch")["attachment"]["servicePorts"]
     endpoint, = group["services"][0]["probeEndpoints"]
-    assert group["port"] == "ge15" and endpoint["target"] == ip
+    assert group["port"] == "ge15" and endpoint["target"] == ip and endpoint["path"] == "/login"
     assert read(now + timedelta(minutes=2))["mapStatus"] == "unknown"
     stale = load_infrastructure_map(snapshot, now + timedelta(minutes=2), include_guest_attachments=True)
     assert "recorder-web" not in stale["servicePaths"]
@@ -6249,6 +6250,17 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     ]
     switch = client.get(url + "&node_id=snr", headers=headers).json()["infrastructure"]["attachment"]
     assert switch["servicePorts"] == switch_ports
+    http = {**check, "method": "HTTP", "port": 8787}
+    raw["nodes"][0]["serviceChecks"] = [
+        {**http, "path": "/api/session"}, {**http, "path": "/app.js", "state": "unreachable"},
+        {**http, "path": "/style.css", "state": "unknown"},
+    ]
+    assert [path["path"] for path in read()["servicePaths"]] == ["/api/session", "/app.js", "/style.css"]
+    browser = client.get(browser_endpoint).json()["infrastructure"]
+    probes = browser["servicePorts"]["snr"][0]["services"][0]["probeEndpoints"]
+    assert [(probe["path"], probe["passed"], probe["failed"], probe["unconfirmed"]) for probe in probes] == [
+        ("/api/session", 1, 0, 0), ("/app.js", 0, 1, 0), ("/style.css", 0, 0, 1),
+    ]
     route = {"state": "reachable", "gateway": address["address"], "expectedGateway": address["address"],
              "sourceIP": "192.0.2.20", "interface": "ens18"}
     routed = {**check, "method": "DNS", "port": 53, "target": "198.51.100.1", "localRoute": route}
