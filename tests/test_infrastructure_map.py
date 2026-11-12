@@ -2306,6 +2306,16 @@ def test_lldp_management_address_requires_matching_inventory_and_host_mac(monkey
     assert stale["state"] == "unknown" and stale["stale"] and "identityCheckedAt" not in stale
     without_arp = build_graph(context, {**network, "arp": []}, {}, {}, bindings, now)
     assert "probeTargetIP" not in next(node for node in without_arp["nodes"] if node["id"] == "remote")
+    context["devices"][0]["management_ip"] = address
+    registered = build_graph(context, network, {}, {}, bindings, now)
+    target = next(node for node in registered["nodes"] if node["id"] == "remote")
+    assert target["reachability"]["state"] == "reachable"
+    assert target["probeTargetIP"] == address and target["probeTargetIdentityAt"] == at
+    host["mac"] = "02:00:00:00:00:04"
+    registered = build_graph(context, network, {}, {}, bindings, now)
+    target = next(node for node in registered["nodes"] if node["id"] == "remote")
+    assert "reachability" not in target and "probeTargetIP" not in target
+    context["devices"][0].pop("management_ip")
     link, = graph["links"]
     assert link["portEvidence"][0]["b"] == "Ge1"
     host["mac"] = "02:00:00:00:00:04"

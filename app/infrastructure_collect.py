@@ -984,11 +984,13 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         addresses.setdefault(str(device.get("management_ip") or ""), []).append(key)
         address_by_asset[key] = device.get("management_ip")
         observed_addresses[key] = device.get("observed_ipv4_addresses", [])
-        observation = _host_observation(host_ips.get(device.get("management_ip"), {}), now)
-        if observation:
-            item["reachability"] = observation
-        names.setdefault(device["name"].casefold(), []).append(key)
         declared_macs[key] = {mac.lower() for mac in device.get("mac_addresses", []) if MAC.fullmatch(mac)}
+        host = host_ips.get(device.get("management_ip"), {})
+        bound_switch = device["kind"] == "switch" and key in asset_ip_checks and declared_macs[key]
+        if not bound_switch or str(host.get("mac") or "").lower() in declared_macs[key]:
+            if observation := _host_observation(host, now):
+                item["reachability"] = observation
+        names.setdefault(device["name"].casefold(), []).append(key)
         for mac in declared_macs[key]:
             declared_devices_by_mac.setdefault(mac, set()).add(key)
         if device.get("model"):
@@ -1385,7 +1387,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 continue
             if len(advertised) == 1 and "Адрес управления по LLDP" not in item["properties"]:
                 item["properties"]["IP заявлен в LLDP"] = advertised[0]
-            if declared_devices_by_mac.get(chassis_mac) != {neighbor} or "reachability" in item:
+            active_switch_check = item["kind"] == NETWORK_KINDS[0] and neighbor in asset_ip_checks
+            if declared_devices_by_mac.get(chassis_mac) != {neighbor} or ("reachability" in item and not active_switch_check):
                 continue
             verified = []
             for address in advertised:
@@ -1400,13 +1403,13 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 item["properties"].pop("IP заявлен в LLDP", None)
                 item["properties"]["Адрес управления по LLDP"] = address
                 arp = arp_mappings.get(address)
-                if (item["kind"] == NETWORK_KINDS[0] and direct and address == asset_ip_checks.get(neighbor)
+                if (active_switch_check and direct and address == asset_ip_checks[neighbor]
                         and arp and arp[0] == chassis_mac == str(host_ips[address].get("mac") or "").lower()):
                     item["probeTargetIP"] = address
                     item["probeTargetIdentityAt"] = min(arp[1], datetime.fromisoformat(row["observed_at"])).isoformat()
                 observation = _host_observation(host_ips[address], now)
                 if observation:
-                    item["reachability"] = observation
+                    item.setdefault("reachability", observation)
 
     for a, b, port_a, port_b, at in _reciprocal_lldp(network, fresh_lldp, peers_by_port, arp_mappings, now):
         local, remote = source_nodes.get(a), source_nodes.get(b)
