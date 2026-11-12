@@ -644,6 +644,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       row.append(make('strong', label),
         make('small', [`${guest} ${path.guestPort}`, path.bridge, `${host} ${hostPort}`].join(' → ')),
         switchPortButton(path.switchId, target, switchPort));
+      if (path.localNeighbor) {
+        row.append(make('small', `VLAN ${path.localNeighbor.vlan} · соседство на ${path.localNeighbor.interface} · физическая пара аплинка`));
+      }
       list.append(row);
     }
     panel.append(make('h3', 'Путь до коммутатора'), list);

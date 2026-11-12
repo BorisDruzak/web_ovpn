@@ -1804,6 +1804,7 @@ def _physical_attachments(nodes: dict, links: list[dict], host_ids: list[str]) -
 
 def _service_attachment_paths(service: dict, guests: dict) -> list[dict]:
     addresses = defaultdict(list)
+    neighbors = defaultdict(list)
     for guest in guests.values():
         for adapter in guest["interfaces"]:
             if adapter["linkDisabled"] or adapter["bridgeActive"] is not True:
@@ -1814,25 +1815,39 @@ def _service_attachment_paths(service: dict, guests: dict) -> list[dict]:
                 observed[ip] = max(observed.get(ip, checked_at), checked_at)
             for ip, checked_at in observed.items():
                 addresses[ip].append((guest, adapter, checked_at))
+            if neighbor := adapter.get("localNeighbor"):
+                key = (neighbor["peerAddress"], guest["guest"]["id"], adapter["guestPort"],
+                       neighbor["vlan"], neighbor["interface"])
+                neighbors[key].append((guest, adapter, neighbor["checkedAt"]))
 
     paths = []
     for check in service["serviceChecks"]:
         if check["source"] != "UI_VPN" or not check["checkedAt"] or check["stale"] or check.get("skipped"):
             continue
-        candidates = addresses.get(check.get("target"), [])
+        target = check.get("target")
+        vlan = check.get("vlanTransit")
+        if vlan:
+            peer = vlan.get("peer", {})
+            if peer.get("state") != "matched":
+                continue
+            candidates = neighbors.get((target, peer["asset"], peer["guestPort"], vlan["id"], vlan["interface"]), [])
+        else:
+            candidates = addresses.get(target, [])
         if len(candidates) != 1:
             continue
         guest, adapter, address_at = candidates[0]
+        bases = {"guest_mac", "bridge_uplink"} if vlan else {"guest_mac"}
         observations = [row for row in adapter["switchObservations"]
-                        if row["basis"] == "guest_mac" and "physicalPair" in row]
+                        if row["basis"] in bases and "physicalPair" in row]
         if len(observations) != 1:
             continue
         observation, = observations
-        paths.append({"target": check["target"], "port": check["port"], "method": check["method"],
+        paths.append({"target": target, "port": check["port"], "method": check["method"],
                       "checkedAt": check["checkedAt"], "addressCheckedAt": address_at,
                       "guestId": guest["guest"]["id"], "guestPort": adapter["guestPort"], "bridge": adapter["bridge"],
                       "hypervisorId": guest["hypervisor"]["id"], "switchId": observation["switch"]["id"],
-                      "physicalPair": observation["physicalPair"]})
+                      "physicalPair": observation["physicalPair"],
+                      **({"localNeighbor": adapter["localNeighbor"]} if vlan else {})})
     return paths
 
 

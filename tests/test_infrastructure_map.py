@@ -5869,10 +5869,16 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     assert interface["switchObservations"][0]["basis"] == "bridge_uplink"
     assert interface["switchObservations"][0]["vlanMemberships"]["basis"] == "local_neighbor"
     assert interface["switchObservations"][0]["vlanMemberships"]["id"] == 50
+    transit_path, = read()["servicePaths"]
+    assert transit_path == {"target": "192.0.2.1", "port": None, "method": "ICMP · VLAN", "checkedAt": stamp,
+                            "guestId": "vm", "guestPort": "net0", "bridge": "vmbr1", "hypervisorId": "pve",
+                            "switchId": "snr", "physicalPair": interface["switchObservations"][0]["physicalPair"],
+                            "addressCheckedAt": stamp, "localNeighbor": interface["localNeighbor"]}
     audit = read_audit()
     assert audit["interfaceCounts"]["local_neighbor_with_physical_pair"] == 1 and audit["gapTotal"] == 0
     raw["nodes"][0]["serviceChecks"][0]["vlanTransit"]["peer"]["state"] = "mismatch"
     assert "localNeighbor" not in read()["guests"][0]["interfaces"][0]
+    assert read()["servicePaths"] == []
     raw["nodes"][0].pop("serviceChecks")
     virtual["switchPorts"] = [virtual.pop("switchUplink")]
     raw["links"][2]["portEvidence"][0]["source"] = "GitHub"
