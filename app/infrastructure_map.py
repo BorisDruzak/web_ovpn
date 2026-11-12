@@ -87,6 +87,7 @@ OBSERVER_CHECK_LABELS = {
     "mongo_tcp_27017": "MongoDB TCP/27017",
     "rabbitmq_tcp_5672": "RabbitMQ TCP/5672",
     "redis_tcp_6379": "Redis TCP/6379",
+    "postgresql_from_directum": "PostgreSQL из ВМ Directum · SSLRequest",
 }
 OBSERVER_CHECK_ERRORS = ("timeout", "transport", "parse", "unexpected_response")
 OBSERVER_METRIC_UNITS = {

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 from datetime import datetime, timedelta, timezone
+from ipaddress import IPv4Address
 import json
 import math
 import os
@@ -176,7 +177,7 @@ _DIRECTUM_BODY = (
 )
 
 
-def _directum_probe(ports: dict[str, int]) -> str:
+def _directum_probe(ports: dict[str, int], postgresql: dict | None = None) -> str:
     listeners = ""
     if ports:
         spec = ";".join(f"{name}=@{{port={ports[name]};process='{process}'}}"
@@ -191,7 +192,22 @@ def _directum_probe(ports: dict[str, int]) -> str:
             "$listeners[$name]=[bool]$matching.Count};"
             "$report|Add-Member -NotePropertyName listeners -NotePropertyValue $listeners}catch{};"
         )
-    return _powershell_probe(_DIRECTUM_BODY + listeners + _WINDOWS_REPORT_JSON, "directum")
+    postgres_probe = ""
+    if postgresql:
+        postgres_probe = (
+            "$pg='transport';$conn=$null;try{"
+            "$conn=New-Object Net.Sockets.TcpClient;"
+            f"if($conn.ConnectAsync('{postgresql['ip']}',{postgresql['port']}).Wait(3000)){{"
+            "$stream=$conn.GetStream();$stream.ReadTimeout=2000;$stream.WriteTimeout=2000;"
+            "$msg=[byte[]](0,0,0,8,4,210,22,47);$stream.Write($msg,0,8);"
+            "$pg=switch($stream.ReadByte()){83{'s'}78{'n'}default{'unexpected_response'}}"
+            "}else{$pg='timeout'}}catch{"
+            "$e=$_.Exception.GetBaseException();"
+            "switch($e.SocketErrorCode){ConnectionRefused{$pg='refused'}TimedOut{$pg='timeout'}}"
+            "}finally{if($null-ne$conn){$conn.Dispose()}};"
+            "$report|Add-Member -NotePropertyName postgresql -NotePropertyValue $pg;"
+        )
+    return _powershell_probe(_DIRECTUM_BODY + listeners + postgres_probe + _WINDOWS_REPORT_JSON, "directum")
 
 
 _ROLE_PROBES = {
@@ -320,7 +336,7 @@ def _validate_runtime_config(config: dict[str, Any]) -> None:
 
 def _validate_runtime_target(value: Any) -> None:
     target = _require_mapping(value, "target")
-    if set(target) - {"listener_ports", "https_host"} != {"role", "host", "user", "checks"}:
+    if set(target) - {"listener_ports", "https_host", "postgresql_endpoint"} != {"role", "host", "user", "checks"}:
         raise ValueError("target fields must be role, host, user, checks, and supported optional fields")
     if target["role"] not in ALLOWED_ROLES:
         raise ValueError("target role is not allowed")
@@ -329,6 +345,16 @@ def _validate_runtime_target(value: Any) -> None:
         if (target["role"] != "directum" or not ports.keys() <= _DIRECTUM_LISTENER_PROCESSES.keys()
                 or any(type(port) is not int or not 1 <= port <= 65535 for port in ports.values())):
             raise ValueError("listener_ports must specify supported Directum components and valid TCP ports")
+    if "postgresql_endpoint" in target:
+        endpoint = _require_mapping(target["postgresql_endpoint"], "postgresql_endpoint")
+        if (target["role"] != "directum" or set(endpoint) != {"ip", "port"}
+                or not isinstance(endpoint["ip"], str) or type(endpoint["port"]) is not int
+                or not 1 <= endpoint["port"] <= 65535):
+            raise ValueError("postgresql_endpoint requires a Directum database IPv4 address and TCP port")
+        try:
+            IPv4Address(endpoint["ip"])
+        except ValueError as exc:
+            raise ValueError("postgresql_endpoint requires a valid IPv4 address") from exc
     if "https_host" in target:
         name = target["https_host"]
         if target["role"] != "acti" or not isinstance(name, str) or not _SAFE_SSH_HOST.fullmatch(name):
@@ -420,6 +446,15 @@ def collect(
                 else:
                     checks.append({"name": name, "source": source, "status": "error",
                                    "error": "unexpected_response"})
+            if "postgresql_endpoint" in configured_target:
+                answer = payload.get("postgresql")
+                check = {"name": "postgresql_from_directum", "source": source, "latency_ms": latency_ms}
+                if answer in ("s", "n", "refused"):
+                    check["status"] = "critical" if answer == "refused" else "ok"
+                else:
+                    check.update(status="error", error=answer if answer in ("timeout", "transport")
+                                 else "unexpected_response")
+                checks.append(check)
         except subprocess.TimeoutExpired:
             checks = _failure_checks(role, source, "timeout")
         except _ProbeFailure as exc:
@@ -478,7 +513,8 @@ def _ssh_command(
             "StrictHostKeyChecking=yes",
             "--",
             f"{target['user']}@{target['host']}",
-            _directum_probe(target["listener_ports"]) if target.get("listener_ports") else _ROLE_PROBES[target["role"]],
+            _directum_probe(target.get("listener_ports", {}), target.get("postgresql_endpoint"))
+            if target["role"] == "directum" else _ROLE_PROBES[target["role"]],
         ]
     )
     return command

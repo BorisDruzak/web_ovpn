@@ -405,6 +405,41 @@ def test_directum_listener_checks_report_the_configured_port_and_preserve_other_
         collect(config, runner=runner, now=parse_utc("2026-07-18T20:00:00Z"))
 
 
+@pytest.mark.parametrize(("answer", "status", "error"), [
+    ("s", "ok", None), ("n", "ok", None), ("refused", "critical", None),
+    ("timeout", "error", "timeout"), ("transport", "error", "transport"),
+    ("unexpected_response", "error", "unexpected_response"), (True, "error", "unexpected_response"),
+])
+def test_directum_postgresql_is_checked_from_windows(answer, status, error):
+    config = runtime_config()
+    configured = next(t for t in config["targets"] if t["role"] == "directum")
+    config["targets"] = [configured]
+    configured["listener_ports"] = {"mongo": 27017, "rabbitmq": 5672, "redis": 6379}
+    configured["postgresql_endpoint"] = {"ip": "192.0.2.10", "port": 5432}
+
+    def runner(command, **kwargs):
+        script = decode_windows_probe(command[-1])
+        assert "'192.0.2.10'" in script and "5432" in script
+        assert "0,0,0,8,4,210,22,47" in script
+        assert "Get-NetTCPConnection" in script
+        assert len(command[-1]) < 8000
+        completed = healthy_runner(command, **kwargs)
+        payload = json.loads(completed.stdout)
+        payload["postgresql"] = answer
+        completed.stdout = json.dumps(payload)
+        return completed
+
+    snapshot = collect(config, runner=runner, now=parse_utc("2026-07-18T20:00:00Z"))
+    checks = {check["name"]: check for check in target(snapshot, "directum")["checks"]}
+    assert checks["postgresql_from_directum"]["status"] == status
+    assert checks["postgresql_from_directum"].get("error") == error
+    assert checks["directumrx_active"]["status"] == "ok"
+
+    configured["postgresql_endpoint"]["ip"] = "host';write-output bad;#"
+    with pytest.raises(ValueError, match="postgresql_endpoint"):
+        collect(config, runner=runner, now=parse_utc("2026-07-18T20:00:00Z"))
+
+
 def test_file_server_probe_checks_windows_e_volume_smb_and_ssh():
     calls = []
 
