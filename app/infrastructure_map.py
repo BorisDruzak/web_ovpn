@@ -1862,10 +1862,25 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime) -> dict:
         host, service = edge["a"], edge["b"]
         if host in guests and nodes[service]["kind"] == "Сервис" and _is_service_attachment(edge):
             service_guests[service][host] = guests[host]
-    return {"guestAttachments": guests, "servicePaths": {
+    service_paths = {
         service: paths for service, targets in service_guests.items()
         if len(targets) <= 12 and (paths := _service_attachment_paths(nodes[service], targets))
-    }}
+    }
+    port_services = defaultdict(lambda: defaultdict(set))
+    port_names = {}
+    for service, paths in service_paths.items():
+        for path in paths:
+            switch, port = path["switchId"], path["physicalPair"]["switchPort"]
+            key = port_label_key(port)
+            port_names.setdefault((switch, key), port)
+            port_services[switch][key].add(service)
+    service_ports = {
+        switch: [{"port": port_names[switch, port], "total": len(ids),
+                  "services": [_attachment_node(nodes[key]) for key in sorted(ids)[:64]]}
+                 for port, ids in sorted(ports.items())]
+        for switch, ports in port_services.items()
+    }
+    return {"guestAttachments": guests, "servicePaths": service_paths, "servicePorts": service_ports}
 
 
 def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
@@ -1881,12 +1896,17 @@ def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
     host_ids = sorted(key for key in targets if key not in guest_ids and nodes[key]["kind"] not in ("Сервис", CLUSTER_KIND))
     guests = _guest_attachments(nodes, links, sorted(guest_ids)[:12])
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
+    detail = {}
+    if anchor and anchor["kind"] == "Сервис" and len(guest_ids) <= 12:
+        detail["servicePaths"] = _service_attachment_paths(anchor, guests)
+    elif anchor and anchor["kind"] == NETWORK_KINDS[0]:
+        attachments = _map_attachments(nodes, links, datetime.now(timezone.utc))
+        detail["servicePorts"] = attachments["servicePorts"].get(node_id, [])
     return {**metadata, "attachment": {"node": _attachment_node(anchor) if anchor else None,
                                        "guestTotal": len(guest_ids), "guests": list(guests.values()),
                                        "physicalHostTotal": len(host_ids),
                                        "physicalHosts": _physical_attachments(nodes, links, host_ids[:12]),
-                                       **({"servicePaths": _service_attachment_paths(anchor, guests)}
-                                          if anchor and anchor["kind"] == "Сервис" and len(guest_ids) <= 12 else {})}}
+                                       **detail}}
 
 
 def summarize_guest_attachment_audit(graph: dict) -> dict:
@@ -2202,7 +2222,7 @@ def load_infrastructure_map(
     empty = {
         "availability": "missing", "snapshotAt": None, "nodes": [], "links": [],
         "clusterId": "", "nodeOrder": [], "overviewGuests": [], "switchKinds": list(NETWORK_KINDS), "git": "",
-        **({"guestAttachments": {}, "servicePaths": {}} if include_guest_attachments else {}),
+        **({"guestAttachments": {}, "servicePaths": {}, "servicePorts": {}} if include_guest_attachments else {}),
     }
     try:
         with path.open("rb") as handle:

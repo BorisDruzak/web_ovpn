@@ -5832,8 +5832,15 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     raw["nodes"][0]["serviceChecks"] = [check]
     adapter["virtual"]["ipv4Observations"] = [address]
     assert read()["servicePaths"] == [service_path]
+    raw["nodes"][0]["serviceChecks"].append({**check, "port": 3268})
+    assert len(read()["servicePaths"]) == 2
     browser = client.get(browser_endpoint).json()["infrastructure"]
-    assert browser["servicePaths"] == {"directum": [service_path]}
+    assert browser["servicePaths"] == {"directum": [service_path, {**service_path, "port": 3268}]}
+    switch_ports = browser["servicePorts"]["snr"]
+    assert len(switch_ports) == 1 and switch_ports[0]["port"] == "xe3" and switch_ports[0]["total"] == 1
+    assert [service["id"] for service in switch_ports[0]["services"]] == ["directum"]
+    switch = client.get(url + "&node_id=snr", headers=headers).json()["infrastructure"]["attachment"]
+    assert switch["servicePorts"] == switch_ports
     raw["nodes"][0].pop("serviceChecks")
     adapter["virtual"].pop("ipv4Observations")
     raw["links"][1]["portEvidence"][0]["virtual"]["uplinks"] = ["eno1"]

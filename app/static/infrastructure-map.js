@@ -1708,8 +1708,27 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       const relationships = make('section');
       relationships.append(make('h3', selectedPort ? 'Наблюдения по порту ' + selectedPort : 'Наблюдения о связях'));
       const guests = chosenPort ? guestsForPort(id, chosenPort) : null;
-      if (!links.length && !guests?.size) relationships.append(make('p', 'Для этого порта нет наблюдений о связях'));
+      const serviceGroup = chosenPort && data.servicePorts?.[id]?.find(item => portKeys(chosenPort).includes(portKey(item.port)));
+      if (!links.length && !guests?.size && !serviceGroup) relationships.append(make('p', 'Для этого порта нет наблюдений о связях'));
       if (list.children.length) relationships.append(list);
+      if (serviceGroup) {
+        const panel = make('details', null, 'map-port-panel');
+        panel.dataset.section = 'services-on-port';
+        const services = make('ul', null, 'map-detail-list');
+        for (const service of serviceGroup.services) {
+          const row = make('li');
+          const open = make('button', service.name);
+          open.type = 'button';
+          open.addEventListener('click', () => select(service.id));
+          row.append(open);
+          services.append(row);
+        }
+        panel.append(make('summary', `Сервисы на порту (${serviceGroup.total})`), services);
+        if (serviceGroup.services.length < serviceGroup.total) {
+          panel.append(make('small', `Показано ${serviceGroup.services.length} из ${serviceGroup.total}`));
+        }
+        relationships.append(panel);
+      }
       if (observations.children.length) {
         const panel = make('details', null, 'map-port-panel');
         panel.dataset.section = 'mac-paths';
