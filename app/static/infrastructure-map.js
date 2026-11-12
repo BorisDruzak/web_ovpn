@@ -1117,9 +1117,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const name = byId.get(switchId).name;
         const confirmed = members.filter(member => member.status === 'forwarding').length;
         row.append(make('strong', `${name} ${aggregate} · ${confirmed} из ${members.length} портов`));
-        for (const {name: port, status, checkedAt, partnerPort} of members) {
+        for (const {name: port, status, checkedAt, partnerPort, partnerInterfaceState} of members) {
           if (status === 'forwarding') row.append(switchPortButton(switchId, name, port));
-          const details = [status !== 'forwarding' && port, labels[status], partnerPort && `порт партнёра ${partnerPort}`,
+          const details = [status !== 'forwarding' && port, labels[status], partnerPort && `порт партнёра LACP №${partnerPort}`,
+            partnerInterfaceState === 'unconfirmed' && 'Имя интерфейса не сверено',
             checkedAt && formatTime(checkedAt)];
           row.append(make('small', details.filter(Boolean).join(' · ')));
         }

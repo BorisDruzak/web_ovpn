@@ -1338,7 +1338,8 @@ def _attach_lacp_port_states(report: dict, edge: dict, nodes: dict, port_states:
         if (not separator or not INTERFACE_NAME.fullmatch(aggregate) or not INTERFACE_NAME.fullmatch(member)
                 or partner is None or int(partner[1]) > 65535):
             continue
-        lacp = {"side": side, "aggregate": aggregate, "member": member, "partnerPort": int(partner[1])}
+        lacp = {"side": side, "aggregate": aggregate, "member": member, "partnerPort": int(partner[1]),
+                "partnerInterfaceState": "unconfirmed"}
         ports = port_states.get(edge[side], {})
         aggregate_state = ports.get(port_label_key(aggregate))
         if aggregate_state and aggregate_state["state"] != "unknown":
@@ -1386,7 +1387,8 @@ def _attach_lacp_health(nodes: dict, expectations: dict, links: list[dict], port
                         and (not sample or _time(at) >= _time(sample[0]))):
                     members.append({"name": name, "status": port["state"], "checkedAt": at})
                 elif sample:
-                    members.append({"name": name, "status": "forwarding", "checkedAt": sample[0], "partnerPort": sample[1]})
+                    members.append({"name": name, "status": "forwarding", "checkedAt": sample[0],
+                                    "partnerPort": sample[1], "partnerInterfaceState": "unconfirmed"})
                 else:
                     members.append({"name": name, "status": "unknown"})
             states = {member["status"] for member in members}
@@ -1599,6 +1601,13 @@ def summarize_topology(graph: dict) -> dict:
     ]
     lacp = [{"id": node["id"], "name": node["name"], **report}
             for node in nodes.values() for report in node.get("lacpHealth", [])]
+    lacp_gaps = [
+        {"id": report["id"], "name": report["name"], "switchId": report["switchId"],
+         "aggregate": report["aggregate"], "switchPort": member["name"],
+         "partnerPort": member["partnerPort"], "checkedAt": member["checkedAt"]}
+        for report in lacp for member in report["members"]
+        if member.get("partnerInterfaceState") == "unconfirmed"
+    ]
     downstream = [{"id": node["id"], "name": node["name"], **node["downstream"]}
                   for node in nodes.values() if "downstream" in node]
     return {**metadata, "topologyAudit": {"directLinks": counts, "pendingTotal": len(pending),
@@ -1607,6 +1616,8 @@ def summarize_topology(graph: dict) -> dict:
                                         "portCounterAudit": graph.get("portCounterAudit") or _summarize_port_counters(nodes),
                                         "stpRootPaths": stp, "stpRoots": roots, "vlanAudits": vlan_audits[:64],
                                         "lacpHealth": lacp[:64],
+                                        "lacpPartnerInterfaceGapTotal": len(lacp_gaps),
+                                        "lacpPartnerInterfaceGaps": lacp_gaps[:64],
                                         "downstreamSwitches": downstream[:MAX_DOWNSTREAM_SWITCHES],
                                         "pending": pending[:64]}}
 
@@ -1798,7 +1809,8 @@ def _physical_attachments(nodes: dict, links: list[dict], host_ids: list[str]) -
                     reading["lldpPeers"] = {sides[side]: value for side, value in lldp_peers.items()}
                 if lacp := report.get("lacp"):
                     reading["lacp"] = {"side": sides[lacp["side"]],
-                                       **{key: lacp[key] for key in ("aggregate", "member", "partnerPort", "polledAt")
+                                       **{key: lacp[key] for key in ("aggregate", "member", "partnerPort", "polledAt",
+                                                                      "partnerInterfaceState")
                                           if key in lacp}}
                 readings.append(reading)
             connections[host_id].append({"peer": _attachment_node(peer), "kind": edge["kind"],

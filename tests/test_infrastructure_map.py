@@ -3168,7 +3168,7 @@ def test_lacp_confirms_only_ports_whose_partner_matches_fresh_arp(tmp_path):
 
 def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tmp_path):
     from app.infrastructure_collect import build_graph
-    from app.infrastructure_map import load_infrastructure_map
+    from app.infrastructure_map import load_infrastructure_map, summarize_topology
 
     now = datetime.now(timezone.utc)
     at = now.isoformat()
@@ -3201,6 +3201,17 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
     color, health = read()
     assert (color, health["status"]) == ("ok", "ok")
     assert [member["partnerPort"] for member in health["members"]] == [1, 2]
+    assert [member["partnerInterfaceState"] for member in health["members"]] == ["unconfirmed"] * 2
+
+    def lacp_gaps(stamp=now):
+        audit = summarize_topology(load_infrastructure_map(path, stamp))["topologyAudit"]
+        assert audit["lacpPartnerInterfaceGapTotal"] == len(audit["lacpPartnerInterfaceGaps"])
+        return audit["lacpPartnerInterfaceGaps"]
+
+    assert lacp_gaps() == [{"id": "pbs", "name": "PBS", "switchId": "snr", "aggregate": "po1",
+                           "switchPort": port, "partnerPort": partner, "checkedAt": at}
+                          for port, partner in (("ge6", 1), ("ge7", 2))]
+    assert lacp_gaps(now + timedelta(minutes=6)) == []
 
     def service_ports():
         graph = load_infrastructure_map(path, now, include_guest_attachments=True)
@@ -3218,6 +3229,7 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
     color, health = read()
     assert (color, health["status"]) == ("warn", "warn")
     assert health["members"][1] == {"name": "ge7", "status": "down", "checkedAt": at}
+    assert [gap["switchPort"] for gap in lacp_gaps()] == ["ge6"]
     assert service_ports() == [("ge6", ["host_lacp"])]
     assert read(now + timedelta(minutes=6))[0] == "unknown"
     network.clear()
