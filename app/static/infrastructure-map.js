@@ -1314,6 +1314,25 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
               li.append(make('small', comparisonLabels[state] + ' · ' + sources.join(' + ') + ' · ' + formatTime(checkedAt)));
             }
           }
+          if (evidence.vlanAudit?.length) {
+            const audit = make('details');
+            const vlans = make('ul', null, 'map-detail-list');
+            const modes = {tagged: 'с тегом', untagged: 'без тега'};
+            const states = {confirmed: 'Режим подтверждён', mismatch: 'Режим расходится', unconfirmed: 'Режим подтверждён частично или неизвестен'};
+            for (const vlan of evidence.vlanAudit) {
+              const row = make('li');
+              row.append(make('strong', `VLAN ${vlan.id} · ожидается ${modes[vlan.expected]}`), make('small', states[vlan.state]));
+              for (const side of ['a', 'b']) {
+                const port = vlan.ports[side] ?? {};
+                const membership = port.egress ? `${modes[port.egress]} · ${formatTime(port.membershipCheckedAt)}` : 'режим неизвестен';
+                const learned = port.learnedMacCount ? ` · изучено MAC ${port.learnedMacCount} · ${formatTime(port.fdbCheckedAt)}` : '';
+                row.append(make('small', `${byId.get(edge[side]).name} ${evidence[side]} · ${membership}${learned}`));
+              }
+              vlans.append(row);
+            }
+            audit.append(make('summary', 'Сверка VLAN'), vlans);
+            li.append(audit);
+          }
           if (evidence.confirmed && evidence.virtual) {
             const network = evidence.virtual;
             const notes = [];

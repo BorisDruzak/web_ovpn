@@ -27,6 +27,7 @@ SERVICE_PROBE_MAX_AGE = timedelta(minutes=5)
 STP_ROOT_PATH_MAX_AGE = timedelta(minutes=5)
 TRANSCEIVER_MAX_AGE = timedelta(minutes=5)
 PORT_LINK_CHECK_MAX_AGE = timedelta(minutes=5)
+VLAN_AUDIT_MAX_AGE = timedelta(minutes=10)
 ROUTER_NEIGHBOR_MAX_AGE = timedelta(minutes=10)
 MAX_ROUTER_NEIGHBORS = 16
 PPPOE_METHOD = "Сессия PPPoE"
@@ -290,6 +291,10 @@ def _public_port(row: dict, now: datetime) -> dict:
         result["proxmoxActive"] = row["proxmoxActive"]
     if telemetry := _public_port_telemetry(row.get("telemetry"), result, now):
         result["telemetry"] = telemetry
+    if memberships := _public_port_vlans(row.get("vlanMemberships"), result):
+        result["vlanMemberships"] = memberships
+    if fdb_vlans := _public_port_fdb_vlans(row.get("fdbVlans"), result):
+        result["fdbVlans"] = fdb_vlans
     return result
 
 
@@ -868,12 +873,6 @@ def _public_node(row: dict, now: datetime) -> dict:
         if alias and port_label_key(alias) != port_label_key(port["name"]) and label_counts[port_label_key(alias)] == 1:
             port["aliases"] = [alias]
     for port, raw_port in zip(ports, port_rows):
-        memberships = _public_port_vlans(raw_port.get("vlanMemberships"), port)
-        if memberships:
-            port["vlanMemberships"] = memberships
-        fdb_vlans = _public_port_fdb_vlans(raw_port.get("fdbVlans"), port)
-        if fdb_vlans:
-            port["fdbVlans"] = fdb_vlans
         _apply_port_link_check(port, raw_port, now)
     observer = next((source for source in sources if source["name"] == "Server Observer"), None)
     aliases = row.get("aliases")
@@ -1187,6 +1186,42 @@ def _compare_link_ports(ports: dict) -> dict:
     return {"state": state, "checkedAt": first.isoformat()}
 
 
+def _audit_link_vlans(expected: object, ports: dict, now: datetime) -> list[dict]:
+    if not isinstance(expected, dict):
+        return []
+    intent = {}
+    for mode in ("tagged", "untagged"):
+        ids = expected.get(mode, [])
+        if not isinstance(ids, list) or len(ids) > 32:
+            return []
+        for vid in ids:
+            if type(vid) is not int or not 1 <= vid <= 4094 or vid in intent:
+                return []
+            intent[vid] = mode
+
+    observations = {vid: {} for vid in intent}
+    for side, port in ports.items():
+        if port["state"] != "up":
+            continue
+        for field, value, timestamp in (("vlanMemberships", "egress", "membershipCheckedAt"),
+                                         ("fdbVlans", "learnedMacCount", "fdbCheckedAt")):
+            sample = port.get(field, {})
+            if not observation_is_fresh(sample.get("checkedAt"), now, max_age=VLAN_AUDIT_MAX_AGE):
+                continue
+            for reading in sample["vlans"]:
+                if reading["id"] in observations and reading.get(value):
+                    side_observation = observations[reading["id"]].setdefault(side, {})
+                    side_observation.update({value: reading[value], timestamp: sample["checkedAt"]})
+
+    results = []
+    for vid, mode in sorted(intent.items()):
+        observations_by_side = observations[vid]
+        actual = [reading["egress"] for reading in observations_by_side.values() if "egress" in reading]
+        state = "mismatch" if any(egress != mode for egress in actual) else "confirmed" if len(actual) == 2 else "unconfirmed"
+        results.append({"id": vid, "expected": mode, "state": state, "ports": observations_by_side})
+    return results
+
+
 def _link_port_alerts(evidence: list[dict]) -> list[dict]:
     alerts = {}
     for report in evidence:
@@ -1289,13 +1324,17 @@ def summarize_topology(graph: dict) -> dict:
            for node in nodes.values() if "stpRootPath" in node]
     roots = [{"id": node["id"], "name": node["name"], **node["stpRoot"]}
              for node in nodes.values() if "stpRoot" in node]
+    vlan_audits = [
+        {"a": link["a"], "b": link["b"], "portA": report["a"], "portB": report["b"], "vlans": report["vlanAudit"]}
+        for link in graph["links"] for report in link["portEvidence"] if report.get("vlanAudit")
+    ]
     lacp = [{"id": node["id"], "name": node["name"], **report}
             for node in nodes.values() for report in node.get("lacpHealth", [])]
     downstream = [{"id": node["id"], "name": node["name"], **node["downstream"]}
                   for node in nodes.values() if "downstream" in node]
     return {**metadata, "topologyAudit": {"directLinks": counts, "pendingTotal": len(pending),
                                         "portAlertTotal": len(alerts), "portAlerts": alerts[:64],
-                                        "stpRootPaths": stp, "stpRoots": roots,
+                                        "stpRootPaths": stp, "stpRoots": roots, "vlanAudits": vlan_audits[:64],
                                         "lacpHealth": lacp[:64],
                                         "downstreamSwitches": downstream[:MAX_DOWNSTREAM_SWITCHES],
                                         "pending": [pending[key] for key in sorted(pending)[:64]]}}
@@ -1715,6 +1754,10 @@ def load_infrastructure_map(
                             stp_paths.append({**stp, "deviceId": node_id})
                     if stp_paths:
                         evidence[-1]["stpPaths"] = stp_paths
+                if evidence[-1].get("pairEvidence") == "verified_inventory":
+                    audit = _audit_link_vlans(report.get("expectedVlans"), evidence[-1].get("portStates", {}), now)
+                    if audit:
+                        evidence[-1]["vlanAudit"] = audit
                 vlan = report.get("vlan")
                 if type(vlan) is int and 1 <= vlan <= 4094:
                     evidence[-1]["vlan"] = vlan

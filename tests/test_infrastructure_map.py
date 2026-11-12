@@ -1942,6 +1942,43 @@ def test_stp_observer_uses_recent_detected_snr_profile_without_a_hint(monkeypatc
     assert asyncio.run(collector._collect_stp_observations([source], [status], now)) == ({}, {})
 
 
+def test_vlan_audit_keeps_port_configuration_and_learned_mac_evidence_distinct(tmp_path):
+    from app.infrastructure_map import load_infrastructure_map, summarize_topology
+
+    now = datetime.now(timezone.utc)
+    stamp = now.isoformat()
+    expected = {"tagged": [20], "untagged": [1]}
+    configured = [{"id": 1, "egress": "untagged", "pvid": True}, {"id": 20, "egress": "tagged", "pvid": False}]
+    port_a = {"name": "ge23", "state": "up", "checkedAt": stamp,
+              "vlanMemberships": {"checkedAt": stamp, "vlans": configured}}
+    port_b = {"name": "Gi1/0/47", "state": "up", "checkedAt": stamp,
+              "fdbVlans": {"checkedAt": stamp, "vlans": [{"id": 20, "learnedMacCount": 2}]}}
+    snapshot = {"schema": 1, "snapshotAt": stamp, "nodes": [
+        {"id": "a", "name": "A", "kind": "Коммутатор", "ports": [port_a]},
+        {"id": "b", "name": "B", "kind": "Коммутатор", "ports": [port_b]},
+    ], "links": [{"a": "a", "b": "b", "kind": "Сетевое соединение", "source": "GitHub", "confirmed": True,
+                  "portEvidence": [{"a": "ge23", "b": "Gi1/0/47", "source": "GitHub", "confirmed": True,
+                                    "expectedVlans": expected}]}]}
+    path = tmp_path / "map.json"
+
+    def read():
+        path.write_text(json.dumps(snapshot), encoding="utf-8")
+        graph = load_infrastructure_map(path, now)
+        audit, = summarize_topology(graph)["topologyAudit"]["vlanAudits"]
+        return audit["vlans"]
+
+    native, tagged = read()
+    assert native["state"] == tagged["state"] == "unconfirmed"
+    assert tagged["ports"] == {
+        "a": {"egress": "tagged", "membershipCheckedAt": stamp},
+        "b": {"learnedMacCount": 2, "fdbCheckedAt": stamp},
+    }
+    port_b["vlanMemberships"] = {"checkedAt": stamp, "vlans": configured}
+    assert all(vlan["state"] == "confirmed" for vlan in read())
+    port_b["vlanMemberships"]["vlans"] = [{"id": 20, "egress": "untagged", "pvid": False}]
+    assert read()[1]["state"] == "mismatch"
+
+
 def test_topology_port_alerts_require_confirmed_pairs_and_fresh_states(tmp_path):
     from app.infrastructure_map import load_infrastructure_map, summarize_topology
 

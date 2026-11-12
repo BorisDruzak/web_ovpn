@@ -1225,7 +1225,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         })
 
     def edge(a, b, kind, source, confirmed=True, details="", ports=None, at=None, vlan=None, virtual=None,
-             evidence_only=False, lacp_polled_at=None):
+             evidence_only=False, lacp_polled_at=None, expected_vlans=None):
         if a not in nodes or b not in nodes or a == b:
             return
         key = (tuple(sorted((a, b))), kind)
@@ -1247,6 +1247,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 report["vlan"] = vlan
             if lacp_polled_at is not None:
                 report["lacpPolledAt"] = lacp_polled_at
+            if expected_vlans:
+                report["expectedVlans"] = expected_vlans
             if report not in evidence:
                 evidence.append(report)
         if evidence:
@@ -1373,7 +1375,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             edge(a["device"], b["device"], SHARED_LLDP_KIND, "GitHub", False, ports=ports)
             continue
         edge(a["device"], b["device"], kind, "GitHub", verified, ports=ports,
-             vlan=vlan.get("id") if tagged_transit else None)
+             vlan=vlan.get("id") if tagged_transit else None,
+             expected_vlans=link.get("vlans") if kind == "Сетевое соединение" else None)
         if verified and kind == "Сетевое соединение" and link.get("relation") == "connected_to":
             for switch, host in ((a, b), (b, a)):
                 if (nodes.get(switch["device"], {}).get("kind") == NETWORK_KINDS[0]
