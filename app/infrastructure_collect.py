@@ -28,7 +28,7 @@ from netctl.config import DEFAULT_DB_URL, load_secrets
 from netctl.context import load_context_bytes, load_schema, validate_context
 from netctl.db import list_sources, read_context_snapshot
 from netctl.drivers import legacy_driver_for
-from netctl.snmp.interfaces import read_interface_link, read_snr_transceivers
+from netctl.snmp.interfaces import read_interface_link, read_snr_transceivers, read_switch_link_modes
 from netctl.snmp.lacp import read_lacp_members
 from netctl.snmp.stp import read_stp_designated_ports, read_stp_root_path
 from netctl.snmp.transport import SnmpTransport
@@ -42,7 +42,7 @@ from .infrastructure_backup import backup_policy, backup_service_checks, read_pr
 from .infrastructure_map import (
     BACKUP_PROBE_METHOD, BACKUP_SERVICE_ID, GUEST_IO_MAX_AGE,
     CLUSTER_HEALTH_METHODS, CLUSTER_KIND, INTERFACE_NAME, MAX_DOWNSTREAM_SWITCHES, MAX_ROUTER_NEIGHBORS,
-    MAX_SNAPSHOT_BYTES, NETWORK_KINDS,
+    MAX_SNAPSHOT_BYTES, NETWORK_KINDS, PORT_LINK_CHECK_MAX_AGE,
     PPPOE_METHOD, PPPOE_SOURCE, PVE_DISK_DEVICE, PVE_STORAGE_ID, RECIPROCAL_MAC_SOURCE,
     SERVICE_PROBE_MAX_AGE, SHARED_LLDP_KIND, SHARED_LLDP_SOURCE, STP_ROOT_PATH_MAX_AGE,
     TRANSCEIVER_MAX_AGE,
@@ -325,21 +325,30 @@ async def _collect_stp_observations(sources: list[dict], switches: list[dict], n
     return roots, designated
 
 
-async def _collect_snr_modules(network: dict, now: datetime) -> dict:
-    detected = {row["source"] for row in network.get("switches", [])
-                if row.get("profile_id") == "snr" and observation_is_fresh(row.get("last_success_at"), now)}
+async def _collect_switch_port_diagnostics(network: dict, now: datetime) -> tuple[dict, dict]:
+    detected = {row["source"]: row["profile_id"] for row in network.get("switches", [])
+                if row.get("profile_id") in {"dgs", "snr", "tplink"}
+                and observation_is_fresh(row.get("last_success_at"), now)}
     targets = [source for source in network["sources"] if source.get("enabled")
                and source.get("driver") == "snmp_switch" and source["name"] in detected]
 
     async def read(source):
+        name = source["name"]
+        snr = detected[name] == "snr"
+        modes, modules = {}, {}
         try:
-            async with asyncio.timeout(5), SnmpTransport.from_source(source) as transport:
-                ports = await read_snr_transceivers(transport)
+            async with asyncio.timeout(6), SnmpTransport.from_source(source) as transport:
+                if ports := await read_switch_link_modes(transport, snr=snr):
+                    modes = {"ports": ports, "checkedAt": datetime.now(timezone.utc).isoformat()}
+                if snr and (ports := await read_snr_transceivers(transport)):
+                    modules = {"ports": ports, "checkedAt": datetime.now(timezone.utc).isoformat()}
         except (TimeoutError, OSError, ValueError):
-            ports = {}
-        return source["name"], {"ports": ports, "checkedAt": datetime.now(timezone.utc).isoformat()}
+            pass
+        return name, modes, modules
 
-    return dict(await asyncio.gather(*(read(source) for source in targets)))
+    results = await asyncio.gather(*(read(source) for source in targets))
+    return ({name: modes for name, modes, _ in results if modes},
+            {name: modules for name, _, modules in results if modules})
 
 
 async def _check_declared_switch_ports(context: dict, network: dict, pve: dict, now: datetime) -> None:
@@ -1386,6 +1395,9 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             modules = network.get("transceivers", {}).get(name, {})
             modules_current = (row.get("enabled") and observation_is_fresh(
                 modules.get("checkedAt"), now, max_age=TRANSCEIVER_MAX_AGE))
+            modes = network.get("link_modes", {}).get(name, {})
+            modes_current = row.get("enabled") and observation_is_fresh(
+                modes.get("checkedAt"), now, max_age=PORT_LINK_CHECK_MAX_AGE)
             for port, raw_port in zip(item["ports"], current):
                 if raw_port.get("linkCheck"):
                     port["linkCheck"] = raw_port["linkCheck"]
@@ -1394,6 +1406,10 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                     module = modules["ports"].get(index, {})
                     if module.get("port") == port["name"]:
                         port["transceiver"] = {**module, "checkedAt": modules["checkedAt"]}
+                if modes_current and type(index) is int and index_counts[index] == 1:
+                    mode = modes["ports"].get(index, {})
+                    if mode.get("port") and port_label_key(mode["port"]) == port_label_key(port["name"]):
+                        port["linkMode"] = {**mode, "checkedAt": modes["checkedAt"]}
                 scope = (name, latest_run, port["checkedAt"])
                 neighbors = peers_by_sample.get((name, port["key"], latest_run, port["checkedAt"]))
                 if neighbors and port["state"] == "up":
@@ -2758,7 +2774,9 @@ def main() -> int:
             network["stp_root_paths"], network["stp_designated_ports"] = asyncio.run(
                 _collect_stp_observations(network["sources"], network.get("switches", []), datetime.now(timezone.utc))
             )
-            network["transceivers"] = asyncio.run(_collect_snr_modules(network, datetime.now(timezone.utc)))
+            network["link_modes"], network["transceivers"] = asyncio.run(
+                _collect_switch_port_diagnostics(network, datetime.now(timezone.utc))
+            )
             if bindings.get("ipsec_links"):
                 network["ipsec"] = _collect_ipsec_policies(network["sources"], bindings["ipsec_links"])
                 network["ipsec_connectivity"] = _collect_ipsec_connectivity(context, network["sources"], bindings["ipsec_links"])

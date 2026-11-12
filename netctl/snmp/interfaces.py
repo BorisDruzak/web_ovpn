@@ -31,28 +31,64 @@ _INTERFACE_COLUMNS = (
     IF_ALIAS,
 )
 _SNR_MODULE_ENTRY = (1, 3, 6, 1, 4, 1, 57206, 7, 100, 30, 3, 1)
+_SNR_SPEED_DUPLEX = (1, 3, 6, 1, 4, 1, 57206, 7, 100, 3, 2, 1, 14)
+_DOT3_STATS_DUPLEX = (1, 3, 6, 1, 2, 1, 10, 7, 2, 1, 19)
+
+
+async def _indexed_port_column(transport, oid: tuple[int, ...], capability: str) -> dict[int, SnmpVarBind]:
+    result = await transport.walk(oid, capability=capability)
+    values = {}
+    if result.outcome is SnmpOutcome.SUCCESS_WITH_ROWS:
+        for row in result.rows:
+            if row.oid[:-1] != oid:
+                return {}
+            index = row.oid[-1]
+            if index in values or not 1 <= index <= 2_147_483_647:
+                return {}
+            values[index] = row
+    return values
+
+
+async def read_switch_link_modes(transport, *, snr: bool = False) -> dict[int, dict]:
+    duplex = await _indexed_port_column(transport, _DOT3_STATS_DUPLEX, "link_mode_duplex")
+    modes = {index: {"duplex": {2: "half", 3: "full"}[row.value]} for index, row in duplex.items()
+             if row.value_type == "integer" and type(row.value) is int and row.value in (2, 3)}
+    if snr:
+        configured = await _indexed_port_column(transport, _SNR_SPEED_DUPLEX, "link_mode_snr")
+        for index, row in configured.items():
+            if row.value_type != "integer" or type(row.value) is not int:
+                continue
+            if row.value == 0 or 7 <= row.value <= 23:
+                modes.setdefault(index, {})["autoNegotiation"] = True
+            elif row.value in (1, 2, 3, 4, 6, 25, 30):
+                modes.setdefault(index, {})["autoNegotiation"] = False
+    if not modes:
+        return {}
+    names = await _indexed_port_column(transport, IF_NAME, "link_mode_names")
+    result = {}
+    for index, mode in modes.items():
+        if index not in names:
+            continue
+        try:
+            name = _text(names[index], "ifName").strip()
+        except ValueError:
+            continue
+        if name:
+            result[index] = {"port": name, **mode}
+    return result
 
 
 async def read_snr_transceivers(transport) -> dict[int, dict]:
     """Read the SNR transceiver inventory columns that contain no serial numbers."""
     columns = {}
     for field, number in (("port", 2), ("vendor", 4), ("formFactor", 5), ("media", 6), ("rate", 7)):
-        oid = (*_SNR_MODULE_ENTRY, number)
-        result = await transport.walk(oid, capability="snr_transceiver_" + field)
         values = {}
-        if result.outcome is SnmpOutcome.SUCCESS_WITH_ROWS:
-            for row in result.rows:
-                if row.oid[:-1] != oid:
-                    values.clear()
-                    break
-                index = row.oid[-1]
-                if index in values or not 1 <= index <= 2_147_483_647:
-                    values.clear()
-                    break
-                try:
-                    values[index] = _text(row, field).strip()
-                except ValueError:
-                    values[index] = ""
+        rows = await _indexed_port_column(transport, (*_SNR_MODULE_ENTRY, number), "snr_transceiver_" + field)
+        for index, row in rows.items():
+            try:
+                values[index] = _text(row, field).strip()
+            except ValueError:
+                continue
         columns[field] = values
     modules = {}
     for index, form in columns["formFactor"].items():

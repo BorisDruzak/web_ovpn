@@ -1746,6 +1746,51 @@ def test_css_root_port_stp_rejects_root_port_change_during_poll():
     assert asyncio.run(read_stp_root_path(Transport(5))) == {}
 
 
+def test_switch_link_mode_uses_negotiated_duplex_and_current_interface_identity(tmp_path):
+    import asyncio
+
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+    from netctl.snmp.interfaces import read_switch_link_modes
+    from netctl.snmp.models import CapabilityResult, SnmpVarBind
+    from netctl.snmp.outcomes import SnmpOutcome
+
+    class Transport:
+        async def walk(self, oid, *, capability):
+            samples = {
+                "link_mode_names": ("octet_string", {5014: b"ge14", 5025: b"xe1", 5028: b"xe4"}),
+                "link_mode_duplex": ("integer", {5014: 3, 5025: 3, 5028: 2}),
+                "link_mode_snr": ("integer", {5014: 0, 5025: 25, 5028: 6}),
+            }
+            kind, rows = samples[capability]
+            return CapabilityResult(capability, SnmpOutcome.SUCCESS_WITH_ROWS,
+                                    tuple(SnmpVarBind((*oid, index), kind, value) for index, value in rows.items()))
+
+    now = datetime.now(timezone.utc)
+    stamp = now.isoformat()
+    modes = asyncio.run(read_switch_link_modes(Transport(), snr=True))
+    assert modes[5014] == {"port": "ge14", "duplex": "full", "autoNegotiation": True}
+    assert modes[5025]["autoNegotiation"] is False
+    assert modes[5028]["duplex"] == "half"
+    context = {"devices": [{"id": "switch", "name": "Switch", "kind": "switch", "management_ip": "192.0.2.1"}]}
+    network = {
+        "sources": [{"name": "snr", "host": "192.0.2.1", "driver": "snmp_switch", "enabled": True}],
+        "ports": [{"source": "snr", "collector_run_id": 1, "if_index": index, "port_key": label,
+                   "name": label, "oper_status": state, "last_seen_at": stamp}
+                  for index, label, state in [(5014, "ge14", "up"), (5025, "renamed", "up"), (5028, "xe4", "down")]],
+        "link_modes": {"snr": {"checkedAt": stamp, "ports": modes}},
+    }
+    path = tmp_path / "map.json"
+    path.write_text(json.dumps(build_graph(context, network, {}, {}, {}, now)), encoding="utf-8")
+    node, = load_infrastructure_map(path, now)["nodes"]
+    ports = {p["name"]: p for p in node["ports"]}
+    assert ports["ge14"]["linkMode"] == {"checkedAt": stamp, "duplex": "full", "autoNegotiation": True}
+    assert "linkMode" not in ports["renamed"]
+    assert "linkMode" not in ports["xe4"]
+    expired, = load_infrastructure_map(path, now + timedelta(minutes=6))["nodes"]
+    assert all("linkMode" not in p for p in expired["ports"])
+
+
 def test_snr_transceiver_inventory_uses_the_current_interface_identity(tmp_path):
     import asyncio
 

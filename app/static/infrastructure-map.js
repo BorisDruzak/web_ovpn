@@ -978,6 +978,13 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           const vlans = port.fdbVlans.vlans.map(vlan => `${vlan.id} (${vlan.learnedMacCount} MAC)`);
           row.append(make('small', 'VLAN по MAC-таблице · ' + vlans.join(', ')));
         }
+        if (selectedPort && port.linkMode) {
+          const {duplex, autoNegotiation, checkedAt} = port.linkMode;
+          const configured = {true: 'Автосогласование включено', false: 'Автосогласование выключено'};
+          const mode = {full: 'Полный дуплекс', half: 'Полудуплекс'};
+          row.append(make('small', [mode[duplex], configured[autoNegotiation], 'SNMP · ' + formatTime(checkedAt)]
+            .filter(Boolean).join(' · ')));
+        }
         if (selectedPort && port.transceiver) {
           const {formFactor, vendor, media, nominalBps, checkedAt} = port.transceiver;
           const rate = nominalBps && 'номинал ' + (nominalBps / 1e9).toLocaleString('ru-RU') + ' Гбит/с';

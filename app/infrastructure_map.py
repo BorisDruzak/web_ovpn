@@ -220,6 +220,16 @@ def _public_port(row: dict, now: datetime) -> dict:
             nominal = module.get("nominalBps")
             if type(nominal) is int and 0 < nominal <= 10**12:
                 result["transceiver"]["nominalBps"] = nominal
+    mode = row.get("linkMode")
+    if (result["state"] == "up" and isinstance(mode, dict)
+            and observation_is_fresh(mode.get("checkedAt"), now, max_age=PORT_LINK_CHECK_MAX_AGE)):
+        duplex = mode.get("duplex")
+        autoneg = mode.get("autoNegotiation")
+        details = {"duplex": duplex} if duplex in ("full", "half") else {}
+        if type(autoneg) is bool:
+            details["autoNegotiation"] = autoneg
+        if details:
+            result["linkMode"] = {"checkedAt": _time(mode["checkedAt"]).isoformat(), **details}
     neighbor_count = row.get("lldpNeighborCount")
     if result["state"] == "up" and type(neighbor_count) is int and 1 <= neighbor_count <= 65535:
         result["lldpNeighborCount"] = neighbor_count
@@ -290,7 +300,7 @@ def _apply_port_link_check(port: dict, row: dict, now: datetime) -> None:
                 speedBps=speed if state == "up" and type(speed) is int and 0 < speed <= 10**15 else None)
     if state != "up":
         for key in ("lldpChassisCount", "lldpNeighborCount", "lldpNeighbors", "lldpCheckedAt",
-                    "fdbLearned", "fdbVlans", "telemetry"):
+                    "fdbLearned", "fdbVlans", "telemetry", "linkMode"):
             port.pop(key, None)
 
 
@@ -1209,7 +1219,7 @@ def summarize_topology(graph: dict) -> dict:
             lldp = {side: {"checkedAt": port["lldpCheckedAt"], "neighbors": port["lldpNeighbors"]}
                     for side, port in declared.get("portStates", {}).items() if port.get("lldpNeighbors")}
             observations = {
-                side: {key: port[key] for key in ("name", "state", "speedBps", "checkedAt", "source") if key in port}
+                side: {key: port[key] for key in ("name", "state", "speedBps", "checkedAt", "source", "linkMode") if key in port}
                 for side, port in declared.get("portStates", {}).items() if port["state"] != "unknown"
             }
             pending[(a, b, declared["a"], declared["b"])] = {
