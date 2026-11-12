@@ -1014,12 +1014,10 @@ def _collect_ipsec_policies(sources: list[dict], configured: dict) -> dict:
 
     def collect(source):
         try:
-            snapshot = legacy_driver_for(source, secrets).ipsec_status()
+            policies = legacy_driver_for(source, secrets).read_ipsec_policies()
         except Exception:
             return source["name"], {}
-        if any(error.get("section") == "policies" for error in snapshot.get("errors", [])):
-            return source["name"], {}
-        return source["name"], {"at": datetime.now(timezone.utc).isoformat(), "policies": snapshot["policies"]}
+        return source["name"], {"at": datetime.now(timezone.utc).isoformat(), "policies": policies}
 
     with ThreadPoolExecutor(max_workers=4) as pool:
         return dict(pool.map(collect, targets))
@@ -3432,9 +3430,10 @@ def main() -> int:
                 _collect_switch_port_diagnostics(network, datetime.now(timezone.utc))
             )
             asyncio.run(_collect_switch_rx_errors(network, datetime.now(timezone.utc)))
-            start_stage("IPsec observations")
             if bindings.get("ipsec_links"):
+                start_stage("IPsec policy observations")
                 network["ipsec"] = _collect_ipsec_policies(network["sources"], bindings["ipsec_links"])
+                start_stage("IPsec connectivity probes")
                 network["ipsec_connectivity"] = _collect_ipsec_connectivity(context, network["sources"], bindings["ipsec_links"])
             start_stage("guest ARP and switch attachment probes")
             network["guest_arp_diagnostics"] = {}
@@ -3464,6 +3463,7 @@ def main() -> int:
         wireguard_probes = _wireguard_probe_specs(context, bindings.get("wireguard_policy_checks"), local_vlan_probes)
         graph = build_graph(context, network, server, pve, bindings, now,
                             local_vlan_probes=local_vlan_probes, wireguard_probes=wireguard_probes)
+        start_stage("downstream address probes")
         _check_downstream_addresses(graph["nodes"], network, now)
         if server.get("collected_at"):
             graph["serverObserverAt"] = server["collected_at"]

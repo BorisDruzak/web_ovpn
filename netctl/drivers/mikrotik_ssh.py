@@ -238,6 +238,9 @@ class MikroTikSshDriver(NetworkDriver):
         snapshot["path_fact_outcomes"] = MikroTikApiDriver.path_fact_outcomes(snapshot, failed_keys=failed_path_fact_keys)
         return snapshot
 
+    def read_ipsec_policies(self) -> list[dict[str, Any]]:
+        return MikroTikApiDriver.normalize_ipsec_policy_rows(self._run_print(self.IPSEC_PATHS["policies"]))
+
     def ipsec_status(self) -> dict[str, Any]:
         raw: dict[str, Any] = {}
         errors: list[dict[str, str]] = []

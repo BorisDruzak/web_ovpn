@@ -2958,6 +2958,30 @@ def test_mikrotik_ssh_driver_parses_routeros6_ipsec_without_sensitive_sa(monkeyp
     assert data["policies"][0]["dst_address"] == "192.168.100.0/23"
     assert data["policies"][0]["established"] is True
     assert not any("installed-sa" in " ".join(command) for command in calls)
+    calls.clear()
+    assert driver.read_ipsec_policies() == data["policies"]
+    assert len(calls) == 1 and "/ip ipsec policy print" in " ".join(calls[0])
+
+
+def test_mikrotik_api_policy_read_only_queries_policy(monkeypatch):
+    from contextlib import nullcontext
+
+    from netctl.drivers.mikrotik_api import MikroTikApiDriver
+
+    driver = MikroTikApiDriver({}, {})
+    client = object()
+    queries = []
+    raw = [{"peer": "test", "src-address": "192.0.2.0/24", "dst-address": "198.51.100.0/24",
+            "tunnel": "true", "action": "encrypt", "ph2-count": "1", "ph2-state": "established"}]
+
+    def query(api, path, fields):
+        queries.append((api, path, fields))
+        return raw
+
+    monkeypatch.setattr(driver, "_client", lambda: nullcontext(client))
+    monkeypatch.setattr(driver, "_query", query)
+    assert driver.read_ipsec_policies() == driver.normalize_ipsec_policy_rows(raw)
+    assert queries == [(client, *driver.IPSEC_PATHS["policies"])]
 
 
 def test_mikrotik_ssh_driver_tests_routeros6_scalar_sections(monkeypatch):

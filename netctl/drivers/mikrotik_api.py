@@ -591,6 +591,12 @@ class MikroTikApiDriver(NetworkDriver):
         snapshot["path_fact_outcomes"] = self.path_fact_outcomes(snapshot, failed_keys=failed_path_fact_keys)
         return snapshot
 
+    def read_ipsec_policies(self) -> list[dict[str, Any]]:
+        path, props = self.IPSEC_PATHS["policies"]
+        with self._client() as api:
+            rows = self._query(api, path, props)
+        return self.normalize_ipsec_policy_rows(rows)
+
     def ipsec_status(self) -> dict[str, Any]:
         raw: dict[str, Any] = {}
         errors: list[dict[str, str]] = []
