@@ -3,6 +3,7 @@ import copy
 import re
 
 from .ad_directory import fail
+from .component_catalog import STANDALONE_COMPONENTS
 from .final_dns_policy import validate
 from .krfb_runtime import DIRECT_POLICY
 from .setup_plans import digest
@@ -25,7 +26,9 @@ def build_workflow_plan(catalog,policy):
         profile=catalog.profile(PROFILE)
         if not is_full_profile(profile) or profile['optional_components']:raise ValueError
         ordered=catalog.ordered(profile['components'],os_id='alt-kworkstation-11')
-        if {c['id'] for c in ordered}!={c['id'] for c in catalog.components()}:raise ValueError
+        profile_components = {c['id'] for c in catalog.components()} - STANDALONE_COMPONENTS
+        if {c['id'] for c in ordered} != profile_components:
+            raise ValueError
         phases={key:[] for key in BUDGETS};membership={}
         for component in ordered:
             identifier=component['id'];recipe=component['verification']['recipe']

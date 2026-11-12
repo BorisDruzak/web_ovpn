@@ -4,6 +4,7 @@ import os
 import re
 
 from .ad_directory import fail
+from .component_catalog import ENDPOINT_AGENT_COMPONENT
 from .setup_jobs import service_uid, setup_queue_lock, timestamp
 from .setup_plans import digest, private_create, private_read
 
@@ -26,7 +27,7 @@ def project_acceptance(settings, payload):
     result = copy.deepcopy(payload['verification'])
     identifier = payload['component']['id']
     component = result['components'][identifier]
-    if component['acceptance_status'] != 'functional_verification_required':
+    if identifier == ENDPOINT_AGENT_COMPONENT or component['acceptance_status'] != 'functional_verification_required':
         return result
     path = _path(settings, payload)
     if not path.exists() and not path.is_symlink():
@@ -57,6 +58,8 @@ def accept(service, plan_id, sha256, *, confirmed):
     with setup_queue_lock(service.settings):
         payload = service.validate(plan_id, sha256)
         identifier = payload['component']['id']
+        if identifier == ENDPOINT_AGENT_COMPONENT:
+            raise fail('endpoint_registration_evidence_required', 'Verify registration and current heartbeat in Endpoint Platform')
         from .component_verification import package_health_ready
         if (payload['action'] != 'noop' or not package_health_ready(payload['observed'])
                 or payload['component']['verification']['functional_verification_required'] is not True):

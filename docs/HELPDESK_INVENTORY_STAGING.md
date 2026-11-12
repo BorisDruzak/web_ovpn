@@ -83,8 +83,21 @@ published component and prepares the existing component plan. Before
 applying, the server checks the same asset-to-machine identity again. Apply
 uses the existing exact plan SHA, permission, queue and job status.
 
-Publishing the ALT component against a verified staging artifact and issuing
-a one-time installation assignment tied to the asset remain staging work.
-An install plan or successful local package exit provides no proof of
-registration or heartbeat. Verify both through Endpoint before treating an
-installation as complete.
+The standalone ALT catalog entry pins the signed Endpoint 3.2.183 native
+kit. Before staging publication, put the exact reviewed
+`endpoint-alt-pilot-3.2.183-1.tar.gz` in the controller artifact path declared
+in the catalog. Verify its detached signature and the release manifest with
+the independently trusted publisher key. The controller checks the digest
+before workstation contact and the role checks it again on the target before
+extraction. The existing native coordinator installs the two RPMs together.
+
+The target needs protected staging config, CA and the exact approved staging
+drop-in before apply. The current role requires an installation ID of the form
+`inventory-<controller-machine-uuid>-<32 lowercase hex digits>`. Existing or
+partially installed packages require review. The role invokes native Setup
+once and keeps its retained receipts. A locally installed pair is recorded
+as requiring Endpoint verification. Manual controller acceptance cannot
+substitute for the Endpoint registration and heartbeat.
+
+Issuing the one-time installation assignment tied to the inventory asset and
+consuming its authoritative registration receipt remain staging work.

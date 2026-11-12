@@ -118,10 +118,27 @@ software_catalog:
     installer_filename: Gosplugin_Alt-RedOS_Installer.rpm.sh
     payload_filename: gosuslugi-plugin-1.3.42.0-1.x86_64.rpm
 
+  endpoint_agent_native:
+    enabled: true
+    source: archive
+    executable: /usr/lib/endpoint-agent-setup/endpoint-agent-setup
+    artifact_path: /opt/alt-deploy-control/artifacts/endpoint-agent/endpoint-alt-pilot-3.2.183-1.tar.gz
+    sha256: c5b552afa4aa27e4df73af0ce68be4ecc88729f30baf3a70e6f9d4c8c709a3f3
+    package_evr: 3.2.183-alt6
+    packages:
+    - filename: endpoint-agent-3.2.183-alt6.x86_64.rpm
+      package_name: endpoint-agent
+      package_evr: 3.2.183-alt6
+      architecture: x86_64
+    - filename: endpoint-agent-user-sensor-3.2.183-alt6.x86_64.rpm
+      package_name: endpoint-agent-user-sensor
+      package_evr: 3.2.183-alt6
+      architecture: x86_64
+
 # Published Setup declarations. Never supplied by the operator at runtime.
 setup_catalog:
   schema_version: 1
-  version: 1
+  version: 2
   components:
     - id: system.base
       version: 1
@@ -276,6 +293,15 @@ setup_catalog:
       execution: {role: workstation_final_dns, operation: configure, scope: system, requires_domain: true, requires_user_home: false, requires_reboot: false, retry_policy: guarded}
       preflight: {recipe: final_dns}
       verification: {recipe: final_dns, functional_verification_required: false}
+    - id: software.endpoint_agent
+      version: 1
+      name: Endpoint Agent (staging)
+      category: applications
+      supported_os: [alt-kworkstation-11]
+      dependencies: [system.base, domain.ready]
+      execution: {role: software_endpoint_agent_native, operation: software, scope: system, requires_domain: true, requires_user_home: false, requires_reboot: false, retry_policy: non_replayable}
+      preflight: {recipe: artifact, artifact_key: endpoint_agent_native}
+      verification: {recipe: package, functional_verification_required: true, services: [endpoint-agent.service, endpoint-agent-update.path]}
   profiles:
     - id: base
       version: 1

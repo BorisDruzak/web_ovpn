@@ -14,6 +14,8 @@ from .errors import ControlError
 
 MAX_CATALOG_BYTES = 524288
 SUPPORTED_OS = frozenset({'alt-kworkstation-11'})
+ENDPOINT_AGENT_COMPONENT = 'software.endpoint_agent'
+STANDALONE_COMPONENTS = frozenset({ENDPOINT_AGENT_COMPONENT})
 PROTECTED_ROLES = frozenset({
     'domain_join', 'domain_verify', 'alt_group_policy_client', 'alt_group_policy_prerequisites',
     'domain_login_baseline', 'prejoin_upgrade', 'workstation_identity', 'workstation_network',
@@ -156,6 +158,7 @@ class ComponentCatalog:
         for component in catalog['components']:
             self._validate_component(component, artifacts)
             require(component['id'] not in self._components)
+            require(not STANDALONE_COMPONENTS.intersection(component['dependencies']))
             self._components[component['id']] = copy.deepcopy(component)
         # Validate closure for every component, not only the requested selection.
         for component in self._components.values():
@@ -274,6 +277,8 @@ class ComponentCatalog:
         _ids(profile['optional_components'])
         require(profile['confirmation_policy'] == 'sha256')
         require(not set(profile['components']) & set(profile['optional_components']))
+        require(not STANDALONE_COMPONENTS.intersection(profile['components'])
+                and not STANDALONE_COMPONENTS.intersection(profile['optional_components']))
         order = [component['id'] for component in self._ordered(profile['components'])]
         require(order == profile['components'])
         for identifier in profile['optional_components']:

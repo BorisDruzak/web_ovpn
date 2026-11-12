@@ -34,7 +34,7 @@ def test_full_plan_is_an_exact_registry_partition_with_direct_vnc_first_and_dns_
     assert set(phases[1]['component_ids'])=={'desktop.shortcuts','desktop.kwallet_repair','remote.krfb'}
     flattened=[v for p in phases for v in p['component_ids']]
     assert len(flattened)==len(set(flattened))==17
-    assert set(flattened)=={c['id'] for c in catalog.components()}
+    assert set(flattened)=={c['id'] for c in catalog.components()} - {'software.endpoint_agent'}
     assert all('adapter' not in catalog.component(v)['execution'] for p in phases[1:] for v in p['component_ids'])
     assert validate_workflow_plan(workflow,catalog)==workflow
     assert workflow['policy_sha256']==hashlib.sha256(json.dumps(workflow['policy'],sort_keys=True,separators=(',',':')).encode()).hexdigest()

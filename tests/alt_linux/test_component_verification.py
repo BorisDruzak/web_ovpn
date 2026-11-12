@@ -142,3 +142,18 @@ def test_system_and_user_component_preserves_first_login_deferral():
     result = VerificationEngine(catalog).evaluate(state, ['desktop.plasma'])
     assert result['components']['desktop.plasma']['status'] == 'blocked'
     assert result['components']['desktop.plasma']['operator_action'] == 'first_domain_login'
+
+
+def test_installed_endpoint_packages_still_require_endpoint_registration_and_heartbeat():
+    catalog = ComponentCatalog.load(CATALOG)
+    component = 'software.endpoint_agent'
+    observed = evidence(catalog)
+    result = VerificationEngine(catalog).evaluate(observed, [component])['components'][component]
+    assert result['installation_status'] == 'installed_verified'
+    assert result['acceptance_status'] == 'functional_verification_required'
+    assert result['operator_action'] == 'endpoint_registration_verification'
+
+    observed['components'][component]['packages'].pop()
+    result = VerificationEngine(catalog).evaluate(observed, [component])['components'][component]
+    assert result['status'] == 'missing'
+    assert result['installation_status'] == 'unverified'

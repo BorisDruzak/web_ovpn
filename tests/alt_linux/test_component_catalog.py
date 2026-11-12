@@ -40,8 +40,8 @@ def edit(project, change):
 
 def test_catalog_initial_profiles():
     catalog = ComponentCatalog.load(SOURCE)
-    assert len(catalog.components()) == 17
-    assert catalog.version == 1
+    assert len(catalog.components()) == 18
+    assert catalog.version == 2
     assert len(catalog.fingerprint) == 64
     core = catalog.profile('core-apps')
     assert core['version'] == 1
@@ -162,3 +162,34 @@ def test_catalog_version_change_preserves_snapshot_and_defensive_copies(project)
     assert original.component('software.onlyoffice')['execution']['role'] == 'software_onlyoffice'
     with pytest.raises(ControlError):
         original.ordered(['software.onlyoffice'], os_id='other-os')
+
+
+def test_endpoint_agent_is_an_independent_native_component_with_functional_acceptance():
+    catalog = ComponentCatalog.load(SOURCE)
+    component = catalog.component('software.endpoint_agent')
+    assert component['execution']['role'] == 'software_endpoint_agent_native'
+    assert component['execution']['retry_policy'] == 'non_replayable'
+    assert component['verification']['functional_verification_required'] is True
+    assert 'software.endpoint_agent' not in catalog.profile('workstation-full-v1')['components']
+    artifact = catalog.artifact(component['id'])
+    assert artifact['source'] == 'archive'
+    assert [item['package_name'] for item in artifact['packages']] == [
+        'endpoint-agent', 'endpoint-agent-user-sensor',
+    ]
+    tasks = yaml.safe_load((SOURCE / 'roles/software_endpoint_agent_native/tasks/main.yml').read_text(encoding='utf-8'))
+    native = next(task for section in tasks for task in section.get('block', [])
+                  if task['name'] == 'Run the existing Endpoint native coordinator')
+    argv = native['ansible.builtin.command']['argv']
+    assert argv[1] == 'install'
+    assert argv[2::2] == ['--core-rpm', '--user-sensor-rpm', '--public-key']
+    assert native.get('retries') is None and native.get('until') is None
+
+
+@pytest.mark.parametrize('bucket', ['components', 'optional_components'])
+def test_endpoint_native_component_cannot_be_added_to_workstation_profiles(project, bucket):
+    def append(catalog):
+        next(row for row in catalog['profiles'] if row['id'] == 'core-apps')[bucket].append('software.endpoint_agent')
+
+    edit(project, append)
+    with pytest.raises(ControlError):
+        ComponentCatalog.load(project)

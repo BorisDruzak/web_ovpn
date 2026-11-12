@@ -70,6 +70,7 @@ def test_real_ansible_syntax(ansible_runtime, playbook):
 
 @pytest.mark.parametrize('profile,component,failure', [('base', '', ''), ('core-apps', '', ''),
     ('core-apps', 'software.onlyoffice', ''), ('core-apps', 'software.onlyoffice', 'unselected_blank_license'),
+    ('core-apps', 'software.endpoint_agent', ''),
     ('core-apps', '', 'missing_artifact'), ('core-apps', '', 'blank_license')])
 def test_real_ansible_nonmutating_selected_preflight(ansible_runtime, profile, component, failure):
     executable, project, env = ansible_runtime
@@ -230,3 +231,17 @@ def test_real_callback_exports_bound_diagnostic_outside_secret_block(ansible_run
     assert len(specific) == 1 and specific[0]['type'] == 'task_failed'
     assert specific[0]['component_id'] == 'domain.ready'
     assert sentinel not in result.stdout+result.stderr+json.dumps(events)
+
+
+def test_native_agent_role_refuses_unscoped_invocation(ansible_runtime):
+    executable, project, env = ansible_runtime
+    play = project/'playbooks/synthetic-endpoint-scope.yml'
+    play.write_text(yaml.safe_dump([{'hosts': 'localhost', 'gather_facts': False,
+        'tasks': [{'ansible.builtin.include_role': {'name': 'software_endpoint_agent_native'}}]}]))
+    variables = {'setup_component_id': 'software.browser', 'ansible_connection': 'local',
+                 'ansible_become': False, 'ansible_python_interpreter': sys.executable}
+    result = subprocess.run([str(executable), '-i', 'localhost,', '-e', json.dumps(variables), str(play)],
+                            cwd=project, env=env, text=True, capture_output=True, timeout=30)
+    assert result.returncode != 0
+    assert 'endpoint_native_component_required' in result.stdout + result.stderr
+    assert 'changed=0' in result.stdout

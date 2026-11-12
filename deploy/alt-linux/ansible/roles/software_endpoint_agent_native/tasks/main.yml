@@ -1,0 +1,143 @@
+---
+- name: Require the approved staging component
+  ansible.builtin.assert:
+    that:
+      - setup_component_id | default('') == 'software.endpoint_agent'
+      - machine_uuid is match('^[0-9a-f-]{36}$')
+    fail_msg: ALT_PREFLIGHT_FAILURE:endpoint_native_component_required
+
+- name: Read protected native staging prerequisites
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+    follow: false
+    get_checksum: false
+  loop:
+    - {path: /etc/endpoint-agent/config.yaml, mode: "0600"}
+    - {path: /etc/endpoint-agent/ca.crt, mode: "0600"}
+    - {path: /etc/systemd/system/endpoint-agent.service.d/staging.conf, mode: "0644"}
+  register: endpoint_native_prerequisites
+
+- name: Require root-owned staging prerequisites
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg | default(false)
+      - not (item.stat.islnk | default(false))
+      - item.stat.uid == 0 and item.stat.gid == 0
+      - item.stat.mode == item.item.mode
+      - 0 < item.stat.size <= 65536
+    fail_msg: ALT_PREFLIGHT_FAILURE:endpoint_native_staging_prerequisites_missing
+  loop: "{{ endpoint_native_prerequisites.results }}"
+  loop_control:
+    label: "{{ item.item.path }}"
+
+- name: Read the prepared native config and staging scope
+  ansible.builtin.slurp:
+    src: "{{ item }}"
+  loop:
+    - /etc/endpoint-agent/config.yaml
+    - /etc/systemd/system/endpoint-agent.service.d/staging.conf
+  register: endpoint_native_config
+  no_log: true
+
+- name: Require staging origin and a prepared machine-specific installation ID
+  vars:
+    native_config: "{{ endpoint_native_config.results[0].content | b64decode | from_yaml }}"
+    staging_dropin: |
+      [Service]
+      Environment=ENDPOINT_AGENT_DEPLOYMENT_ENVIRONMENT=staging
+      Environment=CANARY_ENVIRONMENT=staging
+      Environment=CANARY_APPROVED=true
+      Environment=ENDPOINT_AGENT_ORIGIN=https://endpoint-staging.sosnadmin.local
+  ansible.builtin.assert:
+    that:
+      - native_config.gateway.endpoint == 'https://endpoint-staging.sosnadmin.local'
+      - native_config.gateway.ca_file == '/etc/endpoint-agent/ca.crt'
+      - native_config.provisioning.installation_id is match('^inventory-' ~ machine_uuid ~ '-[0-9a-f]{32}$')
+      - (endpoint_native_config.results[1].content | b64decode) == staging_dropin
+    fail_msg: ALT_PREFLIGHT_FAILURE:endpoint_native_staging_scope_invalid
+  no_log: true
+
+- name: Inspect both Endpoint RPM slots
+  ansible.builtin.command:
+    argv: [rpm, -q, "{{ item.package_name }}"]
+  loop: "{{ software_catalog.endpoint_agent_native.packages }}"
+  register: endpoint_native_existing
+  changed_when: false
+  failed_when: endpoint_native_existing.rc not in [0, 1]
+
+- name: Require fresh slots for the install action
+  ansible.builtin.assert:
+    that:
+      - endpoint_native_existing.results | map(attribute='rc') | unique | list == [1]
+    fail_msg: ALT_PREFLIGHT_FAILURE:endpoint_native_existing_installation_requires_review
+
+- name: Install the exact published native kit
+  block:
+    - name: Create private staging directory for the signed kit
+      ansible.builtin.tempfile:
+        state: directory
+        path: /var/tmp
+        prefix: endpoint-native-kit-
+      register: endpoint_native_tmp
+
+    - name: Copy the pinned native kit
+      ansible.builtin.copy:
+        src: "{{ software_catalog.endpoint_agent_native.artifact_path }}"
+        dest: "{{ endpoint_native_tmp.path }}/kit.tar.gz"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Hash the copied native kit
+      ansible.builtin.stat:
+        path: "{{ endpoint_native_tmp.path }}/kit.tar.gz"
+        follow: false
+        checksum_algorithm: sha256
+      register: endpoint_native_copy
+
+    - name: Require the exact signed archive bytes before extraction
+      ansible.builtin.assert:
+        that:
+          - endpoint_native_copy.stat.isreg
+          - not endpoint_native_copy.stat.islnk
+          - endpoint_native_copy.stat.checksum == software_catalog.endpoint_agent_native.sha256
+        fail_msg: ALT_PREFLIGHT_FAILURE:endpoint_native_kit_invalid
+
+    - name: Extract the verified archive into private staging
+      ansible.builtin.unarchive:
+        src: "{{ endpoint_native_tmp.path }}/kit.tar.gz"
+        dest: "{{ endpoint_native_tmp.path }}"
+        remote_src: true
+
+    - name: Run the existing Endpoint native coordinator
+      vars:
+        kit: "{{ endpoint_native_tmp.path }}/endpoint-alt-pilot-3.2.183-1"
+      ansible.builtin.command:
+        expand_argument_vars: false
+        argv:
+          - "{{ kit }}/endpoint-agent-setup"
+          - install
+          - --core-rpm
+          - "{{ kit }}/endpoint-agent-3.2.183-alt6.x86_64.rpm"
+          - --user-sensor-rpm
+          - "{{ kit }}/endpoint-agent-user-sensor-3.2.183-alt6.x86_64.rpm"
+          - --public-key
+          - "{{ kit }}/endpoint-rpm-release.asc"
+      register: endpoint_native_result
+      changed_when: endpoint_native_result.rc == 0
+      failed_when: false
+      no_log: true
+
+    - name: Require confirmed native installation before reporting a local result
+      ansible.builtin.assert:
+        that:
+          - endpoint_native_result.rc == 0
+        fail_msg: ALT_PREFLIGHT_FAILURE:endpoint_native_result_requires_review
+
+  always:
+    - name: Remove only this job's private kit staging directory
+      ansible.builtin.file:
+        path: "{{ endpoint_native_tmp.path }}"
+        state: absent
+      when: endpoint_native_tmp.path is defined

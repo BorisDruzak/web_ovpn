@@ -5,7 +5,7 @@ import json
 import re
 from datetime import datetime
 
-from .component_catalog import EVR_RE, PACKAGE_RE
+from .component_catalog import ENDPOINT_AGENT_COMPONENT, EVR_RE, PACKAGE_RE
 
 
 def package_health_ready(evidence):
@@ -165,9 +165,12 @@ class VerificationEngine:
             result['status'] = status
             if status == 'compliant':
                 functional = component['verification']['functional_verification_required']
+                operator_action = 'functional_acceptance' if functional else None
+                if identifier == ENDPOINT_AGENT_COMPONENT:
+                    operator_action = 'endpoint_registration_verification'
                 result.update(installation_status='installed_verified',
                               acceptance_status='functional_verification_required' if functional else 'technical_verified',
-                              operator_action='functional_acceptance' if functional else None)
+                              operator_action=operator_action)
             elif status != 'unknown':
                 result['operator_action'] = 'new_confirmed_plan'
         outcomes = [components[c]['status'] for c in selected_ids]
