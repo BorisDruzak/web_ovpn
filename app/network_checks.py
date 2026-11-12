@@ -348,7 +348,20 @@ def _https_speed_check(check: HttpsSpeedCheck) -> dict:
             return {"status": route["status"], "result": result}
         size = profile.upload_bytes if check.direction == "send" else profile.download_bytes
         reading = run_https_speed(profile.peer, check.direction, size)
-        return {"status": reading["status"], "result": {**result, **reading["result"]}}
+        result.update(reading["result"])
+        if profile.router_source and reading["status"] == "measured":
+            observation = {"status": "unconfirmed", "reason": "source_mismatch"}
+            if result.get("source_address") == profile.source_address:
+                try:
+                    observation = run_netctl([
+                        "path", "https-egress", f"--profile={check.profile}",
+                        f"--source-port={result['source_port']}",
+                        f"--expected-config={profile.config_digest()}",
+                    ], timeout=6).get("egress") or {"status": "unavailable"}
+                except (NetctlError, OSError, UnicodeError):
+                    observation = {"status": "unavailable"}
+            result["wan_observation"] = {"source": profile.router_source, **observation}
+        return {"status": reading["status"], "result": result}
     finally:
         _throughput_lock.release()
 
@@ -403,9 +416,12 @@ def run_audited_network_check(db: Session, request: Request, actor: str, check: 
         persist_route_run(db, owner=owner, result=result)
     message = result["target"]
     if isinstance(check, HttpsSpeedCheck) and result["status"] == "measured":
+        details = {key: result["result"][key] for key in ("mbps", "transferred_bytes", "duration_seconds")}
+        if "wan_observation" in result["result"]:
+            details["wan_observation"] = result["result"]["wan_observation"]
         message = json.dumps({
             "target": result["target"],
-            "result": {key: result["result"][key] for key in ("mbps", "transferred_bytes", "duration_seconds")},
+            "result": details,
         }, ensure_ascii=False)
     write_audit(db, request, actor, action, result["status"], message)
     return result

@@ -1061,6 +1061,8 @@ def cmd_context_view(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
 def cmd_path(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     if args.path_command == "probe":
         return cmd_path_probe(args)
+    if args.path_command == "https-egress":
+        return cmd_https_egress(args)
     try:
         destination = str(ipaddress.ip_address(args.destination))
     except ValueError:
@@ -1109,6 +1111,32 @@ def cmd_path_probe(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     except (OSError, ValueError):
         return 1, err("router route probe unavailable")
     return 0, ok(probe=measurement)
+
+
+def cmd_https_egress(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    from app.network_probe_profiles import load_probe_profiles
+
+    from .drivers.mikrotik_api import MikroTikApiDriver
+    from .https_egress import observe_https_egress
+
+    profile = load_probe_profiles().https_speed.get(args.profile)
+    if not profile or not profile.router_source or not profile.source_address:
+        return 1, err("HTTPS egress observation not configured")
+    if not 1 <= args.source_port <= 65535 or profile.config_digest() != args.expected_config:
+        return 1, err("HTTPS egress observation parameters do not match")
+    conn = connect_read_only(args.db)
+    try:
+        source = get_source(conn, profile.router_source)
+    finally:
+        conn.close()
+    if not source or not source.get("enabled") or source.get("driver") != "mikrotik_api":
+        return 0, ok(egress={"status": "unavailable"})
+    try:
+        driver = MikroTikApiDriver(source, load_secrets())
+        result = observe_https_egress(driver, profile.source_address, args.source_port, profile.peer)
+    except (OSError, ValueError):
+        result = {"status": "unavailable"}
+    return 0, ok(egress=result)
 
 
 def cmd_users(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
@@ -1916,6 +1944,10 @@ def build_parser() -> argparse.ArgumentParser:
     path_probe.add_argument("--profile", required=True)
     path_probe.add_argument("--probe", required=True)
     path_probe.add_argument("--expected-config", required=True)
+    path_egress = path_sub.add_parser("https-egress")
+    path_egress.add_argument("--profile", required=True)
+    path_egress.add_argument("--source-port", required=True, type=int)
+    path_egress.add_argument("--expected-config", required=True)
     path_explain = path_sub.add_parser("explain")
     path_explain.add_argument("--asset-key", required=True)
     path_explain.add_argument("--destination", required=True)

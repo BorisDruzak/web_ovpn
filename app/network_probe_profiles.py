@@ -59,11 +59,26 @@ class HttpsSpeedProfile(ProbeProfile):
     port: Literal[443] = 443
     download_bytes: int = Field(ge=MIN_BYTES, le=MAX_DOWNLOAD_BYTES)
     upload_bytes: int = Field(ge=MIN_BYTES, le=MAX_UPLOAD_BYTES)
+    router_source: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+    source_address: str | None = None
 
     @field_validator("peer")
     @classmethod
     def peer_is_public_ipv4(cls, value: str) -> str:
         return validate_speed_peer(value)
+
+    @model_validator(mode="after")
+    def validate_router_observation(self):
+        if bool(self.router_source) != (self.source_address is not None):
+            raise ValueError("router_source and source_address are required together")
+        if self.source_address is not None:
+            address = ipaddress.IPv4Address(self.source_address)
+            if address.is_unspecified or address.is_multicast:
+                raise ValueError("source address must be unicast IPv4")
+        return self
+
+    def config_digest(self) -> str:
+        return hashlib.sha256(self.model_dump_json().encode()).hexdigest()
 
 
 class CaptureProfile(ProbeProfile):
@@ -228,7 +243,7 @@ def probe_catalog() -> dict:
     profiles = load_probe_profiles()
     return {
         "throughput": [{"id": key, **profile.model_dump(exclude_none=True)} for key, profile in profiles.throughput.items()],
-        "https_speed": [{"id": key, **profile.model_dump()} for key, profile in profiles.https_speed.items()],
+        "https_speed": [{"id": key, **profile.model_dump(exclude_none=True)} for key, profile in profiles.https_speed.items()],
         "capture": [{"id": key, **profile.model_dump()} for key, profile in profiles.capture.items()],
         "routes": [
             {"id": key, **profile.model_dump(exclude_none=True, exclude={"probes": {"__all__": {"tls_ca_file"}}})}

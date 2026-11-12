@@ -72,6 +72,11 @@
     {% if result.result.source_address is defined %}
     <dt>Адрес источника</dt><dd>{{ result.result.source_address }}</dd>
     {% endif %}
+    {% if result.result.wan_observation is defined %}
+    <dt>Интерфейс по адресу NAT</dt><dd>
+      {{ result.result.wan_observation.nat_interface if result.result.wan_observation.status == 'confirmed' else 'Не подтверждён' }}
+    </dd>
+    {% endif %}
     {% if result.result.mbps is defined %}
     <dt>Скорость за полный HTTPS-запрос</dt><dd>{{ '%.2f' | format(result.result.mbps) }} Мбит/с</dd>
     <dt>Передано</dt><dd>{{ result.result.transferred_bytes }} байт за {{ '%.2f' | format(result.result.duration_seconds) }} с</dd>
@@ -229,7 +234,12 @@
         {% for run in runs %}
         <tr>
           <td><time datetime="{{ run.checked_at }}">{{ run.checked_at }}</time></td>
-          <td>{{ check_titles[run.check] }}</td><td>{{ run.target }}{% if run.result is defined and run.result.mbps is defined %}<br>{{ '%.2f' | format(run.result.mbps) }} Мбит/с{% endif %}</td>
+          <td>{{ check_titles[run.check] }}</td><td>{{ run.target }}
+            {% if run.result is defined and run.result.mbps is defined %}<br>{{ '%.2f' | format(run.result.mbps) }} Мбит/с{% endif %}
+            {% if run.result is defined and run.result.wan_observation is defined and run.result.wan_observation.status == 'confirmed' %}
+            <br>{{ run.result.wan_observation.nat_interface }}
+            {% endif %}
+          </td>
           <td>{{ 'Разные результаты' if run.check == 'route_availability' and run.status == 'partial' else status_labels.get(run.status, run.status) }}</td>
         </tr>
         {% endfor %}

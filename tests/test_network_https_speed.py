@@ -29,7 +29,7 @@ def test_https_speed_pins_tls_peer_and_caps_transfer(monkeypatch, direction):
         output = {
             "http_status": 200, "bytes_up": size if upload else 0,
             "bytes_down": 0 if upload else size, "duration": 0.5,
-            "peer": PEER, "source": "192.0.2.10",
+            "peer": PEER, "source": "192.0.2.10", "source_port": 42013,
         }
         return subprocess.CompletedProcess(argv, 0, json.dumps(output).encode(), b"")
 
@@ -38,7 +38,7 @@ def test_https_speed_pins_tls_peer_and_caps_transfer(monkeypatch, direction):
         "status": "measured",
         "result": {
             "mbps": 8.0, "duration_seconds": 0.5,
-            "transferred_bytes": size, "source_address": "192.0.2.10",
+            "transferred_bytes": size, "source_address": "192.0.2.10", "source_port": 42013,
         },
     }
 
@@ -47,12 +47,12 @@ def test_https_speed_pins_tls_peer_and_caps_transfer(monkeypatch, direction):
     {"peer": "162.159.140.221"},
     {"http_status": 302},
     {"bytes_down": 99_999},
-    {"duration": 0},
+    {"duration": 0}, {"source_port": 0},
 ])
 def test_https_speed_rejects_incomplete_or_mismatched_transfer(monkeypatch, override):
     output = {
         "http_status": 200, "bytes_up": 0, "bytes_down": 100_000,
-        "duration": 1, "peer": PEER, "source": "192.0.2.10", **override,
+        "duration": 1, "peer": PEER, "source": "192.0.2.10", "source_port": 42013, **override,
     }
     monkeypatch.setattr(subprocess, "run", lambda argv, **kwargs:
         subprocess.CompletedProcess(argv, 0, json.dumps(output).encode(), b""))

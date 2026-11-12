@@ -2477,6 +2477,7 @@ def test_https_speed_uses_profile_and_records_result_in_api_and_ui(tmp_path, mon
         "https_speed": {"internet": {
             "label": "Internet", "peer": peer,
             "download_bytes": 1_000_000, "upload_bytes": 500_000,
+            "router_source": "mikrotik-main", "source_address": "192.0.2.10",
         }},
     })
     monkeypatch.setattr(network_probe_profiles, "load_probe_profiles", lambda: profiles)
@@ -2490,9 +2491,16 @@ def test_https_speed_uses_profile_and_records_result_in_api_and_ui(tmp_path, mon
         calls.append((address, direction, size))
         return {"status": "measured", "result": {
             "mbps": 8.0, "duration_seconds": 1.0, "transferred_bytes": size,
+            "source_address": "192.0.2.10", "source_port": 42013,
         }}
 
     monkeypatch.setattr(network_checks, "run_https_speed", measure)
+    def observe(args, **kwargs):
+        assert args[:4] == ["path", "https-egress", "--profile=internet", "--source-port=42013"]
+        assert args[4] == f"--expected-config={profiles.https_speed['internet'].config_digest()}"
+        return {"egress": {"status": "confirmed", "nat_interface": "wan1"}}
+
+    monkeypatch.setattr(network_checks, "run_netctl", observe)
     base = "/api/v1/network/diagnostics"
     endpoint = base + "/checks"
     payload = {"check": "https_speed", "profile": "internet", "direction": "receive"}
@@ -2502,17 +2510,20 @@ def test_https_speed_uses_profile_and_records_result_in_api_and_ui(tmp_path, mon
     result = client.post(endpoint, headers=headers, json=payload).json()["data"]
     assert result["status"] == "measured"
     assert result["result"]["kernel_route"]["result"]["dev"] == "eth0"
+    assert result["result"]["wan_observation"]["nat_interface"] == "wan1"
     assert client.post(endpoint, headers=headers, json=payload).json()["data"]["status"] == "rate_limited"
     runs = client.get(base + "/runs", headers=headers).json()["data"]["runs"]
     measured = next(row for row in runs if row["status"] == "measured")
     assert measured["target"] == "internet · receive"
     assert measured["result"]["mbps"] == 8.0
+    assert measured["result"]["wan_observation"]["status"] == "confirmed"
     csrf = login(client)
     page = client.post("/network/diagnostics/checks", data={
         "csrf_token": csrf, **payload, "direction": "send",
     })
     assert page.status_code == 200
     assert "Запустить HTTPS-замер" in page.text and "8.00 Мбит/с" in page.text
+    assert "Интерфейс по адресу NAT" in page.text and "wan1" in page.text
     assert calls == [(peer, "receive", 1_000_000), (peer, "send", 500_000)]
 
 

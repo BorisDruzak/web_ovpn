@@ -39,7 +39,7 @@ def run_https_speed(peer: str, direction: str, size: int) -> dict:
         "--write-out", (
             '{"http_status":%{http_code},"bytes_up":%{size_upload},'
             '"bytes_down":%{size_download},"duration":%{time_total},'
-            '"peer":"%{remote_ip}","source":"%{local_ip}"}'
+            '"peer":"%{remote_ip}","source":"%{local_ip}","source_port":%{local_port}}'
         ),
     ]
     if upload:
@@ -66,12 +66,15 @@ def run_https_speed(peer: str, direction: str, size: int) -> dict:
         if not isinstance(data, dict):
             raise ValueError("Invalid transfer statistics")
         duration = data.get("duration")
+        source_port = data.get("source_port")
         if (
             data.get("http_status") != 200
             or data.get("peer") != peer
             or data.get("bytes_up" if upload else "bytes_down") != size
             or type(duration) not in (int, float)
             or not 0 < duration <= TRANSFER_TIMEOUT + 1
+            or type(source_port) is not int
+            or not 1 <= source_port <= 65535
         ):
             raise ValueError("Incomplete or mismatched HTTPS transfer")
         source = str(ipaddress.IPv4Address(data["source"]))
@@ -84,5 +87,6 @@ def run_https_speed(peer: str, direction: str, size: int) -> dict:
             "transferred_bytes": size,
             "duration_seconds": duration,
             "source_address": source,
+            "source_port": source_port,
         },
     }
