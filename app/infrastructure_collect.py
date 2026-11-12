@@ -41,7 +41,8 @@ from netctl.switch_queries import (
 from .infrastructure_backup import backup_policy, backup_service_checks, read_proxmox_backup
 from .infrastructure_map import (
     BACKUP_PROBE_METHOD, BACKUP_SERVICE_ID, GUEST_IO_MAX_AGE,
-    CLUSTER_HEALTH_METHODS, CLUSTER_KIND, INTERFACE_NAME, MAX_DOWNSTREAM_SWITCHES, MAX_SNAPSHOT_BYTES, NETWORK_KINDS,
+    CLUSTER_HEALTH_METHODS, CLUSTER_KIND, INTERFACE_NAME, MAX_DOWNSTREAM_SWITCHES, MAX_ROUTER_NEIGHBORS,
+    MAX_SNAPSHOT_BYTES, NETWORK_KINDS,
     PVE_DISK_DEVICE, PVE_STORAGE_ID, RECIPROCAL_MAC_SOURCE,
     SHARED_LLDP_KIND, SHARED_LLDP_SOURCE, STP_ROOT_PATH_MAX_AGE,
     index_port_states, observation_is_fresh, port_label_key,
@@ -1219,6 +1220,23 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         router_ports.setdefault(interface["source"], []).append({
             "name": name, "source": "RouterOS", "state": state, "checkedAt": interface.get("last_seen_at"),
         })
+    for reading in network.get("router_neighbors", []):
+        interfaces = reading.get("interface")
+        mac = str(reading.get("mac") or "").lower()
+        if not isinstance(interfaces, str) or not MAC.fullmatch(mac):
+            continue
+        local_names = {name.strip() for name in interfaces.split(",")}
+        ports = [port for port in router_ports.get(reading.get("source"), [])
+                 if port["name"] in local_names and port["checkedAt"] == reading.get("last_seen_at")]
+        if len(ports) == 1 and ports[0]["state"] == "up":
+            ports[0].setdefault("routerNeighbors", {})[mac] = {
+                "name": reading.get("identity"), "address": reading.get("address"), "platform": reading.get("platform"),
+            }
+    for ports in router_ports.values():
+        for port in ports:
+            if readings := port.get("routerNeighbors"):
+                port["routerNeighbors"] = {"total": len(readings),
+                                           "devices": {mac: readings[mac] for mac in sorted(readings)[:MAX_ROUTER_NEIGHBORS]}}
     port_groups = {}
     port_names = {}
     for port in network.get("ports", []):
@@ -2405,10 +2423,11 @@ def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | N
         data["switch_management_fdb"] = _switch_management_fdb(connection, data["sources"])
         data["router_neighbors"] = [dict(row) for row in connection.execute(
             """
-            SELECT n.identity, n.address, n.mac, n.last_seen_at
+            SELECT s.name AS source, n.identity, n.address, n.mac, n.interface, n.platform, n.last_seen_at
             FROM network_neighbors AS n
             JOIN network_sources AS s ON s.id = n.source_id
             WHERE s.enabled = 1 AND s.driver IN ('mikrotik_api', 'mikrotik_ssh')
+            ORDER BY s.name, n.interface, n.mac
             """
         )]
         if guest_macs:

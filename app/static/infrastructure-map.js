@@ -952,6 +952,18 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           observed.append(neighbors);
           row.append(observed);
         }
+        if (selectedPort && port.routerNeighbors) {
+          const {checkedAt, total, devices} = port.routerNeighbors;
+          const observed = make('details');
+          const count = devices.length === total ? total : `${devices.length} из ${total}`;
+          observed.append(make('summary', `Соседи RouterOS (${count})`), make('small', formatTime(checkedAt)));
+          const neighbors = make('ul', null, 'map-detail-list');
+          for (const {name, platform, mac, address} of devices) {
+            neighbors.append(make('li', [name, platform, mac, address].filter(Boolean).join(' · ')));
+          }
+          observed.append(neighbors);
+          row.append(observed);
+        }
         if (selectedPort && port.vlanMemberships) {
           const vlans = port.vlanMemberships.vlans;
           for (const [label, selected] of [

@@ -25,6 +25,8 @@ MAX_DOWNSTREAM_SWITCHES = 12
 SERVICE_PROBE_MAX_AGE = timedelta(minutes=5)
 STP_ROOT_PATH_MAX_AGE = timedelta(minutes=5)
 PORT_LINK_CHECK_MAX_AGE = timedelta(minutes=5)
+ROUTER_NEIGHBOR_MAX_AGE = timedelta(minutes=10)
+MAX_ROUTER_NEIGHBORS = 16
 RESOURCE_CAPACITY_MAX_AGE = timedelta(minutes=5)
 GUEST_IO_MAX_AGE = timedelta(minutes=5)
 LACP_HEALTH_MAX_AGE = timedelta(minutes=5)
@@ -228,6 +230,24 @@ def _public_port(row: dict, now: datetime) -> dict:
             result["fdbLearned"] = {"checkedAt": result["checkedAt"], "learnedMacCount": count, "partial": partial}
     if source in ("RouterOS", "Proxmox", "Proxmox · sysfs"):
         result["source"] = source
+    router_neighbors = row.get("routerNeighbors")
+    if (source == "RouterOS" and result["state"] == "up" and isinstance(router_neighbors, dict)
+            and observation_is_fresh(row.get("checkedAt"), now, max_age=ROUTER_NEIGHBOR_MAX_AGE)):
+        readings = router_neighbors.get("devices")
+        devices = []
+        for mac, reading in list(readings.items())[:MAX_ROUTER_NEIGHBORS] if isinstance(readings, dict) else ():
+            if not re.fullmatch(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}", mac) or not isinstance(reading, dict):
+                continue
+            device = {"mac": mac}
+            device.update({key: value for key in ("name", "platform")
+                           if (value := _text(reading.get(key), 64)) and re.fullmatch(r"[\w .:/-]+", value)})
+            if (address := _network_address(reading.get("address"))) and "/" not in address:
+                device["address"] = address
+            devices.append(device)
+        if devices:
+            total = router_neighbors.get("total")
+            result["routerNeighbors"] = {"checkedAt": result["checkedAt"], "devices": devices,
+                                         "total": total if type(total) is int and len(devices) <= total <= 65535 else len(devices)}
     if fresh and source in ("Proxmox", "Proxmox · sysfs") and type(row.get("proxmoxActive")) is bool:
         result["proxmoxActive"] = row["proxmoxActive"]
     if telemetry := _public_port_telemetry(row.get("telemetry"), result, now):

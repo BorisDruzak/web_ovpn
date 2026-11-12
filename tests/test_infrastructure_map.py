@@ -3670,6 +3670,48 @@ def test_transit_peer_management_port_requires_fresh_arp_fdb_and_active_ethernet
     assert lan() == []
 
 
+def test_router_neighbor_table_is_scoped_to_one_live_port_and_never_confirms_a_pair(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    context = {"devices": [{"id": "rb", "name": "Router", "kind": "router"}]}
+    network = {
+        "sources": [{"name": "router", "driver": "mikrotik_ssh", "enabled": True,
+                     "driver_options": {"intent_stable_id": "rb"}}],
+        "router_interfaces": [
+            {"source": "router", "name": name, "type": "ether", "running": running,
+             "disabled": 0, "last_seen_at": at}
+            for name, running in (("ether2", 1), ("ether3", 1), ("ether4", 0))
+        ],
+        "router_neighbors": [
+            {"source": source, "interface": interfaces, "identity": "test-neighbor", "platform": "MikroTik",
+             "address": "192.0.2.18", "mac": f"02:00:00:00:00:{index:02x}", "last_seen_at": checked}
+            for index, (source, interfaces, checked) in enumerate((
+                ("router", "ether2,bridge-lan", at),
+                ("router", "ether2,ether3,bridge-lan", at),
+                ("router", "ether4,bridge-lan", at),
+                ("other", "ether2,bridge-lan", at),
+                ("router", "ether2", (now - timedelta(minutes=1)).isoformat()),
+            ), 1)
+        ],
+    }
+    path = tmp_path / "snapshot.json"
+    path.write_text(json.dumps(build_graph(context, network, {}, {}, {}, now)), encoding="utf-8")
+    graph = load_infrastructure_map(path, now)
+    assert graph["links"] == []
+    ports = graph["nodes"][0]["ports"]
+    assert ports[0]["routerNeighbors"] == {
+        "checkedAt": at, "total": 1, "devices": [
+            {"name": "test-neighbor", "platform": "MikroTik", "mac": "02:00:00:00:00:01", "address": "192.0.2.18"},
+        ],
+    }
+    assert all("routerNeighbors" not in port for port in ports[1:])
+    expired = load_infrastructure_map(path, now + timedelta(minutes=11))
+    assert "routerNeighbors" not in expired["nodes"][0]["ports"][0]
+
+
 def test_route_evidence_is_scoped_and_does_not_mark_service_available():
     from app.infrastructure_collect import build_graph
 
