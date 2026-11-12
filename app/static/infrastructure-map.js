@@ -969,6 +969,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           name.addEventListener('click', () => selectPort(id, port.name));
         }
         row.append(name, make('small', status));
+        if (selectedPort && port.configuredLabel) {
+          const {text, checkedAt} = port.configuredLabel;
+          row.append(make('small', `Подпись на коммутаторе · ${text} · ${formatTime(checkedAt)}`));
+        }
         if (selectedPort) for (const count of lldpCounts(port)) row.append(make('small', count));
         if (selectedPort && port.lldpNeighbors?.length) {
           const observed = make('details');
@@ -1270,6 +1274,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
             const state = [label, formatPortSpeed(port.speedBps), port.source ?? 'SNMP', formatTime(port.checkedAt)];
             state.push(...lldpCounts(port));
             li.append(make('small', `${device} ${port.name}: ${state.filter(Boolean).join(' · ')}`));
+            if (port.configuredLabel) {
+              const {text, checkedAt} = port.configuredLabel;
+              li.append(make('small', `${port.name} · Подпись на коммутаторе · ${text} · ${formatTime(checkedAt)}`));
+            }
             if (port.telemetry) {
               const {rxBps, txBps, rxErrors, txErrors, rxDiscards, txDiscards, intervalSeconds, checkedAt} = port.telemetry;
               const number = new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 2});

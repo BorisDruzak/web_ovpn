@@ -1513,6 +1513,9 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             modes_current = row.get("enabled") and observation_is_fresh(
                 modes.get("checkedAt"), now, max_age=PORT_LINK_CHECK_MAX_AGE)
             for port, raw_port in zip(item["ports"], current):
+                label = raw_port.get("alias")
+                if row.get("enabled") and isinstance(label, str) and 0 < len(label) <= 64:
+                    port["ifAlias"] = label
                 if raw_port.get("linkCheck"):
                     port["linkCheck"] = raw_port["linkCheck"]
                 index = raw_port.get("if_index")

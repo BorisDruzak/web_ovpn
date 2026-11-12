@@ -222,6 +222,9 @@ def _public_port(row: dict, now: datetime) -> dict:
         "checkedAt": stamp.isoformat() if stamp is not None and stamp <= now else None,
         "stale": not fresh,
     }
+    label = row.get("ifAlias")
+    if (fresh and isinstance(label, str) and re.fullmatch(r"[\w .()+/#-]{1,64}", label) and label.strip()):
+        result["configuredLabel"] = {"text": label.strip(), "checkedAt": result["checkedAt"]}
     module = row.get("transceiver")
     if fresh and isinstance(module, dict) and observation_is_fresh(module.get("checkedAt"), now, max_age=TRANSCEIVER_MAX_AGE):
         fields = {key: value for key in ("vendor", "formFactor", "media")
@@ -1263,7 +1266,7 @@ def summarize_topology(graph: dict) -> dict:
                     for side, port in declared.get("portStates", {}).items() if port.get("lldpNeighbors")}
             observations = {
                 side: {key: port[key] for key in ("name", "state", "speedBps", "checkedAt", "source", "linkMode",
-                                                  "telemetry", "fdbLearned", "transceiver") if key in port}
+                                                  "telemetry", "fdbLearned", "transceiver", "configuredLabel") if key in port}
                 for side, port in declared.get("portStates", {}).items() if port["state"] != "unknown"
             }
             pending[(a, b, declared["a"], declared["b"])] = {
