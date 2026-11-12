@@ -723,6 +723,12 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         openvpn_tunnel_kind: 'Интерфейс другого типа',
         openvpn_tunnel_down: 'Туннельный интерфейс не поднят',
         openvpn_tunnel_address: 'На интерфейсе нет ожидаемого адреса',
+        smb_mount_probe: 'Не удалось проверить подключение',
+        smb_mount_idle: 'Автоподключение ещё не выполнено',
+        smb_mount_missing: 'Подключение отсутствует',
+        smb_mount_source: 'Подключён другой ресурс',
+        smb_mount_read: 'Чтение метаданных каталога завершилось ошибкой',
+        smb_mount_changed: 'Подключение сменилось во время проверки',
         postgresql_tls_handshake: 'Не удалось согласовать TLS',
         icmp_identity_unconfirmed: 'Принадлежность адреса этому узлу не подтверждена',
         route_other_gateway: 'Активен другой шлюз', route_inactive: 'Маршрут через ожидаемый шлюз неактивен',
@@ -732,8 +738,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       for (const check of node.serviceChecks) {
         const row = make('li');
         const endpoint = [check.method, check.target, check.httpHost, check.port, check.path, check.dns?.name,
-          check.dns?.record, check.tunnelInterface, check.tunnelAddress].filter(Boolean).join(' ');
-        const confirmed = ['Маршрут', 'OpenVPN TUN'].includes(check.method) ? 'Подтверждён' :
+          check.dns?.record, check.tunnelInterface, check.tunnelAddress, check.smbShare].filter(Boolean).join(' ');
+        const confirmed = ['Маршрут', 'OpenVPN TUN', 'SMB Mount'].includes(check.method) ? 'Подтверждён' :
           node.id === data.clusterId ? 'В норме' : 'Отвечает';
         const result = check.skipped ? 'Не запущена' :
           ({reachable:confirmed, unreachable:'Сбой проверки'}[check.state] ?? 'Нет подтверждения');

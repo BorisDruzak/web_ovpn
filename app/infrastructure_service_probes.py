@@ -316,6 +316,58 @@ def _smb(spec: dict) -> dict:
     return {"state": "reachable", "smbDialect": dialects[dialect], "smbSigningRequired": bool(security_mode & 2)}
 
 
+def _smb_mount(spec: dict) -> dict:
+    name, path = spec.get("share"), spec.get("mount")
+    unknown = {"state": "unknown", "reason": "smb_mount_probe"}
+    if (not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_.$-]{1,64}", name)
+            or not isinstance(path, str) or not re.fullmatch(r"(?:/[A-Za-z0-9_-][A-Za-z0-9_.-]{0,63}){2,8}", path)):
+        return unknown
+    try:
+        address = ipaddress.IPv4Address(spec["ip"])
+    except (KeyError, ValueError, TypeError):
+        return unknown
+    share = {"smbShare": f"//{address}/{name}"}
+
+    def current_mount() -> tuple[int | None, str]:
+        payload = json.loads(subprocess.check_output(
+            ["/usr/bin/findmnt", "-J", "-l", "-o", "ID,SOURCE,TARGET,FSTYPE"], timeout=TIMEOUT,
+        ))
+        rows = payload.get("filesystems") if isinstance(payload, dict) else None
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            return None, "smb_mount_probe"
+        matches = [row for row in rows if row.get("target") == path]
+        mounted = [row for row in matches if row.get("fstype") != "autofs"]
+        if not mounted:
+            return None, "smb_mount_idle" if matches else "smb_mount_missing"
+        if len(mounted) != 1:
+            return None, "smb_mount_probe"
+        row, = mounted
+        if row.get("fstype") not in ("cifs", "smb3") or str(row.get("source", "")).casefold() != share["smbShare"].casefold():
+            return None, "smb_mount_source"
+        mount_id = row.get("id")
+        return (mount_id, "") if type(mount_id) is int and mount_id > 0 else (None, "smb_mount_probe")
+
+    try:
+        mount_id, reason = current_mount()
+        if reason:
+            state = "unreachable" if reason in ("smb_mount_missing", "smb_mount_source") else "unknown"
+            return {**share, "state": state, "reason": reason}
+        try:
+            file_type = subprocess.check_output(
+                ["/usr/bin/stat", "--cached=never", "--format=%F", "--", path], timeout=TIMEOUT,
+                stderr=subprocess.DEVNULL, env={**os.environ, "LC_ALL": "C"},
+            )
+        except subprocess.CalledProcessError:
+            file_type = b""
+        if current_mount() != (mount_id, ""):
+            return {**share, "state": "unknown", "reason": "smb_mount_changed"}
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return {**share, **unknown}
+    if file_type.strip() != b"directory":
+        return {**share, "state": "unreachable", "reason": "smb_mount_read"}
+    return {**share, "state": "reachable"}
+
+
 def _openvpn_management() -> dict:
     family = getattr(socket, "AF_UNIX", None)
     if family is None:
@@ -632,6 +684,7 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
             elif any(spec.get("ip") != target_address for spec in specs):
                 skip_reason = "probe_target_mismatch"
         methods = {"http": "HTTP", "https": "HTTPS", "dns": "DNS", "ldap": "LDAP", "smb": "SMB2",
+                   "smb_mount": "SMB Mount",
                    "zabbix_api": "Zabbix API", "postgresql": "PostgreSQL SSLRequest",
                    "openvpn_management": "OpenVPN Management", "openvpn_tunnel": "OpenVPN TUN",
                    "sip_options": "SIP OPTIONS (UDP)", "icmp": "ICMP"}
@@ -663,6 +716,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 details = _postgresql(spec)
             elif protocol == "smb":
                 details = _smb(spec)
+            elif protocol == "smb_mount":
+                details = _smb_mount(spec)
             elif protocol in {"http", "https"}:
                 details = _http_probe(spec)
             else:

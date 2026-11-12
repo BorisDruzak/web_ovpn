@@ -1859,6 +1859,51 @@ def test_openvpn_requires_connected_daemon_and_active_session(monkeypatch):
     assert "sessionCount" not in check(ready + header + client)
 
 
+def test_smb_mount_checks_the_configured_live_share_without_local_fallback(monkeypatch):
+    from app import infrastructure_service_probes as probes
+    from app.infrastructure_map import _map_statuses, _public_node
+
+    spec = {"type": "smb_mount", "ip": "192.0.2.4", "share": "Soft",
+            "mount": "/mnt/share", "component": True}
+    mounts = [{"id": 41, "source": "//192.0.2.4/Soft", "target": "/mnt/share", "fstype": "cifs"}]
+    reads = []
+    replace_mount = False
+
+    def command(args, **kwargs):
+        if args[0] == "/usr/bin/findmnt":
+            return json.dumps({"filesystems": mounts}).encode()
+        assert args == ["/usr/bin/stat", "--cached=never", "--format=%F", "--", "/mnt/share"]
+        reads.append(args)
+        if replace_mount:
+            mounts[0]["id"] += 1
+        return b"directory\n"
+
+    monkeypatch.setattr(probes.subprocess, "check_output", command)
+    monkeypatch.setattr(probes, "_smb", lambda spec: {"state": "reachable"})
+
+    def check():
+        node = {"id": "files", "kind": "Сервис"}
+        probes.apply_service_probes([node], {"files": [{"type": "smb", "ip": spec["ip"], "port": 445}, spec]})
+        public = _public_node(node, datetime.now(timezone.utc))
+        _map_statuses({"files": public}, [])
+        return public["mapStatus"], public["serviceChecks"][1]
+
+    status, result = check()
+    assert status == "ok" and result["state"] == "reachable" and result["component"]
+    assert result["smbShare"] == "//192.0.2.4/Soft"
+    replace_mount = True
+    status, result = check()
+    assert (status, result["reason"]) == ("unknown", "smb_mount_changed")
+    mounts[0]["source"] = "//192.0.2.4/Other"
+    status, result = check()
+    assert (status, result["reason"]) == ("warn", "smb_mount_source")
+    mounts[0].update(source="systemd-1", fstype="autofs")
+    assert check()[0] == "unknown"
+    mounts.clear()
+    assert check()[1]["reason"] == "smb_mount_missing"
+    assert len(reads) == 2
+
+
 def test_openvpn_tunnel_checks_kernel_link_and_address_as_required_component(monkeypatch):
     from app import infrastructure_service_probes as probes
     from app.infrastructure_map import _map_statuses, _public_node

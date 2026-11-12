@@ -333,6 +333,13 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         dialect = check.get("smbDialect")
         if dialect in ("2.0.2", "2.1", "3.0", "3.0.2") and type(check.get("smbSigningRequired")) is bool:
             result.update(smbDialect=dialect, smbSigningRequired=check["smbSigningRequired"])
+    if result["method"] == "SMB Mount":
+        share = check.get("smbShare")
+        if isinstance(share, str) and re.fullmatch(r"//[0-9.]{7,15}/[A-Za-z0-9_.$-]{1,64}", share):
+            result["smbShare"] = share
+        if reason in ("smb_mount_probe", "smb_mount_idle", "smb_mount_missing", "smb_mount_source",
+                      "smb_mount_read", "smb_mount_changed"):
+            result["reason"] = reason
     if result["method"] == "DNS":
         diagnostic = _public_dns_check(check.get("dns"))
         if diagnostic:
