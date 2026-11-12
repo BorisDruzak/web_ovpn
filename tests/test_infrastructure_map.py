@@ -5966,7 +5966,12 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
             self.reads.append((str(device_id), tuple(profiles)))
             return {"health_v1": {"profile": "health_v1", "collected_at": self.health_at,
                                   "sections": {"resources": {"uptime_seconds": 7200, "free_bytes": 2**31,
-                                                             "load_1m": 0.0, "private": "excluded"}}}}
+                                                             "load_1m": 0.0, "private": "excluded"},
+                                               "services": [
+                                                   {"name": "sshd", "status": "active", "private": "excluded"},
+                                                   {"name": "NetworkManager", "status": "inactive"},
+                                                   {"name": "private-service", "status": "failed"},
+                                               ]}}}
 
         def close(self):
             pass
@@ -6001,7 +6006,11 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
     assert selected.status_code == 200
     detail, = selected.json()["infrastructure"]["agentAudit"]["guests"]
     assert detail == {**matched, "health": {"checkedAt": at, "uptimeSeconds": 7200,
-                                             "memoryAvailableBytes": 2**31}}
+                                             "memoryAvailableBytes": 2**31, "services": [
+                                                 {"name": "sshd", "status": "active"},
+                                                 {"name": "NetworkManager", "status": "inactive"},
+                                             ]}}
+    assert "private-service" not in selected.text
     assert Adapter.reads == [("00000000-0000-4000-8000-000000000000", ("health_v1",))]
     selected = client.get("/api/v1/network/infrastructure?view=agents&node_id=vm:2", headers=headers)
     assert selected.json()["infrastructure"]["agentAudit"]["guests"] == [ambiguous]

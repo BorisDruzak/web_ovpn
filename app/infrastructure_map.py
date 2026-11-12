@@ -39,6 +39,7 @@ RX_SILENCE_MAX_WINDOW = timedelta(hours=1)
 RX_SILENCE_MAX_INTERVALS = 6
 PORT_COUNTER_KEYS = ("rxErrors", "txErrors", "rxDiscards", "txDiscards")
 GUEST_AGENT_PROFILES = ("health_v1", "network_v1", "inventory_v1")
+GUEST_AGENT_SERVICE_NAMES = ("sshd", "NetworkManager")
 GUEST_AGENT_HEALTH_MAX_AGE = timedelta(minutes=6)
 GUEST_ENROLLMENT_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
 VLAN_AUDIT_MAX_AGE = timedelta(minutes=10)
@@ -1922,11 +1923,21 @@ def _guest_agent_health(snapshot: object, now: datetime) -> dict:
     if not observation_is_fresh(checked_at, now, max_age=GUEST_AGENT_HEALTH_MAX_AGE):
         return {}
     sections = snapshot.get("sections")
-    resources = sections.get("resources") if isinstance(sections, dict) else None
-    if not isinstance(resources, dict):
+    if not isinstance(sections, dict):
         return {}
+    resources = sections.get("resources")
+    if not isinstance(resources, dict):
+        resources = {}
     metrics = {label: value for key, label in (("free_bytes", "memoryAvailableBytes"), ("uptime_seconds", "uptimeSeconds"))
                if type(value := resources.get(key)) is int and 0 < value < 2**53}
+    reports = _rows(sections.get("services"), 64)
+    services = []
+    for name in GUEST_AGENT_SERVICE_NAMES:
+        states = [report.get("status") for report in reports if report.get("name") == name]
+        if len(states) == 1 and states[0] in ("active", "inactive", "failed", "unknown"):
+            services.append({"name": name, "status": states[0]})
+    if services:
+        metrics["services"] = services
     return {"checkedAt": _time(checked_at).isoformat(), **metrics} if metrics else {}
 
 

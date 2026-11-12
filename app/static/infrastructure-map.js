@@ -596,6 +596,13 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       if (health.uptimeSeconds !== undefined) metrics.push('Время работы ОС ' + formatUptime(health.uptimeSeconds));
       row.append(make('small', [...metrics, formatTime(health.checkedAt)].join(' · ')));
       label.append(row);
+      if (health.services?.length) {
+        const states = {active: 'активна', inactive: 'неактивна', failed: 'сбой', unknown: 'нет подтверждения'};
+        const services = health.services.map(({name, status}) => name + ' — ' + states[status]);
+        const units = make('div');
+        units.append(make('small', 'Службы ОС · ' + services.join(' · ')));
+        label.append(units);
+      }
     }
     const profileLabels = {health_v1: 'Состояние', network_v1: 'Сеть', inventory_v1: 'Инвентарь'};
     for (const {profile, collectedAt} of guest?.contextProfiles ?? []) {
