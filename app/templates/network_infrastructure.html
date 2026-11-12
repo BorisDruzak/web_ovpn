@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Инфраструктура · OpenVPN Web{% endblock %}
 {% block page_title %}Инфраструктура{% endblock %}
-{% block page_styles %}<link rel="stylesheet" href="{{ url_for('static', path='infrastructure-map.css') }}?v=evidence-6">{% endblock %}
+{% block page_styles %}<link rel="stylesheet" href="{{ url_for('static', path='infrastructure-map.css') }}?v=evidence-7">{% endblock %}
 {% block content %}
 <section id="infra-map-review" aria-label="Карта инфраструктуры"
          data-snapshot-url="{{ url_for('network_infrastructure_snapshot').path }}"
@@ -31,6 +31,11 @@
     <button type="button" data-view="switches" aria-pressed="false">Коммутаторы</button>
     <button type="button" id="map-vr" hidden>Открыть в VR</button>
   </nav>
+  <details id="map-confirmed-port-pairs" class="map-port-summary" hidden>
+    <summary>Подтверждённые пары портов</summary>
+    <ul></ul>
+    <small hidden></small>
+  </details>
   <details id="map-port-pairs" class="map-port-summary" hidden>
     <summary>Пары портов без подтверждения</summary>
     <ul></ul>
@@ -47,5 +52,5 @@
 <script id="infrastructure-data" type="application/json">{{ graph | tojson }}</script>
 {% endblock %}
 {% block page_scripts %}
-<script type="module" src="{{ url_for('static', path='infrastructure-map.js') }}?v=live-175"></script>
+<script type="module" src="{{ url_for('static', path='infrastructure-map.js') }}?v=live-176"></script>
 {% endblock %}

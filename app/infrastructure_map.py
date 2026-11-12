@@ -2728,6 +2728,7 @@ def load_infrastructure_map(
         "availability": "missing", "snapshotAt": None, "nodes": [], "links": [],
         "clusterId": "", "nodeOrder": [], "overviewGuests": [], "switchKinds": list(NETWORK_KINDS), "git": "",
         **({"guestAttachments": {}, "servicePaths": {}, "servicePorts": {},
+            "currentPortPairTotal": 0, "currentPortPairs": [],
             "pendingPortPairTotal": 0, "pendingPortPairs": [],
             "lacpPartnerInterfaceGapTotal": 0, "lacpPartnerInterfaceGaps": []} if include_guest_attachments else {}),
     }
@@ -3004,9 +3005,11 @@ def load_infrastructure_map(
     attachments = {}
     if include_guest_attachments:
         attachments = _map_attachments(nodes, links, now)
-        _, _, _, pending, _ = _topology_port_pairs(nodes, links)
+        _, _, _, pending, current_pairs = _topology_port_pairs(nodes, links)
         lacp_gaps = _lacp_partner_interface_gaps(nodes)
         attachments.update(
+            currentPortPairTotal=len(current_pairs),
+            currentPortPairs=current_pairs[:64],
             pendingPortPairTotal=len(pending),
             pendingPortPairs=[
                 {**{key: row[key] for key in ("a", "b", "nameA", "nameB", "portA", "portB")},

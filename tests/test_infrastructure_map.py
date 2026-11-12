@@ -6907,6 +6907,11 @@ def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_pa
                                          {"source": "LLDP · двустороннее", "checkedAt": now},
                                          {"source": "netctl FDB + Proxmox", "checkedAt": now},
                                      ]}]
+    from app.infrastructure_map import load_infrastructure_map
+
+    browser_graph = load_infrastructure_map(path, include_guest_attachments=True)
+    assert browser_graph["currentPortPairTotal"] == audit["currentPairTotal"]
+    assert browser_graph["currentPortPairs"] == audit["currentPairs"]
     assert audit["pendingTotal"] == 3
     pending, mismatch, recorder = audit["pending"]
     assert (pending["a"], pending["b"], pending["portA"], pending["portB"]) == ("snr", "pve", "ge12", "management_1g")

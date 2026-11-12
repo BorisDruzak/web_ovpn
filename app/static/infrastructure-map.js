@@ -119,7 +119,34 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       ([...list.querySelectorAll('a')].find(link => link.href === activeLink) ?? summary).focus({preventScroll: true});
     }
   }
+  function portPairEndpoint(id, name, port) {
+    if (port && byId.get(id)?.ports?.some(item => portKeys(item).includes(portKey(port)))) {
+      return switchPortButton(id, name, port);
+    }
+    return make('span', name + ' · ' + (port || 'порт неизвестен'));
+  }
+  function renderConfirmedPortPairs() {
+    const panel = root.querySelector('#map-confirmed-port-pairs');
+    const {currentPortPairTotal = 0, currentPortPairs = []} = data;
+    panel.hidden = view !== 'switches' || !currentPortPairTotal;
+    if (panel.hidden) return;
+    const summary = panel.querySelector('summary');
+    const list = panel.querySelector('ul');
+    const more = panel.querySelector('small');
+    summary.textContent = 'Подтверждённые пары портов · ' + currentPortPairTotal;
+    list.replaceChildren(...currentPortPairs.map(({a, b, nameA, nameB, portA, portB, evidence}) => {
+      const row = make('li');
+      row.append(portPairEndpoint(a, nameA, portA), ' ↔ ', portPairEndpoint(b, nameB, portB));
+      for (const {source, checkedAt} of evidence) {
+        row.append(make('small', source + ' · ' + formatTime(checkedAt)));
+      }
+      return row;
+    }));
+    more.hidden = currentPortPairs.length >= currentPortPairTotal;
+    more.textContent = `Показано ${currentPortPairs.length} из ${currentPortPairTotal}`;
+  }
   function renderPortPairSummary() {
+    renderConfirmedPortPairs();
     const panel = root.querySelector('#map-port-pairs');
     const summary = panel.querySelector('summary');
     const list = panel.querySelector('ul');
@@ -131,18 +158,13 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     if (panel.hidden) return;
     summary.textContent = 'Пары портов без подтверждения · ' + pendingPortPairTotal;
     if (lacpPartnerInterfaceGapTotal) summary.append(' · Интерфейсы LACP · ' + lacpPartnerInterfaceGapTotal);
-    const side = (id, name, port) => {
-      if (port && byId.get(id)?.ports?.some(item => portKeys(item).includes(portKey(port)))) {
-        return switchPortButton(id, name, port);
-      }
-      return make('span', name + ' · ' + (port || 'порт неизвестен'));
-    };
     const pending = pendingPortPairs.map(({a, b, nameA, nameB, portA, portB, observedSources = [], lldpPortIds = [],
       archivedPortSides = [], inventoryPortSides = [], portObservations = {}}) => {
       const item = make('li');
       const provenance = key => archivedPortSides.includes(key) ? ' (по архиву)' :
         inventoryPortSides.includes(key) ? ' (по инвентарю)' : '';
-      item.append(side(a, nameA, portA), provenance('a'), ' ↔ ', side(b, nameB, portB), provenance('b'));
+      item.append(portPairEndpoint(a, nameA, portA), provenance('a'), ' ↔ ',
+        portPairEndpoint(b, nameB, portB), provenance('b'));
       const evidence = observedSources.map(source => source === 'netctl FDB' ? 'MAC на порту' : source);
       if (lldpPortIds.length) evidence.push('LLDP Port ID ' + lldpPortIds.join(', '));
       if (evidence.length) item.append(make('small', evidence.join(' · ')));
@@ -155,7 +177,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     });
     const lacp = lacpPartnerInterfaceGaps.map(({name, switchId, aggregate, switchPort, partnerPort}) => {
       const item = make('li');
-      item.append(side(switchId, byId.get(switchId)?.name || switchId, switchPort),
+      item.append(portPairEndpoint(switchId, byId.get(switchId)?.name || switchId, switchPort),
         ` ↔ ${name} · LACP ${aggregate} · порт партнёра ${partnerPort}`,
         make('small', 'Имя интерфейса на стороне партнёра неизвестно'));
       return item;

@@ -33,6 +33,7 @@
 #infra-map-review .map-legend .map-port-alert { width: 16px; border-top: 2px dashed var(--map-warn); }
 #infra-map-review .map-port-summary { margin: 0 0 12px; }
 #infra-map-review .map-port-summary summary { padding: 8px 0; color: var(--map-warn); cursor: pointer; }
+#infra-map-review #map-confirmed-port-pairs summary { color: var(--map-ink); }
 #infra-map-review .map-port-summary ul { list-style: none; margin: 0 0 0 15px; padding: 0; }
 #infra-map-review .map-port-summary li { margin: 5px 0; overflow-wrap: anywhere; }
 #infra-map-review .map-port-summary small:not([hidden]) { display: block; color: var(--map-muted); }
