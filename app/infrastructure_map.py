@@ -817,7 +817,9 @@ def _public_node(row: dict, now: datetime) -> dict:
     ) if row.get("kind") == "Сервис" and isinstance(required, list) else {}
     checks = _rows(row.get("checks"), 80)
     check_counts = Counter(_text(check.get("name"), 64) for check in checks)
-    checks.extend({"name": name} for name in required_names if not check_counts[name])
+    ambiguous = {name for name in required_names if check_counts[name] > 1}
+    checks = [check for check in checks if _text(check.get("name"), 64) not in ambiguous]
+    checks.extend({"name": name} for name in required_names if check_counts[name] != 1)
     service_checks = [_public_service_check(check, now) for check in _rows(row.get("serviceChecks"), 16)]
     stp = row.get("stpRootPath")
     stp_path = {}

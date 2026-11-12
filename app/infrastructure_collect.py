@@ -1585,17 +1585,20 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                                                   if check["name"] == "watchdog_fresh"] == ["ok"]
         item["checks"] = [{"name": check["name"], "status": HEALTH.get(check["status"], "unknown")
                            if valid_report or check["name"] == "watchdog_fresh" else "unknown",
-                           "observed": check.get("observed"), "expected": check.get("expected"),
+                           "observed": check.get("observed") if valid_report or check["name"] == "watchdog_fresh" else None,
+                           "expected": check.get("expected"),
                            "error": check.get("message") or check.get("error"),
                            "latency": check.get("latency_ms")}
                           for check in target_checks]
-        required_checks = configured.get("required_observer_checks", [])
+        configured_checks = configured.get("required_observer_checks", [])
+        required_checks = list(configured_checks) if isinstance(configured_checks, list) else []
+        functional = FUNCTIONAL_CHECKS.get(role)
+        if functional:
+            required_checks.insert(0, functional[0])
         if role == "acti_backup":
-            required_checks = ["repository_capacity",
-                               *(required_checks if isinstance(required_checks, list) else [])]
+            required_checks.insert(0, "repository_capacity")
         item["requiredObserverChecks"] = required_checks
         checked_at = target.get("observed_at")
-        functional = FUNCTIONAL_CHECKS.get(role)
         if functional and valid_report and observer_current and observation_is_fresh(checked_at, now):
             check_name, method = functional
             results = [check["status"] for check in target_checks if check["name"] == check_name]

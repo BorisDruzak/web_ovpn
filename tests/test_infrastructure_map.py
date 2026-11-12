@@ -509,7 +509,7 @@ def test_proxmox_capacity_uses_available_root_space_and_reports_missing_data(tmp
 
 def test_backup_state_requires_a_valid_watchdog_report(tmp_path):
     from app.infrastructure_collect import build_graph
-    from app.infrastructure_map import load_infrastructure_map
+    from app.infrastructure_map import load_infrastructure_map, summarize_services
 
     now = datetime.now(timezone.utc)
     target = {"role": "acti_backup", "status": "critical", "observed_at": now.isoformat(), "checks": []}
@@ -519,25 +519,42 @@ def test_backup_state_requires_a_valid_watchdog_report(tmp_path):
         target["checks"] = [{"name": name, "status": status} for name, status in (
             ("watchdog_fresh", watchdog), ("backup_snapshot_fresh", snapshot), ("repository_capacity", capacity),
         ) if status is not None]
+        if snapshot is not None:
+            check = next(check for check in target["checks"] if check["name"] == "backup_snapshot_fresh")
+            check.update(observed=48 if snapshot == "critical" else 4, expected=30)
         if duplicate:
-            target["checks"].append({"name": "backup_snapshot_fresh", "status": "critical"})
+            target["checks"].append({"name": "backup_snapshot_fresh", "status": "critical", "observed": 72})
         graph = build_graph({}, {}, {"freshness": freshness, "targets": [target]}, {}, {}, now)
         path.write_text(json.dumps(graph), encoding="utf-8")
-        node, = load_infrastructure_map(path, now)["nodes"]
-        return node
+        public = load_infrastructure_map(path, now)
+        node, = public["nodes"]
+        audit, = summarize_services(public)["serviceAudit"]["services"]
+        return node, audit
 
-    node = read("critical", "critical", "critical")
+    node, audit = read("critical", "critical", "critical")
     assert node["mapStatus"] == "unknown"
     assert [(check["label"], check["status"]) for check in node["checks"]] == [
         ("Свежесть отчёта watchdog", "critical"), ("Свежесть резервной копии", "unknown"),
         ("Ёмкость хранилища копий", "unknown"),
     ]
-    assert read(None, "critical")["mapStatus"] == "unknown"
-    assert read("ok", "critical")["mapStatus"] == "critical"
-    assert read("ok", "ok", capacity="critical")["mapStatus"] == "warn"
-    assert read("ok", "ok", capacity=None)["mapStatus"] == "unknown"
-    assert read("ok", "ok", duplicate=True)["mapStatus"] == "unknown"
-    assert read("ok", "critical", freshness="stale")["mapStatus"] == "unknown"
+    assert audit["requiredChecks"] == {"passed": 0, "failed": 0, "unconfirmed": 2}
+    assert node["checks"][1]["observed"] is None
+    assert read(None, "critical")[0]["mapStatus"] == "unknown"
+    node, audit = read("ok", "critical")
+    assert node["mapStatus"] == "critical"
+    assert audit["requiredChecks"] == {"passed": 1, "failed": 1, "unconfirmed": 0}
+    issue, = audit["issues"]
+    assert (issue["check"], issue["required"], issue["observed"], issue["warningThreshold"]) == (
+        "backup_snapshot_fresh", True, 48, 30,
+    )
+    assert read("ok", "ok", capacity="critical")[0]["mapStatus"] == "warn"
+    assert read("ok", "ok", capacity=None)[0]["mapStatus"] == "unknown"
+    node, audit = read("ok", "ok", duplicate=True)
+    assert node["mapStatus"] == "unknown"
+    assert audit["requiredChecks"] == {"passed": 1, "failed": 0, "unconfirmed": 1}
+    duplicate, = [check for check in node["checks"] if check["name"] == "backup_snapshot_fresh"]
+    assert duplicate["observed"] is None
+    assert read("ok", "critical", freshness="stale")[0]["mapStatus"] == "unknown"
 
 
 def test_acti_service_reflects_backup_dependency_on_inventory_host(tmp_path):
@@ -575,6 +592,7 @@ def test_acti_service_reflects_backup_dependency_on_inventory_host(tmp_path):
     assert any(l["a"] == "role:acti" and l["b"] == "role:acti_backup"
                and l["kind"] == "Зависимость сервиса" and l["confirmed"] for l in links)
     assert nodes["role:acti"]["reachability"]["state"] == "reachable"
+    assert any(check["name"] == "https_ready" and check["required"] for check in nodes["role:acti"]["checks"])
     assert nodes["role:acti"]["mapStatus"] == nodes["acti-vm"]["mapStatus"] == "warn"
     assert nodes["role:acti"]["serviceAvailability"]["unavailable"] == ["role:acti_backup"]
     report["targets"][0]["checks"][1]["status"] = "ok"
