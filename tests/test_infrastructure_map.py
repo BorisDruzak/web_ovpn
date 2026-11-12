@@ -7,6 +7,36 @@ import pytest
 from test_context_api import make_client
 
 
+def test_tcp_connect_probe_reports_transport_without_sending_data(monkeypatch):
+    from contextlib import nullcontext
+    from app import infrastructure_service_probes as probes
+
+    spec = {"type": "tcp_connect", "ip": "192.0.2.91", "port": 8000}
+    sockets = []
+
+    def connect(address, *, timeout):
+        sockets.append(address)
+        return nullcontext(object())
+
+    monkeypatch.setattr(probes.socket, "create_connection", connect)
+    node = {"id": "recorder-port", "kind": "Сервис", "probeTargetIP": spec["ip"]}
+    probes.apply_service_probes([node], {node["id"]: [spec]})
+    check, = node["serviceChecks"]
+    assert (check["method"], check["state"], check["target"], check["port"]) == (
+        "TCP", "reachable", "192.0.2.91", 8000)
+    assert sockets == [("192.0.2.91", 8000)]
+    node["probeTargetIP"] = None
+    probes.apply_service_probes([node], {node["id"]: [spec]})
+    assert node["serviceChecks"][-1]["reason"] == "probe_target_unconfirmed"
+    assert len(sockets) == 1
+
+    def reject(*args, **kwargs):
+        raise ConnectionRefusedError
+
+    monkeypatch.setattr(probes.socket, "create_connection", reject)
+    assert probes._tcp_connect(spec) == {"state": "unreachable", "reason": "tcp_connection_refused"}
+
+
 def test_service_probe_transition_tracks_confirmed_recovery(tmp_path):
     from app.infrastructure_collect import _add_service_probe_transitions
     from app.infrastructure_map import load_infrastructure_map, summarize_services

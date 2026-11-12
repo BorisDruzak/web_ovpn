@@ -34,6 +34,7 @@ IPMI_PORT = 623
 RMCP_ASF_HEADER = bytes.fromhex("0600ff06000011be")
 PROBE_METHODS = {
     "http": "HTTP", "https": "HTTPS", "dns": "DNS", "ldap": "LDAP", "smb": "SMB2",
+    "tcp_connect": "TCP",
     "smb_mount": "SMB Mount", "zabbix_api": "Zabbix API", "postgresql": "PostgreSQL SSLRequest",
     "openvpn_management": "OpenVPN Management", "openvpn_tunnel": "OpenVPN TUN",
     "sip_options": "SIP OPTIONS (UDP)", "icmp": "ICMP", "vlan_transit": "ICMP · VLAN",
@@ -1362,6 +1363,22 @@ def _dependency_protocol_probe(spec: dict) -> dict:
         return {"state": "unknown"}
 
 
+def _tcp_connect(spec: dict) -> dict:
+    try:
+        address = str(ipaddress.ip_address(spec["ip"]))
+        port = spec["port"]
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise ValueError("invalid TCP port")
+        with socket.create_connection((address, port), timeout=TIMEOUT):
+            return {"state": "reachable"}
+    except ConnectionRefusedError:
+        return {"state": "unreachable", "reason": "tcp_connection_refused"}
+    except TimeoutError:
+        return {"state": "unknown", "reason": "timeout"}
+    except (OSError, KeyError, TypeError, ValueError):
+        return {"state": "unknown"}
+
+
 def _probe(spec: dict) -> str:
     try:
         protocol = spec["type"]
@@ -1463,6 +1480,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 details = _tls_certificate(spec)
             elif protocol == "ssh_identification":
                 details = _ssh_identification(spec)
+            elif protocol == "tcp_connect":
+                details = _tcp_connect(spec)
             elif protocol == "dns":
                 details = _dns(spec)
             elif protocol == "icmp":
@@ -1495,7 +1514,7 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 "path": spec.get("path") if protocol in {"http", "https", "zabbix_api", "rtsp_options"} else None,
                 "target": spec.get("ip") if not skip_reason and (
                     protocol in {"icmp", "vlan_transit", "sip_options", "ipmi_lan", "rtsp_options", "ssh_identification", "ftp_features",
-                                 "zabbix_api", "postgresql", "dns", "smb", "tls_certificate"}
+                                 "zabbix_api", "postgresql", "dns", "smb", "tls_certificate", "tcp_connect"}
                     or protocol in DEPENDENCY_PROTOCOLS or "probeTargetIP" in node
                     or (protocol in {"http", "https"} and spec.get("report_target") is True
                         and details.get("reason") != "http_configuration")

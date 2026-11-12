@@ -609,7 +609,9 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         if reason in {"backup_no_result", "backup_task_failed", "backup_overdue",
                       "backup_schedule_missing", "backup_untracked_schedule"}:
             result["reason"] = reason
-    if reason == "timeout" and result["method"] in ("HTTP", "HTTPS", "DNS", "SMB2", "PostgreSQL SSLRequest"):
+    if reason == "timeout" and result["method"] in ("HTTP", "HTTPS", "DNS", "SMB2", "PostgreSQL SSLRequest", "TCP"):
+        result["reason"] = reason
+    if reason == "tcp_connection_refused" and result["method"] == "TCP" and result["state"] == "unreachable":
         result["reason"] = reason
     if check.get("supplemental") is True:
         result["supplemental"] = True

@@ -1377,6 +1377,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         http_tls_certificate: 'Сертификат TLS не прошёл проверку', http_tls_error: 'Ошибка TLS',
         http_bad_response: 'Ответ HTTP неполный или некорректный',
         http_connection_refused: 'Отклонено TCP-соединение', http_connection_reset: 'Сброшено TCP-соединение',
+        tcp_connection_refused: 'Отклонено TCP-соединение',
         rtsp_connection_refused: 'Отклонено TCP-соединение', rtsp_auth_required: 'Требуется авторизация',
         http_configuration: 'Ошибка настройки проверки',
         probe_configuration: 'Некорректный список проверок',
