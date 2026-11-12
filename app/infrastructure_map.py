@@ -1855,6 +1855,49 @@ def _is_service_attachment(edge: dict) -> bool:
     return edge["confirmed"] and edge["kind"] in {"Размещение", "Цель проверки"}
 
 
+def _management_port_paths(nodes: dict, links: list[dict]) -> dict:
+    paths = defaultdict(dict)
+    physical = {}
+    for edge in links:
+        if (not edge["confirmed"] or {nodes[edge["a"]]["kind"], nodes[edge["b"]]["kind"]}
+                != {"Гипервизор", NETWORK_KINDS[0]}):
+            continue
+        host_side = "a" if nodes[edge["a"]]["kind"] == "Гипервизор" else "b"
+        switch_side = "b" if host_side == "a" else "a"
+        host, switch = edge[host_side], edge[switch_side]
+        for report in edge["portEvidence"]:
+            key = (switch, report[host_side], report[switch_side])
+            if report.get("pairEvidence") == "current":
+                physical_key = (host, key)
+                physical[physical_key] = max(physical.get(physical_key, report["at"]), report["at"])
+            if not (address := report.get("managementAddress")):
+                continue
+            pair = paths[host, address]
+            if key not in pair or pair[key]["checkedAt"] < report["at"]:
+                pair[key] = {"hostPort": key[1], "switchPort": key[2], "source": report["source"], "checkedAt": report["at"]}
+    confirmed = {}
+    for (host, address), pairs in paths.items():
+        if len(pairs) != 1:
+            continue
+        (key, pair), = pairs.items()
+        if physical_at := physical.get((host, key)):
+            confirmed[host, address] = (key[0], {**pair, "checkedAt": min(pair["checkedAt"], physical_at)})
+    return confirmed
+
+
+def _management_service_paths(service: dict, host: str, management: dict) -> list[dict]:
+    paths = []
+    for check in service["serviceChecks"]:
+        if check["source"] != "UI_VPN" or not check["checkedAt"] or check["stale"] or check.get("skipped"):
+            continue
+        if matched := management.get((host, check["target"])):
+            switch, pair = matched
+            paths.append({"target": check["target"], "port": check["port"], "method": check["method"],
+                          "checkedAt": check["checkedAt"], "addressCheckedAt": pair["checkedAt"],
+                          "management": True, "hypervisorId": host, "switchId": switch, "physicalPair": pair})
+    return paths
+
+
 def _physical_service_port_evidence(nodes: dict, links: list[dict]) -> dict:
     evidence = defaultdict(set)
     for edge in links:
@@ -1891,6 +1934,12 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime) -> dict:
         service: paths for service, targets in service_guests.items()
         if len(targets) <= 12 and (paths := _service_attachment_paths(nodes[service], targets))
     }
+    management = _management_port_paths(nodes, links)
+    for service, hosts in service_hosts.items():
+        if len(hosts) == 1:
+            host, = hosts
+            if paths := _management_service_paths(nodes[service], host, management):
+                service_paths[service] = paths
     port_services = defaultdict(lambda: defaultdict(lambda: defaultdict(set)))
     port_names = {}
 
@@ -1901,7 +1950,8 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime) -> dict:
 
     for service, paths in service_paths.items():
         for path in paths:
-            record(path["switchId"], path["physicalPair"]["switchPort"], service, "guest_path")
+            record(path["switchId"], path["physicalPair"]["switchPort"], service,
+                   "host_management" if path.get("management") else "guest_path")
     evidence = _physical_service_port_evidence(nodes, links)
     for service, hosts in service_hosts.items():
         if len(hosts) == 1:
@@ -1934,6 +1984,8 @@ def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
     detail = {}
     if anchor and anchor["kind"] == "Сервис" and len(guest_ids) <= 12:
         detail["servicePaths"] = _service_attachment_paths(anchor, guests)
+        if len(targets) == 1 and len(host_ids) == 1:
+            detail["servicePaths"].extend(_management_service_paths(anchor, host_ids[0], _management_port_paths(nodes, links)))
     elif anchor and anchor["kind"] == NETWORK_KINDS[0]:
         attachments = _map_attachments(nodes, links, datetime.now(timezone.utc))
         detail["servicePorts"] = attachments["servicePorts"].get(node_id, [])
@@ -2359,6 +2411,11 @@ def load_infrastructure_map(
                 observed_attachment = (source in {"netctl FDB", "MikroTik · ARP", "MikroTik · ARP + FDB"}
                                        and evidence[-1]["confirmed"])
                 both_ports = paired and evidence[-1]["a"] and evidence[-1]["b"]
+                if (source == "netctl FDB + Proxmox" and both_ports and evidence[-1]["confirmed"]
+                        and {nodes[edge["a"]]["kind"], nodes[edge["b"]]["kind"]} == {"Гипервизор", NETWORK_KINDS[0]}):
+                    address = _network_address(report.get("managementAddress"))
+                    if address and ":" not in address and "/" not in address:
+                        evidence[-1]["managementAddress"] = address
                 if (edge["kind"] == "Сетевое соединение" and both_ports and evidence[-1]["confirmed"]
                         and all(evidence[-1][side].strip().casefold() not in {"", "unknown", "неизвестно", "-"}
                                 for side in ("a", "b"))):

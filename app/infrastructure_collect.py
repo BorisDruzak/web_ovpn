@@ -1432,7 +1432,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
 
     def edge(a, b, kind, source, confirmed=True, details="", ports=None, at=None, vlan=None, virtual=None,
              evidence_only=False, lacp_polled_at=None, expected_vlans=None, inventory_sources=None,
-             learned_endpoint=None):
+             learned_endpoint=None, management_address=None):
         if a not in nodes or b not in nodes or a == b:
             return
         key = (tuple(sorted((a, b))), kind)
@@ -1460,6 +1460,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 report["inventorySources"] = inventory_sources
             if learned_endpoint:
                 report["learnedEndpoint"] = learned_endpoint
+            if management_address:
+                report["managementAddress"] = management_address
             if report not in evidence:
                 evidence.append(report)
         if evidence:
@@ -2514,7 +2516,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         if management and management[1] == mac and len(locations[mac]) == 1:
             checked_at = min(datetime.fromisoformat(observed), datetime.fromisoformat(pve_at), management[2])
             edge(switch, device, "Сетевое соединение", "netctl FDB + Proxmox",
-                 ports=(port, management[0]), at=checked_at.isoformat(), vlan=report["vlan_id"])
+                 ports=(port, management[0]), at=checked_at.isoformat(), vlan=report["vlan_id"],
+                 management_address=address_by_asset[device])
         else:
             physical = edges.get((tuple(sorted((switch, device))), "Сетевое соединение"), {})
             switch_side = "a" if physical.get("a") == switch else "b"
@@ -2562,7 +2565,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                     checked = min(checked, datetime.fromisoformat(pve_at))
                 edge(switch, asset, "Путь по MAC-таблице", provenance, details=address,
                      ports=(port_label(switch_source, port), remote_port), at=checked.isoformat(),
-                     vlan=row["vlan_id"], learned_endpoint=learned_endpoint)
+                     vlan=row["vlan_id"], learned_endpoint=learned_endpoint,
+                     management_address=address if remote_port else None)
             if identity_matches:
                 checked = min(arp_at, datetime.fromisoformat(max(live)),
                               max(datetime.fromisoformat(row["observed_at"]) for row in observations)).isoformat()

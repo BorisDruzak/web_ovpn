@@ -3386,6 +3386,25 @@ def test_proxmox_management_port_joins_unique_fdb_and_active_bridge(tmp_path):
     link, = load()
     assert link["confirmed"]
     assert any(p["confirmed"] and p["a"] == "ge11" and p["b"] == "enp2s0f0" for p in link["portEvidence"])
+    assert [row["managementAddress"] for row in link["portEvidence"] if "managementAddress" in row] == [address]
+    snapshot = json.loads(path.read_text(encoding="utf-8"))
+    snapshot["nodes"].append({"id": "management", "name": "Management", "kind": "Сервис", "serviceChecks": [
+        {"source": "UI_VPN", "method": "HTTPS", "target": address, "port": 8006, "checkedAt": at, "state": "reachable"},
+        {"source": "UI_VPN", "method": "HTTPS", "target": "192.0.2.99", "port": 8006, "checkedAt": at, "state": "reachable"},
+    ]})
+    snapshot["links"].append({"a": "pve3", "b": "management", "kind": "Размещение", "confirmed": True})
+    path.write_text(json.dumps(snapshot), encoding="utf-8")
+    from app.infrastructure_map import summarize_guest_attachment
+    graph = load_infrastructure_map(path, now, include_guest_attachments=True)
+    management, = graph["servicePaths"]["management"]
+    assert management["management"] is True and management["target"] == address
+    assert management["physicalPair"]["switchPort"] == "ge11"
+    assert summarize_guest_attachment(graph, "management")["attachment"]["servicePaths"] == [management]
+    assert graph["servicePorts"]["sw"][0]["services"][0]["basis"] == ["host_management"]
+    next(link for link in snapshot["links"] if {link["a"], link["b"]} == {"pve3", "sw"})["kind"] = "Путь по MAC-таблице"
+    path.write_text(json.dumps(snapshot), encoding="utf-8")
+    graph = load_infrastructure_map(path, now, include_guest_attachments=True)
+    assert "management" not in graph["servicePaths"]
     assert not load(now + timedelta(hours=1))[0]["confirmed"]
     network["attachments"].append({**attachment, "port_key": "ge12"})
     assert not any(p["b"] == "enp2s0f0" for link in load() for p in link["portEvidence"])
@@ -4669,7 +4688,7 @@ def test_hypervisor_fdb_path_reports_management_interface_without_claiming_direc
         return virtual.get("switchUplink")
 
     assert proof() == {"a": "ge12", "b": "enp134s0", "source": "netctl FDB + Proxmox",
-                       "at": earlier, "confirmed": True, "vlan": 1,
+                       "at": earlier, "confirmed": True, "vlan": 1, "managementAddress": address,
                        "learnedEndpoint": {"switchId": "observer:core", "deviceId": "pve1", "mac": mac}}
     assert guest_uplink() == {"id": "observer:core", "port": "ge12", "at": earlier, "viaMacTable": True}
     assert guest_uplink(now + timedelta(minutes=25)) is None
