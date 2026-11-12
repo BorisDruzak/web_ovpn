@@ -10,7 +10,7 @@ from .base import NetworkDriver
 from .mikrotik_api import MikroTikApiDriver
 
 
-def parse_routeros_terse(output: str) -> list[dict[str, str]]:
+def parse_routeros_terse(output: str, *, interface_flags: bool = False) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     scalar: dict[str, str] = {}
     for line in output.splitlines():
@@ -22,12 +22,21 @@ def parse_routeros_terse(output: str) -> list[dict[str, str]]:
             scalar[key.strip().replace(" ", "-")] = value.strip()
             continue
         row: dict[str, str] = {}
-        for token in shlex.split(stripped):
+        tokens = shlex.split(stripped)
+        for token in tokens:
             if "=" not in token:
                 continue
             key, value = token.split("=", 1)
             row[key] = value
         if row:
+            if interface_flags and tokens[0].isdigit():
+                flags = ""
+                for token in tokens[1:]:
+                    if not re.fullmatch(r"[XDRS]+", token):
+                        break
+                    flags += token
+                row.setdefault("running", "yes" if "R" in flags else "no")
+                row.setdefault("disabled", "yes" if "X" in flags else "no")
             rows.append(row)
     if not rows and scalar:
         rows.append(scalar)
@@ -108,7 +117,7 @@ class MikroTikSshDriver(NetworkDriver):
         )
         if completed.returncode != 0:
             raise RuntimeError((completed.stderr or completed.stdout or "ssh command failed").strip())
-        return parse_routeros_terse(completed.stdout)
+        return parse_routeros_terse(completed.stdout, interface_flags=terse and path == "/interface")
 
     def test(self) -> dict[str, Any]:
         identity = self._run_print("/system identity", terse=False)

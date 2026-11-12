@@ -3022,6 +3022,31 @@ def test_mikrotik_ssh_collection_uses_scalar_routerboard_print_for_routeros6(mon
     assert routerboard_commands == ["/system routerboard print"]
 
 
+def test_mikrotik_ssh_collection_preserves_interface_status_flags(monkeypatch):
+    import subprocess
+
+    from netctl.drivers.mikrotik_ssh import MikroTikSshDriver
+
+    def fake_run(command, **kwargs):
+        output = (
+            "0 R name=ether1-wan type=ether\n"
+            "1 RS name=ether2 type=ether\n"
+            "2 S name=ether3 type=ether\n"
+            "3 X S name=ether4 type=ether\n"
+            "4 R name=ether5 type=ether running=no disabled=yes\n"
+            "5   name=ether6 type=ether comment=\"R is text\"\n"
+        ) if command[-1] == "/interface print terse" else ""
+        return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    driver = MikroTikSshDriver({"host": "192.0.2.1", "username": "observer"}, {})
+
+    assert [(row["name"], row["running"], row["disabled"]) for row in driver.collect()["interfaces"]] == [
+        ("ether1-wan", True, False), ("ether2", True, False), ("ether3", False, False),
+        ("ether4", False, True), ("ether5", False, True), ("ether6", False, False),
+    ]
+
+
 def test_normalizer_never_assigns_online_from_router_dhcp_or_arp():
     """Letting any normalizer branch emit online would bypass the active-probe projection."""
     from netctl.normalizer import normalize_hosts
