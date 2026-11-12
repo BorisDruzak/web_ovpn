@@ -732,10 +732,16 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       const panel = make('details', null, 'map-port-panel');
       const list = make('ul', null, 'map-detail-list');
       const labels = {reachable: 'Доступен', unreachable: 'Недоступен', unknown: 'Нет подтверждения'};
-      for (const {mac, ip, reachability} of devices) {
+      for (const {mac, ip, reachability, switchPort} of devices) {
         const row = make('li');
         row.append(make('strong', ip ?? mac), make('small', [ip && mac, labels[reachability.state],
           reachability.method, reachability.checkedAt && formatTime(reachability.checkedAt)].filter(Boolean).join(' · ')));
+        if (switchPort) {
+          const portButton = make('button', switchPort.name);
+          portButton.type = 'button';
+          portButton.addEventListener('click', () => selectPort(id, switchPort.name));
+          row.append(portButton, make('small', 'MAC виден на порту · SNMP · ' + formatTime(switchPort.checkedAt)));
+        }
         list.append(row);
       }
       const source = `${byId.get(upstreamId).name} ${port} · ${formatTime(checkedAt)}`;

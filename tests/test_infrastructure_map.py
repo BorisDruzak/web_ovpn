@@ -2432,6 +2432,25 @@ def test_downstream_devices_require_the_expected_live_lldp_pair(tmp_path):
     assert endpoint["reachability"]["state"] == "reachable"
     assert len(graph["nodes"]) == 2 and len(graph["links"]) == 1
     assert summarize_topology(graph)["topologyAudit"]["downstreamSwitches"][0]["devices"] == downstream["devices"]
+    context["devices"][1]["management_ip"] = "192.0.2.2"
+    network["sources"].append({"id": 2, "name": "remote", "host": "192.0.2.2", "driver": "snmp_switch", "enabled": True})
+    network["ports"].append({"source": "remote", "port_key": "ifindex:2", "name": "Ge2", "oper_status": "up",
+                             "last_seen_at": at, "collector_run_id": 2})
+    sample = network["downstream_fdb"]["core-to-poe"]
+    sample["remote"] = {"source": "remote", "readings": [
+        {"mac": endpoint_mac, "name": "Ge2", "at": at.replace("+00:00", "Z")},
+    ]}
+    endpoint, = read()[1]["downstream"]["devices"]
+    assert endpoint["switchPort"] == {"name": "Ge2", "checkedAt": at}
+    sample["remote"]["readings"].append({"mac": endpoint_mac, "name": "Ge1", "at": at})
+    endpoint, = read()[1]["downstream"]["devices"]
+    assert "switchPort" not in endpoint
+    sample["remote"]["readings"].pop()
+    context["devices"][1]["mac_addresses"] = []
+    endpoint, = read()[1]["downstream"]["devices"]
+    assert endpoint["switchPort"]["name"] == "Ge2"
+    context["devices"][1]["mac_addresses"] = [switch_mac]
+    del sample["remote"]
     network["arp"].clear()
     endpoint, = read()[1]["downstream"]["devices"]
     assert "ip" not in endpoint and endpoint["reachability"]["state"] == "unknown"
@@ -3094,6 +3113,18 @@ def test_observed_fdb_resolves_ifindex_only_with_matching_live_port_collection()
         assert _read_downstream_fdb(conn, sources, scopes) == {"link": {
             "source": "core", "at": "2026-11-11T18:36:04Z", "macs": ["02:00:00:00:00:23"],
         }}
+        conn.executescript("""
+            INSERT INTO network_sources VALUES (2, 1);
+            INSERT INTO switch_ports VALUES (2, 'ifindex:7', 8, 'up', 'Ge7', '2026-11-11T18:36:04Z', 'up');
+            INSERT INTO current_switch_fdb VALUES (2, 'ifindex:7', 7, 8,
+                '02:00:00:00:00:23', 1, '2026-11-11T18:36:04Z', 'learned');
+        """)
+        remote_source = {"id": 2, "name": "peer", "host": "192.0.2.2", "driver": "snmp_switch", "enabled": True}
+        remote_scope = {"link": ("192.0.2.1", {"interface": "ge23"}, {"address": "192.0.2.2"})}
+        assert _read_downstream_fdb(conn, [*sources, remote_source], remote_scope)["link"]["remote"] == {
+            "source": "peer", "readings": [{"mac": "02:00:00:00:00:23", "name": "Ge7", "at": "2026-11-11T18:36:04Z"}],
+        }
+        conn.executescript("DELETE FROM current_switch_fdb WHERE source_id=2; DELETE FROM switch_ports WHERE source_id=2;")
         conn.execute("UPDATE switch_ports SET last_seen_at='2026-11-11T18:36:05Z'")
         assert _read_downstream_fdb(conn, sources, scopes) == {}
         conn.execute("UPDATE current_switch_fdb SET status='static'")

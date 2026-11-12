@@ -674,13 +674,14 @@ def _public_guest_storage(row: object, now: datetime) -> dict:
     return {"checkedAt": _time(row["checkedAt"]).isoformat(), "disks": disks} if disks else {}
 
 
-def _public_downstream(row: object, now: datetime) -> dict:
+def _public_downstream(row: object, ports: list[dict], now: datetime) -> dict:
     if not isinstance(row, dict) or not observation_is_fresh(row.get("checkedAt"), now):
         return {}
     upstream, port = _text(row.get("upstreamId")), _text(row.get("port"), 64)
     if not upstream or not port:
         return {}
     devices = {}
+    active_ports = {(port["name"], port["checkedAt"]) for port in ports if port["state"] == "up"}
     for entry in _rows(row.get("devices"), 256):
         mac = _text(entry.get("mac"), 17)
         if not re.fullmatch(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}", mac) or int(mac[:2], 16) & 1:
@@ -692,9 +693,14 @@ def _public_downstream(row: object, now: datetime) -> dict:
                             "reachability": _public_reachability(entry.get("reachability"), now)}
         else:
             devices[mac] = {"mac": mac, "reachability": _public_reachability(None, now)}
+        if isinstance(switch_port := entry.get("switchPort"), dict):
+            name = _text(switch_port.get("name"), 64)
+            at = switch_port.get("checkedAt")
+            if observation_is_fresh(at, now) and (name, _time(at).isoformat()) in active_ports:
+                devices[mac]["switchPort"] = {"name": name, "checkedAt": _time(at).isoformat()}
     ordered = sorted(devices.values(), key=lambda item: (item.get("ip", "~"), item["mac"]))
     return {"upstreamId": upstream, "port": port, "checkedAt": _time(row["checkedAt"]).isoformat(),
-            "deviceCount": len(ordered), "devices": ordered[:64]}
+            "deviceCount": len(ordered), "devices": ordered}
 
 
 def _public_node(row: dict, now: datetime) -> dict:
@@ -776,7 +782,7 @@ def _public_node(row: dict, now: datetime) -> dict:
     service_checks = [_public_service_check(check, now) for check in _rows(row.get("serviceChecks"), 16)]
     stp = row.get("stpRootPath")
     stp_path = {}
-    downstream = _public_downstream(row.get("downstream"), now) if row.get("kind") == NETWORK_KINDS[0] else {}
+    downstream = _public_downstream(row.get("downstream"), ports, now) if row.get("kind") == NETWORK_KINDS[0] else {}
     if row.get("kind") == NETWORK_KINDS[0] and isinstance(stp, dict):
         local_port = _text(stp.get("localPort"), 64)
         bridge = _text(stp.get("designatedBridgeMac"), 17)

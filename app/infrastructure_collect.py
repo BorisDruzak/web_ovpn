@@ -932,12 +932,13 @@ def _downstream_links(context: dict, configured: object) -> dict:
         a, b = link["endpoint_a"], link["endpoint_b"]
         address = devices.get(a["device"], {}).get("management_ip")
         if address and b["device"] in devices and a.get("interface") and b.get("interface"):
-            links[link["id"]] = (address, a, b)
+            links[link["id"]] = (address, a, {**b, "address": devices[b["device"]].get("management_ip")})
     return links
 
 
 def _check_downstream_addresses(nodes: list[dict], network: dict, now: datetime) -> None:
-    missing = [entry for node in nodes for entry in node.get("downstream", {}).get("devices", []) if "ip" not in entry]
+    groups = [node["downstream"]["devices"] for node in nodes if node.get("downstream")]
+    missing = [entry for devices in sorted(groups, key=len) for entry in devices if "ip" not in entry]
     if not missing:
         return
     observed_macs = {}
@@ -1498,20 +1499,46 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 continue
             own_macs = {mac for mac in declared_macs[asset] if declared_devices_by_mac[mac] == {asset}}
             learned = {mac.lower() for mac in sample["macs"] if MAC.fullmatch(mac)}
-            if not own_macs.intersection(learned):
-                continue
             physical = edges.get((tuple(sorted((upstream, asset))), "Сетевое соединение"), {})
             side, peer = ("a", "b") if physical.get("a") == upstream else ("b", "a")
+            local_ports = index_port_states(nodes[upstream].get("ports", []), now)
+            remote_ports = index_port_states(nodes[asset].get("ports", []), now)
+            local_label = port_label_key(local["interface"])
+            remote_label = port_label_key(remote["interface"])
+            local_name = port_label_key(local_ports.get(local_label, {}).get("name", local_label))
+            remote_name = port_label_key(remote_ports.get(remote_label, {}).get("name", remote_label))
             evidence = [row["at"] for row in physical.get("portEvidence", []) if row["confirmed"]
                         and row["source"] in {"LLDP UI_VPN", "LLDP · двустороннее"}
-                        and port_label_key(row[side]) == port_label_key(local["interface"])
-                        and port_label_key(row[peer]) == port_label_key(remote["interface"])
+                        and port_label_key(row[side]) in {local_label, local_name}
+                        and port_label_key(row[peer]) in {remote_label, remote_name}
                         and observation_is_fresh(row["at"], now)]
             if not evidence:
+                continue
+            remote_sample = sample.get("remote", {})
+            sightings = {}
+            if source_nodes.get(remote_sample.get("source")) == asset:
+                for row in remote_sample["readings"]:
+                    if row["mac"] in learned and observation_is_fresh(row["at"], now):
+                        sightings.setdefault(row["mac"], set()).add((row["name"], row["at"]))
+            observed_ports = {}
+            for mac, readings in sightings.items():
+                if len(readings) != 1:
+                    continue
+                (name, at), = readings
+                key = port_label_key(name)
+                port = remote_ports.get(key, {})
+                if (key not in {remote_label, remote_name} and port.get("state") == "up"
+                        and datetime.fromisoformat(port["checkedAt"]) == datetime.fromisoformat(at)):
+                    observed_ports[mac] = {"name": name, "checkedAt": at}
+            if not own_macs.intersection(learned):
+                learned = set(observed_ports)
+            if not learned - own_macs:
                 continue
             devices = []
             for mac in sorted(learned - own_macs):
                 device = {"mac": mac}
+                if mac in observed_ports:
+                    device["switchPort"] = observed_ports[mac]
                 identities = addresses_by_mac.get(mac, [])
                 if len(identities) == 1:
                     address, stamp = identities[0]
@@ -2150,9 +2177,12 @@ def _switch_management_fdb(connection, sources: list[dict]) -> list[dict]:
 
 def _read_downstream_fdb(connection, sources: list[dict], configured: dict) -> dict:
     samples = {}
-    for link_id, (address, local, _) in configured.items():
-        eligible = [source for source in sources if source.get("host") == address
-                    and source.get("enabled") and source.get("driver") == "snmp_switch"]
+    sources_by_host = {}
+    for source in sources:
+        if source.get("enabled") and source.get("driver") == "snmp_switch":
+            sources_by_host.setdefault(source.get("host"), []).append(source)
+    for link_id, (address, local, remote) in configured.items():
+        eligible = sources_by_host.get(address, [])
         if len(eligible) != 1:
             continue
         source, = eligible
@@ -2169,6 +2199,20 @@ def _read_downstream_fdb(connection, sources: list[dict], configured: dict) -> d
         if 1 <= len(rows) <= 256 and len(readings) == 1:
             samples[link_id] = {"source": source["name"], "at": rows[0]["last_seen_at"],
                                 "macs": [row["mac"] for row in rows]}
+            peers = sources_by_host.get(remote.get("address"), []) if remote.get("address") else []
+            if len(peers) == 1:
+                peer, = peers
+                rows = list(connection.execute(f"""
+                    SELECT DISTINCT lower(f.mac) AS mac, p.name, p.last_seen_at AS at
+                    FROM current_switch_fdb AS f
+                    JOIN switch_ports AS p ON {FDB_PORT_MATCH}
+                    WHERE f.source_id = ? AND lower(f.mac) IN (SELECT value FROM json_each(?))
+                      AND p.oper_status = 'up' AND p.admin_status IS NOT 'down'
+                      AND f.last_seen_at = p.last_seen_at AND lower(f.status) = 'learned'
+                    LIMIT 1025
+                """, (peer["id"], json.dumps(samples[link_id]["macs"]))))
+                if len(rows) <= 1024:
+                    samples[link_id]["remote"] = {"source": peer["name"], "readings": [dict(row) for row in rows]}
     return samples
 
 
