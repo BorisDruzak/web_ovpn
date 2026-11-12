@@ -10,6 +10,13 @@ from .base import NetworkDriver
 from .mikrotik_api import MikroTikApiDriver
 
 
+INTERFACE_COUNTER_KEYS = ("rx-byte", "tx-byte", "rx-packet", "tx-packet")
+INTERFACE_COUNTER_COMMAND = (
+    ':foreach row in=[/interface print stats as-value] do={:put (($row->"name") . "|" . '
+    '($row->"rx-byte") . "|" . ($row->"tx-byte") . "|" . ($row->"rx-packet") . "|" . ($row->"tx-packet"))}'
+)
+
+
 def parse_routeros_terse(output: str, *, interface_flags: bool = False) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     scalar: dict[str, str] = {}
@@ -99,17 +106,17 @@ class MikroTikSshDriver(NetworkDriver):
             command.extend(["-J", proxy_jump])
         return command
 
-    def _run_print(self, path: str, *, terse: bool = True, stats: bool = False) -> list[dict[str, str]]:
+    def _run_print(self, path: str, *, terse: bool = True) -> list[dict[str, str]]:
         if path not in set(self.COLLECT_PATHS.values()) | set(self.IPSEC_PATHS.values()):
             raise ValueError("RouterOS SSH driver only allows known read-only print paths")
-        if stats and path != "/interface":
-            raise ValueError("RouterOS SSH statistics are only supported for interfaces")
-        target = f"{self.source['username']}@{self.source['host']}"
         routeros_command = f"{path} print"
-        if stats:
-            routeros_command += " stats"
         if terse:
-            routeros_command += " terse without-paging" if stats else " terse"
+            routeros_command += " terse"
+        output = self._run_read(routeros_command)
+        return parse_routeros_terse(output, interface_flags=terse and path == "/interface")
+
+    def _run_read(self, routeros_command: str) -> str:
+        target = f"{self.source['username']}@{self.source['host']}"
         completed = subprocess.run(
             [*self._ssh_base(), target, routeros_command],
             shell=False,
@@ -121,14 +128,18 @@ class MikroTikSshDriver(NetworkDriver):
         )
         if completed.returncode != 0:
             raise RuntimeError((completed.stderr or completed.stdout or "ssh command failed").strip())
-        output = completed.stdout
-        if stats:
-            output = re.sub(
-                r"(?<!\S)((?:rx|tx)-(?:byte|packet)=)([0-9]+(?: [0-9]{3})+)(?![0-9])",
-                lambda match: match[1] + match[2].replace(" ", ""),
-                output,
-            )
-        return parse_routeros_terse(output, interface_flags=terse and path == "/interface")
+        return completed.stdout
+
+    def _interface_counters(self) -> dict[str, dict[str, str]]:
+        counters = {}
+        for line in self._run_read(INTERFACE_COUNTER_COMMAND).splitlines():
+            fields = line.rsplit("|", len(INTERFACE_COUNTER_KEYS))
+            if len(fields) != len(INTERFACE_COUNTER_KEYS) + 1 or not fields[0]:
+                continue
+            counters[fields[0]] = {
+                key: value for key, value in zip(INTERFACE_COUNTER_KEYS, fields[1:]) if value.isdecimal()
+            }
+        return counters
 
     def test(self) -> dict[str, Any]:
         identity = self._run_print("/system identity", terse=False)
@@ -198,13 +209,11 @@ class MikroTikSshDriver(NetworkDriver):
         interfaces = raw.get("interfaces", [])
         if any("rx-byte" not in row or "tx-byte" not in row for row in interfaces):
             try:
-                stats = {row["name"]: row for row in self._run_print("/interface", stats=True) if row.get("name")}
+                stats = self._interface_counters()
             except (OSError, subprocess.SubprocessError, RuntimeError, ValueError):
                 stats = {}
             for row in interfaces:
-                reading = stats.get(row.get("name"), {})
-                row.update({key: reading[key] for key in ("rx-byte", "tx-byte", "rx-packet", "tx-packet")
-                            if key in reading})
+                row.update(stats.get(row.get("name"), {}))
         snapshot = {
             "system_resource": raw.get("system_resource", []),
             "identity": raw.get("identity", []),

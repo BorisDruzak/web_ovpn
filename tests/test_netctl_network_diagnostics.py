@@ -73,13 +73,13 @@ def test_switch_history_derives_errors_and_records_only_stp_changes(tmp_path):
     assert result["stp_events"][0]["changes_delta"] == 2
 
 
-def test_routeros_ssh_reads_grouped_counters_when_inventory_omits_them(monkeypatch):
+def test_routeros_ssh_reads_structured_counters_with_full_interface_name(monkeypatch):
     from netctl.drivers import mikrotik_ssh
 
     def run(command, **kwargs):
         output = {
-            "/interface print terse": "0 R name=ether1 type=ether",
-            "/interface print stats terse without-paging": "0 R name=ether1 rx-byte=12 345 tx-byte=8 000",
+            "/interface print terse": "0 R name=ether1-wan type=ether",
+            mikrotik_ssh.INTERFACE_COUNTER_COMMAND: "ether1-wan|12345|8000|30|20",
         }.get(command[-1], "")
         return CompletedProcess(command, 0, stdout=output, stderr="")
 
@@ -87,4 +87,4 @@ def test_routeros_ssh_reads_grouped_counters_when_inventory_omits_them(monkeypat
     driver = mikrotik_ssh.MikroTikSshDriver({"host": "127.0.0.1", "username": "observer"}, {})
     [port] = driver.collect()["interfaces"]
 
-    assert (port["name"], port["type"], port["rx_bytes"], port["tx_bytes"]) == ("ether1", "ether", 12345, 8000)
+    assert (port["name"], port["type"], port["rx_bytes"], port["tx_bytes"]) == ("ether1-wan", "ether", 12345, 8000)
