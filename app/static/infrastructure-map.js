@@ -690,6 +690,20 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         }
         row.append(name, make('small', status));
         if (selectedPort) for (const count of lldpCounts(port)) row.append(make('small', count));
+        if (selectedPort && port.lldpNeighbors?.length) {
+          const observed = make('details');
+          const count = port.lldpNeighbors.length;
+          observed.append(make('summary', `Объявления LLDP (${count} из ${port.lldpNeighborCount})`),
+            make('small', formatTime(port.lldpCheckedAt)));
+          const neighbors = make('ul', null, 'map-detail-list');
+          for (const {systemName, chassisId, portId, hostName} of port.lldpNeighbors) {
+            const peer = [systemName, chassisId && 'шасси ' + chassisId, portId && 'порт ' + portId,
+              hostName && hostName !== systemName && 'имя по MAC ' + hostName];
+            neighbors.append(make('li', peer.filter(Boolean).join(' · ')));
+          }
+          observed.append(neighbors);
+          row.append(observed);
+        }
         if (selectedPort && port.vlanMemberships) {
           const vlans = port.vlanMemberships.vlans;
           for (const [label, selected] of [

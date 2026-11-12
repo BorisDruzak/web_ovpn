@@ -186,6 +186,15 @@ def _public_port(row: dict, now: datetime) -> dict:
         chassis_count = row.get("lldpChassisCount")
         if type(chassis_count) is int and 1 <= chassis_count <= neighbor_count:
             result["lldpChassisCount"] = chassis_count
+        neighbors = []
+        for neighbor in _rows(row.get("lldpNeighbors"), min(neighbor_count, 16)):
+            reading = {key: value for key in ("systemName", "chassisId", "portId", "hostName")
+                       if (value := _text(neighbor.get(key), 64)) and re.fullmatch(r"[\w .:/-]+", value)}
+            if reading.get("chassisId") or reading.get("systemName"):
+                neighbors.append(reading)
+        if neighbors:
+            result["lldpNeighbors"] = neighbors
+            result["lldpCheckedAt"] = result["checkedAt"]
     learned = row.get("fdbLearned")
     if result["state"] == "up" and isinstance(learned, dict) and _time(learned.get("checkedAt")) == stamp:
         count, partial = learned.get("learnedMacCount"), learned.get("partial")
@@ -220,7 +229,8 @@ def _apply_port_link_check(port: dict, row: dict, now: datetime) -> None:
     port.update(state=state, source="SNMP", checkedAt=stamp.isoformat(), stale=False,
                 speedBps=speed if state == "up" and type(speed) is int and 0 < speed <= 10**15 else None)
     if state != "up":
-        for key in ("lldpChassisCount", "lldpNeighborCount", "fdbLearned", "fdbVlans", "telemetry"):
+        for key in ("lldpChassisCount", "lldpNeighborCount", "lldpNeighbors", "lldpCheckedAt",
+                    "fdbLearned", "fdbVlans", "telemetry"):
             port.pop(key, None)
 
 
@@ -969,9 +979,12 @@ def summarize_topology(graph: dict) -> dict:
                         or (pb and port_key(b, pb) == port_key(b, declared["b"]))):
                     related.append({"portA": pa, "portB": pb, "source": report["source"], "checkedAt": report["at"],
                                     **({"stpPaths": report["stpPaths"]} if "stpPaths" in report else {})})
+            lldp = {side: {"checkedAt": port["lldpCheckedAt"], "neighbors": port["lldpNeighbors"]}
+                    for side, port in declared.get("portStates", {}).items() if port.get("lldpNeighbors")}
             pending[(a, b, declared["a"], declared["b"])] = {
                 "a": a, "b": b, "nameA": nodes[a]["name"], "nameB": nodes[b]["name"],
                 "portA": declared["a"], "portB": declared["b"], "observedPaths": related[:8],
+                **({"lldpObservations": lldp} if lldp else {}),
             }
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
     stp = [{"id": node["id"], "name": node["name"], **node["stpRootPath"]}

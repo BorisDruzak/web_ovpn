@@ -1077,7 +1077,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         peers_by_port.setdefault(local, set()).add(identity)
         run = row.get("collector_run_id")
         if chassis and type(run) is int:
-            peers_by_sample.setdefault((*local, run, row["observed_at"]), set()).add(identity)
+            peers_by_sample.setdefault((*local, run, row["observed_at"]), {}).setdefault(identity, row)
 
     switch_status = {row["source"]: row for row in network.get("switches", [])}
     router_ports = {}
@@ -1173,6 +1173,19 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 if neighbors and port["state"] == "up":
                     port["lldpNeighborCount"] = len(neighbors)
                     port["lldpChassisCount"] = len({chassis for chassis, _ in neighbors})
+                    port["lldpNeighbors"] = []
+                    for identity in sorted(neighbors)[:16]:
+                        neighbor = neighbors[identity]
+                        mac = str(neighbor.get("chassis_id") or "").lower()
+                        names_seen = {host["hostname"] for host in host_macs.get(mac, [])
+                                      if isinstance(host.get("hostname"), str) and host["hostname"]
+                                      and observation_is_fresh(host.get("last_seen_at"), now)
+                                      and fresh_macs_by_ip.get(host.get("ip")) == {mac}}
+                        port["lldpNeighbors"].append({
+                            "chassisId": mac, "portId": neighbor.get("port_id"),
+                            "systemName": neighbor.get("system_name"),
+                            "hostName": next(iter(names_seen)) if len(names_seen) == 1 else None,
+                        })
                 learned_vlans = fdb_vlans.get((*scope, port["key"]))
                 if learned_vlans and port["state"] == "up":
                     port["fdbVlans"] = {"checkedAt": port["checkedAt"], "vlans": learned_vlans}

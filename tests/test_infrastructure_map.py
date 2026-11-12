@@ -1166,7 +1166,7 @@ def test_map_reports_port_state_for_declared_pair_without_confirming_cable(tmp_p
 
 def test_lldp_neighbor_count_on_ports_and_declared_links_uses_current_poll(tmp_path):
     from app.infrastructure_collect import build_graph, publish_snapshot
-    from app.infrastructure_map import load_infrastructure_map
+    from app.infrastructure_map import load_infrastructure_map, summarize_topology
 
     now = datetime.now(timezone.utc)
     stamp = now.isoformat()
@@ -1181,12 +1181,16 @@ def test_lldp_neighbor_count_on_ports_and_declared_links_uses_current_poll(tmp_p
     ports = [{"source": key, "name": "ge1", "port_key": "ifindex:1", "if_index": 1,
               "oper_status": "up", "last_seen_at": stamp, "collector_run_id": 7} for key in ("a", "b")]
     neighbor = {"source": "a", "local_port_key": "ifindex:1", "observed_at": stamp, "collector_run_id": 7,
-                "chassis_id": "00:11:22:33:44:55", "port_id": "eth0"}
+                "chassis_id": "00:11:22:33:44:55", "port_id": "eth0", "system_name": "Phone",
+                "management_addresses": ["192.0.2.90"], "system_description": "private"}
     lldp = [neighbor, neighbor.copy(), {**neighbor, "port_id": "eth1"},
             {**neighbor, "chassis_id": "00:11:22:33:44:66"},
             {**neighbor, "port_id": "eth2", "collector_run_id": 6},
             {**neighbor, "port_id": "eth3", "observed_at": (now - timedelta(minutes=1)).isoformat()}]
-    graph = build_graph(context, {"sources": sources, "ports": ports, "lldp": lldp}, {}, {}, {}, now)
+    hosts = [{"ip": "192.0.2.66", "mac": "00:11:22:33:44:66", "hostname": "workstation", "last_seen_at": stamp},
+             {"ip": "192.0.2.66", "mac": "00:11:22:33:44:66", "hostname": "old-name",
+              "last_seen_at": (now - timedelta(hours=1)).isoformat()}]
+    graph = build_graph(context, {"sources": sources, "ports": ports, "lldp": lldp, "hosts": hosts}, {}, {}, {}, now)
     path = tmp_path / "map.json"
     publish_snapshot(path, graph)
     public = load_infrastructure_map(path, now)
@@ -1200,8 +1204,15 @@ def test_lldp_neighbor_count_on_ports_and_declared_links_uses_current_poll(tmp_p
     assert report["portStates"]["a"]["lldpNeighborCount"] == 3
     assert report["portStates"]["a"]["lldpChassisCount"] == 2
     assert "lldpNeighborCount" not in report["portStates"]["b"]
+    details = nodes["a"]["ports"][0]["lldpNeighbors"]
+    assert [row["portId"] for row in details] == ["eth0", "eth1", "eth0"]
+    assert details[0] == {"chassisId": "00:11:22:33:44:55", "portId": "eth0", "systemName": "Phone"}
+    assert details[2]["hostName"] == "workstation"
+    assert "private" not in json.dumps(details) and "192.0.2.90" not in json.dumps(details)
+    pending, = summarize_topology(public)["topologyAudit"]["pending"]
+    assert pending["lldpObservations"] == {"a": {"checkedAt": stamp, "neighbors": details}}
     aged = load_infrastructure_map(path, now + timedelta(hours=1))
-    assert all(not {"lldpNeighborCount", "lldpChassisCount"} & port.keys()
+    assert all(not {"lldpNeighborCount", "lldpChassisCount", "lldpNeighbors"} & port.keys()
                for node in aged["nodes"] for port in node["ports"])
 
 
