@@ -76,6 +76,14 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     availability.textContent = message;
     availability.hidden = !message;
   }
+  function formatLldpPortId(portId, subtype) {
+    if (!portId) return '';
+    const labels = {interface_alias:'псевдоним интерфейса', port_component:'компонент порта',
+      mac_address:'MAC-адрес', network_address:'сетевой адрес', interface_name:'имя интерфейса',
+      agent_circuit_id:'идентификатор цепи', local:'локальный идентификатор'};
+    const type = Object.hasOwn(labels, subtype) ? labels[subtype] : '';
+    return `ID порта ${portId}${type ? ' (' + type + ')' : ''}`;
+  }
   function appendRxErrorCounters(parent, counters, portName = '') {
     const labels = {ifInErrors:'Всего RX', fcsErrors:'FCS', alignmentErrors:'Выравнивание',
       frameTooLongs:'Длинные кадры', internalMacRxErrors:'Внутренние ошибки MAC', symbolErrors:'Ошибки символов'};
@@ -1068,13 +1076,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           observed.append(make('summary', `Объявления LLDP (${count} из ${port.lldpNeighborCount})`),
             make('small', formatTime(port.lldpCheckedAt)));
           const neighbors = make('ul', null, 'map-detail-list');
-          const idTypes = {interface_alias:'псевдоним интерфейса', port_component:'компонент порта',
-            mac_address:'MAC-адрес', network_address:'сетевой адрес', interface_name:'имя интерфейса',
-            agent_circuit_id:'идентификатор цепи', local:'локальный идентификатор'};
           for (const {systemName, chassisId, portId, portIdSubtype, hostName, inventoryDeviceId} of port.lldpNeighbors) {
-            const type = idTypes[portIdSubtype];
-            const identifier = portId && 'ID порта ' + portId + (type ? ' (' + type + ')' : '');
-            const peer = [systemName, chassisId && 'шасси ' + chassisId, identifier,
+            const peer = [systemName, chassisId && 'шасси ' + chassisId, formatLldpPortId(portId, portIdSubtype),
               hostName && hostName !== systemName && 'имя по MAC ' + hostName];
             const entry = make('li', peer.filter(Boolean).join(' · '));
             const device = byId.get(inventoryDeviceId);
@@ -1437,6 +1440,12 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
             const state = [label, formatPortSpeed(port.speedBps), port.source ?? 'SNMP', formatTime(port.checkedAt)];
             state.push(...lldpCounts(port));
             li.append(make('small', `${device} ${port.name}: ${state.filter(Boolean).join(' · ')}`));
+            for (const {localPort, chassisId, portId, portIdSubtype, checkedAt} of evidence.lldpPeers?.[side] ?? []) {
+              const peer = byId.get(edge[side === 'a' ? 'b' : 'a']).name;
+              const fields = [localPort, 'LLDP', peer, formatLldpPortId(portId, portIdSubtype),
+                'шасси ' + chassisId, formatTime(checkedAt)];
+              li.append(make('small', fields.filter(Boolean).join(' · ')));
+            }
             if (port.configuredLabel) {
               const {text, checkedAt} = port.configuredLabel;
               li.append(make('small', `${port.name} · Подпись на коммутаторе · ${text} · ${formatTime(checkedAt)}`));

@@ -1464,15 +1464,15 @@ def summarize_topology(graph: dict) -> dict:
                 "a": a, "b": b, "nameA": nodes[a]["name"], "nameB": nodes[b]["name"],
                 "portA": declared["a"], "portB": declared["b"], "observedPaths": related[:8],
                 "missingPortSides": [side for side in ("a", "b") if port_label_key(declared[side]) in unnamed],
-                "identifiedPeerSides": [side for side, peer, path_port in (("a", b, "portA"), ("b", a, "portB"))
-                                        if any(n.get("inventoryDeviceId") == peer
-                                               for n in lldp.get(side, {}).get("neighbors", []))
+                "identifiedPeerSides": [side for side, path_port in (("a", "portA"), ("b", "portB"))
+                                        if side in declared.get("lldpPeers", {})
                                         or any(path.get("learnedEndpoint", {}).get("switchId") == link[side]
                                                and port_key(link[side], path[path_port])
                                                == port_key(link[side], declared[side]) for path in related)],
                 **({"inventorySources": declared["inventorySources"]} if "inventorySources" in declared else {}),
                 **({"portObservations": observations} if observations else {}),
                 **({"lldpObservations": lldp} if lldp else {}),
+                **({"lldpPeers": declared["lldpPeers"]} if "lldpPeers" in declared else {}),
             }
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
     stp = [{"id": node["id"], "name": node["name"], **node["stpRootPath"]}
@@ -2041,6 +2041,20 @@ def load_infrastructure_map(
                             states[side] = port
                     if states:
                         evidence[-1]["portStates"] = states
+                    if edge["kind"] == "Сетевое соединение":
+                        lldp_peers = {}
+                        for side, peer_side in (("a", "b"), ("b", "a")):
+                            port = states.get(side, {})
+                            matches = [
+                                {"localPort": port["name"], "checkedAt": port["lldpCheckedAt"],
+                                 **{key: neighbor[key] for key in ("chassisId", "portId", "portIdSubtype") if key in neighbor}}
+                                for neighbor in port.get("lldpNeighbors", [])
+                                if neighbor.get("inventoryDeviceId") == edge[peer_side]
+                            ]
+                            if matches:
+                                lldp_peers[side] = matches
+                        if lldp_peers:
+                            evidence[-1]["lldpPeers"] = lldp_peers
                 if source == RECIPROCAL_MAC_SOURCE and evidence[-1]["confirmed"]:
                     stp_paths = []
                     for side, port in evidence[-1].get("portStates", {}).items():

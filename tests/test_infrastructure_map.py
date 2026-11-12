@@ -5540,6 +5540,13 @@ def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_pa
                    "ports": [{"name": "ge12", "state": "down", "checkedAt": now, "ifAlias": "PVE1 IPMI"},
                              {"name": "ge15", "state": "up", "speedBps": 10**9, "checkedAt": now,
                               "ifAlias": "<invalid>\npassword=value",
+                              "lldpNeighborCount": 2,
+                              "lldpNeighbors": [
+                                  {"chassisId": "02:00:00:00:00:15", "inventoryDeviceId": "recorder",
+                                   "portId": "bond0", "portIdSubtype": "interface_name"},
+                                  {"chassisId": "02:00:00:00:00:16", "inventoryDeviceId": "other",
+                                   "portId": "eth1", "portIdSubtype": "interface_name"},
+                              ],
                               "fdbLearned": {"checkedAt": now, "learnedMacCount": 0, "partial": False},
                               "telemetry": {"checkedAt": now, "intervalSeconds": 60, "rxBps": 0,
                                             "txBps": 400_000, "rxErrors": 5, "private": "excluded"},
@@ -5596,6 +5603,15 @@ def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_pa
               "transceiver": {"checkedAt": now, "formFactor": "SFP+", "nominalBps": 10**10}},
     }
     assert recorder["missingPortSides"] == ["b"] and recorder["identifiedPeerSides"] == ["a"]
+    expected_peer = {"localPort": "ge15", "chassisId": "02:00:00:00:00:15", "portId": "bond0",
+                     "portIdSubtype": "interface_name", "checkedAt": now}
+    assert recorder["lldpPeers"] == {"a": [expected_peer]}
+    assert len(recorder["lldpObservations"]["a"]["neighbors"]) == 2
+    snapshot = client.get("/api/v1/network/infrastructure", headers=headers).json()["infrastructure"]
+    edge = next(edge for edge in snapshot["links"] if edge["a"] == "snr" and edge["b"] == "recorder")
+    report, = edge["portEvidence"]
+    assert report["lldpPeers"] == {"a": [expected_peer]}
+    assert report["b"] == "" and not report["confirmed"] and "pairEvidence" not in report
     assert recorder["observedPaths"] == [{
         "portA": "ge15", "portB": "", "source": "netctl FDB", "checkedAt": now,
         "learnedEndpoint": {"switchId": "snr", "deviceId": "recorder", "mac": "02:00:00:00:00:15"},
