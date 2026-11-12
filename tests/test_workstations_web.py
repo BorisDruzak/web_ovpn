@@ -160,23 +160,26 @@ def test_windows_staging_assignment_is_owned_retriable_and_binds_only_on_heartbe
 
     asset_id, request_id, release_id, device_id = (uuid.uuid4() for _ in range(4))
     fingerprint = 'sha256:' + 'a' * 64
-    now = datetime.now(timezone.utc)
+    issued_at = None
     calls = []
 
     class Endpoint:
         def issue_inventory_installation(self, assignment_id, proof, platform):
+            nonlocal issued_at
             calls.append(assignment_id)
             assert proof == fingerprint and platform == 'windows'
             with session_scope() as db:
                 db.add(InventoryAsset(id=str(uuid.uuid4()), asset_type=InventoryAssetType.PC))
             if len(calls) == 1:
                 raise EndpointPlatformServiceUnavailable()
-            return SimpleNamespace(issued_at=now, expires_at=now + timedelta(minutes=30))
+            issued_at = datetime.now(timezone.utc)
+            return SimpleNamespace(issued_at=issued_at, expires_at=issued_at + timedelta(minutes=30))
 
         def lookup_inventory_installation(self, assignment_id):
             assert assignment_id == calls[0]
+            assert issued_at is not None
             return SimpleNamespace(state='connected', device_id=device_id,
-                registered_at=now + timedelta(seconds=4), heartbeat_at=now + timedelta(seconds=5))
+                registered_at=issued_at + timedelta(seconds=4), heartbeat_at=issued_at + timedelta(seconds=5))
 
         def close(self):
             pass
@@ -229,7 +232,8 @@ def test_windows_staging_assignment_is_owned_retriable_and_binds_only_on_heartbe
         assert fingerprint not in str(row.parameters_json) and calls[0] not in str(row.parameters_json)
         assert db.scalar(select(InventoryExternalBinding)) is None
     assert calls[0] not in client.get(view).text
-    sync_installation_receipts(get_sessionmaker(), Endpoint(), clock=lambda: now + timedelta(seconds=6),
+    assert issued_at is not None
+    sync_installation_receipts(get_sessionmaker(), Endpoint(), clock=lambda: issued_at + timedelta(seconds=6),
                                windows_secret=get_settings().app_secret_key)
     with session_scope() as db:
         row = db.get(WorkstationRequest, str(request_id))
