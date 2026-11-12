@@ -914,6 +914,18 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       panel.append(make('summary', `Устройства за коммутатором (${count})`), make('small', source), list);
       propertiesSection.append(panel);
     }
+    if (node.stpRoot) {
+      const {localPort, rootBridgeMac, rootDeviceId, checkedAt} = node.stpRoot;
+      const list = make('ul', null, 'map-detail-list');
+      const row = make('li');
+      const port = make('button', localPort);
+      port.type = 'button';
+      port.addEventListener('click', () => selectPort(id, localPort));
+      const bridge = [byId.get(rootDeviceId)?.name, rootBridgeMac].filter(Boolean).join(' · ');
+      row.append(port, make('small', bridge), make('small', 'SNMP · ' + formatTime(checkedAt)));
+      list.append(row);
+      propertiesSection.append(make('h3', 'Корневой мост STP'), list);
+    }
     if (node.stpRootPath) {
       const {localPort, designatedBridgeMac, designatedPortId, checkedAt, bridgeDeviceId,
         designatedPortName, designatedPortCheckedAt} = node.stpRootPath;

@@ -899,6 +899,18 @@ def _public_node(row: dict, now: datetime) -> dict:
     checks = [check for check in checks if _text(check.get("name"), 64) not in ambiguous]
     checks.extend({"name": name} for name in required_names if check_counts[name] != 1)
     service_checks = [_public_service_check(check, now) for check in _rows(row.get("serviceChecks"), 16)]
+    root = row.get("stpRoot")
+    stp_root = {}
+    if row.get("kind") == NETWORK_KINDS[0] and isinstance(root, dict):
+        local_port = _text(root.get("localPort"), 64)
+        bridge = _text(root.get("rootBridgeMac"), 17)
+        if (observation_is_fresh(root.get("checkedAt"), now, max_age=STP_ROOT_PATH_MAX_AGE)
+                and re.fullmatch(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}", bridge)
+                and sum(port["name"] == local_port and port["state"] == "up" for port in ports) == 1):
+            stp_root = {"localPort": local_port, "rootBridgeMac": bridge,
+                        "checkedAt": _time(root["checkedAt"]).isoformat()}
+            if root_id := _text(root.get("rootDeviceId")):
+                stp_root["rootDeviceId"] = root_id
     stp = row.get("stpRootPath")
     stp_path = {}
     if row.get("kind") == NETWORK_KINDS[0] and isinstance(stp, dict):
@@ -939,6 +951,7 @@ def _public_node(row: dict, now: datetime) -> dict:
         **({"guestIo": guest_io} if guest_io else {}),
         **({"backupCoverage": backup_coverage} if backup_coverage else {}),
         **({"stpRootPath": stp_path} if stp_path else {}),
+        **({"stpRoot": stp_root} if stp_root else {}),
         **({"downstream": downstream} if downstream else {}),
         "ports": [port for port in ports if port["name"]],
         "serviceChecks": service_checks,
@@ -1258,13 +1271,15 @@ def summarize_topology(graph: dict) -> dict:
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
     stp = [{"id": node["id"], "name": node["name"], **node["stpRootPath"]}
            for node in nodes.values() if "stpRootPath" in node]
+    roots = [{"id": node["id"], "name": node["name"], **node["stpRoot"]}
+             for node in nodes.values() if "stpRoot" in node]
     lacp = [{"id": node["id"], "name": node["name"], **report}
             for node in nodes.values() for report in node.get("lacpHealth", [])]
     downstream = [{"id": node["id"], "name": node["name"], **node["downstream"]}
                   for node in nodes.values() if "downstream" in node]
     return {**metadata, "topologyAudit": {"directLinks": counts, "pendingTotal": len(pending),
                                         "portAlertTotal": len(alerts), "portAlerts": alerts[:64],
-                                        "stpRootPaths": stp,
+                                        "stpRootPaths": stp, "stpRoots": roots,
                                         "lacpHealth": lacp[:64],
                                         "downstreamSwitches": downstream[:MAX_DOWNSTREAM_SWITCHES],
                                         "pending": [pending[key] for key in sorted(pending)[:64]]}}
@@ -1619,6 +1634,10 @@ def load_infrastructure_map(
                     if valid:
                         agent_keys[node["id"]] = valid
     for node_id, node in nodes.items():
+        root = node.get("stpRoot", {})
+        root_id = root.get("rootDeviceId")
+        if root_id == node_id or nodes.get(root_id, {}).get("kind") not in NETWORK_KINDS[:2]:
+            root.pop("rootDeviceId", None)
         stp = node.get("stpRootPath", {})
         bridge_id = stp.get("bridgeDeviceId")
         if bridge_id == node_id or nodes.get(bridge_id, {}).get("kind") not in NETWORK_KINDS[:2]:

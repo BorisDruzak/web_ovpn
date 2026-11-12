@@ -1689,6 +1689,41 @@ def test_proxmox_port_observer_verifies_target_and_only_updates_inventory_ports(
     assert ports[1]["state"] == "unknown"
 
 
+def test_snr_root_bridge_uses_fresh_port_mapping_without_confirming_a_pair(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map, summarize_topology
+
+    now = datetime.now(timezone.utc)
+    stamp = now.isoformat()
+    root = {"id": "router", "kind": "router", "name": "Root router",
+            "observed_state": {"rstp": {"bridge_id": "32768.2C:C8:1B:9C:31:EA"}}}
+    port = {"source": "snr", "name": "ge23", "bridge_port": 23, "port_key": "ifindex:5023",
+            "collector_run_id": 1, "last_seen_at": stamp, "oper_status": "up"}
+    state = {"source": "snr", "root_port_key": "physical:23", "root_bridge_mac": "2C:C8:1B:9C:31:EA",
+             "observed_at": stamp}
+    network = {"sources": [{"name": "snr", "driver": "snmp_switch", "enabled": True}],
+               "switches": [{"source": "snr", "profile_id": "snr"}], "ports": [port], "stp": [state]}
+    path = tmp_path / "infrastructure.json"
+
+    def read():
+        graph = build_graph({"devices": [root]}, network, {}, {}, {}, now)
+        path.write_text(json.dumps(graph), encoding="utf-8")
+        public = load_infrastructure_map(path, now)
+        assert public["links"] == []
+        return summarize_topology(public)["topologyAudit"]["stpRoots"]
+
+    assert read() == [{"id": "observer:snr", "name": "snr", "localPort": "ge23",
+                       "rootBridgeMac": "2c:c8:1b:9c:31:ea", "rootDeviceId": "router", "checkedAt": stamp}]
+    network["ports"].append({**port, "name": "ge24", "port_key": "ifindex:5024"})
+    assert read() == []
+    network["ports"].pop()
+    port["last_seen_at"] = (now - timedelta(seconds=1)).isoformat()
+    assert read() == []
+    port["last_seen_at"] = stamp
+    state["observed_at"] = (now - timedelta(minutes=6)).isoformat()
+    assert read() == []
+
+
 def test_css_root_port_stp_projects_only_fresh_unambiguous_observations():
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import _public_node
@@ -3318,11 +3353,12 @@ def test_collection_reads_source_registry_without_syncing_config(monkeypatch):
     monkeypatch.setattr(collector, "read_context_snapshot", snapshot)
     monkeypatch.setattr(collector, "query_switch_ports", lambda conn, **kw: switch_page("ports", conn, **kw))
     monkeypatch.setattr(collector, "query_switch_lldp_neighbors", lambda conn, **kw: switch_page("lldp", conn, **kw))
+    monkeypatch.setattr(collector, "query_switch_stp", lambda conn, **kw: switch_page("stp", conn, **kw))
     monkeypatch.setattr(collector, "list_sources", lambda conn: [{"id": 1, "name": "test"}])
     monkeypatch.setattr(collector, "query_confirmed_attachment_ports", lambda conn: [])
     monkeypatch.setattr(collector, "run_netctl", netctl)
     assert collector.read_network()["sources"] == [{"id": 1, "name": "test"}]
-    assert calls == ["snapshot", ("ports", 0), ("ports", 500), ("lldp", 0), "closed"]
+    assert calls == ["snapshot", ("ports", 0), ("ports", 500), ("lldp", 0), ("stp", 0), "closed"]
 
 
 def test_ipsec_phase_two_requires_expected_peers_and_both_policy_directions():

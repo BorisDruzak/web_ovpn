@@ -36,7 +36,7 @@ from netctl.snmp.transport import SnmpTransport
 from netctl.source_identity import list_source_identities
 from netctl.switch_queries import (
     FDB_PORT_MATCH, query_confirmed_attachment_ports, query_observed_mac_ports,
-    query_switch_lldp_neighbors, query_switch_ports,
+    query_switch_lldp_neighbors, query_switch_ports, query_switch_stp,
 )
 
 from .infrastructure_backup import backup_policy, backup_service_checks, read_proxmox_backup
@@ -1430,6 +1430,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
     source_ids = {}
     source_names = {}
     designated_ports = {}
+    stp_by_source = {sample["source"]: sample for sample in network.get("stp", [])}
     for row in network.get("sources", []):
         name = row["name"]
         candidates = addresses.get(str(row.get("host") or ""), []) if row.get("host") else []
@@ -1459,6 +1460,24 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             latest_run = max((port["collector_run_id"] for port in ports
                               if type(port.get("collector_run_id")) is int), default=None)
             current = [port for port in ports if port.get("collector_run_id") == latest_run]
+            root = stp_by_source.get(name, {})
+            if row.get("enabled") and observation_is_fresh(root.get("observed_at"), now, max_age=STP_ROOT_PATH_MAX_AGE):
+                port_key = root.get("root_port_key") or ""
+                alias = re.fullmatch(r"physical:([1-9][0-9]{0,3})", port_key) if status.get("profile_id") == "snr" else None
+                bridge_port = int(alias[1]) if alias else None
+                matches = [port for port in current if port_key and (
+                    port.get("port_key") == port_key
+                    or bridge_port is not None and port.get("bridge_port") == bridge_port
+                )]
+                if len(matches) == 1:
+                    local, = matches
+                    if (local.get("last_seen_at") == root["observed_at"] and local.get("name")
+                            and local.get("oper_status") == "up" and local.get("admin_status") != "down"):
+                        mac = root["root_bridge_mac"].lower()
+                        item["stpRoot"] = {"localPort": local["name"], "rootBridgeMac": mac, "checkedAt": root["observed_at"]}
+                        owners = bridge_owners.get(mac, set())
+                        if len(owners) == 1 and key not in owners:
+                            item["stpRoot"]["rootDeviceId"], = owners
             stp = network.get("stp_root_paths", {}).get(name)
             if stp and row.get("enabled"):
                 matches = [port for port in current if port.get("bridge_port") == stp["rootPortNumber"]]
@@ -2675,7 +2694,7 @@ def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | N
                 """,
                 (json.dumps(sorted(transit_sources)),),
             )]
-        for name, query in (("ports", query_switch_ports), ("lldp", query_switch_lldp_neighbors)):
+        for name, query in (("ports", query_switch_ports), ("lldp", query_switch_lldp_neighbors), ("stp", query_switch_stp)):
             items = data[name] = []
             offset = 0
             for _ in range(20):
