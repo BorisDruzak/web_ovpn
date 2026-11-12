@@ -1636,6 +1636,7 @@ def _topology_port_pairs(nodes: dict, links: list[dict], host_ids: set[str] | No
             if key in discovered and report["at"] <= discovered[key]["observedPaths"][0]["checkedAt"]:
                 continue
             reading = observations(report).get(side)
+            lldp_peers = report.get("lldpPeers", {}).get(side)
             discovered[key] = {
                 "a": switch, "b": device, "nameA": nodes[switch]["name"], "nameB": nodes[device]["name"],
                 "portA": port, "portB": "", "basis": "learned_endpoint",
@@ -1643,6 +1644,7 @@ def _topology_port_pairs(nodes: dict, links: list[dict], host_ids: set[str] | No
                 "observedPaths": [{"portA": port, "portB": "", "source": report["source"],
                                    "checkedAt": report["at"], "learnedEndpoint": learned}],
                 **({"portObservations": {"a": reading}} if reading else {}),
+                **({"lldpPeers": {"a": lldp_peers}} if lldp_peers else {}),
             }
     for row in discovered.values():
         pending[row["a"], row["b"], row["portA"], ""] = row
@@ -2587,7 +2589,9 @@ def load_infrastructure_map(
                             states[side] = port
                     if states:
                         evidence[-1]["portStates"] = states
-                    if edge["kind"] == "Сетевое соединение":
+                    if (edge["kind"] == "Сетевое соединение"
+                            or (source == SHARED_LLDP_SOURCE and evidence[-1]["confirmed"])
+                            or (observed_attachment and "learnedEndpoint" in evidence[-1])):
                         lldp_peers = {}
                         for side, peer_side in (("a", "b"), ("b", "a")):
                             port = states.get(side, {})

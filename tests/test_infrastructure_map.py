@@ -3036,10 +3036,10 @@ def test_shared_lldp_ports_publish_paths_and_require_live_port_and_unique_chassi
                           "endpoint_a": {"device": "switch", "interface": "Gi1/0/48"},
                           "endpoint_b": {"device": "one", "interface": "bridge/ether3"}}]}
     port = {"source": "switch", "port_key": "ifindex:48", "name": "gigabitEthernet 1/0/48",
-            "oper_status": "up", "last_seen_at": at}
+            "oper_status": "up", "last_seen_at": at, "collector_run_id": 1}
     rows = [{"source": "switch", "system_name": name, "local_port_key": "ifindex:48",
              "chassis_id": chassis, "port_id": "bridge/ether3", "port_id_subtype": "interface_name",
-             "observed_at": at} for name, chassis in (("one", first), ("two", unexpected))]
+             "observed_at": at, "collector_run_id": 1} for name, chassis in (("one", first), ("two", unexpected))]
     network = {"sources": [{"id": 1, "name": "switch", "driver": "snmp_switch",
                             "driver_options": {"intent_stable_id": "switch"}}], "ports": [port], "lldp": rows}
     path = tmp_path / "snapshot.json"
@@ -3062,6 +3062,11 @@ def test_shared_lldp_ports_publish_paths_and_require_live_port_and_unique_chassi
     assert links["one"]["confirmed"] and not links["two"]["confirmed"]
     proof = next(p for p in links["one"]["portEvidence"] if p["confirmed"])
     assert (proof["a"], proof["b"], proof["portStates"]["a"]["state"]) == ("gigabitEthernet 1/0/48", "", "up")
+    assert proof["lldpPeers"] == {"a": [{
+        "localPort": proof["a"], "checkedAt": at, "chassisId": first,
+        "portId": "bridge/ether3", "portIdSubtype": "interface_name",
+    }]}
+    assert "pairEvidence" not in proof
     provenance = {"checkedAt": at, "observerId": "switch", "observerPort": "gigabitEthernet 1/0/48", "source": "LLDP"}
     swt_firmware = {**provenance, "product": "SWT-1318P", "version": "1.2.3", "build": "210419"}
     assert firmware() == {"one": swt_firmware}
@@ -5868,6 +5873,11 @@ def test_attachment_view_includes_physical_service_hosts_and_distinguishes_port_
     assert (inverse["hostPort"], inverse["peerPort"]) == ("ge1", "eth0")
     assert read("unbound")["physicalHosts"][0]["pendingPortPairs"] == []
     cable = raw["links"][2]["portEvidence"].pop(0)
+    raw["nodes"][2]["ports"].append({
+        "name": "ge1", "state": "up", "checkedAt": stamp, "speedBps": 10**9, "lldpNeighborCount": 1,
+        "lldpNeighbors": [{"chassisId": "02:00:00:00:00:01", "inventoryDeviceId": "server",
+                           "portId": "bridgeLocal/ether2", "portIdSubtype": "interface_name"}],
+    })
     path.write_text(json.dumps(raw), encoding="utf-8")
     pending_without_cable = read("server")["physicalHosts"][0]["pendingPortPairs"]
     learned_gap, configured_gap = pending_without_cable
@@ -5878,9 +5888,14 @@ def test_attachment_view_includes_physical_service_hosts_and_distinguishes_port_
     )
     assert learned_gap["missingPortSides"] == ["b"] and learned_gap["identifiedPeerSides"] == ["a"]
     assert learned_gap["observedPaths"][0]["learnedEndpoint"]["deviceId"] == "server"
+    assert learned_gap["lldpPeers"] == {"a": [{
+        "localPort": "ge1", "chassisId": "02:00:00:00:00:01", "portId": "bridgeLocal/ether2",
+        "portIdSubtype": "interface_name", "checkedAt": stamp,
+    }]}
     audit = client.get("/api/v1/network/infrastructure?view=topology", headers=headers).json()["infrastructure"]["topologyAudit"]
     assert audit["pendingTotal"] == 2
     assert audit["pending"] == pending_without_cable
+    raw["nodes"][2]["ports"].pop()
     raw["links"][2]["portEvidence"].insert(0, cable)
     raw["links"][1]["confirmed"] = True
     path.write_text(json.dumps(raw), encoding="utf-8")
