@@ -27,18 +27,33 @@ MCP_TOOLS = {
 }
 
 
-def route_report(runs: list[dict], now: datetime, max_age: timedelta, *, api_runs: list[dict]) -> dict:
+def route_report(
+    runs: list[dict], now: datetime, max_age: timedelta, *,
+    api_runs: list[dict], expected_hops: dict[str, str | None],
+) -> dict:
     row = next((run for run in runs if run["trigger"] == "scheduled"), None)
     if row is None:
-        return {"status": "missing", "fresh": False, "run_id": None, "api_matches": False, "probes": []}
+        return {"status": "missing", "fresh": False, "run_id": None, "api_matches": False,
+                "profile_matches": False, "probes": []}
     checked_at = datetime.fromisoformat(row["checked_at"])
-    probes = [{"id": probe["id"], "status": probe["status"]} for probe in row["result"]["probes"]]
+    probes = []
+    for probe in row["result"]["probes"]:
+        summary = {"id": probe["id"], "status": probe["status"]}
+        if probe.get("expected_first_hop"):
+            summary.update(
+                expected_first_hop=probe["expected_first_hop"],
+                observed_path=probe.get("observed_path"),
+                path_status=probe.get("path_status", "unconfirmed"),
+            )
+        probes.append(summary)
+    reported_hops = {probe["id"]: probe.get("expected_first_hop") for probe in probes}
     return {
         "status": row["status"],
         "run_id": row["id"],
         "checked_at": row["checked_at"],
         "fresh": bool(probes) and timedelta(0) <= now - checked_at <= max_age,
         "api_matches": row in api_runs,
+        "profile_matches": reported_hops == expected_hops and len(probes) == len(expected_hops),
         "probes": probes,
     }
 
@@ -115,7 +130,7 @@ def verify(script: Path, max_age: timedelta) -> dict:
         raise ValueError("Diagnostic checks missing")
     profiles = catalog["profiles"]
     scheduled = {
-        profile["id"]: {probe["id"] for probe in profile["probes"]}
+        profile["id"]: {probe["id"]: probe.get("expected_first_hop") for probe in profile["probes"]}
         for profile in profiles["routes"] if profile["scheduled"]
     }
     if not scheduled:
@@ -130,9 +145,9 @@ def verify(script: Path, max_age: timedelta) -> dict:
     for (profile, expected), reply in zip(scheduled.items(), history, strict=True):
         query = urlencode({"profile": profile, "limit": 100})
         api_runs = bridge.api_request("GET", f"{API}/route-runs?{query}")["data"]["runs"]
-        route = route_report(mcp_data(reply)["runs"], now, max_age, api_runs=api_runs)
-        route["profile_matches"] = {probe["id"] for probe in route["probes"]} == expected
-        routes[profile] = route
+        routes[profile] = route_report(
+            mcp_data(reply)["runs"], now, max_age, api_runs=api_runs, expected_hops=expected,
+        )
     return {
         "contracts": "ok",
         "routes": routes,
@@ -146,6 +161,10 @@ def main() -> int:
     parser.add_argument("--mcp-script", type=Path, default=MCP_SCRIPT)
     parser.add_argument("--max-age-minutes", type=int, default=10)
     parser.add_argument("--require-reachable", action="store_true")
+    parser.add_argument(
+        "--require-expected-first-hop", action="store_true",
+        help="require confirmation for every configured first hop",
+    )
     args = parser.parse_args()
     if args.max_age_minutes < 1:
         parser.error("--max-age-minutes must be positive")
@@ -154,10 +173,23 @@ def main() -> int:
     except (OSError, LookupError, RuntimeError, TypeError, ValueError, subprocess.SubprocessError):
         print(json.dumps({"contracts": "failed", "error": "diagnostics_verification_failed"}))
         return 1
-    print(json.dumps(report, ensure_ascii=False, indent=2))
     routes = report["routes"].values()
+    configured_hops = [
+        probe for route in routes for probe in route["probes"] if probe.get("expected_first_hop")
+    ]
+    confirmed_hops = sum(
+        probe["path_status"] == "first_hop_matches" and probe["observed_path"] == probe["expected_first_hop"]
+        for probe in configured_hops
+    )
+    report["expected_first_hops"] = {"configured": len(configured_hops), "confirmed": confirmed_hops}
+    print(json.dumps(report, ensure_ascii=False, indent=2))
     if any(not (route["fresh"] and route["profile_matches"] and route["api_matches"]) for route in routes):
         return 1
+    if args.require_expected_first_hop:
+        if not configured_hops:
+            return 1
+        if confirmed_hops != len(configured_hops):
+            return 2
     return 2 if args.require_reachable and any(route["status"] != "reachable" for route in routes) else 0
 
 
