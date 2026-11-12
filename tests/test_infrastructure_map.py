@@ -5806,6 +5806,14 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
                 follow_redirects=False)
     browser = client.get(browser_endpoint).json()["infrastructure"]
     assert browser["guestAttachments"] == {"vm": guest}
+    assert browser["servicePaths"] == {}
+    raw["nodes"][0]["serviceChecks"] = [check]
+    adapter["virtual"]["ipv4Observations"] = [address]
+    assert read()["servicePaths"] == [service_path]
+    browser = client.get(browser_endpoint).json()["infrastructure"]
+    assert browser["servicePaths"] == {"directum": [service_path]}
+    raw["nodes"][0].pop("serviceChecks")
+    adapter["virtual"].pop("ipv4Observations")
     raw["links"][1]["portEvidence"][0]["virtual"]["uplinks"] = ["eno1"]
     match, = read()["guests"][0]["interfaces"][0]["switchObservations"]
     assert "physicalPair" not in match and "vlanMemberships" not in match

@@ -614,6 +614,42 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     }
   }
 
+  function switchPortButton(id, name, targetPort) {
+    const open = make('button', name + ' ' + targetPort);
+    open.type = 'button';
+    open.addEventListener('click', () => {
+      const port = byId.get(id)?.ports?.find(item => portKeys(item).includes(portKey(targetPort)));
+      select(id);
+      if (port && selected === id) selectPort(id, port.name);
+    });
+    return open;
+  }
+
+  function renderServicePaths(paths) {
+    if (!paths?.length) return null;
+    const panel = make('section');
+    panel.dataset.section = 'service-path';
+    const list = make('ul', null, 'map-detail-list');
+    const rendered = new Set();
+    for (const path of paths) {
+      const endpoint = path.target + (path.port ? ':' + path.port : '');
+      const label = [path.method, endpoint].join(' · ');
+      if (rendered.has(label)) continue;
+      rendered.add(label);
+      const {hostPort, switchPort} = path.physicalPair;
+      const guest = byId.get(path.guestId)?.name ?? path.guestId;
+      const host = byId.get(path.hypervisorId)?.name ?? path.hypervisorId;
+      const target = byId.get(path.switchId)?.name ?? path.switchId;
+      const row = make('li');
+      row.append(make('strong', label),
+        make('small', [`${guest} ${path.guestPort}`, path.bridge, `${host} ${hostPort}`].join(' → ')),
+        switchPortButton(path.switchId, target, switchPort));
+      list.append(row);
+    }
+    panel.append(make('h3', 'Путь до коммутатора'), list);
+    return panel;
+  }
+
   function renderGuestAttachment(attachment) {
     if (!attachment?.interfaces.length) return null;
     const panel = make('details', null, 'map-port-panel');
@@ -663,14 +699,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const {basis, physicalPair, switch: target, switchPort, checkedAt, vlanMemberships} = observation;
         const targetPort = physicalPair?.switchPort ?? switchPort;
         if (physicalPair) row.append(make('small', 'Интерфейс хоста ' + physicalPair.hostPort + ' ↔'));
-        const open = make('button', target.name + ' ' + targetPort);
-        open.type = 'button';
-        open.addEventListener('click', () => {
-          const port = byId.get(target.id)?.ports?.find(item => portKeys(item).includes(portKey(targetPort)));
-          select(target.id);
-          if (port && selected === target.id) selectPort(target.id, port.name);
-        });
-        row.append(open);
+        row.append(switchPortButton(target.id, target.name, targetPort));
         const vlan = observation.vlan ?? iface.vlan;
         row.append(make('small', [labels[basis], vlan && 'VLAN ' + vlan, formatTime(checkedAt)].filter(Boolean).join(' · ')));
         if (basis === 'bridge_uplink') row.append(make('small', 'MAC гостя на коммутаторе не подтверждён'));
@@ -838,8 +867,13 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         if (host?.guest) resourceHost = host;
       }
     }
+    const servicePaths = renderServicePaths(data.servicePaths?.[id]);
+    if (servicePaths) propertiesSection.append(servicePaths);
     const guestAttachment = renderGuestAttachment(data.guestAttachments?.[resourceHost.id]);
-    if (guestAttachment) propertiesSection.append(guestAttachment);
+    if (guestAttachment) {
+      if (servicePaths) guestAttachment.open = false;
+      propertiesSection.append(guestAttachment);
+    }
     if (resourceHost.resources) {
       const {cpuRatio, logicalCpus, memoryUsedBytes, memoryTotalBytes, rootUsedBytes, rootTotalBytes,
         uptimeSeconds, checkedAt} = resourceHost.resources;

@@ -1822,14 +1822,30 @@ def _service_attachment_paths(service: dict, guests: dict) -> list[dict]:
     return paths
 
 
+def _is_service_attachment(edge: dict) -> bool:
+    return edge["confirmed"] and edge["kind"] in {"Размещение", "Цель проверки"}
+
+
+def _map_attachments(nodes: dict, links: list[dict], now: datetime) -> dict:
+    guests = _guest_attachments(nodes, links, [key for key, node in nodes.items() if node["guest"]], now)
+    service_guests = defaultdict(dict)
+    for edge in links:
+        host, service = edge["a"], edge["b"]
+        if host in guests and nodes[service]["kind"] == "Сервис" and _is_service_attachment(edge):
+            service_guests[service][host] = guests[host]
+    return {"guestAttachments": guests, "servicePaths": {
+        service: paths for service, targets in service_guests.items()
+        if len(targets) <= 12 and (paths := _service_attachment_paths(nodes[service], targets))
+    }}
+
+
 def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
     nodes = {node["id"]: node for node in graph["nodes"]}
     anchor = nodes.get(node_id)
     links = graph["links"]
     targets = set()
     if anchor and anchor["kind"] == "Сервис":
-        targets.update(edge["a"] for edge in links if edge["b"] == node_id and edge["confirmed"]
-                       and edge["kind"] in {"Размещение", "Цель проверки"})
+        targets.update(edge["a"] for edge in links if edge["b"] == node_id and _is_service_attachment(edge))
     elif anchor:
         targets.add(node_id)
     guest_ids = {key for key in targets if nodes[key]["guest"]}
@@ -2156,7 +2172,7 @@ def load_infrastructure_map(
     empty = {
         "availability": "missing", "snapshotAt": None, "nodes": [], "links": [],
         "clusterId": "", "nodeOrder": [], "overviewGuests": [], "switchKinds": list(NETWORK_KINDS), "git": "",
-        **({"guestAttachments": {}} if include_guest_attachments else {}),
+        **({"guestAttachments": {}, "servicePaths": {}} if include_guest_attachments else {}),
     }
     try:
         with path.open("rb") as handle:
@@ -2411,6 +2427,5 @@ def load_infrastructure_map(
             selected_node=agent_node_id,
         )}
            if agent_identities is not None else {}),
-        **({"guestAttachments": _guest_attachments(nodes, links, [key for key, node in nodes.items() if node["guest"]], now)}
-           if include_guest_attachments else {}),
+        **(_map_attachments(nodes, links, now) if include_guest_attachments else {}),
     }
