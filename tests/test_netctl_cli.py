@@ -3065,6 +3065,21 @@ def test_mikrotik_ssh_pppoe_observation_requests_only_allowed_fields(monkeypatch
     ]
 
 
+def test_mikrotik_ssh_ipv4_ping_uses_an_explicit_interface(monkeypatch):
+    from netctl.drivers.mikrotik_ssh import MikroTikSshDriver
+
+    outputs = iter(("sent=1 received=1 packet-loss=0%", "sent=1 received=0 packet-loss=100%", "unexpected"))
+    def run(command, **kwargs):
+        assert command[-1] == "/ping address=1.1.1.1 interface=pppoe-out1 count=1"
+        return subprocess.CompletedProcess(command, 0, stdout=next(outputs), stderr="")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    driver = MikroTikSshDriver({"host": "192.0.2.1", "username": "observer"}, {})
+    assert [driver.ping_ipv4_via_interface("1.1.1.1", "pppoe-out1") for _ in range(3)] == [True, False, None]
+    with pytest.raises(ValueError):
+        driver.ping_ipv4_via_interface("1.1.1.1", "pppoe-out1 count=100")
+
+
 def test_normalizer_never_assigns_online_from_router_dhcp_or_arp():
     """Letting any normalizer branch emit online would bypass the active-probe projection."""
     from netctl.normalizer import normalize_hosts

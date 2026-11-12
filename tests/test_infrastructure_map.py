@@ -3877,6 +3877,34 @@ def test_router_neighbor_table_is_scoped_to_one_live_port_and_never_confirms_a_p
     assert "routerNeighbors" not in expired["nodes"][0]["ports"][0]
 
 
+def test_pppoe_internet_probe_requires_configured_public_targets_and_active_session(monkeypatch):
+    from app import infrastructure_collect as collector
+
+    calls = []
+    session = {"name": "pppoe-out1", "parent": "ether1-wan", "running": True, "disabled": False}
+
+    class Driver:
+        def pppoe_interfaces(self):
+            return [session]
+
+        def ping_ipv4_via_interface(self, address, interface):
+            calls.append((address, interface))
+            return True
+
+    monkeypatch.setattr(collector, "load_secrets", lambda: {})
+    monkeypatch.setattr(collector, "legacy_driver_for", lambda *_: Driver())
+    context = {"wan": [{"id": "uplink", "device": "rb", "interface": "pppoe-out1", "gateway": "pppoe_peer"}]}
+    sources = [{"name": "router", "driver": "mikrotik_ssh", "enabled": True,
+                "driver_options": {"intent_stable_id": "rb"}}]
+    assert collector._collect_pppoe(context, sources, {"uplink": ["10.0.0.1"]})["router"]["internet"] == []
+    sample = collector._collect_pppoe(context, sources, {"uplink": ["1.1.1.1"]})["router"]
+    assert calls == [("1.1.1.1", "pppoe-out1")]
+    assert sample["internet"][0]["received"] is True
+    session["running"] = False
+    assert collector._collect_pppoe(context, sources, {"uplink": ["1.1.1.1"]})["router"]["internet"] == []
+    assert len(calls) == 1
+
+
 def test_pppoe_wan_uses_live_session_and_keeps_physical_confirmation_separate(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map
@@ -3888,7 +3916,10 @@ def test_pppoe_wan_uses_live_session_and_keeps_physical_confirmation_separate(tm
     session = {"name": "pppoe-out1", "parent": "ether1-wan", "running": True, "disabled": False}
     network = {"sources": [{"name": "router", "driver": "mikrotik_ssh", "enabled": True,
                            "driver_options": {"intent_stable_id": "rb"}}],
-               "pppoe": {"router": {"checkedAt": at, "interfaces": [session]}},
+               "pppoe": {"router": {"checkedAt": at, "interfaces": [session], "internet": [
+                   {"session": "pppoe-out1", "target": "1.1.1.1", "received": True, "checkedAt": at},
+                   {"session": "pppoe-out1", "target": "8.8.8.8", "received": False, "checkedAt": at},
+               ]}},
                "router_interfaces": [{"source": "router", "name": "ether1-wan", "type": "ether",
                                       "running": 1, "disabled": 0, "last_seen_at": at}]}
     path = tmp_path / "map.json"
@@ -3900,11 +3931,13 @@ def test_pppoe_wan_uses_live_session_and_keeps_physical_confirmation_separate(tm
 
     service, links = read()
     assert service["mapStatus"] == "ok"
-    check, = service["serviceChecks"]
+    check, positive, silent = service["serviceChecks"]
     assert check["required"] and check["pppoe"] == {
         "session": "pppoe-out1", "parent": "ether1-wan", "state": "connected",
         "parentLink": {"state": "up", "source": "RouterOS", "checkedAt": at},
     }
+    assert (positive["method"], positive["target"], positive["state"]) == ("ICMP через PPPoE", "1.1.1.1", "reachable")
+    assert (silent["target"], silent["state"], silent["reason"]) == ("8.8.8.8", "unknown", "icmp_no_echo_reply")
     assert any(r["a"] == "ether1-wan" and r["b"] == "pppoe-out1" for e in links for r in e["portEvidence"])
     assert not any("pairEvidence" in r for e in links for r in e["portEvidence"])
     network["router_interfaces"][0]["last_seen_at"] = (now - timedelta(minutes=11)).isoformat()
@@ -3914,6 +3947,7 @@ def test_pppoe_wan_uses_live_session_and_keeps_physical_confirmation_separate(tm
     service, _ = read()
     assert service["mapStatus"] == "critical"
     assert service["serviceChecks"][0]["pppoe"]["parentLink"]["state"] == "down"
+    assert len(service["serviceChecks"]) == 1
     session["disabled"] = True
     service, _ = read()
     assert service["mapStatus"] == "critical"

@@ -134,6 +134,18 @@ class MikroTikSshDriver(NetworkDriver):
         )
         return result.returncode == 0 and re.search(r"\bsent=1\s+received=1\b", result.stdout) is not None
 
+    def ping_ipv4_via_interface(self, address: str, interface: str) -> bool | None:
+        destination = ipaddress.IPv4Address(address)
+        if not destination.is_global or destination.is_multicast or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}", interface):
+            raise ValueError("WAN ping requires a public IPv4 address and an interface name")
+        target = f"{self.source['username']}@{self.source['host']}"
+        result = subprocess.run(
+            [*self._ssh_base(), target, f"/ping address={destination} interface={interface} count=1"],
+            capture_output=True, text=True, timeout=int(self.source.get("ssh_connect_timeout") or 8) + 3, check=False,
+        )
+        counts = re.findall(r"^\s*sent=1[ \t]+received=([01])\b", result.stdout, re.MULTILINE)
+        return counts[0] == "1" if result.returncode == 0 and len(counts) == 1 else None
+
     def pppoe_interfaces(self) -> list[dict[str, Any]]:
         # A full PPPoE print on RouterOS 6 can include credentials.
         query = (

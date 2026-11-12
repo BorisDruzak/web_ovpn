@@ -30,6 +30,7 @@ PORT_LINK_CHECK_MAX_AGE = timedelta(minutes=5)
 ROUTER_NEIGHBOR_MAX_AGE = timedelta(minutes=10)
 MAX_ROUTER_NEIGHBORS = 16
 PPPOE_METHOD = "Сессия PPPoE"
+PPPOE_INTERNET_METHOD = "ICMP через PPPoE"
 PPPOE_SOURCE = "RouterOS · PPPoE"
 PPPOE_PARENT_LINK_MAX_AGE = timedelta(minutes=10)
 RESOURCE_CAPACITY_MAX_AGE = timedelta(minutes=5)
@@ -415,7 +416,9 @@ def _public_service_check(check: dict, now: datetime) -> dict:
     path = _text(check.get("path"))
     port = check.get("port")
     backup = check.get("method") == BACKUP_PROBE_METHOD and check.get("source") == "Proxmox"
-    max_age = SERVICE_PROBE_MAX_AGE if backup or (check.get("source") == "UI_VPN" and check.get("required") is True) else MAX_AGE
+    current_probe = (check.get("source") == "UI_VPN" and check.get("required") is True
+                     or check.get("source") == "RouterOS" and check.get("method") == PPPOE_INTERNET_METHOD)
+    max_age = SERVICE_PROBE_MAX_AGE if backup or current_probe else MAX_AGE
     result = {
         **_public_reachability(check, now, max_age=max_age),
         "port": port if type(port) is int and 1 <= port <= 65535 else None,
@@ -468,7 +471,7 @@ def _public_service_check(check: dict, now: datetime) -> dict:
             result["identityCheckedAt"] = _time(identity_at).isoformat()
         else:
             result.update(state="unknown", stale=True)
-    icmp = identified_icmp or result["method"] in ("ICMP", "ICMP адреса из инвентаря", "ICMP · VLAN")
+    icmp = identified_icmp or result["method"] in ("ICMP", "ICMP адреса из инвентаря", "ICMP · VLAN", PPPOE_INTERNET_METHOD)
     if icmp:
         round_trip = check.get("roundTripMs")
         if type(round_trip) in (int, float) and 0 <= round_trip <= 3000:
