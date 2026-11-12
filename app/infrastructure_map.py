@@ -854,7 +854,8 @@ def _public_service_check(check: dict, now: datetime) -> dict:
             result["tlsVersion"] = version
     if result["method"] == "Сертификат TLS":
         if reason in {"probe_configuration", "tls_certificate_pin", "tls_certificate_expired",
-                      "tls_certificate_not_yet_valid", "tls_certificate_unconfirmed", "tls_connection_refused",
+                      "tls_certificate_not_yet_valid", "tls_certificate_unconfirmed",
+                      "tls_certificate_verification_failed", "tls_connection_refused",
                       "timeout", "transport_error"}:
             result["reason"] = reason
     if result["method"] == "FTP FEAT":

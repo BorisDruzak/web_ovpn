@@ -703,27 +703,42 @@ def _udp_failure(connection: socket.socket, option: tuple[int, int] | None,
 
 def _tls_certificate(spec: dict) -> dict:
     pin, port = spec.get("tls_sha256"), spec.get("port")
-    if (not isinstance(pin, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", pin)
-            or type(port) is not int or not 1 <= port <= 65535):
-        return {"state": "unknown", "reason": "probe_configuration"}
+    name, ca_file = spec.get("tls_server_name"), spec.get("tls_ca_file")
+    invalid = {"state": "unknown", "reason": "probe_configuration"}
+    if type(port) is not int or not 1 <= port <= 65535:
+        return invalid
     try:
         address = str(ipaddress.ip_address(spec.get("ip")))
     except ValueError:
-        return {"state": "unknown", "reason": "probe_configuration"}
+        return invalid
 
-    # Read the leaf certificate even after expiry, then verify its configured fingerprint.
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    context.check_hostname = False
-    context.verify_mode = ssl.CERT_NONE
+    if name is not None or ca_file is not None:
+        if pin is not None or not _valid_http_hostname(name) or not isinstance(ca_file, str) or not os.path.isabs(ca_file):
+            return invalid
+        try:
+            context = ssl.create_default_context(cafile=ca_file)
+        except (OSError, ValueError):
+            return invalid
+    else:
+        if not isinstance(pin, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", pin):
+            return invalid
+        # Read the leaf even after expiry, then verify its configured fingerprint.
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
     try:
         with socket.create_connection((address, port), timeout=TIMEOUT) as tcp:
-            with context.wrap_socket(tcp, server_hostname=address) as tls:
+            with context.wrap_socket(tcp, server_hostname=name or address) as tls:
                 certificate = tls.getpeercert(binary_form=True)
-                if not certificate or hashlib.sha256(certificate).hexdigest() != pin.lower():
+                if pin is not None and (not certificate or hashlib.sha256(certificate).hexdigest() != pin.lower()):
                     return {"state": "unknown", "reason": "tls_certificate_pin"}
+                if not certificate:
+                    return {"state": "unknown", "reason": "tls_certificate_unconfirmed"}
                 peer = x509.load_der_x509_certificate(certificate)
                 starts, expires = peer.not_valid_before_utc, peer.not_valid_after_utc
                 version = tls.version()
+    except ssl.SSLCertVerificationError:
+        return {"state": "unreachable", "reason": "tls_certificate_verification_failed"}
     except ConnectionRefusedError:
         return {"state": "unreachable", "reason": "tls_connection_refused"}
     except TimeoutError:

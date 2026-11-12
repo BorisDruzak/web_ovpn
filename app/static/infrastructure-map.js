@@ -1507,6 +1507,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         tls_certificate_expired: 'Срок действия сертификата истёк',
         tls_certificate_not_yet_valid: 'Сертификат ещё не вступил в силу',
         tls_certificate_unconfirmed: 'Сертификат TLS не подтверждён',
+        tls_certificate_verification_failed: 'Сертификат TLS не прошёл проверку имени или цепочки доверия',
         tls_connection_refused: 'Порт TLS отклонил подключение',
         icmp_identity_unconfirmed: 'Принадлежность адреса этому узлу не подтверждена',
         route_other_gateway: 'Активен другой шлюз', route_inactive: 'Маршрут через ожидаемый шлюз неактивен',

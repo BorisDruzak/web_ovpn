@@ -5776,6 +5776,57 @@ def test_pinned_tls_certificate_distinguishes_expiry_from_changed_identity(monke
     assert "tlsExpiresAt" not in changed
 
 
+def test_tls_certificate_verifies_name_and_chain_for_configured_address(monkeypatch, tmp_path):
+    from unittest.mock import MagicMock
+
+    from app import infrastructure_service_probes as probes
+    from app.infrastructure_map import _public_service_check
+
+    now = datetime.now(timezone.utc)
+    expires = now + timedelta(days=30)
+    context, tcp = MagicMock(), MagicMock()
+    create_context = MagicMock(return_value=context)
+    connect = MagicMock(return_value=tcp)
+    tls = context.wrap_socket.return_value.__enter__.return_value
+    tls.getpeercert.return_value = b"peer certificate"
+    tls.version.return_value = "TLSv1.3"
+    peer = MagicMock(not_valid_before_utc=now - timedelta(days=1), not_valid_after_utc=expires)
+    monkeypatch.setattr(probes.ssl, "create_default_context", create_context)
+    monkeypatch.setattr(probes.socket, "create_connection", connect)
+    monkeypatch.setattr(probes.x509, "load_der_x509_certificate", MagicMock(return_value=peer))
+    ca_file = str(tmp_path / "domain-ca.pem")
+    spec = {"type": "tls_certificate", "ip": "192.0.2.4", "port": 636, "component": True,
+            "tls_server_name": "ad.example.test", "tls_ca_file": ca_file}
+
+    def check(probe):
+        node = {"id": "certificate", "kind": "Сервис", "probeTargetIP": "192.0.2.4"}
+        probes.apply_service_probes([node], {"certificate": [probe]})
+        result, = node["serviceChecks"]
+        return _public_service_check(result, datetime.now(timezone.utc))
+
+    result = check(spec)
+    assert (result["state"], result["tlsExpiresAt"], result["tlsVersion"]) == (
+        "reachable", expires.isoformat(), "TLSv1.3",
+    )
+    assert (result["port"], result["target"], result["component"]) == (636, "192.0.2.4", True)
+    create_context.assert_called_once_with(cafile=ca_file)
+    connect.assert_called_once_with(("192.0.2.4", 636), timeout=probes.TIMEOUT)
+    context.wrap_socket.assert_called_once_with(tcp.__enter__.return_value, server_hostname="ad.example.test")
+
+    context.wrap_socket.side_effect = probes.ssl.SSLCertVerificationError("certificate mismatch")
+    result = check(spec)
+    assert (result["state"], result["reason"]) == ("unreachable", "tls_certificate_verification_failed")
+    assert "tlsExpiresAt" not in result
+
+    connect.reset_mock()
+    result = check({**spec, "tls_sha256": "0" * 64})
+    assert (result["state"], result["reason"]) == ("unknown", "probe_configuration")
+    create_context.side_effect = OSError("CA cannot be read")
+    result = check(spec)
+    assert (result["state"], result["reason"]) == ("unknown", "probe_configuration")
+    connect.assert_not_called()
+
+
 def test_ftp_probe_requires_complete_feature_reply(monkeypatch):
     from app import infrastructure_service_probes as probes
     from app.infrastructure_map import _public_service_check
