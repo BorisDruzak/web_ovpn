@@ -3380,7 +3380,7 @@ def test_collection_keeps_network_fresh_during_proxmox_api_failure(tmp_path, mon
     assert all(n["id"] != "vm" for n in recovered["nodes"])
 
 
-def test_network_observer_failure_keeps_proxmox_and_independent_checks(tmp_path, monkeypatch):
+def test_network_observer_failure_keeps_proxmox_and_independent_checks(tmp_path, monkeypatch, capsys):
     import sys
     from app import infrastructure_collect as collector
     from app import infrastructure_service_probes as probes
@@ -3412,6 +3412,12 @@ def test_network_observer_failure_keeps_proxmox_and_independent_checks(tmp_path,
                                      "--server-health", str(context), "--bindings", str(bindings), "--output", str(path),
                                      "--proxmox-url", "https://pve.example", "--proxmox-token-file", str(context)])
     assert collector.main() == 0
+    journal = capsys.readouterr().err
+    stages = ["Proxmox", "Network Observer database", "build graph", "service probes", "publish snapshot"]
+    positions = [journal.index(f"starting {stage}") for stage in stages]
+    assert positions == sorted(positions)
+    assert "infrastructure collection: published snapshot in " in journal
+    assert "internal netctl details" not in journal
     graph = load_infrastructure_map(path)
     assert graph["availability"] == "ready" and graph["collectionIssues"] == ["network_observer"]
     nodes = {n["id"]: n for n in graph["nodes"]}

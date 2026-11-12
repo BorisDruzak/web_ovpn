@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from time import sleep
+from time import monotonic, sleep
 from urllib.error import URLError
 from urllib.parse import quote, urlsplit
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
@@ -3363,6 +3363,16 @@ def main() -> int:
     args = parser.parse_args()
     if args.proxmox_url and not args.proxmox_token_file:
         parser.error("--proxmox-url requires --proxmox-token-file")
+    started = stage_started = monotonic()
+    current_stage = "read configuration"
+
+    def start_stage(stage: str) -> None:
+        nonlocal current_stage, stage_started
+        now = monotonic()
+        print(f"infrastructure collection: {current_stage} took {now - stage_started:.2f}s, starting {stage}",
+              file=sys.stderr, flush=True)
+        current_stage, stage_started = stage, now
+
     try:
         context_raw = args.context.read_bytes()
         context = load_context_bytes(context_raw)
@@ -3371,6 +3381,7 @@ def main() -> int:
         bindings = json.loads(args.bindings.read_text(encoding="utf-8")) if args.bindings else {}
         pve = {}
         collection_issues = []
+        start_stage("Proxmox")
         if args.proxmox_url:
             guest_ids = set(bindings.get("guests", {}))
             guest_ids.update(str(service["vmid"]) for service in bindings.get("guest_services", {}).values())
@@ -3400,6 +3411,7 @@ def main() -> int:
         asset_fdb_paths = bindings.get("asset_fdb_paths", {})
         asset_fdb_ips = {device["management_ip"] for device in context.get("devices", [])
                          if device["id"] in asset_fdb_paths and device.get("management_ip")}
+        start_stage("Network Observer database and CLI")
         try:
             network = read_network(guest_macs, route_sources | transit_sources, transit_sources, asset_fdb_ips=asset_fdb_ips,
                                    downstream_links=_downstream_links(context, bindings.get("downstream_mac_links")))
@@ -3408,6 +3420,7 @@ def main() -> int:
             print(f"Network Observer inventory unavailable ({type(exc).__name__})", file=sys.stderr)
             network = {}
         else:
+            start_stage("switch and router observations")
             asyncio.run(_check_declared_switch_ports(context, network, pve, datetime.now(timezone.utc)))
             network["pppoe"] = _collect_pppoe(context, network["sources"], bindings.get("pppoe_internet_checks"))
             if lacp_links:
@@ -3419,9 +3432,11 @@ def main() -> int:
                 _collect_switch_port_diagnostics(network, datetime.now(timezone.utc))
             )
             asyncio.run(_collect_switch_rx_errors(network, datetime.now(timezone.utc)))
+            start_stage("IPsec observations")
             if bindings.get("ipsec_links"):
                 network["ipsec"] = _collect_ipsec_policies(network["sources"], bindings["ipsec_links"])
                 network["ipsec_connectivity"] = _collect_ipsec_connectivity(context, network["sources"], bindings["ipsec_links"])
+            start_stage("guest ARP and switch attachment probes")
             network["guest_arp_diagnostics"] = {}
             network["guest_arp_probes"] = _collect_guest_arp_probes(
                 pve, network, bindings.get("guest_probe_ips", {}), datetime.now(timezone.utc),
@@ -3436,6 +3451,7 @@ def main() -> int:
             network["asset_mac_checks"] = _collect_asset_mac_probes(
                 context, network["sources"], bindings.get("asset_mac_probes", {}),
             )
+        start_stage("build graph")
         network["guest_local_ipv4"] = _collect_local_guest_ipv4(bindings)
         now = datetime.now(timezone.utc)
         server = build_server_health_view(args.server_health, now)
@@ -3456,7 +3472,9 @@ def main() -> int:
                   **{f"transit:{segment}": [{"type": "icmp", "ip": spec["peer"]}]
                      for segment, spec in transit_links.items()},
                   **{service_id: [spec] for service_id, spec in (local_vlan_probes | wireguard_probes).items()}}
+        start_stage("service probes")
         apply_service_probes(graph["nodes"], probes)
+        start_stage("publish snapshot")
         graph["snapshotAt"] = datetime.now(timezone.utc).isoformat()
         graph["git"] = args.git_revision
         graph["contextSha256"] = hashlib.sha256(context_raw).hexdigest()
@@ -3470,6 +3488,7 @@ def main() -> int:
         else:
             _add_guest_io_rates(graph, previous)
         publish_snapshot(args.output, graph)
+        print(f"infrastructure collection: published snapshot in {monotonic() - started:.2f}s", file=sys.stderr, flush=True)
     except Exception as exc:
         parser.exit(1, f"Снимок инфраструктуры не обновлён ({type(exc).__name__}).\n")
     return 0
