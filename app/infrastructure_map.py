@@ -1543,8 +1543,23 @@ def _topology_port_pairs(nodes: dict, links: list[dict], host_ids: set[str] | No
 
     counts = {"current": 0, "verifiedInventory": 0, "unconfirmed": 0}
     pending = {}
+    known_ports = set()
     alerts = []
     inventory_pairs = []
+
+    def remember_ports(a, b, port_a, port_b):
+        for device, peer, label in ((a, b, port_a), (b, a, port_b)):
+            if (key := port_key(device, label)) not in unnamed:
+                known_ports.add((device, peer, key))
+
+    def observations(report):
+        return {
+            side: {key: port[key] for key in ("name", "state", "speedBps", "checkedAt", "source", "linkMode",
+                                              "stpPort", "telemetry", "rxErrorCounters", "rxSilence", "fdbLearned", "transceiver",
+                                              "configuredLabel", "lldpPort") if key in port}
+            for side, port in report.get("portStates", {}).items() if port["state"] != "unknown"
+        }
+
     for link in links:
         if link["kind"] != "Сетевое соединение":
             continue
@@ -1554,6 +1569,11 @@ def _topology_port_pairs(nodes: dict, links: list[dict], host_ids: set[str] | No
         reports = link["portEvidence"]
         current = [r for r in reports if link["confirmed"] and r.get("pairEvidence") == "current"]
         inventory = [r for r in reports if r.get("pairEvidence") == "verified_inventory"]
+        for report in current + inventory:
+            remember_ports(a, b, report["a"], report["b"])
+            if lacp := report.get("lacp"):
+                side, peer = ("a", "b") if lacp["side"] == "a" else ("b", "a")
+                remember_ports(link[side], link[peer], lacp["member"], "")
         inventory_pairs.extend({"a": a, "b": b, "portA": r["a"], "portB": r["b"],
                                 "inventorySources": r.get("inventorySources", [])} for r in inventory)
         counts["current" if current else "verifiedInventory" if inventory else "unconfirmed"] += 1
@@ -1586,12 +1606,8 @@ def _topology_port_pairs(nodes: dict, links: list[dict], host_ids: set[str] | No
                                     **{key: report[key] for key in ("stpPaths", "learnedEndpoint") if key in report}})
             lldp = {side: {"checkedAt": port["lldpCheckedAt"], "neighbors": port["lldpNeighbors"]}
                     for side, port in declared.get("portStates", {}).items() if port.get("lldpNeighbors")}
-            observations = {
-                side: {key: port[key] for key in ("name", "state", "speedBps", "checkedAt", "source", "linkMode",
-                                                  "stpPort", "telemetry", "rxErrorCounters", "rxSilence", "fdbLearned", "transceiver",
-                                                  "configuredLabel", "lldpPort") if key in port}
-                for side, port in declared.get("portStates", {}).items() if port["state"] != "unknown"
-            }
+            reading = observations(declared)
+            remember_ports(a, b, declared["a"], declared["b"])
             pending[(a, b, declared["a"], declared["b"])] = {
                 "a": a, "b": b, "nameA": nodes[a]["name"], "nameB": nodes[b]["name"],
                 "portA": declared["a"], "portB": declared["b"], "observedPaths": related[:8],
@@ -1602,10 +1618,34 @@ def _topology_port_pairs(nodes: dict, links: list[dict], host_ids: set[str] | No
                                                and port_key(link[side], path[path_port])
                                                == port_key(link[side], declared[side]) for path in related)],
                 **({"inventorySources": declared["inventorySources"]} if "inventorySources" in declared else {}),
-                **({"portObservations": observations} if observations else {}),
+                **({"portObservations": reading} if reading else {}),
                 **({"lldpObservations": lldp} if lldp else {}),
                 **({"lldpPeers": declared["lldpPeers"]} if "lldpPeers" in declared else {}),
             }
+    discovered = {}
+    for reports in paths.values():
+        for origin, report in reports:
+            if not (learned := report.get("learnedEndpoint")):
+                continue
+            switch, device = learned["switchId"], learned["deviceId"]
+            side, peer = ("a", "b") if origin == switch else ("b", "a")
+            port = report[side]
+            key = switch, device, port_key(switch, port)
+            if key in known_ports or port_key(device, report[peer]) not in unnamed:
+                continue
+            if key in discovered and report["at"] <= discovered[key]["observedPaths"][0]["checkedAt"]:
+                continue
+            reading = observations(report).get(side)
+            discovered[key] = {
+                "a": switch, "b": device, "nameA": nodes[switch]["name"], "nameB": nodes[device]["name"],
+                "portA": port, "portB": "", "basis": "learned_endpoint",
+                "missingPortSides": ["b"], "identifiedPeerSides": ["a"],
+                "observedPaths": [{"portA": port, "portB": "", "source": report["source"],
+                                   "checkedAt": report["at"], "learnedEndpoint": learned}],
+                **({"portObservations": {"a": reading}} if reading else {}),
+            }
+    for row in discovered.values():
+        pending[row["a"], row["b"], row["portA"], ""] = row
     return counts, inventory_pairs, alerts, [pending[key] for key in sorted(pending)]
 
 

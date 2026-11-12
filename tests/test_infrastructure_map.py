@@ -5867,6 +5867,21 @@ def test_attachment_view_includes_physical_service_hosts_and_distinguishes_port_
     inverse = switch["connections"][0]["ports"][0]
     assert (inverse["hostPort"], inverse["peerPort"]) == ("ge1", "eth0")
     assert read("unbound")["physicalHosts"][0]["pendingPortPairs"] == []
+    cable = raw["links"][2]["portEvidence"].pop(0)
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    pending_without_cable = read("server")["physicalHosts"][0]["pendingPortPairs"]
+    learned_gap, configured_gap = pending_without_cable
+    assert configured_gap == pending
+    assert learned_gap["basis"] == "learned_endpoint"
+    assert (learned_gap["a"], learned_gap["portA"], learned_gap["b"], learned_gap["portB"]) == (
+        "sw", "ge1", "server", "",
+    )
+    assert learned_gap["missingPortSides"] == ["b"] and learned_gap["identifiedPeerSides"] == ["a"]
+    assert learned_gap["observedPaths"][0]["learnedEndpoint"]["deviceId"] == "server"
+    audit = client.get("/api/v1/network/infrastructure?view=topology", headers=headers).json()["infrastructure"]["topologyAudit"]
+    assert audit["pendingTotal"] == 2
+    assert audit["pending"] == pending_without_cable
+    raw["links"][2]["portEvidence"].insert(0, cable)
     raw["links"][1]["confirmed"] = True
     path.write_text(json.dumps(raw), encoding="utf-8")
     assert read("sw")["servicePorts"] == []
