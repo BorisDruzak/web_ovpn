@@ -856,7 +856,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       }
       propertiesSection.append(make('h3', 'Параметры узла'), list);
     }
-    let resourceHost = node;
+    let placementHost = node;
     if (node.kind === 'Сервис') {
       const hosts = new Set((incident.get(id) ?? [])
         .filter(edge => edge.b === id && edge.confirmed && ['Размещение', 'Цель проверки'].includes(edge.kind))
@@ -864,9 +864,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       if (hosts.size === 1) {
         const [hostId] = hosts;
         const host = byId.get(hostId);
-        if (host?.guest) resourceHost = host;
+        if (host) placementHost = host;
       }
     }
+    const resourceHost = placementHost.guest ? placementHost : node;
     const servicePaths = renderServicePaths(data.servicePaths?.[id]);
     if (servicePaths) propertiesSection.append(servicePaths);
     const guestAttachment = renderGuestAttachment(data.guestAttachments?.[resourceHost.id]);
@@ -1067,21 +1068,27 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       list.append(make('dt', 'Конфигурация прочитана'), make('dd', formatTime(node.guestStorage.checkedAt)));
       propertiesSection.append(make('h3', 'Диски по конфигурации Proxmox'), list);
     }
-    if (node.lacpHealth?.length) {
+    if (placementHost.lacpHealth?.length) {
+      const panel = make('section');
+      panel.dataset.section = 'lacp-health';
       const list = make('ul', null, 'map-detail-list');
       const labels = {forwarding: 'Готов к передаче', down: 'Линк опущен', disabled: 'Порт отключён', unknown: 'Нет подтверждения'};
-      for (const {switchId, aggregate, members} of node.lacpHealth) {
+      for (const {switchId, aggregate, members} of placementHost.lacpHealth) {
         const row = make('li');
         const name = byId.get(switchId).name;
         const confirmed = members.filter(member => member.status === 'forwarding').length;
         row.append(make('strong', `${name} ${aggregate} · ${confirmed} из ${members.length} портов`));
         for (const {name: port, status, checkedAt, partnerPort} of members) {
-          const details = [port, labels[status], partnerPort && `порт партнёра ${partnerPort}`, checkedAt && formatTime(checkedAt)];
+          if (status === 'forwarding') row.append(switchPortButton(switchId, name, port));
+          const details = [status !== 'forwarding' && port, labels[status], partnerPort && `порт партнёра ${partnerPort}`,
+            checkedAt && formatTime(checkedAt)];
           row.append(make('small', details.filter(Boolean).join(' · ')));
         }
         list.append(row);
       }
-      propertiesSection.append(make('h3', 'Резервирование LACP'), list);
+      const title = placementHost === node ? 'Резервирование LACP' : `Подключение ${placementHost.name} по LACP`;
+      panel.append(make('h3', title), list);
+      propertiesSection.append(panel);
     }
     if (node.downstream) {
       const {upstreamId, port, basis, checkedAt, stpCheckedAt, deviceCount, devices} = node.downstream;
