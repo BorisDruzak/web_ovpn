@@ -1102,6 +1102,7 @@ def cmd_path_probe(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
             source=probe.router_source, target=probe.target, source_address=probe.source_address,
             interface=probe.interface, routing_table=probe.routing_table, mtu=probe.mtu,
             expected_first_hop=probe.expected_first_hop,
+            trace_hops=probe.trace_hops,
             observe_neighbor=probe.observe_neighbor,
             sources=[source] if source else [], secrets=load_secrets() if source and source.get("enabled") else {},
         )

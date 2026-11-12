@@ -29,6 +29,17 @@
           {% if row.path_status == 'first_hop_matches' %}<br>Совпадает с ожидаемым{% endif %}
           {% if row.path_status == 'first_hop_mismatch' %}<br>Ожидался {{ row.expected_first_hop }}{% endif %}
           {% else %}Путь не подтверждён{% endif %}
+          {% if row.evidence.trace is defined %}
+          {% set trace = row.evidence.trace %}
+          <details>
+            <summary>Трассировка · {{ {'reached': 'цель ответила', 'partial': 'частичная'}.get(trace.status, 'недоступна') }}</summary>
+            <ol>
+              {% for hop in trace.hops %}
+              <li value="{{ hop.ttl }}">{{ hop.address or 'нет ответа' }}{% if hop.rtt_ms is not none %} · {{ hop.rtt_ms }} мс{% endif %}</li>
+              {% endfor %}
+            </ol>
+          </details>
+          {% endif %}
           {% if row.kernel_route and row.kernel_route.status == 'route_found' %}
           <br>Выбор ядра {{ [row.kernel_route.result.dev, row.kernel_route.result.gateway] | select | join(' · ') }}
           {% endif %}

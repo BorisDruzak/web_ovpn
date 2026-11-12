@@ -16,6 +16,7 @@ PROBE_COUNT = 3
 MAX_SSH_CONNECT_TIMEOUT = 8
 MAX_OUTPUT_LENGTH = 16_384
 MAX_FIRST_HOP_TIMEOUT = 4.0
+MAX_TRACE_HOPS = 8
 PROBE_BUDGET = 20.0
 SELECTOR = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}")
 SUMMARY = re.compile(r"sent=([0-9]{1,2})\s+received=([0-9]{1,2})(?:\s+(.*))?")
@@ -247,6 +248,49 @@ def _observe_gateway_arp(client: RouterOSApiClient, target: str, interface: str,
             "resolved": {"true": True, "false": False}.get(complete)}
 
 
+def _trace_reply(rows: list[dict[str, str]], target: str, ttl: int) -> dict:
+    for row in rows:
+        if row.get("seq", "0") != "0":
+            continue
+        status = row.get("status", "").casefold()
+        host = row.get("host", "")
+        if status == "ttl exceeded":
+            try:
+                address = str(_unicast_ipv4(host, "trace responder"))
+            except ValueError:
+                continue
+            return {"ttl": ttl, "address": address, "status": "hop", "rtt_ms": _duration_ms(row.get("time", ""))}
+        if status in ("", "echo reply") and host == target and row.get("received") == "1":
+            return {"ttl": ttl, "address": target, "status": "destination", "rtt_ms": _duration_ms(row.get("time", ""))}
+    return {"ttl": ttl, "address": None, "status": "no_reply", "rtt_ms": None}
+
+
+def _trace_api(client: RouterOSApiClient, words: list[str], target: str, max_hops: int, deadline: float) -> dict:
+    hops = []
+    reason = "hop_limit"
+    for ttl in range(1, max_hops + 1):
+        timeout = min(2.0, deadline - monotonic())
+        if timeout < 1:
+            reason = "probe_budget_exhausted"
+            break
+        try:
+            if client.sock is None:
+                raise RuntimeError("RouterOS API connection unavailable")
+            client.sock.settimeout(timeout)
+            rows = client.call([*words, f"=ttl={ttl}"])
+        except TimeoutError:
+            reason = "router_api_timeout"
+            break
+        except (OSError, RuntimeError, ValueError):
+            reason = "router_api_unavailable"
+            break
+        hop = _trace_reply(rows, target, ttl)
+        hops.append(hop)
+        if hop["status"] == "destination":
+            return {"status": "reached", "reason": "echo_reply", "max_hops": max_hops, "hops": hops}
+    return {"status": "partial" if hops else "unavailable", "reason": reason, "max_hops": max_hops, "hops": hops}
+
+
 def probe_router_route(
     *,
     source: str,
@@ -257,6 +301,7 @@ def probe_router_route(
     mtu: int | None = None,
     expected_first_hop: str | None = None,
     observe_neighbor: bool = False,
+    trace_hops: int | None = None,
     sources: list[dict],
     secrets: dict,
 ) -> dict:
@@ -275,6 +320,8 @@ def probe_router_route(
         raise ValueError("MTU must be an integer from 68 through 9000")
     if type(observe_neighbor) is not bool or (observe_neighbor and (not interface or expected_hop)):
         raise ValueError("gateway ARP requires a bound interface and a direct gateway target")
+    if trace_hops is not None and (type(trace_hops) is not int or not 2 <= trace_hops <= MAX_TRACE_HOPS or not expected_hop):
+        raise ValueError("router trace requires 2–8 hops and an expected first hop")
 
     evidence = {
         "method": "routeros_ping",
@@ -288,6 +335,9 @@ def probe_router_route(
     observed_path = None
     if observe_neighbor:
         evidence["gateway_arp"] = {"status": "unavailable"}
+    if trace_hops is not None:
+        evidence["trace"] = {"status": "unavailable", "reason": "router_api_trace_unavailable",
+                             "max_hops": trace_hops, "hops": []}
     first_hop = None
     if expected_hop is not None:
         first_hop = {"expected": str(expected_hop), "status": "unknown", "reason": "primary_probe_unavailable"}
@@ -362,12 +412,26 @@ def probe_router_route(
                 if observe_neighbor:
                     evidence["gateway_arp"] = _observe_gateway_arp(client, str(destination), interface, deadline)
                 if metrics is not None and first_hop is not None:
-                    hop_words = ["/ping", *(f"={argument}" for argument in hop_arguments)]
+                    hop_words = ["/ping", *(f"={argument}" for argument in hop_arguments[:-1])]
+                    if trace_hops is None:
+                        hop_words.append("=ttl=1")
                     if mtu is not None:
                         hop_words.append("=do-not-fragment=")
-                    observed_path = _measure_first_hop(
-                        first_hop, lambda timeout: _first_hop_api(client, hop_words, timeout), deadline, transport,
-                    )
+                    if trace_hops is None:
+                        observed_path = _measure_first_hop(
+                            first_hop, lambda timeout: _first_hop_api(client, hop_words, timeout), deadline, transport,
+                        )
+                    else:
+                        trace = _trace_api(client, hop_words, str(destination), trace_hops, deadline)
+                        evidence["trace"] = trace
+                        if trace["hops"] and trace["hops"][0]["status"] == "hop":
+                            first = trace["hops"][0]
+                            observed_path = first["address"]
+                            first_hop.update(status="observed", reason="ttl_exceeded")
+                            if first["rtt_ms"] is not None:
+                                first_hop["rtt_ms"] = first["rtt_ms"]
+                        else:
+                            first_hop.update(status="unknown", reason="no_ttl_exceeded" if trace["hops"] else trace["reason"])
     except (subprocess.TimeoutExpired, TimeoutError):
         return result("timeout", f"{transport}_timeout")
     except FileNotFoundError:

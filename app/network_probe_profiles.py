@@ -82,6 +82,7 @@ class RouteProbe(BaseModel):
     interface: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}$")
     routing_table: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}$")
     expected_first_hop: str | None = None
+    trace_hops: int | None = Field(default=None, ge=2, le=8)
     observe_neighbor: bool = False
     ipsec: bool = False
     mtu: int | None = Field(default=None, ge=68, le=9000)
@@ -116,6 +117,8 @@ class RouteProbe(BaseModel):
             raise ValueError("interface and table selectors require RouterOS")
         if self.expected_first_hop and (not self.router_source or self.expected_first_hop == self.target):
             raise ValueError("a distinct first hop requires a RouterOS probe")
+        if self.trace_hops is not None and self.expected_first_hop is None:
+            raise ValueError("router trace requires an expected first hop")
         if self.observe_neighbor and (not self.router_source or not self.interface or self.expected_first_hop):
             raise ValueError("gateway ARP requires a router, interface and direct gateway target")
         if self.ipsec and not (self.router_source and self.source_address):

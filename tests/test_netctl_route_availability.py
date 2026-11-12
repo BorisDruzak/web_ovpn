@@ -283,6 +283,37 @@ def test_api_observes_first_hop_on_completed_probe_without_changing_ping_outcome
     }
 
 
+def test_router_trace_keeps_missing_hops_and_stops_on_destination(monkeypatch):
+    sock = fake_api(monkeypatch, [
+        "!re", "=seq=2", "=sent=3", "=received=3", "", "!done", "",
+        "!re", "=seq=0", "=status=TTL exceeded", "=host=192.0.2.1", "=time=1ms", "", "!done", "",
+        "!re", "=seq=0", "=status=timeout", "=host=192.0.2.50", "", "!done", "",
+        "!re", "=seq=0", "=host=192.0.2.50", "=time=3ms", "=received=1", "", "!done", "",
+    ])
+    result = run_probe(sources=[API_SOURCE], secrets=API_SECRETS, interface="ether9",
+                       expected_first_hop="192.0.2.1", trace_hops=5)
+    assert result["status"] == "reachable" and result["observed_path"] == "192.0.2.1"
+    trace = result["evidence"]["trace"]
+    assert trace["status"] == "reached"
+    assert [(h["ttl"], h["address"], h["status"]) for h in trace["hops"]] == [
+        (1, "192.0.2.1", "hop"), (2, None, "no_reply"), (3, "192.0.2.50", "destination"),
+    ]
+    assert "=ttl=4" not in sock.words and sock.words.count("=interface=ether9") == 4
+
+
+def test_router_trace_retains_observed_hops_after_router_trap(monkeypatch):
+    fake_api(monkeypatch, [
+        "!re", "=sent=3", "=received=0", "", "!done", "",
+        "!re", "=status=TTL exceeded", "=host=192.0.2.1", "", "!done", "",
+        "!trap", "=message=permission denied", "",
+    ])
+    result = run_probe(sources=[API_SOURCE], secrets=API_SECRETS, expected_first_hop="192.0.2.1", trace_hops=5)
+    assert result["status"] == "unreachable" and result["observed_path"] == "192.0.2.1"
+    assert result["evidence"]["trace"]["status"] == "partial"
+    assert result["evidence"]["trace"]["reason"] == "router_api_unavailable"
+    assert len(result["evidence"]["trace"]["hops"]) == 1
+
+
 def test_ssh_uses_shorter_timeout_for_first_hop(monkeypatch):
     calls = []
 
