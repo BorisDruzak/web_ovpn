@@ -299,8 +299,14 @@ def _public_service_check(check: dict, now: datetime) -> dict:
     if (check.get("skipped") is True and result["checkedAt"] and result["state"] == "unknown"
             and reason in ("probe_target_unconfirmed", "probe_target_mismatch")):
         return {**result, "target": "", "skipped": True, "reason": reason}
-    icmp = result["method"] in ("ICMP", "ICMP адреса из инвентаря")
+    icmp = result["method"] in ("ICMP", "ICMP адреса из инвентаря", "ICMP · LLDP + ARP")
     if icmp:
+        identity_at = check.get("identityCheckedAt")
+        if result["method"] == "ICMP · LLDP + ARP":
+            if observation_is_fresh(identity_at, now):
+                result["identityCheckedAt"] = _time(identity_at).isoformat()
+            else:
+                result.update(state="unknown", stale=True)
         round_trip = check.get("roundTripMs")
         if type(round_trip) in (int, float) and 0 <= round_trip <= 3000:
             result["roundTripMs"] = round_trip

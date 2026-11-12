@@ -757,6 +757,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         ].filter(Boolean).map(value => ' · ' + value).join('');
         const source = check.source ? ' · ' + check.source : '';
         const time = check.checkedAt ? ' · ' + formatTime(check.checkedAt) : '';
+        const identity = check.identityCheckedAt ? ' · Адрес сверён ' + formatTime(check.identityCheckedAt) : '';
         const attempts = check.attempts ? ' · попыток: ' + check.attempts : '';
         const dns = [check.dns?.rcode, check.dns?.transport, check.dns?.addresses?.join(', ')]
           .filter(Boolean).map(value => ' · ' + value).join('');
@@ -775,7 +776,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           (check.smbSigningRequired ? ' · сервер требует подпись' : ' · сервер не требует подпись') : '';
         const scope = check.supplemental ? ' · дополнительная проверка' :
           check.component ? ' · компонент сервиса' : check.required ? ' · проверка доступности' : '';
-        row.append(make('strong', endpoint || 'Проверка'), make('small', result + http + postgresql + smb + (reason ? ' · ' + reason + errorSource : '') + dns + rtt + attempts + gateway + egress + management + scope + source + time + (check.stale ? ' · устарело' : '')));
+        row.append(make('strong', endpoint || 'Проверка'), make('small', result + http + postgresql + smb + (reason ? ' · ' + reason + errorSource : '') + dns + rtt + attempts + gateway + egress + management + scope + source + time + identity + (check.stale ? ' · устарело' : '')));
         list.append(row);
       }
       propertiesSection.append(make('h3', 'Проверки'), list);

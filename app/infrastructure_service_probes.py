@@ -720,13 +720,15 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                    "sip_options": "SIP OPTIONS (UDP)", "icmp": "ICMP"}
         checks = []
         primary = []
+        management_observation = None
+        identity_at = node.get("probeTargetIdentityAt") if node["kind"] == "Коммутатор" else None
         for spec in specs:
             protocol = spec.get("type") if isinstance(spec.get("type"), str) else ""
             method = methods.get(protocol, "")
             supplemental = node["kind"] != "Сервис" or spec.get("supplemental") is True
             component = not supplemental and spec.get("component") is True
             if node["kind"] != "Сервис":
-                method = "ICMP адреса из инвентаря"
+                method = "ICMP · LLDP + ARP" if identity_at else "ICMP адреса из инвентаря"
             port = spec.get("port")
             valid_port = port if type(port) is int and 1 <= port <= 65535 else None
             if skip_reason:
@@ -753,7 +755,7 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 details = _http_probe(spec)
             else:
                 details = {"state": _probe(spec)}
-            if node["kind"] != "Сервис" and protocol == "icmp" and details["state"] == "reachable":
+            if node["kind"] != "Сервис" and protocol == "icmp" and details["state"] == "reachable" and not identity_at:
                 details["reason"] = "icmp_identity_unconfirmed"
             observation = {
                 **details,
@@ -767,12 +769,17 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 ) else None,
                 "checkedAt": datetime.now(timezone.utc).isoformat(),
             }
+            if identity_at and protocol == "icmp" and not skip_reason:
+                observation["identityCheckedAt"] = identity_at
+                if details["state"] == "reachable":
+                    management_observation = {"state": "reachable", "source": "UI_VPN", "method": method,
+                                              "checkedAt": identity_at}
             checks.append(observation)
             if not supplemental and not component and not skip_reason:
                 primary.append(observation)
         node.setdefault("serviceChecks", []).extend(checks)
         if not primary:
-            return node, None
+            return node, management_observation
         results = {check["state"] for check in primary}
         state = "reachable" if "reachable" in results else "unreachable" if results == {"unreachable"} else "unknown"
         method = " + ".join(dict.fromkeys(check["method"] for check in primary if check["method"]))

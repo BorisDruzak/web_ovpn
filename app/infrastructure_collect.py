@@ -818,6 +818,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
     host_ips = {}
     host_macs = {}
     fresh_macs_by_ip = {}
+    asset_ip_checks = bindings.get("asset_ip_checks", {})
     for host in network.get("hosts", []):
         if host.get("ip"):
             host_ips[host["ip"]] = host
@@ -1186,6 +1187,11 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 address, = verified
                 item["properties"].pop("IP заявлен в LLDP", None)
                 item["properties"]["Адрес управления по LLDP"] = address
+                arp = arp_mappings.get(address)
+                if (item["kind"] == NETWORK_KINDS[0] and direct and address == asset_ip_checks.get(neighbor)
+                        and arp and arp[0] == chassis_mac == str(host_ips[address].get("mac") or "").lower()):
+                    item["probeTargetIP"] = address
+                    item["probeTargetIdentityAt"] = min(arp[1], datetime.fromisoformat(row["observed_at"])).isoformat()
                 observation = _host_observation(host_ips[address], now)
                 if observation:
                     item["reachability"] = observation
@@ -1477,7 +1483,6 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
     attachments = [report for report in network.get("attachments", [])
                    if observation_is_fresh(report.get("observed_at"), now)]
     locations = {}
-    asset_ip_checks = bindings.get("asset_ip_checks", {})
     for report in attachments:
         locations.setdefault(report["mac"].lower(), set()).add((report["source_id"], report["port_key"]))
     for report in attachments:

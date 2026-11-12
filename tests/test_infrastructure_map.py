@@ -1737,8 +1737,10 @@ def test_proxmox_management_port_joins_unique_fdb_and_active_bridge(tmp_path):
     assert not any(p["b"] == "enp2s0f0" for link in load() for p in link["portEvidence"])
 
 
-def test_lldp_management_address_requires_matching_inventory_and_host_mac():
+def test_lldp_management_address_requires_matching_inventory_and_host_mac(monkeypatch):
     from app.infrastructure_collect import build_graph
+    from app import infrastructure_service_probes as probes
+    from app.infrastructure_map import _public_service_check
 
     now = datetime.now(timezone.utc)
     at = now.isoformat()
@@ -1752,16 +1754,31 @@ def test_lldp_management_address_requires_matching_inventory_and_host_mac():
         {"source": "local", "local_port_key": "51", "system_name": "Remote", "chassis_id": mac,
          "port_id": "Ge1", "port_id_subtype": "interface_name", "management_addresses": [address], "observed_at": at},
     ]}
-    graph = build_graph(context, network, {}, {}, {}, now)
+    network["arp"] = [{"ip": address, "mac": mac, "last_seen_at": at}]
+    bindings = {"asset_ip_checks": {"remote": address}}
+    graph = build_graph(context, network, {}, {}, bindings, now)
     remote = next(node for node in graph["nodes"] if node["id"] == "remote")
     assert remote["reachability"]["state"] == "reachable"
     assert remote["properties"]["Адрес управления по LLDP"] == address
+    assert remote["probeTargetIP"] == address
+    monkeypatch.setattr(probes, "_icmp_check", lambda ip: {"state": "reachable", "roundTripMs": 0.8})
+    probes.apply_service_probes([remote], {"remote": [{"type": "icmp", "ip": address}]})
+    assert remote["reachability"]["method"] == "ICMP · LLDP + ARP"
+    check = _public_service_check(remote["serviceChecks"][0], datetime.now(timezone.utc))
+    assert check["identityCheckedAt"] == at and check["roundTripMs"] == 0.8
+    raw_check = remote["serviceChecks"][0]
+    stale = _public_service_check({**raw_check, "identityCheckedAt": (now - timedelta(hours=1)).isoformat()},
+                                  datetime.now(timezone.utc))
+    assert stale["state"] == "unknown" and stale["stale"] and "identityCheckedAt" not in stale
+    without_arp = build_graph(context, {**network, "arp": []}, {}, {}, bindings, now)
+    assert "probeTargetIP" not in next(node for node in without_arp["nodes"] if node["id"] == "remote")
     link, = graph["links"]
     assert link["portEvidence"][0]["b"] == "Ge1"
     host["mac"] = "02:00:00:00:00:04"
-    graph = build_graph(context, network, {}, {}, {}, now)
+    graph = build_graph(context, network, {}, {}, bindings, now)
     remote = next(node for node in graph["nodes"] if node["id"] == "remote")
     assert "reachability" not in remote
+    assert "probeTargetIP" not in remote
 
     network["router_neighbors"] = [{"identity": "Remote", "address": address, "mac": host["mac"], "last_seen_at": at}]
     graph = build_graph(context, network, {}, {}, {}, now)
