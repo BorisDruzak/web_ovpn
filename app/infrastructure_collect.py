@@ -29,7 +29,10 @@ from netctl.context import load_context_bytes, load_schema, validate_context
 from netctl.db import list_sources, read_context_snapshot
 from netctl.drivers import legacy_driver_for
 from netctl.snmp.fdb import read_learned_fdb_port
-from netctl.snmp.interfaces import read_bridge_stp_ports, read_interface_link, read_snr_transceivers, read_switch_link_modes
+from netctl.snmp.interfaces import (
+    read_bridge_stp_ports, read_interface_link, read_interface_rx_error_counters,
+    read_snr_transceivers, read_switch_link_modes,
+)
 from netctl.snmp.lacp import read_lacp_members
 from netctl.snmp.stp import read_stp_designated_ports, read_stp_root_path
 from netctl.snmp.transport import SnmpTransport
@@ -453,6 +456,48 @@ async def _check_declared_switch_ports(context: dict, network: dict, pve: dict, 
             pass
 
     await asyncio.gather(*(check(sources[address], wanted) for address, wanted in checks.items()))
+
+
+async def _collect_switch_rx_errors(network: dict, now: datetime) -> None:
+    affected = {(row["source"], row["port_key"], row["collector_run_id"], row["observed_at"]): row["in_errors_delta"]
+                for row in network.get("port_telemetry", []) if type(row.get("in_errors_delta")) is int
+                and row["in_errors_delta"] > 0 and observation_is_fresh(row["observed_at"], now)}
+    if not affected:
+        return
+    ports = network.get("ports", [])
+    latest_runs = {}
+    for row in ports:
+        source, run = row["source"], row.get("collector_run_id")
+        if type(run) is int and run > latest_runs.get(source, 0):
+            latest_runs[source] = run
+    ports = [row for row in ports if row["source"] in latest_runs
+             and row.get("collector_run_id") == latest_runs[row["source"]]]
+    indexes = Counter((row["source"], row.get("if_index")) for row in ports)
+    candidates = {}
+    for row in ports:
+        scope = (row["source"], row["port_key"], row["collector_run_id"], row.get("last_seen_at"))
+        index = row.get("if_index")
+        if (scope in affected and row.get("name") and type(index) is int and 1 <= index <= 2_147_483_647
+                and indexes[(row["source"], index)] == 1 and row.get("oper_status") == "up"
+                and row.get("admin_status") != "down"):
+            candidates.setdefault(row["source"], []).append((affected[scope], row))
+
+    async def read(source, rows):
+        try:
+            async with asyncio.timeout(3), SnmpTransport.from_source(source) as transport:
+                for _, row in sorted(rows, key=lambda pair: -pair[0])[:4]:
+                    try:
+                        counters = await read_interface_rx_error_counters(transport, row["if_index"], row["name"])
+                    except ValueError:
+                        continue
+                    if counters:
+                        row["rxErrorCounters"] = {"checkedAt": datetime.now(timezone.utc).isoformat(), **counters}
+        except (TimeoutError, OSError, ValueError):
+            pass
+
+    await asyncio.gather(*(read(source, candidates[source["name"]]) for source in network.get("sources", [])
+                           if source.get("enabled") and source.get("driver") == "snmp_switch"
+                           and source["name"] in candidates))
 
 
 def _probe_on_link_mac(address: str, mac: str, *, fresh_only: bool = False) -> bool:
@@ -1672,6 +1717,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                     "rxErrors": sample.get("in_errors_delta"), "txErrors": sample.get("out_errors_delta"),
                     "rxDiscards": sample.get("in_discards_delta"), "txDiscards": sample.get("out_discards_delta"),
                 }
+                if raw_port.get("rxErrorCounters"):
+                    port["rxErrorCounters"] = raw_port["rxErrorCounters"]
         if "fdb_entries" in status:
             item["properties"]["Записи MAC-таблицы"] = str(status["fdb_entries"])
     for item in nodes.values():
@@ -3020,6 +3067,7 @@ def main() -> int:
             network["link_modes"], network["transceivers"], network["stp_ports"] = asyncio.run(
                 _collect_switch_port_diagnostics(network, datetime.now(timezone.utc))
             )
+            asyncio.run(_collect_switch_rx_errors(network, datetime.now(timezone.utc)))
             if bindings.get("ipsec_links"):
                 network["ipsec"] = _collect_ipsec_policies(network["sources"], bindings["ipsec_links"])
                 network["ipsec_connectivity"] = _collect_ipsec_connectivity(context, network["sources"], bindings["ipsec_links"])

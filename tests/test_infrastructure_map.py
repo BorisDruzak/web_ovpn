@@ -3683,7 +3683,9 @@ def test_switch_port_telemetry_requires_matching_current_collection(tmp_path):
     network = {"sources": [{"id": 1, "name": "core", "driver": "snmp_switch",
                             "driver_options": {"intent_stable_id": "sw"}}],
                "ports": [{"source": "core", "port_key": "physical:7", "name": "Port7",
-                          "collector_run_id": 11, "oper_status": "up", "last_seen_at": at}],
+                          "collector_run_id": 11, "oper_status": "up", "last_seen_at": at,
+                          "rxErrorCounters": {"checkedAt": at, "ifInErrors": 44, "fcsErrors": 0,
+                                              "alignmentErrors": -1, "unrecognized": 1}}],
                "port_telemetry": [sample]}
     path = tmp_path / "map.json"
 
@@ -3697,16 +3699,52 @@ def test_switch_port_telemetry_requires_matching_current_collection(tmp_path):
     port, audit = read()
     assert port["telemetry"] == {"checkedAt": at, "intervalSeconds": 300,
                                  "rxBps": 250000, "txBps": 0, "rxErrors": 2}
+    assert port["rxErrorCounters"] == {"checkedAt": at, "ifInErrors": 44, "fcsErrors": 0}
     assert audit == {"measuredPorts": 1, "affectedPorts": 1, "ports": [
         {"deviceId": "sw", "deviceName": "Switch", "port": "Port7", "telemetry": port["telemetry"]},
     ]}
     assert read(now + timedelta(minutes=21))[1] == {"measuredPorts": 0, "affectedPorts": 0, "ports": []}
+    assert "rxErrorCounters" not in read(now + timedelta(minutes=6))[0]
     sample["in_errors_delta"] = 0
     assert read()[1] == {"measuredPorts": 1, "affectedPorts": 0, "ports": []}
     sample["in_errors_delta"] = 2
     sample["collector_run_id"] = 10
     assert "telemetry" not in read()[0]
     assert read()[1]["measuredPorts"] == 0
+
+
+def test_rx_error_diagnostics_poll_only_matching_affected_ports(monkeypatch):
+    import asyncio
+    from app import infrastructure_collect as collector
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    ports = [{"source": "core", "port_key": name, "name": name, "if_index": index,
+              "last_seen_at": at, "collector_run_id": 11, "oper_status": "up"}
+             for index, name in enumerate(("ge1", "ge2", "ge3"), 1)]
+    ports.append({**ports[0], "port_key": "physical:1", "collector_run_id": 10})
+    telemetry = [{"source": "core", "port_key": port["port_key"], "collector_run_id": run,
+                  "observed_at": at, "in_errors_delta": count}
+                 for port, run, count in zip(ports, (11, 10, 11), (2, 9, 0))]
+    network = {"sources": [{"name": "core", "enabled": True, "driver": "snmp_switch"}],
+               "ports": ports, "port_telemetry": telemetry}
+
+    class Transport:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+    async def read(transport, index, name):
+        assert (index, name) == (1, "ge1")
+        return {"ifInErrors": 44, "fcsErrors": 0}
+
+    monkeypatch.setattr(collector.SnmpTransport, "from_source", lambda source: Transport())
+    monkeypatch.setattr(collector, "read_interface_rx_error_counters", read)
+    asyncio.run(collector._collect_switch_rx_errors(network, now))
+    assert ports[0]["rxErrorCounters"]["fcsErrors"] == 0
+    assert all("rxErrorCounters" not in port for port in ports[1:])
 
 
 def test_collection_reads_source_registry_without_syncing_config(monkeypatch):

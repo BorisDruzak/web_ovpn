@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from netctl.snmp.interfaces import BRIDGE_STP_PORT_STATES
+from netctl.snmp.interfaces import BRIDGE_STP_PORT_STATES, RX_ERROR_COLUMNS
 
 from .endpoint_context_adapter import get_endpoint_context_adapter
 from .endpoint_platform_client import EndpointPlatformServiceError
@@ -325,6 +325,13 @@ def _public_port(row: dict, now: datetime) -> dict:
         result["proxmoxActive"] = row["proxmoxActive"]
     if telemetry := _public_port_telemetry(row.get("telemetry"), result, now):
         result["telemetry"] = telemetry
+        counters = row.get("rxErrorCounters")
+        if (telemetry.get("rxErrors", 0) > 0 and isinstance(counters, dict)
+                and observation_is_fresh(counters.get("checkedAt"), now, max_age=PORT_LINK_CHECK_MAX_AGE)):
+            readings = {key: value for key in RX_ERROR_COLUMNS
+                        if type(value := counters.get(key)) is int and 0 <= value < 2**32}
+            if "ifInErrors" in readings and len(readings) > 1:
+                result["rxErrorCounters"] = {"checkedAt": _time(counters["checkedAt"]).isoformat(), **readings}
     if memberships := _public_port_vlans(row.get("vlanMemberships"), result):
         result["vlanMemberships"] = memberships
     if fdb_vlans := _public_port_fdb_vlans(row.get("fdbVlans"), result):

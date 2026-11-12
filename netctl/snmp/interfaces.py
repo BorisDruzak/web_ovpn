@@ -12,6 +12,7 @@ from .oids import (
     IF_ALIAS,
     IF_DESCR,
     IF_HIGH_SPEED,
+    IF_IN_ERRORS,
     IF_INDEX,
     IF_NAME,
     IF_OPER_STATUS,
@@ -35,6 +36,15 @@ _INTERFACE_COLUMNS = (
 _SNR_MODULE_ENTRY = (1, 3, 6, 1, 4, 1, 57206, 7, 100, 30, 3, 1)
 _SNR_SPEED_DUPLEX = (1, 3, 6, 1, 4, 1, 57206, 7, 100, 3, 2, 1, 14)
 _DOT3_STATS_DUPLEX = (1, 3, 6, 1, 2, 1, 10, 7, 2, 1, 19)
+_DOT3_STATS_ENTRY = _DOT3_STATS_DUPLEX[:-1]
+RX_ERROR_COLUMNS = {
+    "ifInErrors": IF_IN_ERRORS,
+    "fcsErrors": (*_DOT3_STATS_ENTRY, 3),
+    "alignmentErrors": (*_DOT3_STATS_ENTRY, 2),
+    "frameTooLongs": (*_DOT3_STATS_ENTRY, 13),
+    "internalMacRxErrors": (*_DOT3_STATS_ENTRY, 16),
+    "symbolErrors": (*_DOT3_STATS_ENTRY, 18),
+}
 BRIDGE_STP_PORT_STATES = {1: "disabled", 2: "blocking", 3: "listening", 4: "learning", 5: "forwarding", 6: "broken"}
 
 
@@ -140,14 +150,30 @@ async def read_snr_transceivers(transport) -> dict[int, dict]:
     return modules
 
 
+async def _interface_scalar(transport, column, if_index):
+    oid = (*column, if_index)
+    result = await transport.get(oid)
+    if (result.outcome is SnmpOutcome.SUCCESS_WITH_ROWS and len(result.rows) == 1
+            and result.rows[0].oid == oid):
+        return result.rows[0]
+    return None
+
+
+async def read_interface_rx_error_counters(transport, if_index: int, expected_name: str) -> dict:
+    name = await _interface_scalar(transport, IF_NAME, if_index)
+    if name is None or _text(name, "ifName").strip().casefold() != expected_name.strip().casefold():
+        return {}
+    counters = {}
+    for field, column in RX_ERROR_COLUMNS.items():
+        row = await _interface_scalar(transport, column, if_index)
+        if row and row.value_type == "counter32" and type(row.value) is int and 0 <= row.value < 2**32:
+            counters[field] = row.value
+    return counters if len(counters) > 1 and "ifInErrors" in counters else {}
+
+
 async def read_interface_link(transport, if_index: int, expected_name: str) -> dict:
     async def scalar(column):
-        oid = (*column, if_index)
-        result = await transport.get(oid)
-        if (result.outcome is SnmpOutcome.SUCCESS_WITH_ROWS and len(result.rows) == 1
-                and result.rows[0].oid == oid):
-            return result.rows[0]
-        return None
+        return await _interface_scalar(transport, column, if_index)
 
     name = await scalar(IF_NAME)
     if name is None or _text(name, "ifName").strip().casefold() != expected_name.strip().casefold():

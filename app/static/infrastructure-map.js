@@ -1102,6 +1102,14 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
             if (text) row.append(make('small', text));
           }
         }
+        if (selectedPort && port.rxErrorCounters) {
+          const labels = {ifInErrors:'Всего RX', fcsErrors:'FCS', alignmentErrors:'Выравнивание',
+            frameTooLongs:'Длинные кадры', internalMacRxErrors:'Внутренние ошибки MAC', symbolErrors:'Ошибки символов'};
+          const counts = Object.entries(labels).filter(([key]) => key in port.rxErrorCounters)
+            .map(([key, label]) => `${label} ${port.rxErrorCounters[key].toLocaleString('ru-RU')}`);
+          row.append(make('small', 'Накопленные счётчики SNMP · ' + formatTime(port.rxErrorCounters.checkedAt)),
+            make('small', counts.join(' · ')));
+        }
         list.append(row);
       }
       const up = node.ports.filter(port => proxmox ? port.proxmoxActive : port.state === 'up').length;
