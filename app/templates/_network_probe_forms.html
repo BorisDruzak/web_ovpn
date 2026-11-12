@@ -21,6 +21,27 @@
   <p>Точки замера пока не настроены.</p>
   {% endif %}
 </section>
+{% if probe_profiles.https_speed %}
+<section class="card">
+  <h2>Скорость интернета по HTTPS</h2>
+  <form method="post" action="/network/diagnostics/checks">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <input type="hidden" name="check" value="https_speed">
+    <label for="https-speed-profile">Точка замера</label>
+    <select id="https-speed-profile" name="profile" required>
+      {% for profile in probe_profiles.https_speed %}
+      <option value="{{ profile.id }}">{{ profile.label }}</option>
+      {% endfor %}
+    </select>
+    <label for="https-speed-direction">Направление</label>
+    <select id="https-speed-direction" name="direction">
+      <option value="receive">Загрузка на VPN-сервер</option>
+      <option value="send">Отправка с VPN-сервера</option>
+    </select>
+    <button class="button" type="submit">Запустить HTTPS-замер</button>
+  </form>
+</section>
+{% endif %}
 <section class="card">
   <h2>Захват PCAP для Wireshark</h2>
   {% if probe_profiles.capture %}

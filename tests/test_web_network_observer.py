@@ -2468,6 +2468,54 @@ def test_route_availability_exposes_linux_neighbor_in_api_and_ui(tmp_path, monke
     assert "ARP 192.0.2.1 · разрешение не удалось" in page.text
 
 
+def test_https_speed_uses_profile_and_records_result_in_api_and_ui(tmp_path, monkeypatch):
+    client, headers = make_client(tmp_path, monkeypatch)
+    from app import network_checks, network_probe_profiles
+
+    peer = "162.159.140.220"
+    profiles = network_probe_profiles.ProbeProfiles.model_validate({
+        "https_speed": {"internet": {
+            "label": "Internet", "peer": peer,
+            "download_bytes": 1_000_000, "upload_bytes": 500_000,
+        }},
+    })
+    monkeypatch.setattr(network_probe_profiles, "load_probe_profiles", lambda: profiles)
+    monkeypatch.setattr(network_checks, "load_probe_profiles", lambda: profiles)
+    monkeypatch.setattr(network_checks, "lookup_linux_route", lambda *args, **kwargs: {
+        "status": "route_found", "result": {"dev": "eth0", "gateway": "192.0.2.1"},
+    })
+    calls = []
+
+    def measure(address, direction, size):
+        calls.append((address, direction, size))
+        return {"status": "measured", "result": {
+            "mbps": 8.0, "duration_seconds": 1.0, "transferred_bytes": size,
+        }}
+
+    monkeypatch.setattr(network_checks, "run_https_speed", measure)
+    base = "/api/v1/network/diagnostics"
+    endpoint = base + "/checks"
+    payload = {"check": "https_speed", "profile": "internet", "direction": "receive"}
+    catalog = client.get(endpoint, headers=headers).json()["data"]["profiles"]
+    assert catalog["https_speed"][0]["id"] == "internet"
+    assert client.post(endpoint, headers=headers, json={**payload, "url": "https://example.org"}).status_code == 422
+    result = client.post(endpoint, headers=headers, json=payload).json()["data"]
+    assert result["status"] == "measured"
+    assert result["result"]["kernel_route"]["result"]["dev"] == "eth0"
+    assert client.post(endpoint, headers=headers, json=payload).json()["data"]["status"] == "rate_limited"
+    runs = client.get(base + "/runs", headers=headers).json()["data"]["runs"]
+    measured = next(row for row in runs if row["status"] == "measured")
+    assert measured["target"] == "internet · receive"
+    assert measured["result"]["mbps"] == 8.0
+    csrf = login(client)
+    page = client.post("/network/diagnostics/checks", data={
+        "csrf_token": csrf, **payload, "direction": "send",
+    })
+    assert page.status_code == 200
+    assert "Запустить HTTPS-замер" in page.text and "8.00 Мбит/с" in page.text
+    assert calls == [(peer, "receive", 1_000_000), (peer, "send", 500_000)]
+
+
 def test_network_probe_catalog_run_and_download_permissions(tmp_path, monkeypatch):
     client, headers = make_client(tmp_path, monkeypatch)
     from app import network_capture_store, network_checks, network_probe_profiles

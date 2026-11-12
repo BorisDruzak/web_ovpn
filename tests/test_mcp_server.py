@@ -23,6 +23,7 @@ def test_route_availability_mcp_uses_existing_http_check_and_history(monkeypatch
     ]
     schema = server.TOOLS["openvpn_network_run_check"]["inputSchema"]
     assert "route_availability" in schema["properties"]["check"]["enum"]
+    assert "https_speed" in schema["properties"]["check"]["enum"]
 
 
 def test_complete_workflow_reference_and_tool_help_use_original_job():

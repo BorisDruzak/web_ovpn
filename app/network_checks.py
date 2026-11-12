@@ -18,6 +18,7 @@ from .audit import write_audit
 from .models import WebAuditLog
 from .network_actions import acquire_network_action
 from .network_capture_store import create_capture
+from .network_https_speed import SPEED_HOST, run_https_speed
 from .network_probe_profiles import ProfileId, load_probe_profiles
 from .network_route_history import persist_route_run
 from .network_route_matrix import run_route_matrix
@@ -39,6 +40,7 @@ CHECKS = (
     {"check": "trace_route", "title": "Трассировка до наблюдаемого узла", "active": True},
     {"check": "source_test", "title": "Связь с источником Network Observer", "active": True},
     {"check": "iperf3", "title": "Замер пропускной способности iperf3", "active": True},
+    {"check": "https_speed", "title": "Скорость интернета по HTTPS", "active": True},
     {"check": "pcap_capture", "title": "Захват PCAP для Wireshark", "active": True},
     {"check": "loop_check", "title": "Признаки L2-петель", "active": False},
 )
@@ -85,6 +87,12 @@ class IperfCheck(CheckInput):
     direction: Literal["send", "receive"] = "send"
 
 
+class HttpsSpeedCheck(CheckInput):
+    check: Literal["https_speed"]
+    profile: ProfileId
+    direction: Literal["send", "receive"] = "receive"
+
+
 class CaptureCheck(CheckInput):
     check: Literal["pcap_capture"]
     profile: ProfileId
@@ -102,7 +110,7 @@ class RouteAvailabilityCheck(CheckInput):
 
 NetworkCheck = Annotated[
     LinuxRouteCheck | AssetRouteCheck | SourceTestCheck | TraceRouteCheck | IperfCheck | CaptureCheck | LoopCheck
-    | RouteAvailabilityCheck,
+    | RouteAvailabilityCheck | HttpsSpeedCheck,
     Field(discriminator="check"),
 ]
 NETWORK_CHECK_INPUT = TypeAdapter(NetworkCheck)
@@ -324,10 +332,31 @@ def _capture_check(check: CaptureCheck, owner: str | None) -> dict:
     return create_capture(owner, profile)
 
 
+def _https_speed_check(check: HttpsSpeedCheck) -> dict:
+    profile = load_probe_profiles().https_speed.get(check.profile)
+    if profile is None:
+        return {"status": "not_found", "result": {}}
+    if not _throughput_lock.acquire(blocking=False):
+        return {"status": "busy", "result": {}}
+    try:
+        route = lookup_linux_route(ipaddress.IPv4Address(profile.peer), tcp_port=profile.port)
+        result = {
+            "label": profile.label, "point": "vpn_server", "host": SPEED_HOST, "peer": profile.peer,
+            "direction": check.direction, "kernel_route": route,
+        }
+        if route["status"] != "route_found":
+            return {"status": route["status"], "result": result}
+        size = profile.upload_bytes if check.direction == "send" else profile.download_bytes
+        reading = run_https_speed(profile.peer, check.direction, size)
+        return {"status": reading["status"], "result": {**result, **reading["result"]}}
+    finally:
+        _throughput_lock.release()
+
+
 def execute_network_check(check: NetworkCheck, *, allowed: bool = True, capture_owner: str | None = None) -> dict:
     if isinstance(check, SourceTestCheck):
         target = check.source
-    elif isinstance(check, IperfCheck):
+    elif isinstance(check, (IperfCheck, HttpsSpeedCheck)):
         target = f"{check.profile} · {check.direction}"
     elif isinstance(check, (CaptureCheck, RouteAvailabilityCheck)):
         target = check.profile
@@ -347,6 +376,8 @@ def execute_network_check(check: NetworkCheck, *, allowed: bool = True, capture_
         evidence = trace_linux_route(check.destination)
     elif isinstance(check, IperfCheck):
         evidence = _iperf_check(check)
+    elif isinstance(check, HttpsSpeedCheck):
+        evidence = _https_speed_check(check)
     elif isinstance(check, CaptureCheck):
         evidence = _capture_check(check, capture_owner)
     elif isinstance(check, LoopCheck):
@@ -361,16 +392,22 @@ def execute_network_check(check: NetworkCheck, *, allowed: bool = True, capture_
 
 def run_audited_network_check(db: Session, request: Request, actor: str, check: NetworkCheck) -> dict:
     action = AUDIT_PREFIX + check.check
-    active = isinstance(check, (SourceTestCheck, TraceRouteCheck, IperfCheck, CaptureCheck, RouteAvailabilityCheck))
+    active = isinstance(check, (SourceTestCheck, TraceRouteCheck, IperfCheck, HttpsSpeedCheck, CaptureCheck, RouteAvailabilityCheck))
     owner = ("service:" if request.url.path.startswith("/api/v1/") else "user:") + actor
-    throttle_action = f"{action}:{check.profile}:{check.direction}" if isinstance(check, IperfCheck) else action
+    throttle_action = f"{action}:{check.profile}:{check.direction}" if isinstance(check, (IperfCheck, HttpsSpeedCheck)) else action
     if isinstance(check, RouteAvailabilityCheck):
         throttle_action = f"{action}:{check.profile}"
     allowed = not active or acquire_network_action(db, owner, throttle_action, datetime.now(UTC)).accepted
     result = execute_network_check(check, allowed=allowed, capture_owner=owner)
     if isinstance(check, RouteAvailabilityCheck) and result["result"].get("probes"):
         persist_route_run(db, owner=owner, result=result)
-    write_audit(db, request, actor, action, result["status"], result["target"])
+    message = result["target"]
+    if isinstance(check, HttpsSpeedCheck) and result["status"] == "measured":
+        message = json.dumps({
+            "target": result["target"],
+            "result": {key: result["result"][key] for key in ("mbps", "transferred_bytes", "duration_seconds")},
+        }, ensure_ascii=False)
+    write_audit(db, request, actor, action, result["status"], message)
     return result
 
 
@@ -386,10 +423,21 @@ def list_network_check_runs(db: Session, actor: str, limit: int) -> list[dict]:
         .order_by(WebAuditLog.ts.desc(), WebAuditLog.id.desc())
         .limit(limit)
     )
-    return [{
-        "check": row.action.removeprefix(AUDIT_PREFIX),
-        "status": row.result,
-        "target": row.message,
-        "checked_at": row.ts.replace(tzinfo=row.ts.tzinfo or UTC).isoformat(),
-        "request_id": row.request_id,
-    } for row in rows]
+    runs = []
+    for row in rows:
+        check = row.action.removeprefix(AUDIT_PREFIX)
+        run = {
+            "check": check,
+            "status": row.result,
+            "target": row.message,
+            "checked_at": row.ts.replace(tzinfo=row.ts.tzinfo or UTC).isoformat(),
+            "request_id": row.request_id,
+        }
+        if check == "https_speed" and row.result == "measured":
+            try:
+                details = json.loads(row.message)
+                run.update(target=details["target"], result=details["result"])
+            except (TypeError, ValueError, KeyError):
+                pass
+        runs.append(run)
+    return runs

@@ -224,9 +224,9 @@ TOOLS: dict[str, dict[str, Any]] = {
         {"profile": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}},
     ),
     "openvpn_network_run_check": tool_schema(
-        "Run a registered network check. route_availability compares configured paths in a catalog profile. iperf3 and pcap_capture also use profiles. iperf3 accepts send/receive. loop_check optionally takes a switch source.",
+        "Run a registered network check. route_availability compares configured paths in a catalog profile. iperf3, https_speed and pcap_capture also use profiles. iperf3 and https_speed accept send/receive. loop_check optionally takes a switch source.",
         {
-            "check": {"type": "string", "enum": ["linux_route", "asset_route", "trace_route", "source_test", "iperf3", "pcap_capture", "loop_check", "route_availability"]},
+            "check": {"type": "string", "enum": ["linux_route", "asset_route", "trace_route", "source_test", "iperf3", "https_speed", "pcap_capture", "loop_check", "route_availability"]},
             "destination": {"type": "string", "description": "Destination IPv4 or IPv6 address"},
             "asset_key": {"type": "string"},
             "protocol": {"type": "string", "enum": ["tcp", "udp", "icmp"]},

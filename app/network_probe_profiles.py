@@ -11,6 +11,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, field_validator, model_validator
 
+from .network_https_speed import MAX_DOWNLOAD_BYTES, MAX_UPLOAD_BYTES, MIN_BYTES, validate_speed_peer
 from .network_throughput import validate_throughput_profile
 
 PROFILE_PATH = Path("/etc/openvpn-web/network-probes.json")
@@ -52,6 +53,17 @@ class ThroughputProfile(ProbeProfile):
                 bind_interface=self.bind_interface,
             )
         return self
+
+
+class HttpsSpeedProfile(ProbeProfile):
+    port: Literal[443] = 443
+    download_bytes: int = Field(ge=MIN_BYTES, le=MAX_DOWNLOAD_BYTES)
+    upload_bytes: int = Field(ge=MIN_BYTES, le=MAX_UPLOAD_BYTES)
+
+    @field_validator("peer")
+    @classmethod
+    def peer_is_public_ipv4(cls, value: str) -> str:
+        return validate_speed_peer(value)
 
 
 class CaptureProfile(ProbeProfile):
@@ -176,6 +188,7 @@ class ProbeProfiles(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     throughput: dict[ProfileId, ThroughputProfile] = Field(default_factory=dict, max_length=32)
+    https_speed: dict[ProfileId, HttpsSpeedProfile] = Field(default_factory=dict, max_length=8)
     capture: dict[ProfileId, CaptureProfile] = Field(default_factory=dict, max_length=32)
     routes: dict[ProfileId, RouteProfile] = Field(default_factory=dict, max_length=16)
 
@@ -215,6 +228,7 @@ def probe_catalog() -> dict:
     profiles = load_probe_profiles()
     return {
         "throughput": [{"id": key, **profile.model_dump(exclude_none=True)} for key, profile in profiles.throughput.items()],
+        "https_speed": [{"id": key, **profile.model_dump()} for key, profile in profiles.https_speed.items()],
         "capture": [{"id": key, **profile.model_dump()} for key, profile in profiles.capture.items()],
         "routes": [
             {"id": key, **profile.model_dump(exclude_none=True, exclude={"probes": {"__all__": {"tls_ca_file"}}})}

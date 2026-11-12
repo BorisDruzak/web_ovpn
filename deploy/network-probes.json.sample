@@ -10,6 +10,14 @@
       "bind_interface": "ens18"
     }
   },
+  "https_speed": {
+    "internet-default": {
+      "label": "Cloudflare через маршрут VPN-сервера",
+      "peer": "162.159.140.220",
+      "download_bytes": 10000000,
+      "upload_bytes": 5000000
+    }
+  },
   "routes": {
     "wan-comparison": {
       "label": "Основной и резервный WAN",
