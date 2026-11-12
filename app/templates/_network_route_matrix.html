@@ -26,6 +26,14 @@
           {% if row.kernel_route and row.kernel_route.status == 'route_found' %}
           <br>Выбор ядра {{ [row.kernel_route.result.dev, row.kernel_route.result.gateway] | select | join(' · ') }}
           {% endif %}
+          {% if row.ipsec %}
+          <br>IPsec {{ {'established': 'установлен', 'inactive': 'не активен', 'no_matching_policy': 'политика не найдена', 'ambiguous_policy': 'несколько политик'}.get(row.ipsec.status, 'нет данных') }}
+          {% if row.ipsec.peer_sa_counters %}
+            {% for direction, counter in row.ipsec.peer_sa_counters.items() %}
+            <br>{{ 'Исходящие' if direction == 'outgoing' else 'Входящие' }} SA {{ counter.associations }}{% if counter.bytes is not none %} · {{ counter.bytes }} Б{% endif %}
+            {% endfor %}
+          {% endif %}
+          {% endif %}
         </td>
       </tr>
       {% endfor %}

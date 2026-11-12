@@ -34,6 +34,7 @@ ROUTE_STATUSES = (
     "not_run",
 )
 PROBE_REASONS = {
+    "tls_ca_unavailable",
     "invalid_configuration",
     "probe_unavailable",
     "source_unavailable",

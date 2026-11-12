@@ -363,6 +363,101 @@ def test_tls_distinguishes_certificate_verification_failure(monkeypatch, routed)
     assert "sensitive" not in str(result)
 
 
+@pytest.mark.parametrize("protocol", ["tls", "https"])
+@pytest.mark.parametrize("custom_ca", [False, True])
+def test_tls_preserves_certificate_and_hostname_validation_with_optional_ca(
+    monkeypatch, routed, tmp_path, protocol, custom_ca
+):
+    class Tls(_Connection):
+        def version(self):
+            return "TLSv1.3"
+
+        def getpeercert(self):
+            return {}
+
+        def sendall(self, data):
+            assert data.startswith(b"GET / HTTP/1.1\r\n")
+
+        def recv(self, size):
+            return b"HTTP/1.1 200 OK\r\n"
+
+    ca_file = tmp_path / "internal-ca.pem"
+    ca_file.touch()
+    context = ssl.create_default_context()
+
+    def trust(**kwargs):
+        assert kwargs == ({"cafile": str(ca_file)} if custom_ca else {})
+        return context
+
+    def wrap(actual_context, connection, *, server_hostname):
+        assert actual_context is context
+        assert context.check_hostname and context.verify_mode == ssl.CERT_REQUIRED
+        assert server_hostname == "service.test"
+        return Tls()
+
+    monkeypatch.setattr(ssl, "create_default_context", trust)
+    monkeypatch.setattr(ssl.SSLContext, "wrap_socket", wrap)
+    monkeypatch.setattr(
+        socket, "create_connection", lambda *args, **kwargs: _Connection()
+    )
+    result = probe_local_route(
+        target=TARGET,
+        protocol=protocol,
+        server_name="service.test",
+        **({"tls_ca_file": str(ca_file)} if custom_ca else {}),
+    )
+
+    assert result["status"] == "reachable"
+    assert result["evidence"]["tls_version"] == "TLSv1.3"
+    assert str(ca_file) not in str(result)
+
+
+@pytest.mark.parametrize("kind", ["missing", "directory", "invalid", "unreadable"])
+def test_tls_reports_unusable_ca_as_setup_failure(monkeypatch, routed, tmp_path, kind):
+    ca_file = tmp_path / "private-ca.pem"
+    if kind == "directory":
+        ca_file.mkdir()
+    elif kind in ("invalid", "unreadable"):
+        ca_file.write_text("not a certificate")
+    if kind == "unreadable":
+
+        def trust(*, cafile):
+            raise PermissionError(cafile)
+
+        monkeypatch.setattr(ssl, "create_default_context", trust)
+    monkeypatch.setattr(
+        socket, "create_connection", lambda *args, **kw: pytest.fail("unexpected probe")
+    )
+
+    result = probe_local_route(
+        target=TARGET,
+        protocol="tls",
+        server_name="service.test",
+        tls_ca_file=str(ca_file),
+    )
+
+    assert result["status"] == "unavailable"
+    assert result["evidence"]["reason"] == "tls_ca_unavailable"
+    assert "private-ca" not in str(result)
+
+
+@pytest.mark.parametrize(
+    "protocol, absolute", [("tls", False), ("http", True), ("icmp", True)]
+)
+def test_ca_path_must_be_absolute_and_used_with_tls(
+    monkeypatch, tmp_path, protocol, absolute
+):
+    monkeypatch.setattr(
+        subprocess, "run", lambda *args, **kw: pytest.fail("unexpected route lookup")
+    )
+    ca_file = str(tmp_path / "ca.pem") if absolute else "relative/ca.pem"
+
+    result = probe_local_route(target=TARGET, protocol=protocol, tls_ca_file=ca_file)
+
+    assert result["status"] == "unavailable"
+    assert result["evidence"]["reason"] == "invalid_configuration"
+
+
 @pytest.mark.parametrize(
     "expectation, answers, rcode, status, reason",
     [

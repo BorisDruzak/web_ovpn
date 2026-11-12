@@ -68,9 +68,11 @@ class RouteProbe(BaseModel):
     interface: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}$")
     routing_table: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}$")
     expected_first_hop: str | None = None
+    ipsec: bool = False
     mtu: int | None = Field(default=None, ge=68, le=9000)
     port: int | None = Field(default=None, ge=1, le=65535)
     server_name: str | None = Field(default=None, max_length=253, pattern=r"^[A-Za-z0-9][A-Za-z0-9.-]*$")
+    tls_ca_file: str | None = Field(default=None, max_length=255, pattern=r"^/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$")
     http_path: str | None = Field(default=None, max_length=160, pattern=r"^/(?:[A-Za-z0-9._-][A-Za-z0-9._/-]*)?$")
     expected_http_status: int | None = Field(default=None, ge=200, le=599)
     dns_name: str | None = Field(default=None, max_length=253, pattern=r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
@@ -99,6 +101,8 @@ class RouteProbe(BaseModel):
             raise ValueError("interface and table selectors require RouterOS")
         if self.expected_first_hop and (not self.router_source or self.expected_first_hop == self.target):
             raise ValueError("a distinct first hop requires a RouterOS probe")
+        if self.ipsec and not (self.router_source and self.source_address):
+            raise ValueError("IPsec evidence requires a router and explicit source address")
         if self.protocol == "icmp" and self.port is not None or self.mtu is not None and self.protocol != "icmp":
             raise ValueError("ICMP accepts MTU instead of a port")
         if self.protocol == "tcp" and self.port is None:
@@ -107,6 +111,8 @@ class RouteProbe(BaseModel):
             raise ValueError("server name requires HTTP or TLS")
         if self.protocol == "https" and not self.server_name:
             raise ValueError("HTTPS requires a server name")
+        if self.tls_ca_file and self.protocol not in {"tls", "https"}:
+            raise ValueError("a CA file requires TLS")
         if (self.http_path is not None or self.expected_http_status is not None) and self.protocol not in {"http", "https"}:
             raise ValueError("HTTP parameters require HTTP or HTTPS")
         if self.protocol == "dns" and not self.dns_name:
@@ -121,6 +127,7 @@ class RouteProbe(BaseModel):
             "target": self.target, "protocol": self.protocol, "source_address": self.source_address,
             "port": self.port or {"http": 80, "https": 443, "tls": 443, "dns": 53}.get(self.protocol),
             "server_name": self.server_name,
+            "tls_ca_file": self.tls_ca_file,
             "http_path": (self.http_path or "/") if is_http else None,
             "expected_http_status": (self.expected_http_status or 200) if is_http else None,
             "dns_name": self.dns_name, "dns_type": (self.dns_type or "A") if self.protocol == "dns" else None,
@@ -189,5 +196,8 @@ def probe_catalog() -> dict:
     return {
         "throughput": [{"id": key, **profile.model_dump()} for key, profile in profiles.throughput.items()],
         "capture": [{"id": key, **profile.model_dump()} for key, profile in profiles.capture.items()],
-        "routes": [{"id": key, **profile.model_dump(exclude_none=True)} for key, profile in profiles.routes.items()],
+        "routes": [
+            {"id": key, **profile.model_dump(exclude_none=True, exclude={"probes": {"__all__": {"tls_ca_file"}}})}
+            for key, profile in profiles.routes.items()
+        ],
     }

@@ -201,12 +201,23 @@ def _tcp(
     source_address: str | None,
     protocol: str,
     server_name: str | None,
+    tls_ca_file: str | None,
     path: str,
     expected_status: int,
     evidence: dict,
 ) -> str:
     deadline = monotonic() + PROBE_TIMEOUT
-    context = ssl.create_default_context() if protocol in ("tls", "https") else None
+    context = None
+    if tls_ca_file is not None:
+        try:
+            if not os.path.isfile(tls_ca_file):
+                raise FileNotFoundError
+            context = ssl.create_default_context(cafile=tls_ca_file)
+        except (OSError, ValueError):
+            evidence["reason"] = "tls_ca_unavailable"
+            return "unavailable"
+    elif protocol in ("tls", "https"):
+        context = ssl.create_default_context()
     source = (source_address, 0) if source_address is not None else None
     name = server_name or target
     with socket.create_connection(
@@ -340,6 +351,7 @@ def probe_local_route(
     source_address: str | None = None,
     port: int | None = None,
     server_name: str | None = None,
+    tls_ca_file: str | None = None,
     http_path: str | None = None,
     expected_http_status: int | None = None,
     dns_name: str | None = None,
@@ -372,6 +384,13 @@ def probe_local_route(
             raise ValueError("Invalid server name")
         if protocol == "https" and server_name is None:
             raise ValueError("Missing HTTPS server name")
+        if tls_ca_file is not None and (
+            protocol not in ("tls", "https")
+            or not isinstance(tls_ca_file, str)
+            or not os.path.isabs(tls_ca_file)
+            or "\0" in tls_ca_file
+        ):
+            raise ValueError("Invalid TLS CA file")
         if http_path is not None or expected_http_status is not None:
             if protocol not in ("http", "https"):
                 raise ValueError("HTTP parameters require HTTP or HTTPS")
@@ -411,6 +430,7 @@ def probe_local_route(
                 source_address,
                 protocol,
                 server_name,
+                tls_ca_file,
                 http_path or "/",
                 expected_http_status or 200,
                 evidence,

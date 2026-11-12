@@ -97,3 +97,34 @@ def test_cli_reads_router_from_sqlite_and_rejects_changed_profile(tmp_path, monk
     code, payload = cli.dispatch(parser.parse_args([*args, f"--expected-config={digest}"]))
     assert code == 0 and payload["probe"]["status"] == "reachable"
     assert calls == [["/ping", "=address=192.0.2.20", "=count=3", "=interval=1s", "=interface=wan1", "=routing-table=isp1"]]
+
+
+def test_ipsec_policy_and_peer_sa_bytes_are_independent_of_echo_reply(monkeypatch):
+    from app import network_route_matrix
+
+    profile = network_probe_profiles.RouteProfile.model_validate({"label": "Archive", "probes": [{
+        "id": "to-archive", "expected_path": "Tunnel", "target": "192.0.2.20", "protocol": "icmp",
+        "router_source": "mikrotik-main", "source_address": "198.51.100.10", "ipsec": True,
+    }]})
+
+    def netctl(args, **kwargs):
+        if args[:2] == ["path", "probe"]:
+            return {"probe": {"status": "unreachable", "evidence": {"received": 0}}}
+        assert args == ["ipsec", "status", "--source=mikrotik-main"]
+        return {"sources": [{"source": "mikrotik-main", "status": "ok", "errors": [], "policies": [{
+            "src_address": "198.51.100.0/24", "dst_address": "192.0.2.0/24", "action": "encrypt",
+            "disabled": False, "established": True, "ph2_count": 1,
+            "sa_src_address": "203.0.113.1", "sa_dst_address": "203.0.113.2",
+        }], "installed_sas": [
+            {"src_address": "203.0.113.1", "dst_address": "203.0.113.2", "state": "mature", "current_bytes": 42},
+            {"src_address": "203.0.113.2", "dst_address": "203.0.113.1", "state": "mature", "current_bytes": 10},
+            {"src_address": "203.0.113.3", "dst_address": "203.0.113.1", "state": "mature", "current_bytes": 70},
+        ]}]}
+
+    monkeypatch.setattr(network_route_matrix, "run_netctl", netctl)
+    row = network_route_matrix.run_route_matrix("archive", profile)["result"]["probes"][0]
+    assert row["status"] == "unreachable" and row["observed_path"] is None
+    assert row["ipsec"]["status"] == "established"
+    assert row["ipsec"]["peer_sa_counters"] == {
+        "outgoing": {"associations": 1, "bytes": 42}, "incoming": {"associations": 1, "bytes": 10},
+    }
