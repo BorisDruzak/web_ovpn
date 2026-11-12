@@ -1572,9 +1572,10 @@ def test_lldp_neighbor_count_on_ports_and_declared_links_uses_current_poll(tmp_p
               "oper_status": "up", "last_seen_at": stamp, "collector_run_id": 7} for key in ("a", "b")]
     neighbor = {"source": "a", "local_port_key": "ifindex:1", "observed_at": stamp, "collector_run_id": 7,
                 "chassis_id": "00:11:22:33:44:55", "port_id": "eth0", "system_name": "Phone",
+                "port_id_subtype": "interface_name",
                 "management_addresses": ["192.0.2.90"], "system_description": "private"}
     lldp = [neighbor, neighbor.copy(), {**neighbor, "port_id": "eth1"},
-            {**neighbor, "chassis_id": "00:11:22:33:44:66"},
+            {**neighbor, "chassis_id": "00:11:22:33:44:66", "port_id_subtype": "private"},
             {**neighbor, "port_id": "eth2", "collector_run_id": 6},
             {**neighbor, "port_id": "eth3", "observed_at": (now - timedelta(minutes=1)).isoformat()}]
     hosts = [{"ip": "192.0.2.66", "mac": "00:11:22:33:44:66", "hostname": "workstation", "last_seen_at": stamp},
@@ -1597,12 +1598,13 @@ def test_lldp_neighbor_count_on_ports_and_declared_links_uses_current_poll(tmp_p
     details = nodes["a"]["ports"][0]["lldpNeighbors"]
     assert [row["portId"] for row in details] == ["eth0", "eth1", "eth0"]
     assert details[0] == {"chassisId": "00:11:22:33:44:55", "portId": "eth0", "systemName": "Phone",
-                          "inventoryDeviceId": "b"}
+                          "inventoryDeviceId": "b", "portIdSubtype": "interface_name"}
     assert details[2]["hostName"] == "workstation"
     assert "inventoryDeviceId" not in details[2]
     assert "private" not in json.dumps(details) and "192.0.2.90" not in json.dumps(details)
     pending, = summarize_topology(public)["topologyAudit"]["pending"]
     assert pending["lldpObservations"] == {"a": {"checkedAt": stamp, "neighbors": details}}
+    assert pending["missingPortSides"] == [] and pending["identifiedPeerSides"] == ["a"]
     aged = load_infrastructure_map(path, now + timedelta(hours=1))
     assert all(not {"lldpNeighborCount", "lldpChassisCount", "lldpNeighbors"} & port.keys()
                for node in aged["nodes"] for port in node["ports"])
@@ -5394,6 +5396,7 @@ def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_pa
               "telemetry": {"checkedAt": now, "intervalSeconds": 60, "rxBps": 0, "txBps": 400_000},
               "transceiver": {"checkedAt": now, "formFactor": "SFP+", "nominalBps": 10**10}},
     }
+    assert recorder["missingPortSides"] == ["b"] and recorder["identifiedPeerSides"] == []
 
 
 def test_reciprocal_mac_path_shows_fresh_stp_evidence_without_confirming_cable(tmp_path):

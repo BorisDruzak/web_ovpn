@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from netctl.snmp.interfaces import BRIDGE_STP_PORT_STATES, RX_ERROR_COLUMNS
+from netctl.snmp.lldp import LLDP_PORT_ID_SUBTYPES
 
 from .endpoint_context_adapter import get_endpoint_context_adapter
 from .endpoint_platform_client import EndpointPlatformServiceError
@@ -287,6 +288,8 @@ def _public_port(row: dict, now: datetime) -> dict:
         for neighbor in _rows(row.get("lldpNeighbors"), min(neighbor_count, 16)):
             reading = {key: value for key in ("systemName", "chassisId", "portId", "hostName")
                        if (value := _text(neighbor.get(key), 64)) and re.fullmatch(r"[\w .:/-]+", value)}
+            if "portId" in reading and neighbor.get("portIdSubtype") in LLDP_PORT_ID_SUBTYPES.values():
+                reading["portIdSubtype"] = neighbor["portIdSubtype"]
             device = neighbor.get("inventoryDeviceId")
             if (re.fullmatch(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}", reading.get("chassisId", ""))
                     and isinstance(device, str) and re.fullmatch(r"[a-z0-9][a-z0-9-]{0,127}", device)):
@@ -1434,6 +1437,10 @@ def summarize_topology(graph: dict) -> dict:
             pending[(a, b, declared["a"], declared["b"])] = {
                 "a": a, "b": b, "nameA": nodes[a]["name"], "nameB": nodes[b]["name"],
                 "portA": declared["a"], "portB": declared["b"], "observedPaths": related[:8],
+                "missingPortSides": [side for side in ("a", "b") if port_label_key(declared[side]) in unnamed],
+                "identifiedPeerSides": [side for side, peer in (("a", b), ("b", a))
+                                        if any(n.get("inventoryDeviceId") == peer
+                                               for n in lldp.get(side, {}).get("neighbors", []))],
                 **({"inventorySources": declared["inventorySources"]} if "inventorySources" in declared else {}),
                 **({"portObservations": observations} if observations else {}),
                 **({"lldpObservations": lldp} if lldp else {}),

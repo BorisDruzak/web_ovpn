@@ -36,7 +36,7 @@ _CHASSIS_ID_SUBTYPES = {
     6: "interface_name",
     7: "local",
 }
-_PORT_ID_SUBTYPES = {
+LLDP_PORT_ID_SUBTYPES = {
     1: "interface_alias",
     2: "port_component",
     3: "mac_address",
@@ -232,7 +232,7 @@ def _compact_local_ports(
         if row.oid != LLDP_LOC_PORT_ID + suffix or len(suffix) != 1 or suffix[0] not in by_index:
             continue
         index = suffix[0]
-        subtype = _subtype(by_index[index], _PORT_ID_SUBTYPES)
+        subtype = _subtype(by_index[index], LLDP_PORT_ID_SUBTYPES)
         if subtype not in ("interface_name", "interface_alias"):
             continue
         label = _text(row, "local port ID", required=True).casefold()
@@ -323,7 +323,7 @@ def parse_lldp_neighbors(
                 "port_id_subtype": _optional_value(
                     port_subtype_rows,
                     index,
-                    lambda row: _subtype(row, _PORT_ID_SUBTYPES),
+                    lambda row: _subtype(row, LLDP_PORT_ID_SUBTYPES),
                     "",
                 ),
                 "port_description": _optional_value(

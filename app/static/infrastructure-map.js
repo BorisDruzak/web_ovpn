@@ -1028,8 +1028,13 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           observed.append(make('summary', `Объявления LLDP (${count} из ${port.lldpNeighborCount})`),
             make('small', formatTime(port.lldpCheckedAt)));
           const neighbors = make('ul', null, 'map-detail-list');
-          for (const {systemName, chassisId, portId, hostName, inventoryDeviceId} of port.lldpNeighbors) {
-            const peer = [systemName, chassisId && 'шасси ' + chassisId, portId && 'ID порта ' + portId,
+          const idTypes = {interface_alias:'псевдоним интерфейса', port_component:'компонент порта',
+            mac_address:'MAC-адрес', network_address:'сетевой адрес', interface_name:'имя интерфейса',
+            agent_circuit_id:'идентификатор цепи', local:'локальный идентификатор'};
+          for (const {systemName, chassisId, portId, portIdSubtype, hostName, inventoryDeviceId} of port.lldpNeighbors) {
+            const type = idTypes[portIdSubtype];
+            const identifier = portId && 'ID порта ' + portId + (type ? ' (' + type + ')' : '');
+            const peer = [systemName, chassisId && 'шасси ' + chassisId, identifier,
               hostName && hostName !== systemName && 'имя по MAC ' + hostName];
             const entry = make('li', peer.filter(Boolean).join(' · '));
             const device = byId.get(inventoryDeviceId);

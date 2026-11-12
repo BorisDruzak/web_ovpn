@@ -1687,6 +1687,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                                       and fresh_macs_by_ip.get(host.get("ip")) == {mac}}
                         reading = {
                             "chassisId": mac, "portId": neighbor.get("port_id"),
+                            "portIdSubtype": neighbor.get("port_id_subtype"),
                             "systemName": neighbor.get("system_name"),
                             "hostName": next(iter(names_seen)) if len(names_seen) == 1 else None,
                         }
