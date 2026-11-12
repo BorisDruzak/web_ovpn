@@ -1135,13 +1135,20 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
     for device in context.get("devices", []):
         key = device["id"]
         item = node(key, device["name"], KINDS.get(device["kind"], "Сервер"), device.get("site", ""))
-        addresses.setdefault(str(device.get("management_ip") or ""), []).append(key)
-        address_by_asset[key] = device.get("management_ip")
+        address = device.get("management_ip")
+        addresses.setdefault(str(address or ""), []).append(key)
+        address_by_asset[key] = address
         observed_addresses[key] = device.get("observed_ipv4_addresses", [])
         declared_macs[key] = {mac.lower() for mac in device.get("mac_addresses", []) if MAC.fullmatch(mac)}
-        host = host_ips.get(device.get("management_ip"), {})
+        host = host_ips.get(address, {})
+        mac = str(host.get("mac") or "").lower()
         bound_switch = device["kind"] == "switch" and key in asset_ip_checks and declared_macs[key]
-        if not bound_switch or str(host.get("mac") or "").lower() in declared_macs[key]:
+        bound_router = device["kind"] == "router" and address and declared_macs[key]
+        mac_matches = mac in declared_macs[key]
+        if bound_router:
+            item["properties"]["Адрес управления"] = address
+            mac_matches = mac_matches and fresh_macs_by_ip.get(address) == {mac}
+        if mac_matches or not (bound_switch or bound_router):
             if observation := _host_observation(host, now):
                 item["reachability"] = observation
         names.setdefault(device["name"].casefold(), []).append(key)

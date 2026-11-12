@@ -789,6 +789,8 @@ def _public_node(row: dict, now: datetime) -> dict:
         key: _text(value) for key, value in supplied.items()
         if key in PUBLIC_PROPERTIES and isinstance(value, str)
     } if isinstance(supplied, dict) else {}
+    if isinstance(supplied, dict) and (address := _network_address(supplied.get("Адрес управления"))):
+        properties["Адрес управления"] = address
     if not any(source["name"] == "Proxmox" for source in fresh):
         for key in RUNTIME_PROPERTIES:
             properties.pop(key, None)

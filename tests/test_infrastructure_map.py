@@ -2899,6 +2899,33 @@ def test_network_device_without_management_ip_uses_unique_current_mac_binding():
     assert "reachability" not in build([device], [{**host, "last_seen_at": (now - timedelta(hours=1)).isoformat()}])
 
 
+def test_router_management_address_uses_only_fresh_matching_mac():
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import _public_node
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    address, mac = "192.0.2.15", "02:00:00:00:00:03"
+    device = {"id": "router", "name": "Router", "kind": "router",
+              "management_ip": address, "mac_addresses": [mac]}
+    host = {"ip": address, "mac": mac, "last_seen_at": at, "availability": {
+        "checked_at": at, "run_status": "success", "state": "online", "reason": "active_probe", "active_method": "icmp",
+    }}
+    other = {**host, "mac": "02:00:00:00:00:09"}
+    stale = {**host, "last_seen_at": (now - timedelta(hours=1)).isoformat()}
+
+    def build(hosts):
+        node, = build_graph({"devices": [device]}, {"hosts": hosts}, {}, {}, {}, now)["nodes"]
+        return _public_node(node, now)
+
+    assert build([other])["reachability"]["state"] == "unknown"
+    assert build([other, host])["reachability"]["state"] == "unknown"
+    assert build([stale])["reachability"]["state"] == "unknown"
+    public = build([host])
+    assert public["reachability"]["state"] == "reachable"
+    assert public["properties"]["Адрес управления"] == address
+
+
 def test_switch_ports_expose_fresh_link_state_and_age(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map
