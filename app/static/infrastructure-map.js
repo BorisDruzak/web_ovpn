@@ -1379,6 +1379,11 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           const proof = {current: ' · пара по свежему наблюдению',
                          verified_inventory: ' · пара по подтверждённой записи инвентаря'}[evidence.pairEvidence] ?? '';
           li.append(make('small', ports + vlan + ' · ' + source + time + proof + (evidence.confirmed ? '' : ' · без подтверждения')));
+          if (evidence.learnedEndpoint) {
+            const {switchId, mac} = evidence.learnedEndpoint;
+            const switchPort = edge.a === switchId ? evidence.a : evidence.b;
+            li.append(make('small', 'MAC ' + mac + ' изучен на ' + byId.get(switchId).name + ' ' + switchPort));
+          }
           appendInventorySources(li, evidence.inventorySources);
           for (const {deviceId, localPort, bridgeDeviceId, designatedBridgeMac, designatedPortId,
             designatedPortName, checkedAt} of evidence.stpPaths ?? []) {

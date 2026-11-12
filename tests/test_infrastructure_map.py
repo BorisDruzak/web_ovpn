@@ -4136,8 +4136,9 @@ def test_configured_asset_fdb_path_is_scoped_and_requires_a_unique_live_port(mon
     path, = links()
     assert path["a"] == "observer:access" and path["b"] == "gateway"
     assert path["kind"] == "Путь по MAC-таблице" and path["confirmed"]
+    learned = {"switchId": "observer:access", "deviceId": "gateway", "mac": mac}
     assert path["portEvidence"] == [{"a": "Gi1/0/23", "b": "", "source": "netctl FDB",
-                                     "at": at, "confirmed": True, "vlan": 1}]
+                                     "at": at, "confirmed": True, "vlan": 1, "learnedEndpoint": learned}]
     monkeypatch.setattr("app.infrastructure_service_probes._icmp_check", lambda ip: {"state": "reachable"})
     graph = build_graph(context, network, {}, {}, bindings, now)
     gateway = next(node for node in graph["nodes"] if node["id"] == "gateway")
@@ -4150,7 +4151,10 @@ def test_configured_asset_fdb_path_is_scoped_and_requires_a_unique_live_port(mon
     observed, = public["links"]
     evidence, = observed["portEvidence"]
     assert evidence["portStates"]["a"]["telemetry"]["rxErrors"] == 3
+    assert evidence["learnedEndpoint"] == learned
     assert "pairEvidence" not in evidence
+    stale, = load_infrastructure_map(snapshot, now + timedelta(hours=1))["links"]
+    assert "learnedEndpoint" not in stale["portEvidence"][0]
     assert links(now + timedelta(hours=1)) == []
     network["asset_fdb"].append({**network["asset_fdb"][0], "port_key": "physical:24"})
     assert links() == []
@@ -4258,7 +4262,8 @@ def test_hypervisor_fdb_path_reports_management_interface_without_claiming_direc
         return virtual.get("switchUplink")
 
     assert proof() == {"a": "ge12", "b": "enp134s0", "source": "netctl FDB + Proxmox",
-                       "at": earlier, "confirmed": True, "vlan": 1}
+                       "at": earlier, "confirmed": True, "vlan": 1,
+                       "learnedEndpoint": {"switchId": "observer:core", "deviceId": "pve1", "mac": mac}}
     assert guest_uplink() == {"id": "observer:core", "port": "ge12", "at": earlier, "viaMacTable": True}
     assert guest_uplink(now + timedelta(minutes=25)) is None
     pve["activePorts"]["pve1"] = []
@@ -5461,6 +5466,11 @@ def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_pa
             {"a": "snr", "b": "recorder", "kind": "Сетевое соединение", "portEvidence": [
                 {"a": "ge15", "b": "", "source": "GitHub", "confirmed": False},
             ]},
+            {"a": "recorder", "b": "snr", "kind": "Путь по MAC-таблице", "source": "netctl FDB",
+             "confirmed": True, "observedAt": now, "portEvidence": [
+                {"a": "", "b": "ge15", "source": "netctl FDB", "confirmed": True, "at": now,
+                 "learnedEndpoint": {"switchId": "snr", "deviceId": "recorder", "mac": "02:00:00:00:00:15"}},
+            ]},
         ],
     }), encoding="utf-8")
     client, headers, _ = make_client(tmp_path, monkeypatch)
@@ -5487,7 +5497,11 @@ def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_pa
               "telemetry": {"checkedAt": now, "intervalSeconds": 60, "rxBps": 0, "txBps": 400_000},
               "transceiver": {"checkedAt": now, "formFactor": "SFP+", "nominalBps": 10**10}},
     }
-    assert recorder["missingPortSides"] == ["b"] and recorder["identifiedPeerSides"] == []
+    assert recorder["missingPortSides"] == ["b"] and recorder["identifiedPeerSides"] == ["a"]
+    assert recorder["observedPaths"] == [{
+        "portA": "ge15", "portB": "", "source": "netctl FDB", "checkedAt": now,
+        "learnedEndpoint": {"switchId": "snr", "deviceId": "recorder", "mac": "02:00:00:00:00:15"},
+    }]
 
 
 def test_reciprocal_mac_path_shows_fresh_stp_evidence_without_confirming_cable(tmp_path):

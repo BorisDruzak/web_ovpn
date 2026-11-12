@@ -1438,7 +1438,7 @@ def summarize_topology(graph: dict) -> dict:
                 if ((pa and port_key(a, pa) == port_key(a, declared["a"]))
                         or (pb and port_key(b, pb) == port_key(b, declared["b"]))):
                     related.append({"portA": pa, "portB": pb, "source": report["source"], "checkedAt": report["at"],
-                                    **({"stpPaths": report["stpPaths"]} if "stpPaths" in report else {})})
+                                    **{key: report[key] for key in ("stpPaths", "learnedEndpoint") if key in report}})
             lldp = {side: {"checkedAt": port["lldpCheckedAt"], "neighbors": port["lldpNeighbors"]}
                     for side, port in declared.get("portStates", {}).items() if port.get("lldpNeighbors")}
             observations = {
@@ -1451,9 +1451,12 @@ def summarize_topology(graph: dict) -> dict:
                 "a": a, "b": b, "nameA": nodes[a]["name"], "nameB": nodes[b]["name"],
                 "portA": declared["a"], "portB": declared["b"], "observedPaths": related[:8],
                 "missingPortSides": [side for side in ("a", "b") if port_label_key(declared[side]) in unnamed],
-                "identifiedPeerSides": [side for side, peer in (("a", b), ("b", a))
+                "identifiedPeerSides": [side for side, peer, path_port in (("a", b, "portA"), ("b", a, "portB"))
                                         if any(n.get("inventoryDeviceId") == peer
-                                               for n in lldp.get(side, {}).get("neighbors", []))],
+                                               for n in lldp.get(side, {}).get("neighbors", []))
+                                        or any(path.get("learnedEndpoint", {}).get("switchId") == link[side]
+                                               and port_key(link[side], path[path_port])
+                                               == port_key(link[side], declared[side]) for path in related)],
                 **({"inventorySources": declared["inventorySources"]} if "inventorySources" in declared else {}),
                 **({"portObservations": observations} if observations else {}),
                 **({"lldpObservations": lldp} if lldp else {}),
@@ -1910,6 +1913,18 @@ def load_infrastructure_map(
                 })
                 if source == "GitHub" and (references := inventory_link_sources(report.get("inventorySources"))):
                     evidence[-1]["inventorySources"] = references
+                learned = report.get("learnedEndpoint")
+                if (edge["kind"] == "Путь по MAC-таблице" and evidence[-1]["confirmed"]
+                        and source in {"netctl FDB", "netctl FDB + Proxmox"} and isinstance(learned, dict)):
+                    switch_id = _text(learned.get("switchId"), 160)
+                    device_id = _text(learned.get("deviceId"), 160)
+                    mac = learned.get("mac")
+                    side = "a" if edge["a"] == switch_id else "b"
+                    if ({switch_id, device_id} == {edge["a"], edge["b"]}
+                            and nodes[switch_id]["kind"] == NETWORK_KINDS[0]
+                            and evidence[-1][side] and isinstance(mac, str)
+                            and re.fullmatch(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}", mac)):
+                        evidence[-1]["learnedEndpoint"] = {"switchId": switch_id, "deviceId": device_id, "mac": mac}
                 paired = edge["kind"] == "Сетевое соединение" or source in {RECIPROCAL_MAC_SOURCE, "netctl FDB + Proxmox"}
                 observed_attachment = (source in {"netctl FDB", "MikroTik · ARP", "MikroTik · ARP + FDB"}
                                        and evidence[-1]["confirmed"])

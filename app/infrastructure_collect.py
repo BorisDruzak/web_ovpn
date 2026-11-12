@@ -1342,7 +1342,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         })
 
     def edge(a, b, kind, source, confirmed=True, details="", ports=None, at=None, vlan=None, virtual=None,
-             evidence_only=False, lacp_polled_at=None, expected_vlans=None, inventory_sources=None):
+             evidence_only=False, lacp_polled_at=None, expected_vlans=None, inventory_sources=None,
+             learned_endpoint=None):
         if a not in nodes or b not in nodes or a == b:
             return
         key = (tuple(sorted((a, b))), kind)
@@ -1368,6 +1369,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 report["expectedVlans"] = expected_vlans
             if inventory_sources:
                 report["inventorySources"] = inventory_sources
+            if learned_endpoint:
+                report["learnedEndpoint"] = learned_endpoint
             if report not in evidence:
                 evidence.append(report)
         if evidence:
@@ -2395,13 +2398,16 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             management = management_ports.get(asset)
             remote_port = management[0] if management and management[1] == mac else ""
             provenance = "netctl FDB + Proxmox" if remote_port else "netctl FDB"
+            identity_matches = declared_devices_by_mac.get(mac) == {asset}
+            learned_endpoint = {"switchId": switch, "deviceId": asset, "mac": mac} if identity_matches else None
             for row in observations:
                 checked = min(arp_at, datetime.fromisoformat(max(live)), datetime.fromisoformat(row["observed_at"]))
                 if remote_port:
                     checked = min(checked, datetime.fromisoformat(pve_at))
                 edge(switch, asset, "Путь по MAC-таблице", provenance, details=address,
-                     ports=(port_label(switch_source, port), remote_port), at=checked.isoformat(), vlan=row["vlan_id"])
-            if declared_devices_by_mac.get(mac) == {asset}:
+                     ports=(port_label(switch_source, port), remote_port), at=checked.isoformat(),
+                     vlan=row["vlan_id"], learned_endpoint=learned_endpoint)
+            if identity_matches:
                 checked = min(arp_at, datetime.fromisoformat(max(live)),
                               max(datetime.fromisoformat(row["observed_at"]) for row in observations)).isoformat()
                 for item in identity_services.get(asset, []):
