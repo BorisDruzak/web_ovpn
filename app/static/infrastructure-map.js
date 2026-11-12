@@ -629,7 +629,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       }
       if (!iface.switchObservations.length) row.append(make('small', 'Порт коммутатора не подтверждён'));
       for (const observation of iface.switchObservations) {
-        const {basis, physicalPair, switch: target, switchPort, checkedAt} = observation;
+        const {basis, physicalPair, switch: target, switchPort, checkedAt, vlanMemberships} = observation;
         const targetPort = physicalPair?.switchPort ?? switchPort;
         if (physicalPair) row.append(make('small', 'Интерфейс хоста ' + physicalPair.hostPort + ' ↔'));
         const open = make('button', target.name + ' ' + targetPort);
@@ -644,6 +644,16 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         row.append(make('small', [labels[basis], vlan && 'VLAN ' + vlan, formatTime(checkedAt)].filter(Boolean).join(' · ')));
         if (physicalPair) row.append(make('small',
           ['Физическая пара подтверждена', physicalPair.source, formatTime(physicalPair.checkedAt)].join(' · ')));
+        if (vlanMemberships) {
+          const modes = {tagged: 'с тегом', untagged: 'без тега'};
+          for (const [side, reading] of Object.entries(vlanMemberships.ports)) {
+            const port = side === 'host' ? physicalPair.hostPort : targetPort;
+            row.append(make('small', [
+              `VLAN ${vlanMemberships.id} на ${port}`, modes[reading.egress], reading.pvid && 'PVID',
+              reading.source, formatTime(reading.checkedAt),
+            ].filter(Boolean).join(' · ')));
+          }
+        }
       }
       list.append(row);
     }

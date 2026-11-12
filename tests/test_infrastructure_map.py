@@ -5342,13 +5342,23 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     path = tmp_path / "infrastructure.json"
     monkeypatch.setenv("INFRASTRUCTURE_MAP_SNAPSHOT_PATH", str(path))
     stamp = datetime.now(timezone.utc).isoformat()
+    vlan_ports = {
+        "host": {"name": "ens7", "state": "up", "source": "Proxmox · sysfs", "checkedAt": stamp},
+        "switch": {"name": "xe3", "state": "up", "checkedAt": stamp},
+    }
+    for port in vlan_ports.values():
+        port["vlanMemberships"] = {"checkedAt": stamp, "vlans": [
+            {"id": 1, "egress": "untagged", "pvid": True},
+            {"id": 20, "egress": "tagged", "pvid": False},
+            {"id": 50, "egress": "tagged", "pvid": False},
+        ]}
     raw = {"schema": 1, "snapshotAt": stamp, "nodes": [
         {"id": key, "name": key, "kind": kind, **extra} for key, kind, extra in (
             ("directum", "Сервис", {}),
             ("vm", "Виртуальная машина", {"guest": True, "vmid": 103,
              "sources": [{"name": "Proxmox", "status": "ok", "label": "Запущена", "at": stamp}]}),
-            ("pve", "Гипервизор", {}),
-            ("snr", "Коммутатор", {}),
+            ("pve", "Гипервизор", {"ports": [vlan_ports["host"]]}),
+            ("snr", "Коммутатор", {"ports": [vlan_ports["switch"]]}),
         )],
         "links": [
             {"a": "vm", "b": "directum", "kind": "Цель проверки", "confirmed": True},
@@ -5382,6 +5392,19 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     assert match["basis"] == "guest_mac" and match["switchPort"] == "xe3"
     assert match["physicalPair"] == {"hostPort": "ens7", "switchPort": "xe3",
                                       "source": "netctl FDB + Proxmox", "checkedAt": stamp}
+    vlan_evidence = match["vlanMemberships"]
+    assert vlan_evidence == {"id": 1, "basis": "guest_mac", "ports": {
+        "host": {"egress": "untagged", "pvid": True, "source": "Proxmox · sysfs", "checkedAt": stamp},
+        "switch": {"egress": "untagged", "pvid": True, "source": "SNMP", "checkedAt": stamp},
+    }}
+    old = (datetime.fromisoformat(stamp) - timedelta(minutes=11)).isoformat()
+    host = vlan_ports["host"]
+    host["checkedAt"] = host["vlanMemberships"]["checkedAt"] = old
+    observation, = read()["guests"][0]["interfaces"][0]["switchObservations"]
+    assert observation["physicalPair"] == match["physicalPair"]
+    assert observation["vlanMemberships"]["ports"] == {"switch": vlan_evidence["ports"]["switch"]}
+    host["checkedAt"] = host["vlanMemberships"]["checkedAt"] = stamp
+    assert read()["guests"] == [guest]
 
     def read_audit():
         response = client.get(url, headers=headers)
@@ -5404,16 +5427,22 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     assert browser["guestAttachments"] == {"vm": guest}
     raw["links"][1]["portEvidence"][0]["virtual"]["uplinks"] = ["eno1"]
     match, = read()["guests"][0]["interfaces"][0]["switchObservations"]
-    assert "physicalPair" not in match
+    assert "physicalPair" not in match and "vlanMemberships" not in match
     audit = read_audit()
     assert audit["interfaceCounts"]["guest_mac"] == 1 and audit["gapTotal"] == 1
     gap, = audit["gaps"]
     assert gap["guest"]["id"] == "vm"
     assert gap["interfaces"] == [{"guestPort": "net0", "bridge": "vmbr1", "state": "guest_mac"}]
     raw["links"][1]["portEvidence"][0]["virtual"]["uplinks"] = ["ens7"]
-    virtual = raw["links"][1]["portEvidence"][0]["virtual"]
+    guest_port = raw["links"][1]["portEvidence"][0]
+    virtual = guest_port["virtual"]
     virtual["switchUplink"], = virtual.pop("switchPorts")
-    read()
+    guest_port["vlan"] = 20
+    configured, = read()["guests"][0]["interfaces"][0]["switchObservations"]
+    assert configured["vlanMemberships"]["basis"] == "configured_tag"
+    assert configured["vlanMemberships"]["id"] == 20
+    assert {r["egress"] for r in configured["vlanMemberships"]["ports"].values()} == {"tagged"}
+    guest_port.pop("vlan")
     assert read_audit()["interfaceCounts"]["bridge_with_physical_pair"] == 1
     raw["nodes"][0]["serviceChecks"] = [{
         "method": "ICMP · VLAN", "state": "reachable", "source": "UI_VPN", "checkedAt": stamp,
@@ -5426,6 +5455,8 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
         "vlan": 50, "interface": "ens18.50", "peerAddress": "192.0.2.1", "checkedAt": stamp,
     }
     assert interface["switchObservations"][0]["basis"] == "bridge_uplink"
+    assert interface["switchObservations"][0]["vlanMemberships"]["basis"] == "local_neighbor"
+    assert interface["switchObservations"][0]["vlanMemberships"]["id"] == 50
     audit = read_audit()
     assert audit["interfaceCounts"]["local_neighbor_with_physical_pair"] == 1 and audit["gapTotal"] == 0
     raw["nodes"][0]["serviceChecks"][0]["vlanTransit"]["peer"]["state"] = "mismatch"

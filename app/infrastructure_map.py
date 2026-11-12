@@ -1520,7 +1520,30 @@ def _guest_ipv4_observations(value: object, now: datetime) -> list[dict]:
     return observations
 
 
-def _guest_attachments(nodes: dict, links: list[dict], guest_ids: list[str]) -> dict:
+def _attachment_vlan_memberships(interface: dict, match: dict, ports: dict, now: datetime) -> dict:
+    if (vid := match.get("vlan")) is not None:
+        basis = "guest_mac"
+    elif (vid := interface.get("vlan")) is not None:
+        basis = "configured_tag"
+    elif (vid := interface.get("localNeighbor", {}).get("vlan")) is not None:
+        basis = "local_neighbor"
+    else:
+        return {}
+    observations = {}
+    for side, port in ports.items():
+        sample = port.get("vlanMemberships", {})
+        if (port.get("state") != "up"
+                or not observation_is_fresh(sample.get("checkedAt"), now, max_age=VLAN_AUDIT_MAX_AGE)):
+            continue
+        reading = next((row for row in sample["vlans"] if row["id"] == vid), None)
+        if reading:
+            observations[side] = {"egress": reading["egress"], "pvid": reading["pvid"],
+                                  "source": port.get("source") or "SNMP", "checkedAt": sample["checkedAt"]}
+    return {"id": vid, "basis": basis, "ports": observations} if observations else {}
+
+
+def _guest_attachments(nodes: dict, links: list[dict], guest_ids: list[str], now: datetime | None = None) -> dict:
+    now = now or datetime.now(timezone.utc)
     placements = defaultdict(list)
     physical = defaultdict(list)
     local_neighbors = defaultdict(list)
@@ -1551,10 +1574,14 @@ def _guest_attachments(nodes: dict, links: list[dict], guest_ids: list[str]) -> 
             for report in edge["portEvidence"]:
                 if report.get("pairEvidence") == "current" and report["confirmed"]:
                     host_port, switch_port = report[host_side], report[switch_side]
-                    physical[edge[host_side], edge[switch_side], port_label_key(switch_port)].append({
+                    pair = {
                         "hostPort": host_port, "switchPort": switch_port,
                         "source": report["source"], "checkedAt": report["at"],
-                    })
+                    }
+                    states = report.get("portStates", {})
+                    physical[edge[host_side], edge[switch_side], port_label_key(switch_port)].append(
+                        (pair, {"host": states.get(host_side, {}), "switch": states.get(switch_side, {})})
+                    )
 
     guests = {}
     for guest_id in guest_ids:
@@ -1600,9 +1627,12 @@ def _guest_attachments(nodes: dict, links: list[dict], guest_ids: list[str]) -> 
                 if basis != "configured_bridge" and virtual["bridgeActive"] is True:
                     pairs = physical[host_id, switch_id, port_label_key(match["port"])]
                     uplinks = {port_label_key(name) for name in virtual["uplinks"]}
-                    pairs = [pair for pair in pairs if port_label_key(pair["hostPort"]) in uplinks]
-                    if len({port_label_key(pair["hostPort"]) for pair in pairs}) == 1:
-                        observation["physicalPair"] = max(pairs, key=lambda pair: pair["checkedAt"])
+                    pairs = [(pair, ports) for pair, ports in pairs if port_label_key(pair["hostPort"]) in uplinks]
+                    if len({port_label_key(pair["hostPort"]) for pair, _ in pairs}) == 1:
+                        pair, ports = max(pairs, key=lambda item: item[0]["checkedAt"])
+                        observation["physicalPair"] = pair
+                        if vlans := _attachment_vlan_memberships(interface, match, ports, now):
+                            observation["vlanMemberships"] = vlans
                 interface["switchObservations"].append(observation)
     return guests
 
@@ -2163,6 +2193,6 @@ def load_infrastructure_map(
             selected_node=agent_node_id,
         )}
            if agent_identities is not None else {}),
-        **({"guestAttachments": _guest_attachments(nodes, links, [key for key, node in nodes.items() if node["guest"]])}
+        **({"guestAttachments": _guest_attachments(nodes, links, [key for key, node in nodes.items() if node["guest"]], now)}
            if include_guest_attachments else {}),
     }
