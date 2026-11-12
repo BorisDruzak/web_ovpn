@@ -151,7 +151,9 @@ class MikroTikApiDriver(NetworkDriver):
         "identity": ("/system/identity/print", ["name"]),
         "interfaces": (
             "/interface/print",
-            ["name", "type", "running", "disabled", "mtu", "mac-address", "comment", "actual-mtu", "rx-byte", "tx-byte", "rx-packet", "tx-packet"],
+            ["name", "type", "running", "disabled", "mtu", "mac-address", "comment", "actual-mtu",
+             "rx-byte", "tx-byte", "rx-packet", "tx-packet", "rx-error", "tx-error",
+             "rx-drop", "tx-drop", "link-downs"],
         ),
         "addresses": ("/ip/address/print", ["address", "network", "interface", "disabled", "dynamic", "comment"]),
         "routing_rules": ("/routing/rule/print", [".id", "action", "disabled", "src-address", "dst-address", "routing-mark", "table", "comment", "priority"]),
@@ -283,6 +285,11 @@ class MikroTikApiDriver(NetworkDriver):
                 "tx_bytes": parse_int(row.get("tx-byte"), default=None),
                 "rx_packets": parse_int(row.get("rx-packet")),
                 "tx_packets": parse_int(row.get("tx-packet")),
+                "in_errors": parse_int(row.get("rx-error"), default=None),
+                "out_errors": parse_int(row.get("tx-error"), default=None),
+                "in_discards": parse_int(row.get("rx-drop"), default=None),
+                "out_discards": parse_int(row.get("tx-drop"), default=None),
+                "link_downs": parse_int(row.get("link-downs"), default=None),
             }
             for row in rows
         ]

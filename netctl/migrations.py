@@ -2156,6 +2156,11 @@ def _migration_29(conn: sqlite3.Connection) -> None:
     """)
 
 
+def _migration_30(conn: sqlite3.Connection) -> None:
+    for column in ("in_errors", "out_errors", "in_discards", "out_discards", "link_downs"):
+        conn.execute(f"ALTER TABLE router_interface_counter_samples ADD COLUMN {column} TEXT")
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1),
     (2, _migration_2),
@@ -2186,6 +2191,7 @@ MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (27, _migration_27),
     (28, _migration_28),
     (29, _migration_29),
+    (30, _migration_30),
 )
 
 

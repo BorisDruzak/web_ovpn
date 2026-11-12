@@ -23,14 +23,16 @@ def record_router_samples(conn: sqlite3.Connection, source_id: int, observed_at:
     conn.executemany(
         """
         INSERT INTO router_interface_counter_samples
-            (source_id, interface_name, observed_at, interface_type, mac, running, rx_bytes, tx_bytes)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (source_id, interface_name, observed_at, interface_type, mac, running, rx_bytes, tx_bytes,
+             in_errors, out_errors, in_discards, out_discards, link_downs)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (source_id, interface_name, observed_at) DO NOTHING
         """,
         (
             (source_id, item["name"], observed_at, item.get("type") or "", item.get("mac") or "",
              int(bool(item.get("running")) and not item.get("disabled")),
-             _counter(item.get("rx_bytes")), _counter(item.get("tx_bytes")))
+             _counter(item.get("rx_bytes")), _counter(item.get("tx_bytes")),
+             *(_counter(item.get(key)) for key in PORT_COUNTERS), _counter(item.get("link_downs")))
             for item in interfaces if item.get("name")
         ),
     )
@@ -41,11 +43,19 @@ def _router_rates(current: sqlite3.Row, previous: sqlite3.Row, elapsed: float) -
         return {}
     if any(current[key] != previous[key] for key in ("interface_type", "mac")):
         return {}
-    counters = ("rx_bytes", "tx_bytes")
-    if any(row[key] is None for row in (current, previous) for key in counters):
-        return {}
-    rx, tx = (int(current[key]) - int(previous[key]) for key in counters)
-    return {"rx_bps": rx * 8 / elapsed, "tx_bps": tx * 8 / elapsed} if min(rx, tx) >= 0 else {}
+    metrics = {}
+    byte_counters = ("rx_bytes", "tx_bytes")
+    if all(row[key] is not None for row in (current, previous) for key in byte_counters):
+        rx, tx = (int(current[key]) - int(previous[key]) for key in byte_counters)
+        if min(rx, tx) < 0:
+            return {}
+        metrics.update(rx_bps=rx * 8 / elapsed, tx_bps=tx * 8 / elapsed)
+    if "link_downs" in current.keys() and current["link_downs"] == previous["link_downs"]:
+        for key in PORT_COUNTERS:
+            after, before = current[key], previous[key]
+            if after is not None and before is not None and int(after) >= int(before):
+                metrics[f"{key}_delta"] = int(after) - int(before)
+    return metrics
 
 
 def _switch_rates(current: sqlite3.Row, previous: sqlite3.Row, elapsed: float) -> dict:

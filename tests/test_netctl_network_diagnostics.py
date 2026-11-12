@@ -38,6 +38,56 @@ def test_router_history_uses_valid_deltas_and_leaves_a_gap_after_reset(tmp_path,
     ]
 
 
+def test_router_history_keeps_error_deltas_only_between_valid_samples(tmp_path, monkeypatch):
+    from netctl import migrations, store
+    from netctl.drivers.mikrotik_api import MikroTikApiDriver
+
+    columns = ("rx-error", "tx-error", "rx-drop", "tx-drop", "link-downs")
+    uri = f"sqlite:///{(tmp_path / 'runtime.sqlite').as_posix()}"
+    versioned_migrations = migrations.MIGRATIONS
+    with monkeypatch.context() as legacy_schema:
+        legacy_schema.setattr(migrations, "MIGRATIONS", tuple(
+            (version, migrate) for version, migrate in versioned_migrations if version <= 29
+        ))
+        conn = connect(uri)
+    with closing(conn):
+        source = seed_source(conn, 1, "router", "mikrotik_api")
+        conn.execute("""
+            INSERT INTO router_interface_counter_samples (
+                source_id, interface_name, observed_at, interface_type, mac, running, rx_bytes, tx_bytes
+            ) VALUES (1, 'wan', '2026-11-12T12:00:00Z', 'ether', '', 1, '0', '0')
+        """)
+        migrations.apply_migrations(conn)
+        for minute, rx, tx, counters in [
+            (5, 300, 600, ("2", "4", "6", "8", "1")),
+            (10, 600, 900, ("2", "5", "7", "10", "1")),
+            (15, 900, 1200, ("1", "5", "8", "bad", "1")),
+            (20, 1200, 1500, ("3", "6", "9", "11", "2")),
+            (25, 100, 100, ("4", "7", "10", "12", "2")),
+        ]:
+            observed_at = f"2026-11-12T12:{minute:02}:00Z"
+            monkeypatch.setattr(store, "utc_now", lambda: observed_at)
+            interface = {
+                "name": "wan", "type": "ether", "running": "true",
+                "rx-byte": str(rx), "tx-byte": str(tx), **dict(zip(columns, counters, strict=True)),
+            }
+            rows = MikroTikApiDriver.normalize_interface_rows([interface])
+            save_collection(conn, source, {"interfaces": rows}, observed_at)
+        result = read_diagnostics(conn, "router", "wan", now=datetime(2026, 11, 12, 12, 26, tzinfo=UTC))
+
+    assert set(columns) <= set(MikroTikApiDriver.COLLECT_PATHS["interfaces"][1])
+    keys = ("in_errors_delta", "out_errors_delta", "in_discards_delta", "out_discards_delta")
+    assert [tuple(point[key] for key in keys) for point in result["points"]] == [
+        (None, None, None, None),
+        (None, None, None, None),
+        (0, 1, 1, 2),
+        (None, 0, 1, None),
+        (None, None, None, None),
+        (None, None, None, None),
+    ]
+    assert [point["rx_bps"] for point in result["points"]] == [None, 8, 8, 8, 8, None]
+
+
 def test_switch_history_derives_errors_and_records_only_stp_changes(tmp_path):
     with closing(connect(f"sqlite:///{(tmp_path / 'runtime.sqlite').as_posix()}")) as conn:
         seed_source(conn, 1, "switch", "snmp_switch")
