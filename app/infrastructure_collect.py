@@ -35,7 +35,9 @@ from netctl.snmp.transport import SnmpTransport
 from netctl.source_identity import list_source_identities
 from netctl.switch_queries import FDB_PORT_MATCH, query_confirmed_attachment_ports, query_observed_mac_ports
 
+from .infrastructure_backup import backup_policy, backup_service_checks, read_proxmox_backup
 from .infrastructure_map import (
+    BACKUP_PROBE_METHOD,
     CLUSTER_HEALTH_METHODS, CLUSTER_KIND, INTERFACE_NAME, MAX_SNAPSHOT_BYTES, NETWORK_KINDS,
     PVE_DISK_DEVICE, PVE_STORAGE_ID, RECIPROCAL_MAC_SOURCE,
     SHARED_LLDP_KIND, SHARED_LLDP_SOURCE,
@@ -948,6 +950,15 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             item = node(service_id, spec["label"], "Сервис", nodes[asset]["site"], "UI_VPN")
             item["probeTargetIP"] = address_by_asset[asset]
             edge(asset, service_id, "Размещение", "Настройки карты")
+    backup = bindings.get("proxmox_backup_monitor")
+    if (policy := backup_policy(backup)) and (asset := backup.get("asset")) in nodes:
+        item = node("proxmox-pbs-backups", "Резервное копирование Proxmox", "Сервис", nodes[asset]["site"], "UI_VPN")
+        checks = backup_service_checks(pve.get("backup", {}), policy, now)
+        item["serviceChecks"] = checks
+        states = {check["state"] for check in checks}
+        state = "reachable" if "reachable" in states else "unreachable" if states == {"unreachable"} else "unknown"
+        item["reachability"] = _observation(state, "Проверка сервиса", BACKUP_PROBE_METHOD, checks[0]["checkedAt"])
+        edge(asset, item["id"], "Размещение", "Настройки карты")
     verified_host_ports = set()
     shared_ports = set()
     for link in context.get("links", []):
@@ -1690,7 +1701,7 @@ class _NoRedirect(HTTPRedirectHandler):
 
 
 def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: set[str],
-                 management_bridges: dict[str, str] | None = None) -> dict:
+                 management_bridges: dict[str, str] | None = None, *, backup_storage: str | None = None) -> dict:
     origin = urlsplit(url)
     if origin.scheme != "https" or not origin.hostname or origin.username or origin.path not in ("", "/") or origin.query or origin.fragment:
         raise ValueError("Proxmox requires an HTTPS origin")
@@ -1824,6 +1835,9 @@ def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: set[s
             data = result["bridges"].get(node, {}).get(bridge, {})
             if data.get("active") == 1 and data.get("bridge_ports") in active_ports.get(node, []):
                 result["management"][node] = {"address": data.get("address"), "port": data["bridge_ports"]}
+    if backup_storage:
+        result["backup"] = read_proxmox_backup(get, [row["node"] for row in result["nodes"]],
+                                               backup_storage, datetime.now(timezone.utc))
     result["at"] = datetime.now(timezone.utc).isoformat()
     return result
 
@@ -2070,9 +2084,12 @@ def main() -> int:
             guest_ids.update(str(service["vmid"]) for service in bindings.get("guest_services", {}).values())
             guest_ids.update(str(role["vmid"]) for role in bindings.get("roles", {}).values()
                              if type(role.get("vmid")) is int and not role.get("asset"))
+            backup = bindings.get("proxmox_backup_monitor")
+            backup_options = {"backup_storage": backup["storage"]} if backup_policy(backup) else {}
             try:
                 pve = read_proxmox(args.proxmox_url, args.proxmox_token_file, args.proxmox_ca, guest_ids,
-                                   bindings.get("hypervisor_management_bridges"))
+                                   bindings.get("hypervisor_management_bridges"),
+                                   **backup_options)
             except (OSError, KeyError, ValueError) as exc:
                 collection_issues.append("proxmox")
                 print(f"Proxmox inventory unavailable ({type(exc).__name__})", file=sys.stderr)

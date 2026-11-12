@@ -22,6 +22,7 @@ MAX_AGE = timedelta(minutes=25)
 SERVICE_PROBE_MAX_AGE = timedelta(minutes=5)
 STP_ROOT_PATH_MAX_AGE = timedelta(minutes=5)
 PORT_LINK_CHECK_MAX_AGE = timedelta(minutes=5)
+BACKUP_PROBE_METHOD = "Копия Proxmox"
 STATES = ("critical", "warn", "ok", "unknown")
 NETWORK_KINDS = ("Коммутатор", "Маршрутизатор", "Точка доступа", "Сетевое устройство")
 INTERFACE_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}")
@@ -317,7 +318,8 @@ def _public_dns_check(value: object) -> dict:
 def _public_service_check(check: dict, now: datetime) -> dict:
     path = _text(check.get("path"))
     port = check.get("port")
-    max_age = SERVICE_PROBE_MAX_AGE if check.get("source") == "UI_VPN" and check.get("required") is True else MAX_AGE
+    backup = check.get("method") == BACKUP_PROBE_METHOD and check.get("source") == "Proxmox"
+    max_age = SERVICE_PROBE_MAX_AGE if backup or (check.get("source") == "UI_VPN" and check.get("required") is True) else MAX_AGE
     result = {
         **_public_reachability(check, now, max_age=max_age),
         "port": port if type(port) is int and 1 <= port <= 65535 else None,
@@ -325,6 +327,20 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         "path": path if re.fullmatch(r"/[A-Za-z0-9._/-]{0,159}", path) and not path.startswith("//") else "",
     }
     reason = check.get("reason")
+    if backup:
+        vmid, hours = check.get("backupVmid"), check.get("backupMaxAgeHours")
+        if type(vmid) is int and 1 <= vmid <= 999_999_999:
+            result["backupVmid"] = vmid
+        if type(hours) is int and 1 <= hours <= 744:
+            result["backupMaxAgeHours"] = hours
+        completed = _time(check.get("backupCompletedAt"))
+        if completed is not None and completed <= now:
+            result["backupCompletedAt"] = completed.isoformat()
+            if result["state"] == "reachable" and "backupMaxAgeHours" in result and now - completed > timedelta(hours=hours):
+                result["state"], reason = "unreachable", "backup_overdue"
+        if reason in {"backup_no_result", "backup_task_failed", "backup_overdue",
+                      "backup_schedule_missing", "backup_untracked_schedule"}:
+            result["reason"] = reason
     if reason == "timeout" and result["method"] in ("HTTP", "HTTPS", "DNS", "SMB2", "PostgreSQL SSLRequest"):
         result["reason"] = reason
     if check.get("supplemental") is True:

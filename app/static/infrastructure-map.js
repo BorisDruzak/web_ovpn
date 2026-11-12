@@ -752,12 +752,20 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         route_other_gateway: 'Активен другой шлюз', route_inactive: 'Маршрут через ожидаемый шлюз неактивен',
         route_rejecting: 'Активный маршрут отбрасывает трафик',
         route_multiple_gateways: 'Обнаружено несколько активных шлюзов',
+        backup_no_result: 'Нет подтверждённого результата задания',
+        backup_task_failed: 'Последнее копирование завершилось ошибкой',
+        backup_overdue: 'Копия старше порога',
+        backup_schedule_missing: 'ВМ отсутствует в активном расписании',
+        backup_untracked_schedule: 'Есть активное задание без настроенного порога',
       };
       for (const check of node.serviceChecks) {
         const row = make('li');
-        const endpoint = [check.method, check.target, check.httpHost, check.port, check.path, check.dns?.name,
+        const backup = [check.backupCompletedAt && 'Завершено ' + formatTime(check.backupCompletedAt),
+          check.backupMaxAgeHours && 'Порог ' + check.backupMaxAgeHours + ' ч'].filter(Boolean).map(text => ' · ' + text).join('');
+        const endpoint = [check.method, check.backupVmid && 'ВМ ' + check.backupVmid,
+          check.target, check.httpHost, check.port, check.path, check.dns?.name,
           check.dns?.record, check.tunnelInterface, check.tunnelAddress, check.smbShare].filter(Boolean).join(' ');
-        const confirmed = ['Маршрут', 'OpenVPN TUN', 'SMB Mount'].includes(check.method) ? 'Подтверждён' :
+        const confirmed = ['Маршрут', 'OpenVPN TUN', 'SMB Mount', 'Копия Proxmox'].includes(check.method) ? 'Подтверждён' :
           node.id === data.clusterId ? 'В норме' : 'Отвечает';
         const result = check.skipped ? 'Не запущена' :
           ({reachable:confirmed, unreachable:'Сбой проверки'}[check.state] ?? 'Нет подтверждения');
@@ -792,7 +800,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           (check.smbSigningRequired ? ' · сервер требует подпись' : ' · сервер не требует подпись') : '';
         const scope = check.supplemental ? ' · дополнительная проверка' :
           check.component ? ' · компонент сервиса' : check.required ? ' · проверка доступности' : '';
-        row.append(make('strong', endpoint || 'Проверка'), make('small', result + http + postgresql + smb + (reason ? ' · ' + reason + errorSource : '') + dns + rtt + attempts + gateway + egress + management + scope + source + time + identity + (check.stale ? ' · устарело' : '')));
+        row.append(make('strong', endpoint || 'Проверка'), make('small', result + http + postgresql + smb + (reason ? ' · ' + reason + errorSource : '') + backup + dns + rtt + attempts + gateway + egress + management + scope + source + time + identity + (check.stale ? ' · устарело' : '')));
         list.append(row);
       }
       propertiesSection.append(make('h3', 'Проверки'), list);

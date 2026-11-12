@@ -1317,6 +1317,69 @@ def test_confirmed_switch_port_checks_require_two_observed_ends(monkeypatch):
     assert sum("linkCheck" in row for row in network["ports"]) == 2
 
 
+def test_proxmox_backup_checks_match_storage_and_guest_and_expire():
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_backup import backup_service_checks, read_proxmox_backup
+    from app.infrastructure_map import _map_statuses, _public_node, _public_service_check
+
+    now = datetime.now(timezone.utc)
+    ended = int((now - timedelta(hours=26)).timestamp())
+    recent = int((now - timedelta(hours=2)).timestamp())
+
+    def task(upid, endtime, status="OK"):
+        return {"upid": upid, "node": "pve1", "type": "vzdump", "starttime": endtime - 30,
+                "endtime": endtime, "status": status}
+
+    backup = task("UPID:pve1:backup", ended)
+    other_storage = task("UPID:pve1:other", recent)
+    failed = task("UPID:pve1:failed", recent, "job errors")
+    tasks = [backup, other_storage, failed]
+    logs = {
+        "backup": ["INFO: starting new backup job: vzdump 102 --storage pbs",
+                   "INFO: Finished Backup of VM 102 (00:00:30)", "TASK OK"],
+        "other": ["INFO: starting new backup job: vzdump 102 --storage local",
+                  "INFO: Finished Backup of VM 102 (00:00:30)", "TASK OK"],
+        "failed": ["INFO: starting new backup job: vzdump 104 --storage pbs",
+                   "ERROR: Backup of VM 104 failed - private details", "TASK ERROR: job errors"],
+    }
+
+    def get(path):
+        if path == "cluster/backup":
+            return [{"type": "vzdump", "enabled": 1, "storage": "pbs", "vmid": "102,104,106"}]
+        if "?typefilter=vzdump" in path:
+            return tasks
+        for name, lines in logs.items():
+            if f"%3A{name}/log?" in path:
+                return [{"t": line} for line in lines]
+        raise AssertionError(path)
+
+    def check():
+        observation = read_proxmox_backup(get, ["pve1"], "pbs", now)
+        return {row["backupVmid"]: row for row in backup_service_checks(observation, {102: 24, 104: 30, 106: 192}, now)}
+
+    results = check()
+    assert [results[vm]["reason"] for vm in (102, 104, 106)] == [
+        "backup_overdue", "backup_task_failed", "backup_no_result",
+    ]
+    assert results[102]["backupCompletedAt"] == datetime.fromtimestamp(ended, timezone.utc).isoformat()
+    assert "private details" not in json.dumps(results)
+    stale = _public_service_check(results[104], now + timedelta(minutes=6))
+    assert stale["stale"] and stale["state"] == "unknown"
+    graph = build_graph({"devices": [{"id": "pbs", "name": "PBS", "kind": "backup_server"}]}, {}, {},
+                        {"cluster": [], "nodes": [], "guests": [], "at": now.isoformat(),
+                         "backup": read_proxmox_backup(get, ["pve1"], "pbs", now)},
+                        {"proxmox_backup_monitor": {"asset": "pbs", "storage": "pbs",
+                                                    "max_age_hours": {"102": 30, "104": 30, "106": 192}}}, now)
+    nodes = {node["id"]: _public_node(node, now) for node in graph["nodes"]}
+    nodes["pbs"]["reachability"]["state"] = "reachable"
+    _map_statuses(nodes, graph["links"])
+    assert nodes["proxmox-pbs-backups"]["mapStatus"] == nodes["pbs"]["mapStatus"] == "warn"
+    logs["other"].pop()
+    assert check()[102]["reason"] == "backup_no_result"
+    logs["other"] = ["INFO: starting new backup job: vzdump 102 --storage pbs", "TASK ERROR: setup failed"]
+    assert check()[102]["reason"] == "backup_no_result"
+
+
 def test_proxmox_port_observer_verifies_target_and_only_updates_inventory_ports(tmp_path, monkeypatch):
     from app import infrastructure_port_ssh as observer
     from app.infrastructure_map import _public_port
