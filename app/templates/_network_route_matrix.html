@@ -10,6 +10,14 @@
         <td>{{ row.target }} · {{ row.protocol | upper }}</td>
         <td>
           {{ status_labels.get(row.status, row.status) }}
+          {% if row.evidence.openvpn_session is defined %}
+          <br>{{ row.openvpn_client }} · {{ {
+            'connected': 'сессия подтверждена',
+            'not_connected': 'сессия отсутствует',
+            'address_mismatch': 'имя или адрес сессии не совпадает',
+            'unavailable': 'состояние сессии недоступно'
+          }.get(row.evidence.openvpn_session) }}
+          {% endif %}
           {% if row.evidence.packet_loss_pct is defined %}<br>Потери {{ row.evidence.packet_loss_pct }}%{% endif %}
           {% if row.evidence.rtt_ms is defined and row.evidence.rtt_ms.avg is defined %}<br>RTT {{ row.evidence.rtt_ms.avg }} мс{% endif %}
           {% if row.evidence.rtt_variation is defined %}<br>Изменение RTT {{ row.evidence.rtt_variation.mean_abs_delta_ms }} мс · пар {{ row.evidence.rtt_variation.pairs }}{% endif %}

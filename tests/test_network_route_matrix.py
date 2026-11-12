@@ -60,6 +60,40 @@ def test_route_matrix_keeps_requested_and_observed_paths_distinct(monkeypatch):
     ]
 
 
+@pytest.mark.parametrize("connections,expected,session", [
+    ([], "not_connected", "not_connected"),
+    ([{"common_name": "other", "virtual_address": "192.0.2.20"}], "not_connected", "address_mismatch"),
+    ([{"common_name": "router", "virtual_address": "192.0.2.30"}], "not_connected", "address_mismatch"),
+    ([{"common_name": "router", "virtual_address": "192.0.2.20"}], "reachable", "connected"),
+    (None, "unavailable", "unavailable"),
+])
+def test_openvpn_probe_requires_the_expected_live_session(monkeypatch, connections, expected, session):
+    from app import network_route_matrix
+
+    profile = network_probe_profiles.RouteProfile.model_validate({"label": "Tunnel", "probes": [{
+        "id": "router", "expected_path": "OpenVPN", "target": "192.0.2.20",
+        "protocol": "icmp", "openvpn_client": "router",
+    }]})
+    calls = []
+
+    def read_sessions(args, **kwargs):
+        assert args == ["connected", "--source", "management"]
+        return {"status": "ok", "source": "management" if connections is not None else "status_file",
+                "connected": connections or []}
+
+    def probe(**kwargs):
+        calls.append(kwargs)
+        return {"status": "reachable", "evidence": {}}
+
+    monkeypatch.setattr(network_route_matrix, "run_vpnctl", read_sessions)
+    monkeypatch.setattr(network_route_matrix, "probe_local_route", probe)
+    result = network_route_matrix.run_route_matrix("tunnel", profile)
+    assert result["status"] == expected
+    assert len(calls) == int(expected == "reachable")
+    assert result["result"]["probes"][0]["openvpn_client"] == "router"
+    assert result["result"]["probes"][0]["evidence"]["openvpn_session"] == session
+
+
 def test_cli_reads_router_from_sqlite_and_rejects_changed_profile(tmp_path, monkeypatch):
     from netctl import cli, db, route_availability
 

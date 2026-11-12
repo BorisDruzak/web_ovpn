@@ -5,8 +5,9 @@ from datetime import UTC, datetime
 from .network_probe_profiles import RouteProbe, RouteProfile
 from .network_route_local import probe_local_route
 from .netctl_client import NetctlError, run_netctl
+from .vpnctl_client import VpnctlError, run_vpnctl
 
-PROBE_STATUSES = {"reachable", "unreachable", "timeout", "unavailable", "failed"}
+PROBE_STATUSES = {"reachable", "unreachable", "timeout", "unavailable", "failed", "not_connected"}
 
 
 def _read_ipsec(source: str) -> dict:
@@ -58,10 +59,40 @@ def _ipsec_evidence(snapshot: dict, probe: RouteProbe) -> dict:
     return observed
 
 
-def _run_probe(profile_id: str, probe: RouteProbe) -> dict:
-    config_digest = probe.config_digest()
+def _read_openvpn_sessions() -> list[dict] | None:
     try:
-        if probe.router_source:
+        snapshot = run_vpnctl(["connected", "--source", "management"], timeout=5)
+    except (VpnctlError, OSError, UnicodeError):
+        return None
+    sessions = snapshot.get("connected")
+    if (
+        snapshot.get("status") != "ok" or snapshot.get("source") != "management"
+        or not isinstance(sessions, list)
+        or any(not isinstance(row, dict) or not isinstance(row.get("common_name"), str)
+               or not isinstance(row.get("virtual_address"), str) for row in sessions)
+    ):
+        return None
+    return sessions
+
+
+def _openvpn_session(probe: RouteProbe, sessions: list[dict] | None) -> str:
+    if sessions is None:
+        return "unavailable"
+    matches = [row for row in sessions if row["virtual_address"] == probe.target]
+    if len(matches) == 1 and matches[0]["common_name"] == probe.openvpn_client:
+        return "connected"
+    if matches or any(row["common_name"] == probe.openvpn_client for row in sessions):
+        return "address_mismatch"
+    return "not_connected"
+
+
+def _run_probe(profile_id: str, probe: RouteProbe, sessions: list[dict] | None = None) -> dict:
+    config_digest = probe.config_digest()
+    session = _openvpn_session(probe, sessions) if probe.openvpn_client else None
+    try:
+        if session is not None and session != "connected":
+            measurement = {"status": "unavailable" if session == "unavailable" else "not_connected"}
+        elif probe.router_source:
             measurement = run_netctl(
                 ["path", "probe", f"--profile={profile_id}", f"--probe={probe.id}",
                  f"--expected-config={config_digest}"], timeout=22,
@@ -76,6 +107,9 @@ def _run_probe(profile_id: str, probe: RouteProbe) -> dict:
         measurement = None
     if not isinstance(measurement, dict) or measurement.get("status") not in PROBE_STATUSES:
         measurement = {"status": "unavailable", "evidence": {"reason": "probe_runner_unavailable"}}
+    evidence = measurement.get("evidence", {})
+    if session is not None:
+        evidence = {**evidence, "openvpn_session": session}
     observed_path = measurement.get("observed_path")
     if not observed_path:
         path_status = "unconfirmed"
@@ -98,17 +132,19 @@ def _run_probe(profile_id: str, probe: RouteProbe) -> dict:
         "routing_table": probe.routing_table,
         "checked_at": datetime.now(UTC).isoformat(),
         "status": measurement["status"],
-        "evidence": measurement.get("evidence", {}),
+        "evidence": evidence,
         "reason": measurement.get("reason"),
         "kernel_route": measurement.get("kernel_route"),
+        **({"openvpn_client": probe.openvpn_client} if probe.openvpn_client else {}),
     }
 
 
 def run_route_matrix(profile_id: str, profile: RouteProfile) -> dict:
+    sessions = _read_openvpn_sessions() if any(probe.openvpn_client for probe in profile.probes) else None
     with ThreadPoolExecutor(max_workers=4) as pool:
         sources = {probe.router_source for probe in profile.probes if probe.ipsec}
         ipsec = {source: pool.submit(_read_ipsec, source) for source in sources}
-        probes = list(pool.map(lambda probe: _run_probe(profile_id, probe), profile.probes))
+        probes = list(pool.map(lambda probe: _run_probe(profile_id, probe, sessions), profile.probes))
     for definition, row in zip(profile.probes, probes, strict=True):
         if definition.ipsec:
             row["ipsec"] = _ipsec_evidence(ipsec[definition.router_source].result(), definition)

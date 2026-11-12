@@ -22,7 +22,7 @@ SCHEDULE_OWNER = "schedule:"
 _SCHEDULE_ACTION = "network-check-route-availability"
 _PROBE_SELECTORS = (
     "origin", "target", "protocol", "source_address", "interface", "routing_table",
-    "expected_path", "expected_first_hop",
+    "expected_path", "expected_first_hop", "openvpn_client",
 )
 
 

@@ -123,6 +123,7 @@ class RouteProbe(BaseModel):
     expected_dns_answers: list[Annotated[str, StringConstraints(min_length=1, max_length=255)]] = Field(
         default_factory=list, max_length=8,
     )
+    openvpn_client: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
     @field_validator("target", "source_address", "expected_first_hop")
     @classmethod
@@ -138,6 +139,8 @@ class RouteProbe(BaseModel):
     def validate_parameters(self):
         if self.router_source and self.agent_origin:
             raise ValueError("select one probe origin")
+        if self.openvpn_client and (self.router_source or self.agent_origin):
+            raise ValueError("OpenVPN session guard requires a probe from the VPN server")
         if self.router_source and self.protocol != "icmp":
             raise ValueError("RouterOS route probes require ICMP")
         if (self.interface or self.routing_table) and not self.router_source:
@@ -182,7 +185,8 @@ class RouteProbe(BaseModel):
         }
 
     def config_digest(self) -> str:
-        return hashlib.sha256(self.model_dump_json().encode("utf-8")).hexdigest()
+        exclude = {"openvpn_client"} if self.openvpn_client is None else None
+        return hashlib.sha256(self.model_dump_json(exclude=exclude).encode("utf-8")).hexdigest()
 
 
 class RouteProfile(BaseModel):
