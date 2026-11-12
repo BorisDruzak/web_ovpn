@@ -31,6 +31,7 @@ ROUTER_NEIGHBOR_MAX_AGE = timedelta(minutes=10)
 MAX_ROUTER_NEIGHBORS = 16
 PPPOE_METHOD = "Сессия PPPoE"
 PPPOE_SOURCE = "RouterOS · PPPoE"
+PPPOE_PARENT_LINK_MAX_AGE = timedelta(minutes=10)
 RESOURCE_CAPACITY_MAX_AGE = timedelta(minutes=5)
 GUEST_IO_MAX_AGE = timedelta(minutes=5)
 LACP_HEALTH_MAX_AGE = timedelta(minutes=5)
@@ -427,6 +428,11 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         session, parent = _text(pppoe.get("session"), 32), _text(pppoe.get("parent"), 32)
         if INTERFACE_NAME.fullmatch(session) and INTERFACE_NAME.fullmatch(parent):
             result["pppoe"] = {"session": session, "parent": parent, "state": pppoe["state"]}
+            link = pppoe.get("parentLink")
+            if (isinstance(link, dict) and link.get("state") in ("up", "down", "disabled")
+                    and observation_is_fresh(link.get("checkedAt"), now, max_age=PPPOE_PARENT_LINK_MAX_AGE)):
+                result["pppoe"]["parentLink"] = {"state": link["state"], "source": "RouterOS",
+                                                 "checkedAt": _time(link["checkedAt"]).isoformat()}
     reason = check.get("reason")
     if reason == "probe_configuration" and result["source"] == "UI_VPN" and result["method"] == "Настройки проверки":
         result["reason"] = reason

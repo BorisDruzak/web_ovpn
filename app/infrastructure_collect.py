@@ -1588,17 +1588,22 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             continue
         item = node("wan:" + wan["id"], f"PPPoE · {session}", "Сервис", nodes[router]["site"], "UI_VPN")
         edge(router, item["id"], "Размещение", "GitHub")
-        readings = [(sample["checkedAt"], row) for name, sample in network.get("pppoe", {}).items()
+        readings = [(name, sample["checkedAt"], row) for name, sample in network.get("pppoe", {}).items()
                     if source_nodes.get(name) == router
                     and observation_is_fresh(sample.get("checkedAt"), now, max_age=SERVICE_PROBE_MAX_AGE)
                     for row in sample["interfaces"] if row["name"] == session]
         check = {**_observation("unknown", "UI_VPN", PPPOE_METHOD, now.isoformat()), "required": True}
         if len(readings) == 1:
-            (checked_at, row), = readings
+            (source_name, checked_at, row), = readings
             status = "disabled" if row["disabled"] else "connected" if row["running"] else "disconnected"
+            parent = row["parent"]
+            session_details = {"session": session, "parent": parent, "state": status}
+            ports = [port for port in router_ports.get(source_name, []) if port["name"] == parent]
+            if len(ports) == 1:
+                session_details["parentLink"] = {key: ports[0][key] for key in ("state", "checkedAt")}
             check.update(state="reachable" if status == "connected" else "unreachable", checkedAt=checked_at,
-                         pppoe={"session": session, "parent": row["parent"], "state": status})
-            edge(router, item["id"], "Цель проверки", PPPOE_SOURCE, ports=(row["parent"], session), at=checked_at)
+                         pppoe=session_details)
+            edge(router, item["id"], "Цель проверки", PPPOE_SOURCE, ports=(parent, session), at=checked_at)
         item["serviceChecks"] = [check]
         item["reachability"] = _observation(check["state"], "Проверка сервиса", PPPOE_METHOD, check["checkedAt"])
     features = {item["id"]: item for item in context.get("features", []) if item.get("kind") == "policy_based_ipsec"}

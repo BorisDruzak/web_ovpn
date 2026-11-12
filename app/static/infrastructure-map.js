@@ -1193,6 +1193,11 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           title.addEventListener('click', () => select(guests[0].id));
         }
         row.append(title, make('small', result + http + rtsp + postgresql + smb + (reason ? ' · ' + reason + errorSource : '') + backup + policy + dns + rtt + attempts + gateway + egress + management + scope + source + time + identity + (check.stale ? ' · устарело' : '')));
+        if (pppoe?.parentLink) {
+          const {state, source, checkedAt} = pppoe.parentLink;
+          const link = {up: 'Линк поднят', down: 'Линк опущен', disabled: 'Порт отключён'}[state];
+          row.append(make('small', [pppoe.parent, link, source, formatTime(checkedAt)].join(' · ')));
+        }
         list.append(row);
       }
       propertiesSection.append(make('h3', 'Проверки'), list);

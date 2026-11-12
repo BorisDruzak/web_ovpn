@@ -3888,7 +3888,9 @@ def test_pppoe_wan_uses_live_session_and_keeps_physical_confirmation_separate(tm
     session = {"name": "pppoe-out1", "parent": "ether1-wan", "running": True, "disabled": False}
     network = {"sources": [{"name": "router", "driver": "mikrotik_ssh", "enabled": True,
                            "driver_options": {"intent_stable_id": "rb"}}],
-               "pppoe": {"router": {"checkedAt": at, "interfaces": [session]}}}
+               "pppoe": {"router": {"checkedAt": at, "interfaces": [session]}},
+               "router_interfaces": [{"source": "router", "name": "ether1-wan", "type": "ether",
+                                      "running": 1, "disabled": 0, "last_seen_at": at}]}
     path = tmp_path / "map.json"
 
     def read(public_at=now):
@@ -3899,11 +3901,19 @@ def test_pppoe_wan_uses_live_session_and_keeps_physical_confirmation_separate(tm
     service, links = read()
     assert service["mapStatus"] == "ok"
     check, = service["serviceChecks"]
-    assert check["required"] and check["pppoe"] == {"session": "pppoe-out1", "parent": "ether1-wan", "state": "connected"}
+    assert check["required"] and check["pppoe"] == {
+        "session": "pppoe-out1", "parent": "ether1-wan", "state": "connected",
+        "parentLink": {"state": "up", "source": "RouterOS", "checkedAt": at},
+    }
     assert any(r["a"] == "ether1-wan" and r["b"] == "pppoe-out1" for e in links for r in e["portEvidence"])
     assert not any("pairEvidence" in r for e in links for r in e["portEvidence"])
+    network["router_interfaces"][0]["last_seen_at"] = (now - timedelta(minutes=11)).isoformat()
+    assert "parentLink" not in read()[0]["serviceChecks"][0]["pppoe"]
+    network["router_interfaces"][0].update(running=0, last_seen_at=at)
     session["running"] = False
-    assert read()[0]["mapStatus"] == "critical"
+    service, _ = read()
+    assert service["mapStatus"] == "critical"
+    assert service["serviceChecks"][0]["pppoe"]["parentLink"]["state"] == "down"
     session["disabled"] = True
     service, _ = read()
     assert service["mapStatus"] == "critical"
