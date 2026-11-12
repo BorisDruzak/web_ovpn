@@ -57,6 +57,8 @@ OBSERVER_CHECK_LABELS = {
     "root_disk_free": "Свободно на корневом разделе",
     "data_disk_free": "Свободно на разделе данных",
     "rxdata_log_bytes": "Размер журналов Directum",
+    "windows_memory_available_bytes": "Доступно памяти в Windows",
+    "windows_memory_available_percent": "Доля доступной памяти Windows",
     "directumrx_active": "Служба Directum RX",
     "iis_active": "Служба IIS",
     "mongo_active": "Служба MongoDB",
@@ -74,6 +76,8 @@ OBSERVER_METRIC_UNITS = {
     "root_disk_free": "percent",
     "data_disk_free": "percent",
     "rxdata_log_bytes": "bytes",
+    "windows_memory_available_bytes": "bytes",
+    "windows_memory_available_percent": "percent",
 }
 PUBLIC_PROPERTIES = {
     "Модель", "VMID", "Размещение по GitHub", "Источник сбора",

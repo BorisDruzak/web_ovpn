@@ -63,7 +63,7 @@ def test_service_color_includes_required_observer_checks_and_confirmed_dependenc
         checks = [] if component is None else [{"name": "redis_tcp_6379", "status": component}]
         checks.append({"name": "c_disk_free", "status": "critical"})
         if component == "error":
-            checks[0]["error"] = "timeout"
+            checks[0]["message"] = "timeout"
         target = {"role": "directum", "status": "critical", "observed_at": observer_at, "checks": checks}
         report = {"freshness": "missing" if missing else "current", "targets": [] if missing else [target]}
         context = {"devices": [{"id": "vm", "name": "VM", "kind": "server"}]}
@@ -115,6 +115,8 @@ def test_observer_disk_measurements_publish_units_and_reported_warning_threshold
         {"role": "directum", "status": "critical", "observed_at": stamp, "checks": [
             {"name": "c_disk_free", "status": "critical", "observed": 5.32, "expected": 15},
             {"name": "rxdata_log_bytes", "status": "ok", "observed": 9 * 2**30, "expected": 20 * 2**30},
+            {"name": "windows_memory_available_bytes", "status": "ok", "observed": 2**30},
+            {"name": "windows_memory_available_percent", "status": "ok", "observed": 12.5},
             {"name": "data_disk_free", "status": "ok", "observed": 102, "expected": "unrelated"},
             {"name": "unrelated_metric", "status": "ok", "observed": 42, "expected": 45},
         ]},
@@ -133,6 +135,11 @@ def test_observer_disk_measurements_publish_units_and_reported_warning_threshold
     assert (disk["unit"], disk["observed"], disk["warningThreshold"]) == ("percent", 5.32, 15)
     logs = checks["rxdata_log_bytes"]
     assert (logs["unit"], logs["observed"], logs["warningThreshold"]) == ("bytes", 9 * 2**30, 20 * 2**30)
+    assert checks["windows_memory_available_bytes"]["unit"] == "bytes"
+    assert checks["windows_memory_available_bytes"]["observed"] == 2**30
+    assert checks["windows_memory_available_percent"]["unit"] == "percent"
+    assert checks["windows_memory_available_percent"]["observed"] == 12.5
+    assert "warningThreshold" not in checks["windows_memory_available_percent"]
     assert checks["data_disk_free"]["observed"] is None
     assert "warningThreshold" not in checks["data_disk_free"]
     assert "warningThreshold" not in checks["unrelated_metric"]

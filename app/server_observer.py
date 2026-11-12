@@ -156,6 +156,10 @@ _DIRECTUM_BODY = (
     "services=@{directumrx=[bool]($directum -and $directum.Status -eq 'Running');"
     "mongo=[bool](& $running 'MongoDB');rabbitmq=[bool](& $running 'RabbitMQ');"
     "redis=[bool](& $running 'Redis');iis=[bool](& $running 'W3SVC');dns=[bool](& $running 'DNS')}};"
+    "try{$os=Get-CimInstance Win32_OperatingSystem -Property FreePhysicalMemory,TotalVisibleMemorySize -ErrorAction Stop;"
+    "if($null -ne $os.FreePhysicalMemory -and $null -ne $os.TotalVisibleMemorySize){"
+    "$report|Add-Member -NotePropertyName memory -NotePropertyValue @{"
+    "available_kib=[int64]$os.FreePhysicalMemory;visible_kib=[int64]$os.TotalVisibleMemorySize}}}catch{};"
 )
 
 
@@ -658,6 +662,7 @@ def _checks_from_payload(
     elif role == "directum":
         _append_disk_check(checks, source, payload, "free_percent", "c_disk_free", latency_ms)
         _append_log_check(checks, source, payload, latency_ms)
+        _append_windows_memory_checks(checks, source, payload.get("memory"), latency_ms)
         for service, name in (
             ("directumrx", "directumrx_active"), ("mongo", "mongo_active"),
             ("rabbitmq", "rabbitmq_active"), ("redis", "redis_active"),
@@ -786,6 +791,22 @@ def _append_log_check(
     checks.append({"name": "rxdata_log_bytes", "source": source,
                    "status": classify_directum_logs(value), "observed": value,
                    "expected": 20 * 1024**3, "latency_ms": latency_ms})
+
+
+def _append_windows_memory_checks(
+    checks: list[dict[str, Any]], source: str, memory: object, latency_ms: float,
+) -> None:
+    if not isinstance(memory, dict):
+        return
+    available, visible = memory.get("available_kib"), memory.get("visible_kib")
+    if (type(available) is not int or type(visible) is not int
+            or not 0 <= available <= visible < 2**43 or visible == 0):
+        return
+    for name, value in (
+        ("windows_memory_available_bytes", available * 1024),
+        ("windows_memory_available_percent", round(100 * available / visible, 2)),
+    ):
+        checks.append({"name": name, "source": source, "status": "ok", "observed": value, "latency_ms": latency_ms})
 
 
 def _append_service_check(

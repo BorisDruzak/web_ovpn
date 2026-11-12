@@ -421,6 +421,38 @@ def test_file_server_probe_checks_windows_e_volume_smb_and_ssh():
     assert "& $running 'sshd'" in probe
 
 
+@pytest.mark.parametrize("memory,expected", [
+    ({"available_kib": 2 * 2**20, "visible_kib": 8 * 2**20}, (2 * 2**30, 25.0)),
+    ({"available_kib": 0, "visible_kib": 8 * 2**20}, (0, 0.0)),
+    ({"available_kib": 10, "visible_kib": 9}, None),
+    ({"available_kib": False, "visible_kib": 9}, None),
+    (None, None),
+])
+def test_directum_memory_is_optional_and_uses_windows_visible_memory(memory, expected):
+    config = runtime_config()
+    config["targets"] = [next(t for t in config["targets"] if t["role"] == "directum")]
+
+    def runner(command, **kwargs):
+        assert "Get-CimInstance Win32_OperatingSystem" in decode_windows_probe(command[-1])
+        completed = healthy_runner(command, **kwargs)
+        payload = json.loads(completed.stdout)
+        payload["memory"] = memory
+        completed.stdout = json.dumps(payload)
+        return completed
+
+    snapshot = collect(config, runner=runner, now=parse_utc("2026-07-18T20:00:00Z"))
+    directum = target(snapshot, "directum")
+    checks = [check for check in directum["checks"] if check["name"].startswith("windows_memory_")]
+    assert directum["status"] == "ok"
+    if expected is None:
+        assert not checks
+    else:
+        assert [(check["name"], check["observed"]) for check in checks] == [
+            ("windows_memory_available_bytes", expected[0]), ("windows_memory_available_percent", expected[1]),
+        ]
+        assert all("expected" not in check for check in checks)
+
+
 def test_directum_probe_recursively_sums_rxdata_logs():
     calls = []
 
