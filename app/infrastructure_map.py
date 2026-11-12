@@ -18,7 +18,10 @@ from netctl.snmp.lldp import LLDP_PORT_ID_SUBTYPES
 from .endpoint_context_adapter import get_endpoint_context_adapter
 from .endpoint_platform_client import EndpointPlatformServiceError
 from .server_observer import STALE_AFTER as SERVER_OBSERVER_MAX_AGE
-from .server_observer import valid_acti_backup_job
+from .server_observer import (
+    ACTI_BACKUP_MAX_REPOSITORY_BYTES, ACTI_BACKUP_MIN_FREE_GIB, ACTI_BACKUP_WATCHDOG_MAX_AGE,
+    valid_acti_backup_job, valid_acti_backup_repository,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -170,7 +173,7 @@ def _number(value: object) -> int | float | None:
     return value if type(value) is float and math.isfinite(value) else None
 
 
-def _observer_measurement(check: dict, name: str) -> dict:
+def _observer_measurement(check: dict, name: str, now: datetime) -> dict:
     job = check.get("backup_job")
     if name == "backup_job" and valid_acti_backup_job(job):
         completed = job["completed_at"]
@@ -178,6 +181,14 @@ def _observer_measurement(check: dict, name: str) -> dict:
                               "timerActive": job["timer_active"],
                               "completedAt": datetime.fromtimestamp(completed, timezone.utc).isoformat()
                               if completed is not None else None}}
+    repo = check.get("backup_repository")
+    if name == "repository_capacity" and valid_acti_backup_repository(repo):
+        measured = datetime.fromtimestamp(repo["checked_at"], timezone.utc)
+        if timedelta(0) <= now - measured <= ACTI_BACKUP_WATCHDOG_MAX_AGE:
+            return {"backupRepository": {
+                "checkedAt": measured.isoformat(), "usedBytes": repo["used_bytes"], "freeGiB": repo["free_gib"],
+                "maximumBytes": ACTI_BACKUP_MAX_REPOSITORY_BYTES, "minimumFreeGiB": ACTI_BACKUP_MIN_FREE_GIB,
+            }}
     unit = OBSERVER_METRIC_UNITS.get(name)
     observed = _number(check.get("observed"))
     if unit is None:
@@ -1075,7 +1086,7 @@ def _public_node(row: dict, now: datetime) -> dict:
                 and check_counts[name] == 1 and check.get("status") == "unknown"
                 and check.get("error") in OBSERVER_CHECK_ERRORS else {}),
              "checkedAt": observer["at"] if observer else None, "stale": not observer or observer["stale"],
-             **_observer_measurement(check, name), "latency": _number(check.get("latency"))}
+             **_observer_measurement(check, name, now), "latency": _number(check.get("latency"))}
             for check in checks
             for name in [_text(check.get("name"), 64)]
         ],
@@ -1682,7 +1693,8 @@ def summarize_services(graph: dict) -> dict:
             {"check": check["name"], "label": check.get("label", check["name"]),
              "required": check.get("required") is True,
              "status": check["status"], "source": "Server Observer",
-             **{key: check[key] for key in ("checkedAt", "stale", "error", "unit", "observed", "warningThreshold", "backupJob", "sourceNodeId")
+             **{key: check[key] for key in ("checkedAt", "stale", "error", "unit", "observed", "warningThreshold",
+                                           "backupJob", "backupRepository", "sourceNodeId")
                 if key in check}}
             for check in node["checks"] if check.get("required") or check["status"] in ("critical", "warn")
         ]

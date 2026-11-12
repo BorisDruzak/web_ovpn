@@ -569,7 +569,9 @@ def test_acti_service_reflects_backup_dependency_on_inventory_host(tmp_path):
         {"role": "acti_backup", "status": "critical", "observed_at": stamp,
          "checks": [{"name": "watchdog_fresh", "status": "ok"},
                     {"name": "backup_snapshot_fresh", "status": "critical"},
-                    {"name": "repository_capacity", "status": "ok"}]},
+                    {"name": "repository_capacity", "status": "ok", "backup_repository": {
+                        "checked_at": int((now - timedelta(hours=1)).timestamp()), "used_bytes": 2**30, "free_gib": 200,
+                    }}]},
         {"role": "acti", "status": "ok", "observed_at": stamp,
          "checks": [{"name": "https_ready", "status": "ok"},
                     {"name": "backup_job", "status": "critical", "backup_job": {
@@ -604,6 +606,11 @@ def test_acti_service_reflects_backup_dependency_on_inventory_host(tmp_path):
                                 "exitCode": 1, "timerActive": True}
     backup_job, = [check for check in nodes["role:acti_backup"]["checks"] if check["name"] == "backup_job"]
     assert backup_job == {**job, "required": False, "sourceNodeId": "role:acti"}
+    capacity, = [check for check in nodes["role:acti_backup"]["checks"] if check["name"] == "repository_capacity"]
+    assert capacity["backupRepository"] == {
+        "checkedAt": (now - timedelta(hours=1)).replace(microsecond=0).isoformat(), "usedBytes": 2**30,
+        "freeGiB": 200, "maximumBytes": 300 * 2**30, "minimumFreeGiB": 100,
+    }
     audit = summarize_services(load_infrastructure_map(path, now))["serviceAudit"]["services"]
     acti, = [service for service in audit if service["id"] == "role:acti"]
     issue, = [issue for issue in acti["issues"] if issue["check"] == "backup_job"]

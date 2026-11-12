@@ -47,7 +47,7 @@ SNAPSHOT_FILE_MODE = 0o640
 SNAPSHOT_REPLACE_ATTEMPTS = 3
 SNAPSHOT_REPLACE_RETRY_SECONDS = 0.01
 _PUBLIC_CHECK_FIELDS = frozenset(
-    {"name", "source", "status", "observed", "expected", "latency_ms", "error", "backup_job"}
+    {"name", "source", "status", "observed", "expected", "latency_ms", "error", "backup_job", "backup_repository"}
 )
 _STATUS_PRIORITY = {"ok": 0, "warn": 1, "critical": 2, "error": 3}
 _SAFE_CHECK_NAMES = re.compile(r"[a-z][a-z0-9_]{0,63}$")
@@ -83,6 +83,9 @@ ACTI_CA_PATH = "/etc/openvpn-web/acti-ca.crt"
 ACTI_SERVICES = ("frontend", "api", "postgres", "redis", "worker", "keycloak")
 ACTI_FLAGS = ("worker_heartbeat", "mounts_verified", "storage_capacity", "outbox_healthy", "backup_fresh", "backup_check_fresh")
 ACTI_BACKUP_FLAGS = ("watchdog_fresh", "backup_snapshot_fresh", "repository_capacity")
+ACTI_BACKUP_MAX_REPOSITORY_BYTES = 300 * 2**30
+ACTI_BACKUP_MIN_FREE_GIB = 100
+ACTI_BACKUP_WATCHDOG_MAX_AGE = timedelta(hours=30)
 ACTI_HTTPS_CHECKS = (
     ("https_live", "/api/v1/health/live"),
     ("https_ready", "/api/v1/health/ready"),
@@ -135,6 +138,8 @@ $ok=$ok-and$n-eq[math]::Floor($n)-and$p.repository_entries-eq[math]::Floor($p.re
 $a=T $p.checked_utc;$z=[datetimeoffset]::UtcNow;$t=[datetimeoffset]$e.TimeGenerated.ToUniversalTime();
 $fresh=$ok-and$null-ne$a-and($z-$a).TotalHours-le 30-and($z-$a).TotalMinutes-ge -5-and($z-$t).TotalHours-le 30-and($z-$t).TotalMinutes-ge -5-and[math]::Abs(($a-$t).TotalMinutes)-le 5;
 if($fresh){$r.watchdog_fresh=$true;$r.repository_capacity=$p.free_gib-ge 100-and$b-le 322122547200;
+if($b-le 9007199254740991-and$p.free_gib-le 9007199254740991){$r.backup_repository=@{
+checked_at=[long]($a.ToUnixTimeSeconds());used_bytes=[long]$b;free_gib=[double]$p.free_gib}};
 $s=T $p.newest_snapshot_utc;$h=$null;if($s){$h=($z-$s).TotalHours};
 $v=$n-gt 0-and(N $x)-and(N $h)-and[math]::Abs(($a-$s).TotalHours-$x)-le(1.0/12);
 $r.backup_snapshot_fresh=$v-and$x-le 30-and$h-le 30;
@@ -693,6 +698,9 @@ def _checks_from_payload(
     if role == "acti_backup":
         for name in ACTI_BACKUP_FLAGS:
             _append_boolean_check(checks, source, payload, name, name, latency_ms)
+        if "backup_repository" in payload:
+            capacity = next(check for check in checks if check["name"] == "repository_capacity")
+            capacity["backup_repository"] = payload["backup_repository"]
         if "snapshot_count" in payload:
             count = payload["snapshot_count"]
             age = payload["snapshot_age_hours"]
@@ -776,11 +784,19 @@ def valid_acti_backup_job(job: Any) -> bool:
     )
 
 
+def valid_acti_backup_repository(repo: Any) -> bool:
+    if not isinstance(repo, dict) or set(repo) != {"checked_at", "used_bytes", "free_gib"}:
+        return False
+    stamp, used, free = (repo[key] for key in ("checked_at", "used_bytes", "free_gib"))
+    return (type(stamp) is int and 0 < stamp < 10**10 and type(used) is int and 0 <= used < 2**53
+            and type(free) in (int, float) and 0 <= free < 2**53)
+
+
 def _require_role_payload(role: str, payload: dict[str, Any]) -> None:
     if role == "acti_backup":
         required = {"format", "services", *ACTI_BACKUP_FLAGS}
         measurements = {"snapshot_count", "snapshot_age_hours"}
-        if (set(payload) not in (required, required | measurements)
+        if (set(payload) not in (required, required | measurements, required | measurements | {"backup_repository"})
             or payload.get("format") != "acti-backup-observer-v1"
             or payload.get("services") != {}
             or any(type(payload.get(field)) is not bool for field in ACTI_BACKUP_FLAGS)):
@@ -790,6 +806,12 @@ def _require_role_payload(role: str, payload: dict[str, Any]) -> None:
             age = payload["snapshot_age_hours"]
             if (not payload["watchdog_fresh"] or type(count) is not int or not 0 <= count < 2**53
                     or age is not None and (count == 0 or type(age) not in (int, float) or not 0 <= age < 2**53)):
+                raise _ProbeFailure("unexpected_response")
+        if "backup_repository" in payload:
+            repo = payload["backup_repository"]
+            if (not valid_acti_backup_repository(repo) or payload["repository_capacity"] != (
+                    repo["free_gib"] >= ACTI_BACKUP_MIN_FREE_GIB
+                    and repo["used_bytes"] <= ACTI_BACKUP_MAX_REPOSITORY_BYTES)):
                 raise _ProbeFailure("unexpected_response")
         return
     if role == "acti":
@@ -983,6 +1005,10 @@ def public_check(check: dict[str, Any]) -> dict[str, Any]:
         if name != "backup_job" or not valid_acti_backup_job(check["backup_job"]):
             raise ValueError("backup job details are not allowed")
         public["backup_job"] = check["backup_job"]
+    if "backup_repository" in check:
+        if name != "repository_capacity" or not valid_acti_backup_repository(check["backup_repository"]):
+            raise ValueError("backup repository measurements are not allowed")
+        public["backup_repository"] = check["backup_repository"]
     return public
 
 

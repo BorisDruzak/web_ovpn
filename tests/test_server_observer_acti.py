@@ -309,7 +309,7 @@ def test_acti_https_contract_errors_are_redacted_and_do_not_skip_later_checks(
 
 def test_backup_probe_is_fixed_read_only_bounded_windows_command():
     command = observer._ROLE_PROBES["acti_backup"]
-    assert len(command) <= 7000
+    assert len(command) <= 7600
     body = base64.b64decode(command.split("-EncodedCommand ")[1]).decode("utf-16le")
     assert "Get-EventLog -LogName Application -Source ACTIBackup -Newest 1" in body
     for forbidden in (
@@ -480,7 +480,7 @@ def test_backup_eventlog_program_validates_owned_report_without_writes(mutation)
         "repository_capacity",
     }
     if data["watchdog_fresh"]:
-        expected_fields |= {"snapshot_count", "snapshot_age_hours"}
+        expected_fields |= {"snapshot_count", "snapshot_age_hours", "backup_repository"}
     assert set(data) == expected_fields
     if mutation == "healthy":
         assert all(
@@ -492,6 +492,13 @@ def test_backup_eventlog_program_validates_owned_report_without_writes(mutation)
         assert checks["backup_snapshot_fresh"]["expected"] == 30
         assert checks["backup_snapshot_fresh"]["observed"] == data["snapshot_age_hours"]
         assert checks["backup_snapshot_count"]["observed"] == 2
+        usage = data["backup_repository"]
+        assert usage == {"checked_at": int(now.timestamp()), "used_bytes": 1000, "free_gib": 1000}
+        assert observer.public_check(checks["repository_capacity"])["backup_repository"] == usage
+        with pytest.raises(observer._ProbeFailure):
+            observer._checks_from_payload("acti_backup", "gateway", {
+                **data, "backup_repository": {**usage, "free_gib": 1},
+            }, 1)
     elif mutation == "capacity":
         assert (
             data["watchdog_fresh"] is True
