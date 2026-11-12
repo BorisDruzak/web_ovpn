@@ -241,6 +241,56 @@ def _dgs_fixture_transport() -> _PagedFixtureTransport:
     return transport
 
 
+@pytest.mark.parametrize(
+    ("outcome", "value_type", "out_value", "stored_outcome"),
+    [
+        (SnmpOutcome.SUCCESS_WITH_ROWS, "counter64", 0, SnmpOutcome.SUCCESS_WITH_ROWS),
+        (SnmpOutcome.SUCCESS_WITH_ROWS, "counter32", None, SnmpOutcome.PARSE_ERROR),
+        (SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT, "counter64", None, SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT),
+        (SnmpOutcome.TIMEOUT, "counter64", None, SnmpOutcome.TIMEOUT),
+    ],
+)
+def test_broadcast_snmp_columns_are_optional_and_join_by_ifindex(outcome, value_type, out_value, stored_outcome):
+    from netctl.snmp.oids import IF_HC_IN_OCTETS, IF_HC_OUT_OCTETS, IF_INDEX
+
+    transport = _dgs_fixture_transport()
+    if_index = transport.results[IF_INDEX].rows[0].value
+    in_broadcast, out_broadcast, discontinuity = [
+        (1, 3, 6, 1, 2, 1, 31, 1, 1, 1, column) for column in (9, 13, 19)
+    ]
+    for oid, capability in [(IF_HC_IN_OCTETS, "if_hc_in_octets"), (IF_HC_OUT_OCTETS, "if_hc_out_octets")]:
+        transport.results[oid] = CapabilityResult(
+            capability, SnmpOutcome.SUCCESS_WITH_ROWS, (SnmpVarBind(oid + (if_index,), "counter64", 123),),
+        )
+    transport.results[in_broadcast] = CapabilityResult(
+        "if_hc_in_broadcast_packets", SnmpOutcome.SUCCESS_WITH_ROWS,
+        (
+            SnmpVarBind(in_broadcast + (if_index,), "counter64", 2**63 + 1),
+            SnmpVarBind(in_broadcast + (2_147_483_647,), "counter64", 8),
+        ),
+    )
+    transport.results[out_broadcast] = CapabilityResult(
+        "if_hc_out_broadcast_packets", outcome,
+        (SnmpVarBind(out_broadcast + (if_index,), value_type, 0),) if outcome is SnmpOutcome.SUCCESS_WITH_ROWS else (),
+    )
+    transport.results[discontinuity] = CapabilityResult(
+        "if_counter_discontinuity_time", SnmpOutcome.SUCCESS_WITH_ROWS,
+        (SnmpVarBind(discontinuity + (if_index,), "time_ticks", 0),),
+    )
+
+    snapshot = asyncio.run(collect_switch_snapshot({}, transport))
+
+    assert snapshot.fdb
+    capabilities = {item.capability: item.outcome for item in snapshot.capabilities}
+    assert capabilities["counter_samples"] is SnmpOutcome.SUCCESS_WITH_ROWS
+    assert capabilities["if_hc_out_broadcast_packets"] is stored_outcome
+    [sample] = snapshot.counter_samples
+    assert sample.if_index == if_index
+    assert sample.in_broadcast_packets == 2**63 + 1
+    assert sample.out_broadcast_packets == out_value
+    assert sample.counter_discontinuity_ticks == 0
+
+
 def test_ifx_timeout_keeps_valid_core_bridge_and_fdb_snapshot() -> None:
     from netctl.snmp.oids import IF_HIGH_SPEED
 

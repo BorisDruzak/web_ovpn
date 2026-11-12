@@ -153,6 +153,9 @@ class SwitchCounterSample:
     in_octets: int | None
     out_octets: int | None
     octet_counter_bits: int | None
+    in_broadcast_packets: int | None = None
+    out_broadcast_packets: int | None = None
+    counter_discontinuity_ticks: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -166,6 +169,9 @@ class SwitchCounterSample:
             "in_octets": self.in_octets,
             "out_octets": self.out_octets,
             "octet_counter_bits": self.octet_counter_bits,
+            "in_broadcast_packets": self.in_broadcast_packets,
+            "out_broadcast_packets": self.out_broadcast_packets,
+            "counter_discontinuity_ticks": self.counter_discontinuity_ticks,
         }
 
 

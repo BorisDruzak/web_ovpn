@@ -611,7 +611,7 @@ def test_counter_timeout_is_partial_and_does_not_destroy_fdb(
     ).fetchone()[0] == "unsupported"
 
 
-def test_unsigned_64_bit_octets_are_persisted_without_precision_loss(
+def test_unsigned_64_bit_octets_and_broadcast_counters_are_persisted_without_precision_loss(
     switch_conn: sqlite3.Connection,
 ) -> None:
     from netctl.switch_store import collect_and_save_switch
@@ -620,7 +620,10 @@ def test_unsigned_64_bit_octets_are_persisted_without_precision_loss(
     value = 2**63 + 123
     snapshot = _with_counter_sample(
         _snapshot((_entry("02:00:00:00:00:03", 1),)),
-        _counter_sample(in_octets=value, out_octets=value + 1),
+        replace(
+            _counter_sample(in_octets=value, out_octets=value + 1),
+            in_broadcast_packets=value, out_broadcast_packets=2**64 - 1, counter_discontinuity_ticks=0,
+        ),
     )
 
     result = collect_and_save_switch(
@@ -630,13 +633,14 @@ def test_unsigned_64_bit_octets_are_persisted_without_precision_loss(
         "2026-08-09T10:00:00Z",
     )
     row = switch_conn.execute(
-        """SELECT typeof(in_octets), in_octets, typeof(out_octets), out_octets
+        """SELECT typeof(in_octets), in_octets, typeof(out_octets), out_octets,
+                  typeof(in_broadcast_packets), in_broadcast_packets, out_broadcast_packets, counter_discontinuity_ticks
            FROM switch_port_counter_samples WHERE source_id = ?""",
         (source["id"],),
     ).fetchone()
 
     assert result["status"] == "success"
-    assert tuple(row) == ("text", str(value), "text", str(value + 1))
+    assert tuple(row) == ("text", str(value), "text", str(value + 1), "text", str(value), str(2**64 - 1), 0)
 
 
 _STP_CAPABILITIES = (

@@ -561,6 +561,11 @@ def _valid_counter_sample(sample: SwitchCounterSample) -> bool:
         and _valid_optional_int(
             sample.out_octets, minimum=0, maximum=octet_maximum
         )
+        and all(
+            _valid_optional_int(value, minimum=0, maximum=2**64 - 1)
+            for value in (sample.in_broadcast_packets, sample.out_broadcast_packets)
+        )
+        and _valid_optional_int(sample.counter_discontinuity_ticks, minimum=0, maximum=2**32 - 1)
     )
 
 
@@ -1469,8 +1474,9 @@ def _persist_counter_telemetry(
             INSERT INTO switch_port_counter_samples (
                 source_id, collector_run_id, port_key, if_index, observed_at,
                 sys_uptime_ticks, octet_counter_bits, in_octets, out_octets,
-                in_errors, out_errors, in_discards, out_discards, speed_bps
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                in_errors, out_errors, in_discards, out_discards, speed_bps,
+                in_broadcast_packets, out_broadcast_packets, counter_discontinuity_ticks
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 source_id,
@@ -1487,6 +1493,9 @@ def _persist_counter_telemetry(
                 sample.in_discards,
                 sample.out_discards,
                 speeds[sample.port_key],
+                str(sample.in_broadcast_packets) if sample.in_broadcast_packets is not None else None,
+                str(sample.out_broadcast_packets) if sample.out_broadcast_packets is not None else None,
+                sample.counter_discontinuity_ticks,
             ),
         )
         telemetry = derive_port_telemetry(

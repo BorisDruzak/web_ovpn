@@ -2145,6 +2145,17 @@ def _migration_28(conn: sqlite3.Connection) -> None:
     """)
 
 
+def _migration_29(conn: sqlite3.Connection) -> None:
+    conn.execute("ALTER TABLE switch_port_counter_samples ADD COLUMN in_broadcast_packets TEXT")
+    conn.execute("ALTER TABLE switch_port_counter_samples ADD COLUMN out_broadcast_packets TEXT")
+    conn.execute("ALTER TABLE switch_port_counter_samples ADD COLUMN counter_discontinuity_ticks INTEGER")
+    conn.execute("""
+        CREATE INDEX switch_port_broadcast_samples_source_time_idx
+        ON switch_port_counter_samples(source_id, observed_at DESC, id DESC)
+        WHERE in_broadcast_packets IS NOT NULL OR out_broadcast_packets IS NOT NULL
+    """)
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1),
     (2, _migration_2),
@@ -2174,6 +2185,7 @@ MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (26, _migration_26),
     (27, _migration_27),
     (28, _migration_28),
+    (29, _migration_29),
 )
 
 

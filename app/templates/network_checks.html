@@ -69,14 +69,27 @@
   <p>Окно наблюдений {{ result.result.since }} — {{ result.result.until }}</p>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>Коммутатор</th><th>Оценка</th><th>Охват FDB / STP</th><th>Порты и VLAN</th></tr></thead>
+      <thead><tr><th>Коммутатор</th><th>Оценка</th><th>Охват наблюдений</th><th>Порты и VLAN</th></tr></thead>
       <tbody>
         {% for device in result.result.sources %}
         <tr><td>{{ device.source }}</td><td>{{ status_labels.get(device.status, device.status) }}</td>
-          <td>{{ device.coverage.fdb.status }} / {{ device.coverage.stp.status }}</td>
+          <td>
+            FDB {{ device.coverage.fdb.status }} / STP {{ device.coverage.stp.status }}
+            {% set broadcast = device.coverage.broadcast %}
+            {% if broadcast is defined %}
+            <br>Широковещание · {{ {'recent': 'есть интервалы', 'stale': 'устарело', 'insufficient': 'мало данных'}.get(broadcast.status, 'нет данных') }}
+            {% if broadcast.status == 'recent' %} · портов {{ broadcast.sampled_ports }}{% endif %}
+            {% endif %}
+          </td>
           <td>
             {% for item in device.evidence %}
             <div>{{ item.ports | join(' ↔ ') }} · VLAN {{ item.vlan_id }} · {{ item.mac }}</div>
+            {% for sample in item.broadcast_intervals %}
+            <div>{{ sample.port_key }} · вход / выход
+              {{ '%.1f' | format(sample.in_pps) if sample.in_pps is not none else '—' }} /
+              {{ '%.1f' | format(sample.out_pps) if sample.out_pps is not none else '—' }} пак/с
+              · {{ sample.interval_seconds }} с · до <time datetime="{{ sample.until }}">{{ sample.until }}</time></div>
+            {% endfor %}
             {% else %}—{% endfor %}
           </td>
         </tr>

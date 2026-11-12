@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Protocol
 
-from .counters import parse_counter_samples
+from .counters import parse_broadcast_column, parse_counter_samples
 from .fdb import parse_legacy_fdb, parse_qbridge_fdb_with_rejections
 from .interfaces import parse_bridge_port_map, parse_interfaces
 from .lldp import parse_lldp_neighbors
@@ -37,8 +38,11 @@ from .oids import (
     DOT1D_STP_TOPOLOGY_CHANGES,
     IF_ADMIN_STATUS,
     IF_ALIAS,
+    IF_COUNTER_DISCONTINUITY_TIME,
     IF_DESCR,
+    IF_HC_IN_BROADCAST_PACKETS,
     IF_HC_IN_OCTETS,
+    IF_HC_OUT_BROADCAST_PACKETS,
     IF_HC_OUT_OCTETS,
     IF_HIGH_SPEED,
     IF_INDEX,
@@ -111,6 +115,11 @@ _USABLE_REQUIRED_OUTCOMES = {
     SnmpOutcome.SUCCESS_WITH_ROWS,
     SnmpOutcome.SUCCESS_EMPTY,
 }
+_BROADCAST_COUNTER_COLUMNS = (
+    (IF_HC_IN_BROADCAST_PACKETS, "if_hc_in_broadcast_packets", "in_broadcast_packets", "counter64"),
+    (IF_HC_OUT_BROADCAST_PACKETS, "if_hc_out_broadcast_packets", "out_broadcast_packets", "counter64"),
+    (IF_COUNTER_DISCONTINUITY_TIME, "if_counter_discontinuity_time", "counter_discontinuity_ticks", "time_ticks"),
+)
 
 
 def _rows(results: tuple[CapabilityResult, ...]) -> tuple[SnmpVarBind, ...]:
@@ -750,6 +759,24 @@ async def collect_switch_snapshot(
                 error_message="SNMP counter rows are malformed",
             )
         else:
+            if counter_samples:
+                broadcast_columns = {}
+                for oid, capability, field, value_type in _BROADCAST_COUNTER_COLUMNS:
+                    result = await transport.walk(oid, capability=capability)
+                    if result.outcome is SnmpOutcome.SUCCESS_WITH_ROWS:
+                        try:
+                            broadcast_columns[field] = parse_broadcast_column(result, oid, value_type=value_type)
+                        except ValueError:
+                            result = _optional_group_result(
+                                capability, SnmpOutcome.PARSE_ERROR,
+                                error_code="malformed_broadcast_counters",
+                                error_message="SNMP broadcast counter rows are malformed",
+                            )
+                    capabilities.append(result)
+                counter_samples = tuple(
+                    replace(sample, **{field: values.get(sample.if_index) for field, values in broadcast_columns.items()})
+                    for sample in counter_samples
+                )
             counter_group = _optional_group_result(
                 "counter_samples",
                 (

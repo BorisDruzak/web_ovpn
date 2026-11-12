@@ -6,11 +6,14 @@ from datetime import UTC, datetime, timedelta
 WINDOW = timedelta(hours=1)
 MAX_REVERSAL_GAP = timedelta(minutes=15)
 STP_CORRELATION_MARGIN = timedelta(minutes=10)
+MAX_BROADCAST_INTERVAL = timedelta(minutes=15)
 MAX_SOURCES = 50
 MAX_FDB_EVENTS = 2_000
 MAX_STP_EVENTS = 100
+MAX_BROADCAST_SAMPLES = 2_000
 MAX_FINDINGS = 20
 MAX_STP_EVENTS_PER_FINDING = 5
+MAX_BROADCAST_INTERVALS_PER_FINDING = 12
 MIN_FDB_POLLS = 3
 STATUS_PRIORITY = ("no_evidence", "insufficient_data", "mac_flapping", "suspected_loop")
 
@@ -109,7 +112,129 @@ def _find_reversals(
     return [finding for _, finding in sorted(findings.values(), key=lambda entry: entry[0], reverse=True)]
 
 
-def _read_source(conn: sqlite3.Connection, device: sqlite3.Row, since: datetime, until: datetime) -> dict:
+def _broadcast_delta(current: str | None, previous: str | None) -> int | None:
+    if current is None or previous is None:
+        return None
+    try:
+        after, before = int(current), int(previous)
+    except ValueError:
+        return None
+    if not (0 <= after < 2**64 and 0 <= before < 2**64):
+        return None
+    return after - before
+
+
+def _broadcast_rates(
+    samples: list[tuple[datetime, sqlite3.Row]],
+) -> list[tuple[datetime, datetime, dict]]:
+    previous_by_port: dict[str, tuple[datetime, sqlite3.Row]] = {}
+    intervals = []
+    for at, current in sorted(samples, key=lambda item: (item[0], item[1]["id"])):
+        port = current["port_key"]
+        prior = previous_by_port.get(port)
+        previous_by_port[port] = (at, current)
+        if prior is None:
+            continue
+        prior_at, previous = prior
+        elapsed = at - prior_at
+        if (
+            not timedelta(0) < elapsed <= MAX_BROADCAST_INTERVAL
+            or current["if_index"] is None or current["if_index"] != previous["if_index"]
+            or current["sys_uptime_ticks"] is None or previous["sys_uptime_ticks"] is None
+            or current["sys_uptime_ticks"] <= previous["sys_uptime_ticks"]
+            or current["counter_discontinuity_ticks"] is None
+            or current["counter_discontinuity_ticks"] != previous["counter_discontinuity_ticks"]
+        ):
+            continue
+        in_delta, out_delta = (
+            _broadcast_delta(current[key], previous[key])
+            for key in ("in_broadcast_packets", "out_broadcast_packets")
+        )
+        deltas = [delta for delta in (in_delta, out_delta) if delta is not None]
+        if not deltas or min(deltas) < 0:
+            continue
+        seconds = elapsed.total_seconds()
+        intervals.append((prior_at, at, {
+            "port_key": port,
+            "if_index": current["if_index"],
+            "since": previous["observed_at"],
+            "until": current["observed_at"],
+            "interval_seconds": seconds,
+            "in_pps": in_delta / seconds if in_delta is not None else None,
+            "out_pps": out_delta / seconds if out_delta is not None else None,
+        }))
+    return intervals
+
+
+def _broadcast_evidence(
+    conn: sqlite3.Connection, source_id: int, since: datetime, until: datetime,
+    lower: str, upper: str, findings: list[dict], *, has_history: bool,
+) -> dict:
+    coverage = {
+        "status": "unavailable", "scope": "port", "last_observed_at": None,
+        "sampled_ports": 0, "valid_intervals": 0, "truncated": False,
+    }
+    for finding in findings:
+        finding.update(broadcast_intervals=[], broadcast_truncated=False)
+    if not has_history:
+        return coverage
+
+    rows = conn.execute(
+        """
+        SELECT id, port_key, if_index, observed_at, sys_uptime_ticks,
+               in_broadcast_packets, out_broadcast_packets, counter_discontinuity_ticks
+        FROM switch_port_counter_samples
+        WHERE source_id = ? AND observed_at >= ? AND observed_at < ?
+          AND (in_broadcast_packets IS NOT NULL OR out_broadcast_packets IS NOT NULL)
+        ORDER BY observed_at DESC, id DESC LIMIT ?
+        """,
+        (source_id, lower, upper, MAX_BROADCAST_SAMPLES + 1),
+    ).fetchall()
+    coverage["truncated"] = len(rows) > MAX_BROADCAST_SAMPLES
+    samples = []
+    for row in rows[:MAX_BROADCAST_SAMPLES]:
+        at = _timestamp(row["observed_at"])
+        if at is not None and since <= at <= until:
+            samples.append((at, row))
+    if not samples:
+        older = conn.execute(
+            """
+            SELECT observed_at FROM switch_port_counter_samples
+            WHERE source_id = ? AND observed_at < ?
+              AND (in_broadcast_packets IS NOT NULL OR out_broadcast_packets IS NOT NULL)
+            ORDER BY observed_at DESC, id DESC LIMIT 1
+            """,
+            (source_id, lower),
+        ).fetchone()
+        if older is not None:
+            coverage.update(status="stale", last_observed_at=older["observed_at"])
+        return coverage
+
+    intervals = _broadcast_rates(samples)
+    coverage.update(
+        status="recent" if intervals else "insufficient",
+        last_observed_at=samples[0][1]["observed_at"],
+        sampled_ports=len({row["port_key"] for _, row in samples}),
+        valid_intervals=len(intervals),
+    )
+    for finding in findings:
+        started = _timestamp(finding["first_observed_at"])
+        ended = _timestamp(finding["last_observed_at"])
+        evidence = [
+            interval for before, after, interval in intervals
+            if started is not None and ended is not None and before < ended and started < after
+            and interval["port_key"] in finding["ports"]
+        ]
+        finding.update(
+            broadcast_intervals=evidence[:MAX_BROADCAST_INTERVALS_PER_FINDING],
+            broadcast_truncated=len(evidence) > MAX_BROADCAST_INTERVALS_PER_FINDING or coverage["truncated"],
+        )
+    return coverage
+
+
+def _read_source(
+    conn: sqlite3.Connection, device: sqlite3.Row, since: datetime, until: datetime, *, has_broadcast_history: bool,
+) -> dict:
     # Collector timestamps are UTC ISO strings. Prefix bounds preserve index
     # lookups for the canonical Z suffix and equivalent +00:00 timestamps.
     lower = since.isoformat(timespec="seconds")[:19]
@@ -199,12 +324,15 @@ def _read_source(conn: sqlite3.Connection, device: sqlite3.Row, since: datetime,
             "truncated": stp_truncated,
             "scope": "switch",
         },
-        "broadcast": {"status": "unavailable"},
     }
     findings = _find_reversals(events, _stp_changes(stp_events, since, until), since, until)
     truncated = (
         fdb_truncated or stp_truncated or len(findings) > MAX_FINDINGS
         or any(finding["stp_truncated"] for finding in findings)
+    )
+    findings = findings[:MAX_FINDINGS]
+    coverage["broadcast"] = _broadcast_evidence(
+        conn, source_id, since, until, lower, upper, findings, has_history=has_broadcast_history,
     )
     if findings:
         status = "suspected_loop" if findings[0]["stp_events"] else "mac_flapping"
@@ -219,7 +347,7 @@ def _read_source(conn: sqlite3.Connection, device: sqlite3.Row, since: datetime,
         "last_status": device["last_status"],
         "status": status,
         "coverage": coverage,
-        "evidence": findings[:MAX_FINDINGS],
+        "evidence": findings,
         "truncated": truncated,
     }
 
@@ -246,7 +374,12 @@ def read_loop_diagnostics(
         + " ORDER BY sources.name LIMIT ?",
         params,
     ).fetchall()
-    sources = [_read_source(conn, device, since, until) for device in devices[:MAX_SOURCES]]
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(switch_port_counter_samples)")}
+    has_broadcast_history = {"in_broadcast_packets", "out_broadcast_packets", "counter_discontinuity_ticks"} <= columns
+    sources = [
+        _read_source(conn, device, since, until, has_broadcast_history=has_broadcast_history)
+        for device in devices[:MAX_SOURCES]
+    ]
     sources_truncated = len(devices) > MAX_SOURCES
     statuses = [item["status"] for item in sources]
     if sources_truncated:

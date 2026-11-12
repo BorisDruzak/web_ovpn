@@ -43,6 +43,13 @@ def _column(
     return values
 
 
+def parse_broadcast_column(
+    result: CapabilityResult, oid: tuple[int, ...], *, value_type: str,
+) -> dict[int, int]:
+    maximum = _COUNTER64_MAX if value_type == "counter64" else _COUNTER32_MAX
+    return _column(result, oid, field=result.capability, value_type=value_type, maximum=maximum)
+
+
 def parse_counter_samples(
     in_octets: CapabilityResult,
     out_octets: CapabilityResult,

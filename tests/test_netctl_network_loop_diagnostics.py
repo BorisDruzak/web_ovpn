@@ -67,6 +67,137 @@ def add_stp_sample(conn, source_id, at, counter):
     )
 
 
+def add_broadcast_sample(conn, port_key, at, in_packets, out_packets, *, if_index=1, uptime=100, discontinuity=0):
+    run = add_collection(conn, 1, at)
+    conn.execute(
+        """
+        INSERT INTO switch_port_counter_samples (
+            source_id, collector_run_id, port_key, if_index, observed_at,
+            sys_uptime_ticks, in_broadcast_packets, out_broadcast_packets, counter_discontinuity_ticks
+        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            run, port_key, if_index, at, uptime, str(in_packets) if in_packets is not None else None,
+            str(out_packets) if out_packets is not None else None, discontinuity,
+        ),
+    )
+
+
+def test_broadcast_only_correlates_with_matching_port_and_overlapping_movement(database):
+    conn, _ = database
+    add_source(conn, 1, "switch")
+    add_event(conn, 1, "2026-11-12T12:05:00Z", PORT_A, PORT_B)
+    add_event(conn, 1, "2026-11-12T12:10:00Z", PORT_B, PORT_A)
+    add_broadcast_sample(conn, PORT_A, "2026-11-12T12:05:00Z", 2**63, 0)
+    add_broadcast_sample(conn, PORT_A, "2026-11-12T12:10:00Z", 2**63 + 3000, 0, uptime=30100)
+    add_broadcast_sample(conn, PORT_A, "2026-11-12T12:15:00Z", 2**63 + 6000, 0, uptime=60100)
+    add_broadcast_sample(conn, "ifindex:3", "2026-11-12T12:05:00Z", 10, None, if_index=3)
+    add_broadcast_sample(conn, "ifindex:3", "2026-11-12T12:10:00Z", 3010, None, if_index=3, uptime=30100)
+
+    result = read(conn)
+
+    assert result["status"] == "mac_flapping"
+    [switch] = result["sources"]
+    assert switch["coverage"]["broadcast"] == {
+        "status": "recent", "scope": "port", "last_observed_at": "2026-11-12T12:15:00Z",
+        "sampled_ports": 2, "valid_intervals": 3, "truncated": False,
+    }
+    [finding] = switch["evidence"]
+    assert finding["broadcast_intervals"] == [{
+        "port_key": PORT_A, "if_index": 1, "since": "2026-11-12T12:05:00Z",
+        "until": "2026-11-12T12:10:00Z", "interval_seconds": 300.0, "in_pps": 10.0, "out_pps": 0.0,
+    }]
+
+
+@pytest.mark.parametrize(
+    ("at", "in_packets", "if_index", "uptime", "discontinuity"),
+    [
+        ("2026-11-12T12:10:00Z", 4000, 1, 50, 0),
+        ("2026-11-12T12:10:00Z", 4000, 1, 30100, 12000),
+        ("2026-11-12T12:10:00Z", 4000, 1, 30100, None),
+        ("2026-11-12T12:10:00Z", 4000, 2, 30100, 0),
+        ("2026-11-12T12:10:00Z", 10, 1, 30100, 0),
+        ("2026-11-12T12:20:01Z", 4000, 1, 90200, 0),
+    ],
+)
+def test_broadcast_invalid_intervals_never_produce_rates(database, at, in_packets, if_index, uptime, discontinuity):
+    conn, _ = database
+    add_source(conn, 1, "switch")
+    add_broadcast_sample(conn, PORT_A, "2026-11-12T12:05:00Z", 1000, None)
+    add_broadcast_sample(conn, PORT_A, at, in_packets, None, if_index=if_index, uptime=uptime, discontinuity=discontinuity)
+
+    [switch] = read(conn)["sources"]
+
+    assert switch["status"] == "insufficient_data"
+    assert switch["coverage"]["broadcast"]["status"] == "insufficient"
+    assert switch["coverage"]["broadcast"]["valid_intervals"] == 0
+
+
+def test_broadcast_rates_alone_do_not_form_a_loop_finding(database):
+    conn, _ = database
+    add_source(conn, 1, "switch")
+    add_broadcast_sample(conn, PORT_A, "2026-11-12T12:05:00Z", 10, None)
+    add_broadcast_sample(conn, PORT_A, "2026-11-12T12:10:00Z", 3_000_010, None, uptime=30100)
+
+    [switch] = read(conn)["sources"]
+
+    assert switch["coverage"]["broadcast"]["status"] == "recent"
+    assert switch["status"] == "insufficient_data"
+    assert switch["evidence"] == []
+
+
+def test_read_only_loop_diagnostics_tolerates_schema_before_broadcast_migration(tmp_path, monkeypatch):
+    from netctl import migrations
+
+    url = f"sqlite:///{(tmp_path / 'legacy.sqlite').as_posix()}"
+    with monkeypatch.context() as legacy:
+        legacy.setattr(migrations, "MIGRATIONS", tuple(item for item in migrations.MIGRATIONS if item[0] <= 28))
+        with closing(connect(url)) as conn:
+            add_source(conn, 1, "legacy-switch")
+            at = "2026-11-12T12:05:00Z"
+            run = add_collection(conn, 1, at)
+            conn.execute(
+                """
+                INSERT INTO switch_port_counter_samples
+                    (source_id, collector_run_id, port_key, observed_at, in_octets)
+                VALUES (1, ?, ?, ?, '40000')
+                """,
+                (run, PORT_A, at),
+            )
+            conn.commit()
+    with closing(connect_read_only(url)) as conn:
+        [switch] = read(conn)["sources"]
+
+    assert switch["coverage"]["broadcast"]["status"] == "unavailable"
+
+    with closing(connect(url)) as conn:
+        row = conn.execute("""
+            SELECT in_octets, in_broadcast_packets, out_broadcast_packets, counter_discontinuity_ticks
+            FROM switch_port_counter_samples
+        """).fetchone()
+    assert tuple(row) == ("40000", None, None, None)
+
+
+def test_broadcast_read_limit_is_reported_without_affecting_fdb_status(database, monkeypatch):
+    from netctl import network_loop_diagnostics
+
+    monkeypatch.setattr(network_loop_diagnostics, "MAX_BROADCAST_SAMPLES", 1)
+    conn, _ = database
+    add_source(conn, 1, "switch")
+    add_event(conn, 1, "2026-11-12T12:05:00Z", PORT_A, PORT_B)
+    add_event(conn, 1, "2026-11-12T12:10:00Z", PORT_B, PORT_A)
+    add_broadcast_sample(conn, PORT_A, "2026-11-12T12:05:00Z", 200, None)
+    add_broadcast_sample(conn, PORT_A, "2026-11-12T12:10:00Z", 400, None, uptime=30100)
+
+    [switch] = read(conn)["sources"]
+
+    assert switch["status"] == "mac_flapping"
+    assert switch["coverage"]["broadcast"]["truncated"] is True
+    [finding] = switch["evidence"]
+    assert finding["broadcast_truncated"] is True
+    assert finding["broadcast_intervals"] == []
+
+
 def test_reversal_and_stp_change_report_suspected_loop_using_read_only_connection(database):
     conn, url = database
     add_source(conn, 1, "switch")
