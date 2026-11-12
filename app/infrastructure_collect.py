@@ -2585,7 +2585,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 edge(switch, asset, "Путь по MAC-таблице", provenance, details=address,
                      ports=(port_label(switch_source, port), remote_port), at=checked.isoformat(),
                      vlan=row["vlan_id"], learned_endpoint=learned_endpoint,
-                     management_address=address if remote_port else None)
+                     management_address=address if remote_port or identity_matches else None)
             if identity_matches:
                 checked = min(arp_at, datetime.fromisoformat(max(live)),
                               max(datetime.fromisoformat(row["observed_at"]) for row in observations)).isoformat()

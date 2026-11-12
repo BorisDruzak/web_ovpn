@@ -700,12 +700,15 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       const key = [label, path.gateway].join('|');
       if (rendered.has(key)) continue;
       rendered.add(key);
-      if (path.routerAttachment) {
-        const {routerId, port, source, checkedAt} = path.routerAttachment;
-        const router = byId.get(routerId)?.name ?? routerId;
+      const attachment = path.routerAttachment ?? path.switchAttachment;
+      if (attachment) {
+        const {routerId, switchId, port, source, checkedAt} = attachment;
+        const deviceId = routerId ?? switchId;
+        const device = byId.get(deviceId)?.name ?? deviceId;
         const row = make('li');
-        row.append(make('strong', label), make('small', [source, formatTime(checkedAt)].join(' · ')),
-          switchPortButton(routerId, router, port));
+        const evidence = switchId ? 'ARP + FDB коммутатора' : source;
+        row.append(make('strong', label), make('small', [evidence, formatTime(checkedAt)].join(' · ')),
+          switchPortButton(deviceId, device, port));
         list.append(row);
         continue;
       }
@@ -730,7 +733,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     return panel;
   }
 
-  function renderObservedHostPorts(host) {
+  function renderObservedHostPorts(host, paths) {
     const list = make('ul', null, 'map-detail-list');
     const rendered = new Set();
     for (const edge of incident.get(host.id) ?? []) {
@@ -741,6 +744,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const endpoint = reading.learnedEndpoint;
         const port = reading[switchSide];
         if (!reading.confirmed || endpoint?.deviceId !== host.id || endpoint.switchId !== target.id || !port) continue;
+        if (paths.some(path => path.switchAttachment?.switchId === target.id
+            && portKey(path.switchAttachment.port) === portKey(port))) continue;
         const key = [target.id, portKey(port), endpoint.mac].join('/');
         if (rendered.has(key)) continue;
         rendered.add(key);
@@ -980,10 +985,11 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       }
     }
     const resourceHost = placementHost.guest ? placementHost : node;
-    const servicePaths = renderServicePaths(data.servicePaths?.[id]);
+    const paths = data.servicePaths?.[id] ?? [];
+    const servicePaths = renderServicePaths(paths);
     if (servicePaths) propertiesSection.append(servicePaths);
     if (node.kind === 'Сервис' && placementHost !== node && !placementHost.guest) {
-      const observedPorts = renderObservedHostPorts(placementHost);
+      const observedPorts = renderObservedHostPorts(placementHost, paths);
       if (observedPorts) propertiesSection.append(observedPorts);
     }
     const guestAttachment = renderGuestAttachment(data.guestAttachments?.[resourceHost.id]);
@@ -1822,7 +1828,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         panel.dataset.section = 'services-on-port';
         const services = make('ul', null, 'map-detail-list');
         const bases = {host_mac: 'MAC устройства', host_lacp: 'LACP хоста', host_management: 'Интерфейс управления',
-          guest_gateway: 'Вход через шлюз', guest_local_udp: 'Привязка к интерфейсу ВМ', router_mac: 'ARP и FDB маршрутизатора'};
+          guest_gateway: 'Вход через шлюз', guest_local_udp: 'Привязка к интерфейсу ВМ',
+          router_mac: 'ARP и FDB маршрутизатора', switch_mac: 'Адрес проверен по ARP и FDB'};
         for (const service of serviceGroup.services) {
           const row = make('li');
           const open = make('button', service.name);

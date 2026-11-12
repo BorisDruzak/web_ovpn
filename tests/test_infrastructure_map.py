@@ -4779,7 +4779,8 @@ def test_configured_asset_fdb_path_is_scoped_and_requires_a_unique_live_port(mon
     assert path["kind"] == "Путь по MAC-таблице" and path["confirmed"]
     learned = {"switchId": "observer:access", "deviceId": "gateway", "mac": mac}
     assert path["portEvidence"] == [{"a": "Gi1/0/23", "b": "", "source": "netctl FDB",
-                                     "at": at, "confirmed": True, "vlan": 1, "learnedEndpoint": learned}]
+                                     "at": at, "confirmed": True, "vlan": 1, "learnedEndpoint": learned,
+                                     "managementAddress": address}]
     monkeypatch.setattr("app.infrastructure_service_probes._icmp_check", lambda ip: {"state": "reachable"})
     graph = build_graph(context, network, {}, {}, bindings, now)
     gateway = next(node for node in graph["nodes"] if node["id"] == "gateway")
@@ -4812,7 +4813,7 @@ def test_configured_asset_fdb_path_is_scoped_and_requires_a_unique_live_port(mon
 @pytest.mark.parametrize("canonical", (False, True))
 def test_asset_service_can_require_current_fdb_and_arp_identity(monkeypatch, tmp_path, canonical):
     from app.infrastructure_collect import build_graph
-    from app.infrastructure_map import load_infrastructure_map
+    from app.infrastructure_map import load_infrastructure_map, summarize_guest_attachment
     from app.infrastructure_service_probes import apply_service_probes
 
     now = datetime.now(timezone.utc)
@@ -4843,13 +4844,27 @@ def test_asset_service_can_require_current_fdb_and_arp_identity(monkeypatch, tmp
     def read(when=None):
         graph = build_graph(context, network, {}, {}, bindings, now)
         apply_service_probes(graph["nodes"], {"recorder-web": [spec]})
+        service = next(node for node in graph["nodes"] if node["id"] == "recorder-web")
+        service["serviceChecks"].append({**service["serviceChecks"][0], "target": "192.0.2.99",
+                                         "supplemental": True, "required": False})
         snapshot.write_text(json.dumps(graph), encoding="utf-8")
         return next(node for node in load_infrastructure_map(snapshot, when)["nodes"] if node["id"] == "recorder-web")
 
     node = read()
     assert node["mapStatus"] == "ok" and node["serviceChecks"][0]["identityCheckedAt"] == observed
     assert node["name"] == ("Inventory Web" if canonical else "Web")
+    graph = load_infrastructure_map(snapshot, include_guest_attachments=True)
+    path, = summarize_guest_attachment(graph, "recorder-web")["attachment"]["servicePaths"]
+    assert path["target"] == ip and path["port"] == 80
+    assert path["switchAttachment"] == {"switchId": "observer:switch", "port": "ge15",
+                                        "source": "netctl FDB", "checkedAt": observed}
+    assert "physicalPair" not in path and graph["servicePaths"]["recorder-web"] == [path]
+    group, = summarize_guest_attachment(graph, "observer:switch")["attachment"]["servicePorts"]
+    endpoint, = group["services"][0]["probeEndpoints"]
+    assert group["port"] == "ge15" and endpoint["target"] == ip
     assert read(now + timedelta(minutes=2))["mapStatus"] == "unknown"
+    stale = load_infrastructure_map(snapshot, now + timedelta(minutes=2), include_guest_attachments=True)
+    assert "recorder-web" not in stale["servicePaths"]
     calls.clear()
     if canonical:
         bindings["asset_services"]["recorder-web"]["asset"] = "different-device"
