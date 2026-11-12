@@ -551,7 +551,7 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         if type(status) is int and 100 <= status <= 599:
             result["httpStatus"] = status
         if reason in (
-            "http_status", "http_content_type", "http_body_limit", "http_invalid_json",
+            "http_status", "http_content_type", "http_content_encoding", "http_body_limit", "http_invalid_json",
             "http_reported_unavailable", "http_payload_mismatch", "http_certificate_pin",
             "http_tls_certificate", "http_tls_error", "http_bad_response", "http_connection_refused",
             "http_connection_reset", "http_configuration",

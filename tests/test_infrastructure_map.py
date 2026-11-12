@@ -740,6 +740,48 @@ def test_http_probe_matches_json_health_fields_without_fixing_the_version():
     assert results == ["reachable", "unknown", "unreachable", "unknown", "unknown", "unreachable"]
 
 
+def test_http_probe_accepts_only_bounded_complete_gzip_when_configured(monkeypatch):
+    import gzip
+    from io import BytesIO
+
+    from app import infrastructure_service_probes as probes
+
+    marker = b"<title>MikroTik SwOS</title>"
+    body = gzip.compress(marker)
+
+    class Response(BytesIO):
+        status = 200
+
+        def getheader(self, name, default):
+            return {"Content-Type": "text/html", "Content-Encoding": "gzip"}.get(name, default)
+
+    class Connection:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def request(self, *args, **kwargs):
+            pass
+
+        def getresponse(self):
+            return Response(body)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(probes.http.client, "HTTPConnection", Connection)
+    spec = {"type": "http", "ip": "192.0.2.10", "port": 80, "path": "/index.html",
+            "content_type": "text/html", "body_contains": marker.decode()}
+    assert probes._http_probe(spec)["state"] == "unknown"
+    spec["allow_gzip"] = True
+    assert probes._http_probe(spec)["state"] == "reachable"
+    body = gzip.compress(b"<title>Other</title>")
+    assert probes._http_probe(spec)["reason"] == "http_payload_mismatch"
+    body = gzip.compress(marker)[:-4]
+    assert probes._http_probe(spec)["reason"] == "http_content_encoding"
+    body = gzip.compress(marker + b" " * probes.HTTP_BODY_LIMIT)
+    assert probes._http_probe(spec)["reason"] == "http_body_limit"
+
+
 def test_http_probe_checks_nested_boolean_health_fields(monkeypatch):
     from app.infrastructure_service_probes import _http_probe
 

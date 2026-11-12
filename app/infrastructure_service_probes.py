@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import http.client
+import io
 import ipaddress
 import json
 import os
@@ -13,6 +15,7 @@ import ssl
 import struct
 import subprocess
 import uuid
+import zlib
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from time import monotonic, sleep
@@ -66,6 +69,9 @@ def _http(ip: str, port: int, spec: dict) -> dict:
     content_type = spec.get("content_type")
     json_fields = spec.get("json_fields")
     json_unavailable = spec.get("json_unavailable")
+    allow_gzip = spec.get("allow_gzip", False)
+    if type(allow_gzip) is not bool:
+        raise ValueError("allow_gzip requires a boolean")
     if (not all(isinstance(value, (str, type(None))) for value in (body_expected, body_marker, content_type))
             or not (body_expected or body_marker or content_type or json_fields)):
         raise ValueError("HTTP probe requires a response contract")
@@ -105,7 +111,7 @@ def _http(ip: str, port: int, spec: dict) -> dict:
     connection = (http.client.HTTPSConnection(server_name or ip, port, timeout=TIMEOUT, context=context) if tls
                   else http.client.HTTPConnection(ip, port, timeout=TIMEOUT))
     observed = {}
-    headers = {"Accept-Encoding": "identity"}
+    headers = {"Accept-Encoding": "gzip, identity" if allow_gzip else "identity"}
     if http_host is not None:
         observed["httpHost"] = http_host
         headers["Host"] = http_host if port == 80 else f"{http_host}:{port}"
@@ -127,8 +133,25 @@ def _http(ip: str, port: int, spec: dict) -> dict:
             return {**observed, "state": "unknown", "reason": "http_status"}
         if content_type and response.getheader("Content-Type", "").split(";", 1)[0].strip().lower() != content_type:
             return {**observed, "state": "unknown", "reason": "http_content_type"}
+        read = response.read
+        if allow_gzip:
+            encoding = response.getheader("Content-Encoding", "").strip().lower()
+            if encoding == "gzip":
+                compressed = read(HTTP_BODY_LIMIT + 1)
+                if len(compressed) > HTTP_BODY_LIMIT:
+                    return {**observed, "state": "unknown", "reason": "http_body_limit"}
+                try:
+                    with gzip.GzipFile(fileobj=io.BytesIO(compressed)) as stream:
+                        decoded = stream.read(HTTP_BODY_LIMIT + 1)
+                except (gzip.BadGzipFile, EOFError, zlib.error):
+                    return {**observed, "state": "unknown", "reason": "http_content_encoding"}
+                if len(decoded) > HTTP_BODY_LIMIT:
+                    return {**observed, "state": "unknown", "reason": "http_body_limit"}
+                read = io.BytesIO(decoded).read
+            elif encoding not in ("", "identity"):
+                return {**observed, "state": "unknown", "reason": "http_content_encoding"}
         if json_fields is not None:
-            payload = response.read(HTTP_BODY_LIMIT + 1)
+            payload = read(HTTP_BODY_LIMIT + 1)
             if len(payload) > HTTP_BODY_LIMIT:
                 return {**observed, "state": "unknown", "reason": "http_body_limit"}
             try:
@@ -141,12 +164,12 @@ def _http(ip: str, port: int, spec: dict) -> dict:
                 return {**observed, "state": "unreachable", "reason": "http_reported_unavailable"}
             matches = _matches_json_fields(document, json_fields)
         elif body_expected:
-            payload = response.read(HTTP_BODY_LIMIT + 1)
+            payload = read(HTTP_BODY_LIMIT + 1)
             matches = payload.strip() == body_expected.encode()
         elif body_marker:
-            matches = body_marker.encode() in response.read(HTTP_BODY_LIMIT)
+            matches = body_marker.encode() in read(HTTP_BODY_LIMIT)
         else:
-            matches = bool(response.read(1))
+            matches = bool(read(1))
         if matches:
             return {**observed, "state": "reachable"}
         return {**observed, "state": "unknown", "reason": "http_payload_mismatch"}

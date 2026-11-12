@@ -1087,6 +1087,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         dns_route_unconfirmed: 'Маршрут UI_VPN не подтверждён, DNS-запрос не отправлен',
         dns_route_mismatch: 'Выбран другой маршрут UI_VPN, DNS-запрос не отправлен',
         http_content_type: 'Неожиданный тип ответа', http_body_limit: 'Ответ превышает лимит проверки',
+        http_content_encoding: 'Неподдерживаемое или повреждённое сжатие ответа',
         http_invalid_json: 'Ответ не содержит ожидаемый объект JSON',
         http_reported_unavailable: 'Приложение сообщило о сбое',
         http_payload_mismatch: 'Содержимое ответа не совпало с ожидаемым',
