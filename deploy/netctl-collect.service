@@ -1,5 +1,6 @@
 [Unit]
 Description=Network Observer collection
+After=netctl-reconcile.service
 OnFailure=netctl-reconcile.service
 
 [Service]

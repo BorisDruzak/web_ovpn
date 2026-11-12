@@ -16,6 +16,14 @@ VERIFIER = ROOT / "deploy" / "verify_netctl_systemd.py"
 FIXTURES = ROOT / "tests" / "fixtures" / "systemd"
 
 
+def test_periodic_collection_waits_for_an_active_failure_reconciliation() -> None:
+    collector = (ROOT / "deploy" / "netctl-collect.service").read_text().splitlines()
+    reconcile = (ROOT / "deploy" / "netctl-reconcile.service").read_text().splitlines()
+    assert "OnFailure=netctl-reconcile.service" in collector
+    assert "After=netctl-reconcile.service" in collector
+    assert "After=netctl-collect.service" not in reconcile
+
+
 def _write_executable(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
     path.chmod(0o755)

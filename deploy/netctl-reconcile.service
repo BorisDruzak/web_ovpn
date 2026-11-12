@@ -1,6 +1,5 @@
 [Unit]
 Description=Reconcile netctl state after collection failures
-After=netctl-collect.service
 
 [Service]
 Type=oneshot
