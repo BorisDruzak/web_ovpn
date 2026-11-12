@@ -1140,6 +1140,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         icmp_route_unconfirmed: 'Маршрут UI_VPN не подтверждён, ICMP не отправлен',
         icmp_route_mismatch: 'Выбран другой маршрут UI_VPN, ICMP не отправлен',
         transport_error: 'Ошибка сетевого запроса', unexpected_response: 'Ответ не соответствует запросу',
+        sip_route_unconfirmed: 'Маршрут UI_VPN не подтверждён, SIP-запрос не отправлен',
+        sip_route_mismatch: 'Выбран другой маршрут UI_VPN, SIP-запрос не отправлен',
         dns_no_answer: 'Нет записи запрошенного типа', dns_address_mismatch: 'Адреса не совпадают с ожидаемыми',
         dns_unexpected_source: 'DNS-ответ пришёл с другого адреса или порта',
         dns_truncated: 'UDP-ответ DNS усечён',

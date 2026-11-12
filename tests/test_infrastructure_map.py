@@ -4972,7 +4972,7 @@ def test_sip_options_validates_transaction_and_treats_silence_as_unknown(monkeyp
     import ipaddress
     import struct
     from app import infrastructure_service_probes as probes
-    from app.infrastructure_map import _public_node
+    from app.infrastructure_map import _map_statuses, _public_node, summarize_services
 
     class Datagram:
         def __enter__(self):
@@ -4992,6 +4992,10 @@ def test_sip_options_validates_transaction_and_treats_silence_as_unknown(monkeyp
 
         def connect(self, address):
             assert address == ("192.0.2.13", 5060)
+
+        def bind(self, address):
+            assert address == ("192.0.2.14", 0)
+            self.bound = True
 
         def getsockname(self):
             return ("192.0.2.14", 12345)
@@ -5074,6 +5078,30 @@ def test_sip_options_validates_transaction_and_treats_silence_as_unknown(monkeyp
     probes.apply_service_probes([node], {"pbx": [spec]})
     result = _public_node(node, datetime.now(timezone.utc))["serviceChecks"][-1]
     assert (result["state"], result["responseCode"], result["attempts"]) == ("unknown", 100, 3)
+
+    gateway = "192.0.2.1"
+    spec["route_via"] = gateway
+    route = {"state": "unreachable", "expectedGateway": gateway, "gateway": "192.0.2.254",
+             "sourceIP": "192.0.2.14", "interface": "eth0"}
+    monkeypatch.setattr(probes, "_local_ipv4_route", lambda address, via: route)
+    node["serviceChecks"].clear()
+    wire.requests = []
+    probes.apply_service_probes([node], {"pbx": [spec]})
+    result = _public_node(node, datetime.now(timezone.utc))["serviceChecks"][0]
+    assert result["state"] == "unknown" and result["reason"] == "sip_route_mismatch"
+    assert result["localRoute"] == route and wire.requests == []
+
+    route.update(state="reachable", gateway=gateway)
+    node["serviceChecks"].clear()
+    wire.code, wire.offender = b"refused", spec["ip"]
+    probes.apply_service_probes([node], {"pbx": [spec]})
+    assert wire.bound
+    public = _public_node(node, datetime.now(timezone.utc))
+    _map_statuses({"pbx": public}, [])
+    issue, = summarize_services({"nodes": [public], "links": []})["serviceAudit"]["services"][0]["issues"]
+    assert (issue["status"], issue["errorSource"], issue["attempts"], issue["localRoute"]) == (
+        "critical", spec["ip"], 1, route,
+    )
 
 
 def test_infrastructure_map_serves_only_public_snapshot(tmp_path, monkeypatch):

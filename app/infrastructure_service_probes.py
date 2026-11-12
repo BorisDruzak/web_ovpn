@@ -849,6 +849,16 @@ def _sip_options(spec: dict) -> dict:
         return {"state": "unknown"}
     if type(port) is not int or not 1 <= port <= 65535:
         return {"state": "unknown"}
+    if "route_via" in spec:
+        route = _local_ipv4_route(ip, spec["route_via"])
+        if route["state"] != "reachable":
+            reason = "sip_route_mismatch" if route["state"] == "unreachable" else "sip_route_unconfirmed"
+            return {"state": "unknown", "reason": reason, "localRoute": route}
+        return {**_sip_udp(ip, port, source=route["sourceIP"]), "localRoute": route}
+    return _sip_udp(ip, port)
+
+
+def _sip_udp(ip: str, port: int, *, source: str | None = None) -> dict:
     family = socket.AF_INET6 if ":" in ip else socket.AF_INET
     destination = f"[{ip}]" if family == socket.AF_INET6 else ip
     transaction = uuid.uuid4().hex
@@ -856,6 +866,8 @@ def _sip_options(spec: dict) -> dict:
         with socket.socket(family, socket.SOCK_DGRAM) as connection:
             connection.settimeout(TIMEOUT)
             error_option = _enable_udp_error_queue(connection, family)
+            if source is not None:
+                connection.bind((source, 0))
             connection.connect((ip, port))
             local, local_port, *_ = connection.getsockname()
             if family == socket.AF_INET6:

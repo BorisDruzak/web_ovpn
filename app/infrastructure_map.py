@@ -532,7 +532,10 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         if reason in ("icmp_no_echo_reply", "icmp_unreachable", "icmp_probe_error",
                       "icmp_route_unconfirmed", "icmp_route_mismatch"):
             result["reason"] = reason
-    if icmp or result["method"] == "DNS":
+    sip = result["method"] == "SIP OPTIONS (UDP)"
+    if sip and reason in ("sip_route_mismatch", "sip_route_unconfirmed"):
+        result["reason"] = reason
+    if icmp or sip or result["method"] == "DNS":
         route = check.get("localRoute")
         if isinstance(route, dict) and not result["stale"] and route.get("state") in ("reachable", "unreachable", "unknown"):
             details = {"state": route["state"]}
@@ -705,7 +708,7 @@ def _public_service_check(check: dict, now: datetime) -> dict:
     }:
         result["reason"] = reason
     attempts = check.get("attempts")
-    if result["method"] == "SIP OPTIONS (UDP)" and type(attempts) is int and 1 <= attempts <= 3:
+    if sip and type(attempts) is int and 1 <= attempts <= 3:
         result["attempts"] = attempts
     return result
 
@@ -1644,7 +1647,7 @@ def summarize_services(graph: dict) -> dict:
              "required": check.get("required") is True,
              **{key: check[key] for key in ("source", "checkedAt", "stale", "reason", "path", "port", "target",
                                             "pppoe", "rtspStatus", "ftpReply", "tlsExpiresAt", "tlsVersion",
-                                            "dns", "localRoute")
+                                            "dns", "localRoute", "errorSource", "responseCode", "attempts")
                 if key in check and check[key] is not None and check[key] != ""}}
             for check in node["serviceChecks"] if check.get("required") or (
                 state == "unknown" and check.get("supplemental") and check["state"] != "reachable"
