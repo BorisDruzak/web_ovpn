@@ -1272,6 +1272,50 @@ def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
                                        "guestTotal": len(guest_ids), "guests": list(guests.values())}}
 
 
+def summarize_guest_attachment_audit(graph: dict) -> dict:
+    nodes = {node["id"]: node for node in graph["nodes"]}
+    guest_ids = [node_id for node_id, node in nodes.items() if node["guest"]]
+    guests = _guest_attachments(nodes, graph["links"], guest_ids)
+    evidence_order = {
+        ("guest_mac", True): "guest_mac_with_physical_pair",
+        ("guest_mac", False): "guest_mac",
+        ("bridge_uplink", True): "bridge_with_physical_pair",
+        ("bridge_uplink", False): "bridge_uplink",
+        ("configured_bridge", False): "configured_bridge",
+    }
+    guest_counts = dict.fromkeys(("running", "stopped", "unknown"), 0)
+    interface_counts = dict.fromkeys((*evidence_order.values(), "unconfirmed", "inactive"), 0)
+    gaps = []
+    for guest_id, attachment in guests.items():
+        node = nodes[guest_id]
+        power = "unknown"
+        if node["reachability"]["state"] == "stopped":
+            power = "stopped"
+        elif any(source["name"] == "Proxmox" and source["label"] == "Запущена" and not source["stale"]
+                 for source in node["sources"]):
+            power = "running"
+        guest_counts[power] += 1
+
+        incomplete = []
+        for interface in attachment["interfaces"]:
+            if power == "stopped" or interface["linkDisabled"]:
+                state = "inactive"
+            else:
+                evidence = {(row["basis"], "physicalPair" in row) for row in interface["switchObservations"]}
+                state = next((label for key, label in evidence_order.items() if key in evidence), "unconfirmed")
+            interface_counts[state] += 1
+            if state not in {"guest_mac_with_physical_pair", "inactive"}:
+                incomplete.append({"guestPort": interface["guestPort"], "bridge": interface["bridge"], "state": state})
+        if power != "stopped" and (incomplete or not attachment["interfaces"]):
+            gaps.append({"guest": attachment["guest"], "hypervisor": attachment["hypervisor"],
+                         "power": power, "placement": attachment["placement"], "interfaces": incomplete})
+
+    gaps.sort(key=lambda gap: (gap["power"] != "running", gap["guest"]["id"]))
+    metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
+    return {**metadata, "attachmentAudit": {"guestCounts": guest_counts, "interfaceCounts": interface_counts,
+                                            "gapTotal": len(gaps), "gaps": gaps[:64]}}
+
+
 def summarize_services(graph: dict) -> dict:
     nodes = {node["id"]: node for node in graph["nodes"]}
     hosts = {}

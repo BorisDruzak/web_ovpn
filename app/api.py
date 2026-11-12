@@ -35,7 +35,13 @@ from .network_observer import list_from as network_list_from, merge_unified_host
 from .network_paths_adapter import get_network_path, list_network_paths
 from .routeros_backups import list_routeros_backups
 from .server_health_view import build_server_health_view
-from .infrastructure_map import load_infrastructure_map, summarize_guest_attachment, summarize_services, summarize_topology
+from .infrastructure_map import (
+    load_infrastructure_map,
+    summarize_guest_attachment,
+    summarize_guest_attachment_audit,
+    summarize_services,
+    summarize_topology,
+)
 from .vpnctl_client import VpnctlError, run_vpnctl
 
 CLIENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -1044,8 +1050,8 @@ def api_network_infrastructure(
     actor: str = Depends(require_api_actor),
     db: Session = Depends(get_db),
 ):
-    if (view == "attachment") != (node_id is not None):
-        raise HTTPException(status_code=422, detail="node_id is required only for view=attachment")
+    if view != "attachment" and node_id is not None:
+        raise HTTPException(status_code=422, detail="node_id is supported only for view=attachment")
     path = get_settings().infrastructure_map_snapshot_path
     if view == "agents":
         adapter = None
@@ -1069,7 +1075,8 @@ def api_network_infrastructure(
         elif view == "topology":
             graph = summarize_topology(graph)
         elif view == "attachment":
-            graph = summarize_guest_attachment(graph, node_id)
+            graph = (summarize_guest_attachment_audit(graph) if node_id is None
+                     else summarize_guest_attachment(graph, node_id))
     return JSONResponse(
         {"status": "ok", "infrastructure": graph},
         headers={"Cache-Control": "no-store"},

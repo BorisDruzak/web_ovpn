@@ -526,6 +526,7 @@ def test_mcp_infrastructure_returns_one_node_and_its_linked_peers(monkeypatch):
         assert method == "GET" and path in ("/api/v1/network/infrastructure?view=topology",
                                             "/api/v1/network/infrastructure?view=agents",
                                             "/api/v1/network/infrastructure?view=services",
+                                            "/api/v1/network/infrastructure?view=attachment",
                                             "/api/v1/network/infrastructure?view=attachment&node_id=role%3Adirectum")
         return {"status": "ok", "infrastructure": summary}
 
@@ -537,8 +538,9 @@ def test_mcp_infrastructure_returns_one_node_and_its_linked_peers(monkeypatch):
         assert server.call_tool("openvpn_network_infrastructure", {
             "view": "attachment", "node_id": "role:directum",
         })["infrastructure"] == summary
+        assert server.call_tool("openvpn_network_infrastructure", {"view": "attachment"})["infrastructure"] == summary
         with pytest.raises(ValueError):
-            server.call_tool("openvpn_network_infrastructure", {"view": "attachment"})
+            server.call_tool("openvpn_network_infrastructure", {"view": "attachment", "query": "Directum"})
         with pytest.raises(ValueError):
             server.call_tool("openvpn_network_infrastructure", {"view": "topology", "node_id": "vm:103"})
     scoped = server.call_tool("openvpn_network_infrastructure", {"node_id": "vm:103"})["infrastructure"]

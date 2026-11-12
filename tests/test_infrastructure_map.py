@@ -3987,7 +3987,8 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     raw = {"schema": 1, "snapshotAt": stamp, "nodes": [
         {"id": key, "name": key, "kind": kind, **extra} for key, kind, extra in (
             ("directum", "Сервис", {}),
-            ("vm", "Виртуальная машина", {"guest": True, "vmid": 103}),
+            ("vm", "Виртуальная машина", {"guest": True, "vmid": 103,
+             "sources": [{"name": "Proxmox", "status": "ok", "label": "Запущена", "at": stamp}]}),
             ("pve", "Гипервизор", {}),
             ("snr", "Коммутатор", {}),
         )],
@@ -4023,6 +4024,18 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     assert match["basis"] == "guest_mac" and match["switchPort"] == "xe3"
     assert match["physicalPair"] == {"hostPort": "ens7", "switchPort": "xe3",
                                       "source": "netctl FDB + Proxmox", "checkedAt": stamp}
+
+    def read_audit():
+        response = client.get(url, headers=headers)
+        assert response.status_code == 200 and response.headers["cache-control"] == "no-store"
+        report = response.json()["infrastructure"]
+        assert "nodes" not in report and "links" not in report
+        return report["attachmentAudit"]
+
+    audit = read_audit()
+    assert audit["guestCounts"] == {"running": 1, "stopped": 0, "unknown": 0}
+    assert audit["interfaceCounts"]["guest_mac_with_physical_pair"] == 1
+    assert audit["gapTotal"] == 0
     browser_endpoint = "/network/infrastructure/snapshot"
     assert client.get(browser_endpoint, follow_redirects=False).status_code == 303
     login = client.get("/login")
@@ -4034,16 +4047,32 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     raw["links"][1]["portEvidence"][0]["virtual"]["uplinks"] = ["eno1"]
     match, = read()["guests"][0]["interfaces"][0]["switchObservations"]
     assert "physicalPair" not in match
+    audit = read_audit()
+    assert audit["interfaceCounts"]["guest_mac"] == 1 and audit["gapTotal"] == 1
+    gap, = audit["gaps"]
+    assert gap["guest"]["id"] == "vm"
+    assert gap["interfaces"] == [{"guestPort": "net0", "bridge": "vmbr1", "state": "guest_mac"}]
     raw["links"][1]["portEvidence"][0]["virtual"]["uplinks"] = ["ens7"]
+    virtual = raw["links"][1]["portEvidence"][0]["virtual"]
+    virtual["switchUplink"], = virtual.pop("switchPorts")
+    read()
+    assert read_audit()["interfaceCounts"]["bridge_with_physical_pair"] == 1
+    virtual["switchPorts"] = [virtual.pop("switchUplink")]
     raw["links"][2]["portEvidence"][0]["source"] = "GitHub"
     match, = read()["guests"][0]["interfaces"][0]["switchObservations"]
     assert match["basis"] == "guest_mac" and "physicalPair" not in match
     raw["links"][1]["portEvidence"][0]["virtual"]["linkDisabled"] = True
     assert read()["guests"][0]["interfaces"][0]["switchObservations"] == []
+    assert read_audit()["interfaceCounts"]["inactive"] == 1 and read_audit()["gapTotal"] == 0
     raw["links"][1]["confirmed"] = False
     guest, = read()["guests"]
     assert guest["placement"] == "unconfirmed" and guest["interfaces"] == []
-    assert client.get(url, headers=headers).status_code == 422
+    gap, = read_audit()["gaps"]
+    assert gap["placement"] == "unconfirmed" and gap["interfaces"] == []
+    raw["nodes"][1]["reachability"] = {"state": "stopped", "checkedAt": stamp, "source": "Proxmox"}
+    read()
+    assert read_audit()["guestCounts"] == {"running": 0, "stopped": 1, "unknown": 0}
+    assert read_audit()["gapTotal"] == 0
 
 
 def test_service_audit_shares_map_status_and_reports_required_check_gaps(tmp_path, monkeypatch):

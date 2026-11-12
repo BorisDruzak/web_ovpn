@@ -175,7 +175,7 @@ TOOLS: dict[str, dict[str, Any]] = {
     "openvpn_network_dashboard": tool_schema("Show network observer dashboard summary and source health."),
     "openvpn_network_infrastructure": tool_schema(
         "Read the map. Use view=services for service checks, view=topology for port confirmation gaps, "
-        "view=agents for Proxmox agent matches, view=attachment with node_id for the VM-to-switch path, "
+        "view=agents for Proxmox agent matches, view=attachment for VM-to-switch coverage (node_id for one path), "
         "query to search, or node_id and optional port_name to inspect.",
         {
             "query": {"type": "string", "minLength": 1, "maxLength": 160},
@@ -540,8 +540,8 @@ def _infrastructure_snapshot(node_id: str | None, query: str | None, port_name: 
     if node_id is not None and (not isinstance(node_id, str) or not 1 <= len(node_id) <= 160):
         raise ValueError("node_id must be a non-empty string of at most 160 characters")
     if view == "attachment":
-        if node_id is None or query is not None or port_name is not None:
-            raise ValueError("view=attachment requires node_id and cannot be combined with query or port_name")
+        if query is not None or port_name is not None:
+            raise ValueError("view=attachment cannot be combined with query or port_name")
         return api_request("GET", _query_path("/api/v1/network/infrastructure",
                                              [("view", "attachment"), ("node_id", node_id)]))
     if view is not None:
