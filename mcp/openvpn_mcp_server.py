@@ -176,7 +176,7 @@ TOOLS: dict[str, dict[str, Any]] = {
     "openvpn_network_infrastructure": tool_schema(
         "Read the map. Use view=services for service checks, view=topology for port confirmation gaps, "
         "view=agents for Proxmox agent matches (node_id for guest health), "
-        "view=attachment for VM-to-switch coverage (node_id for one path), "
+        "view=attachment for VM-to-switch coverage (node_id for VM, host, or service paths), "
         "query to search, or node_id and optional port_name to inspect.",
         {
             "query": {"type": "string", "minLength": 1, "maxLength": 160},

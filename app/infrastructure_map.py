@@ -1647,21 +1647,65 @@ def _guest_attachments(nodes: dict, links: list[dict], guest_ids: list[str], now
     return guests
 
 
+def _physical_attachments(nodes: dict, links: list[dict], host_ids: list[str]) -> list[dict]:
+    connections = {host_id: [] for host_id in host_ids}
+    for edge in links:
+        direct = edge["kind"] == "Сетевое соединение"
+        if not direct and (edge["kind"] not in ("Путь по MAC-таблице", SHARED_LLDP_KIND) or not edge["confirmed"]):
+            continue
+        for host_side, peer_side in (("a", "b"), ("b", "a")):
+            host_id, peer = edge[host_side], nodes[edge[peer_side]]
+            if host_id not in connections or peer["guest"] or peer["kind"] in ("Сервис", CLUSTER_KIND):
+                continue
+            readings = []
+            for report in edge["portEvidence"]:
+                if not direct and not report["confirmed"]:
+                    continue
+                reading = {"hostPort": report[host_side], "peerPort": report[peer_side], "source": report["source"],
+                           "checkedAt": report["at"], "confirmed": report["confirmed"]}
+                reading.update({key: report[key] for key in ("pairEvidence", "learnedEndpoint", "inventorySources")
+                                if key in report})
+                sides = {host_side: "host", peer_side: "peer"}
+                if port_states := report.get("portStates"):
+                    reading["portStates"] = {
+                        sides[side]: {key: state[key] for key in ("name", "state", "speedBps", "checkedAt",
+                                                                "stale", "source", "configuredLabel", "linkMode")
+                                      if key in state}
+                        for side, state in port_states.items()
+                    }
+                if lldp_peers := report.get("lldpPeers"):
+                    reading["lldpPeers"] = {sides[side]: value for side, value in lldp_peers.items()}
+                if lacp := report.get("lacp"):
+                    reading["lacp"] = {"side": sides[lacp["side"]],
+                                       **{key: lacp[key] for key in ("aggregate", "member", "partnerPort", "polledAt")
+                                          if key in lacp}}
+                readings.append(reading)
+            connections[host_id].append({"peer": _attachment_node(peer), "kind": edge["kind"],
+                                         "confirmed": edge["confirmed"], "ports": readings})
+    for group in connections.values():
+        group.sort(key=lambda row: (row["kind"] != "Сетевое соединение", not row["confirmed"], row["peer"]["id"]))
+    return [{"host": _attachment_node(nodes[host_id]), "connectionTotal": len(group), "connections": group[:24]}
+            for host_id, group in connections.items()]
+
+
 def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
     nodes = {node["id"]: node for node in graph["nodes"]}
     anchor = nodes.get(node_id)
-    guest_ids = set()
-    if anchor and anchor["guest"]:
-        guest_ids.add(node_id)
-    elif anchor and anchor["kind"] == "Сервис":
-        guest_ids.update(edge["a"] for edge in graph["links"] if edge["b"] == node_id
-                         and edge["confirmed"] and edge["kind"] in {"Размещение", "Цель проверки"}
-                         and nodes[edge["a"]]["guest"])
-
-    guests = _guest_attachments(nodes, graph["links"], sorted(guest_ids)[:12])
+    links = graph["links"]
+    targets = set()
+    if anchor and anchor["kind"] == "Сервис":
+        targets.update(edge["a"] for edge in links if edge["b"] == node_id and edge["confirmed"]
+                       and edge["kind"] in {"Размещение", "Цель проверки"})
+    elif anchor:
+        targets.add(node_id)
+    guest_ids = {key for key in targets if nodes[key]["guest"]}
+    host_ids = sorted(key for key in targets if key not in guest_ids and nodes[key]["kind"] not in ("Сервис", CLUSTER_KIND))
+    guests = _guest_attachments(nodes, links, sorted(guest_ids)[:12])
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
     return {**metadata, "attachment": {"node": _attachment_node(anchor) if anchor else None,
-                                       "guestTotal": len(guest_ids), "guests": list(guests.values())}}
+                                       "guestTotal": len(guest_ids), "guests": list(guests.values()),
+                                       "physicalHostTotal": len(host_ids),
+                                       "physicalHosts": _physical_attachments(nodes, links, host_ids[:12])}}
 
 
 def summarize_guest_attachment_audit(graph: dict) -> dict:

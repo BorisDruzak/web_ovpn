@@ -5348,6 +5348,56 @@ def test_infrastructure_map_serves_only_public_snapshot(tmp_path, monkeypatch):
     assert response.headers["cache-control"] == "no-store"
 
 
+def test_attachment_view_includes_physical_service_hosts_and_distinguishes_port_evidence(tmp_path, monkeypatch):
+    stamp = datetime.now(timezone.utc).isoformat()
+    path = tmp_path / "map.json"
+    monkeypatch.setenv("INFRASTRUCTURE_MAP_SNAPSHOT_PATH", str(path))
+    raw = {"schema": 1, "snapshotAt": stamp, "nodes": [
+        {"id": "web", "name": "Web", "kind": "Сервис"},
+        {"id": "server", "name": "Server", "kind": "Сервер"},
+        {"id": "sw", "name": "Switch", "kind": "Коммутатор"},
+        {"id": "unbound", "name": "Unbound", "kind": "Сервер"},
+    ], "links": [
+        {"a": "server", "b": "web", "kind": "Размещение", "confirmed": True},
+        {"a": "unbound", "b": "web", "kind": "Размещение", "confirmed": False},
+        {"a": "sw", "b": "server", "kind": "Сетевое соединение", "confirmed": True, "portEvidence": [
+            {"a": "ge1", "b": "eth0", "source": "LLDP UI_VPN", "at": stamp, "confirmed": True},
+            {"a": "xe1", "b": "", "source": "GitHub", "confirmed": False},
+        ]},
+        {"a": "server", "b": "sw", "kind": "Путь по MAC-таблице", "source": "netctl FDB",
+         "observedAt": stamp, "confirmed": True, "portEvidence": [
+            {"a": "", "b": "ge1", "source": "netctl FDB", "at": stamp, "confirmed": True,
+             "learnedEndpoint": {"switchId": "sw", "deviceId": "server", "mac": "02:00:00:00:00:01"}},
+         ]},
+    ]}
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    client, headers, _ = make_client(tmp_path, monkeypatch)
+
+    def read(node):
+        response = client.get("/api/v1/network/infrastructure?view=attachment&node_id=" + node, headers=headers)
+        assert response.status_code == 200
+        return response.json()["infrastructure"]["attachment"]
+
+    report = read("web")
+    assert report["guestTotal"] == 0 and report["physicalHostTotal"] == 1
+    host, = report["physicalHosts"]
+    assert host["host"]["id"] == "server" and host["connectionTotal"] == 2
+    direct, learned = host["connections"]
+    assert direct["peer"]["id"] == "sw" and direct["kind"] == "Сетевое соединение"
+    assert direct["ports"] == [
+        {"hostPort": "eth0", "peerPort": "ge1", "source": "LLDP UI_VPN", "checkedAt": stamp,
+         "confirmed": True, "pairEvidence": "current"},
+        {"hostPort": "", "peerPort": "xe1", "source": "GitHub", "checkedAt": None, "confirmed": False},
+    ]
+    reading, = learned["ports"]
+    assert learned["kind"] == "Путь по MAC-таблице" and reading["peerPort"] == "ge1"
+    assert reading["hostPort"] == "" and "pairEvidence" not in reading
+    assert reading["learnedEndpoint"]["deviceId"] == "server"
+    assert read("server")["physicalHosts"] == [host]
+    inverse = read("sw")["physicalHosts"][0]["connections"][0]["ports"][0]
+    assert (inverse["hostPort"], inverse["peerPort"]) == ("ge1", "eth0")
+
+
 def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path, monkeypatch):
     path = tmp_path / "infrastructure.json"
     monkeypatch.setenv("INFRASTRUCTURE_MAP_SNAPSHOT_PATH", str(path))
