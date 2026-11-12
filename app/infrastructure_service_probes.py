@@ -36,7 +36,7 @@ PROBE_METHODS = {
     "openvpn_management": "OpenVPN Management", "openvpn_tunnel": "OpenVPN TUN",
     "sip_options": "SIP OPTIONS (UDP)", "icmp": "ICMP", "vlan_transit": "ICMP · VLAN",
     "wireguard_policy": "Маршрут · WireGuard", "ipmi_lan": "IPMI LAN (UDP)", "rtsp_options": "RTSP OPTIONS",
-    "ssh_identification": "SSH",
+    "ssh_identification": "SSH", "ftp_features": "FTP FEAT",
 }
 
 
@@ -550,6 +550,69 @@ def _udp_failure(connection: socket.socket, option: tuple[int, int] | None,
             return {"state": "unreachable", "reason": "icmp_port_unreachable", "errorSource": offender}
         return {"state": "unknown", "reason": "icmp_rejected", "errorSource": offender}
     return fallback
+
+
+def _read_ftp_reply(connection: socket.socket, deadline: float) -> int | None:
+    code = b""
+    buffer = b""
+    remaining_bytes = 4096
+    while remaining_bytes:
+        remaining_time = deadline - monotonic()
+        if remaining_time <= 0:
+            raise TimeoutError
+        connection.settimeout(remaining_time)
+        chunk = connection.recv(remaining_bytes)
+        if not chunk:
+            break
+        remaining_bytes -= len(chunk)
+        buffer += chunk
+        while b"\r\n" in buffer:
+            line, _, buffer = buffer.partition(b"\r\n")
+            if code:
+                if line.startswith(code + b" "):
+                    return int(code)
+                continue
+            first = re.match(rb"([1-5][0-9]{2})([ -])", line)
+            if not first:
+                return None
+            code, separator = first.groups()
+            if separator == b" ":
+                return int(code)
+    return None
+
+
+def _ftp_features(spec: dict) -> dict:
+    port = spec.get("port")
+    if type(port) is not int or not 1 <= port <= 65535:
+        return {"state": "unknown"}
+    try:
+        address = str(ipaddress.ip_address(spec.get("ip")))
+    except ValueError:
+        return {"state": "unknown"}
+    try:
+        with socket.create_connection((address, port), timeout=TIMEOUT) as connection:
+            deadline = monotonic() + TIMEOUT
+            code = _read_ftp_reply(connection, deadline)
+            if code == 220:
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    raise TimeoutError
+                connection.settimeout(remaining)
+                connection.sendall(b"FEAT\r\n")
+                code = _read_ftp_reply(connection, deadline)
+                if code == 211:
+                    return {"state": "reachable", "ftpReply": code}
+    except TimeoutError:
+        return {"state": "unknown", "reason": "timeout"}
+    except ConnectionRefusedError:
+        return {"state": "unreachable", "reason": "ftp_connection_refused"}
+    except OSError:
+        return {"state": "unknown", "reason": "transport_error"}
+    if code == 421:
+        return {"state": "unreachable", "ftpReply": code}
+    if code is not None:
+        return {"state": "unknown", "ftpReply": code, "reason": "ftp_unexpected_reply"}
+    return {"state": "unknown", "reason": "ftp_invalid_reply"}
 
 
 def _ssh_identification(spec: dict) -> dict:
@@ -1097,6 +1160,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 details = _ipmi_lan(spec)
             elif protocol == "rtsp_options":
                 details = _rtsp_options(spec)
+            elif protocol == "ftp_features":
+                details = _ftp_features(spec)
             elif protocol == "ssh_identification":
                 details = _ssh_identification(spec)
             elif protocol == "dns":
@@ -1128,7 +1193,7 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 "port": valid_port,
                 "path": spec.get("path") if protocol in {"http", "https", "zabbix_api", "rtsp_options"} else None,
                 "target": spec.get("ip") if not skip_reason and (
-                    protocol in {"icmp", "vlan_transit", "sip_options", "ipmi_lan", "rtsp_options", "ssh_identification",
+                    protocol in {"icmp", "vlan_transit", "sip_options", "ipmi_lan", "rtsp_options", "ssh_identification", "ftp_features",
                                  "zabbix_api", "postgresql", "dns", "smb"}
                     or "probeTargetIP" in node
                 ) else None,

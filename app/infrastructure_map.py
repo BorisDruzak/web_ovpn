@@ -651,6 +651,12 @@ def _public_service_check(check: dict, now: datetime) -> dict:
             result["rtspStatus"] = rtsp
         if reason == "rtsp_connection_refused" or (rtsp == 401 and reason == "rtsp_auth_required"):
             result["reason"] = reason
+    if result["method"] == "FTP FEAT":
+        reply = check.get("ftpReply")
+        if type(reply) is int and 100 <= reply <= 599:
+            result["ftpReply"] = reply
+        if reason in {"timeout", "transport_error", "ftp_connection_refused", "ftp_unexpected_reply", "ftp_invalid_reply"}:
+            result["reason"] = reason
     if result["method"] == "SSH" and result["source"] == "UI_VPN" and reason in {
         "timeout", "transport_error", "ssh_connection_refused", "ssh_identification_invalid",
     }:
@@ -1582,7 +1588,7 @@ def summarize_services(graph: dict) -> dict:
             {"check": check["method"], "status": check_status.get(check["state"], "unknown"),
              "required": check.get("required") is True,
              **{key: check[key] for key in ("source", "checkedAt", "stale", "reason", "path", "port", "target",
-                                            "pppoe", "rtspStatus", "dns", "localRoute")
+                                            "pppoe", "rtspStatus", "ftpReply", "dns", "localRoute")
                 if key in check and check[key] is not None and check[key] != ""}}
             for check in node["serviceChecks"] if check.get("required") or (
                 state == "unknown" and check.get("supplemental") and check["state"] != "reachable"

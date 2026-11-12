@@ -4456,6 +4456,48 @@ def test_icmp_diagnostics_distinguish_echo_silence_and_probe_error(monkeypatch):
     assert "raw output" not in json.dumps(checks)
 
 
+def test_ftp_probe_requires_complete_feature_reply(monkeypatch):
+    from app import infrastructure_service_probes as probes
+    from app.infrastructure_map import _public_service_check
+
+    class Connection:
+        def __init__(self, *chunks):
+            self.chunks = iter(chunks)
+            self.sent = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def settimeout(self, timeout):
+            assert timeout > 0
+
+        def recv(self, size):
+            return next(self.chunks, b"")[:size]
+
+        def sendall(self, data):
+            self.sent.append(data)
+
+    def check(*chunks):
+        connection = Connection(*chunks)
+        monkeypatch.setattr(probes.socket, "create_connection", lambda *args, **kwargs: connection)
+        node = {"id": "ftp", "kind": "Сервис", "probeTargetIP": "192.0.2.4"}
+        probes.apply_service_probes([node], {"ftp": [{"type": "ftp_features", "ip": "192.0.2.4", "port": 21}]})
+        result, = node["serviceChecks"]
+        return _public_service_check(result, datetime.now(timezone.utc)), connection.sent
+
+    result, sent = check(b"220 FTP Service\r\n", b"211-Extended features\r\n UTF8\r\n", b"211 END\r\n")
+    assert (result["state"], result["ftpReply"], sent) == ("reachable", 211, [b"FEAT\r\n"])
+    result, sent = check(b"421 Service unavailable\r\n")
+    assert (result["state"], result["ftpReply"], sent) == ("unreachable", 421, [])
+    result, _ = check(b"220 FTP Service\r\n", b"211-Extended features\r\n UTF8\r\n")
+    assert (result["state"], result["reason"]) == ("unknown", "ftp_invalid_reply")
+    result, sent = check(b"HTTP/1.1 200 OK\r\n")
+    assert result["state"] == "unknown" and not sent
+
+
 def test_ssh_identification_confirms_only_a_bounded_protocol_response(monkeypatch):
     from app import infrastructure_service_probes as probes
     from app.infrastructure_map import _public_service_check

@@ -1115,6 +1115,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         postgresql_tls_handshake: 'Не удалось согласовать TLS',
         ssh_connection_refused: 'SSH-порт отклонил подключение',
         ssh_identification_invalid: 'Нет корректного ответа SSH',
+        ftp_connection_refused: 'Порт FTP отклонил подключение',
+        ftp_unexpected_reply: 'Неожиданный код ответа FTP',
+        ftp_invalid_reply: 'Неполный или некорректный ответ FTP',
         icmp_identity_unconfirmed: 'Принадлежность адреса этому узлу не подтверждена',
         route_other_gateway: 'Активен другой шлюз', route_inactive: 'Маршрут через ожидаемый шлюз неактивен',
         route_rejecting: 'Активный маршрут отбрасывает трафик',
@@ -1180,6 +1183,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           .filter(Boolean).map(value => ' · ' + value).join('');
         const http = check.httpStatus ? ' · HTTP ' + check.httpStatus : '';
         const rtsp = check.rtspStatus ? ' · RTSP ' + check.rtspStatus : '';
+        const ftp = check.ftpReply ? ' · FTP ' + check.ftpReply : '';
         const localRoute = check.localRoute;
         const vlanPeer = vlan?.peer;
         const peer = vlanPeer && ({matched: ' · Сосед ' + vlanPeer.guestPort + ' подтверждён',
@@ -1204,7 +1208,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           title.type = 'button';
           title.addEventListener('click', () => select(guests[0].id));
         }
-        row.append(title, make('small', result + http + rtsp + postgresql + smb + (reason ? ' · ' + reason + errorSource : '') + backup + policy + dns + rtt + attempts + gateway + egress + management + scope + source + time + identity + (check.stale ? ' · устарело' : '')));
+        row.append(title, make('small', result + http + rtsp + ftp + postgresql + smb + (reason ? ' · ' + reason + errorSource : '') + backup + policy + dns + rtt + attempts + gateway + egress + management + scope + source + time + identity + (check.stale ? ' · устарело' : '')));
         if (pppoe?.parentLink) {
           const {state, source, checkedAt} = pppoe.parentLink;
           const link = {up: 'Линк поднят', down: 'Линк опущен', disabled: 'Порт отключён'}[state];
