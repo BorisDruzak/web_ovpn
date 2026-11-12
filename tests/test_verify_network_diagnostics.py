@@ -31,6 +31,27 @@ def test_route_report_uses_fresh_scheduled_run_and_preserves_failed_probe():
     assert route_report(runs[:1], now, timedelta(minutes=10))["status"] == "missing"
 
 
+def test_loop_report_preserves_per_source_coverage_without_copying_findings():
+    coverage = {
+        "fdb": {"status": "recent", "truncated": False},
+        "stp": {"status": "unavailable", "last_observed_at": None},
+        "broadcast": {"status": "recent", "sampled_ports": 4, "valid_intervals": 9},
+    }
+    source = {"source": "switch-a", "status": "insufficient_data", "coverage": coverage, "truncated": False}
+    result = {
+        "status": "insufficient_data",
+        "since": "2026-11-13T01:00:00Z",
+        "until": "2026-11-13T02:00:00Z",
+        "truncated": False,
+        "sources": [{**source, "evidence": [{"mac": "02:00:00:00:00:01"}]}],
+    }
+    report = verifier.loop_report(result)
+    assert report == {
+        "status": result["status"], "since": result["since"], "until": result["until"],
+        "truncated": False, "sources": 1, "source_coverage": [source],
+    }
+
+
 @pytest.mark.parametrize("fresh,matches,strict,expected", [
     (True, True, False, 0),
     (True, True, True, 2),

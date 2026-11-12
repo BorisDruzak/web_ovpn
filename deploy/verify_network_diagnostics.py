@@ -40,6 +40,21 @@ def route_report(runs: list[dict], now: datetime, max_age: timedelta) -> dict:
     }
 
 
+def loop_report(result: dict) -> dict:
+    sources = result["sources"]
+    return {
+        "status": result["status"],
+        "since": result["since"],
+        "until": result["until"],
+        "truncated": result["truncated"],
+        "sources": len(sources),
+        "source_coverage": [
+            {field: source[field] for field in ("source", "status", "coverage", "truncated")}
+            for source in sources
+        ],
+    }
+
+
 def mcp_requests(script: Path, requests: list[tuple[str, dict]]) -> list[dict]:
     messages = [
         {"jsonrpc": "2.0", "id": number, "method": method, "params": params}
@@ -114,13 +129,10 @@ def verify(script: Path, max_age: timedelta) -> dict:
     }
     for profile, expected in scheduled.items():
         routes[profile]["profile_matches"] = {probe["id"] for probe in routes[profile]["probes"]} == expected
-    loop_data = mcp_data(loops)["result"]
     return {
         "contracts": "ok",
         "routes": routes,
-        "loop_diagnostics": {
-            "status": loop_data["status"], "sources": len(loop_data["sources"]),
-        },
+        "loop_diagnostics": loop_report(mcp_data(loops)["result"]),
         "profiles": {key: len(profiles[key]) for key in ("throughput", "https_speed", "capture")},
     }
 
