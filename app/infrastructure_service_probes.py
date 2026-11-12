@@ -221,6 +221,9 @@ def _dns_query(spec: dict) -> tuple[dns.message.QueryMessage, set[ipaddress.IPv4
 
 
 def _dns(spec: dict) -> dict:
+    transport = spec.get("transport", "auto")
+    if transport not in ("auto", "udp", "tcp"):
+        return {"state": "unknown"}
     try:
         port = spec["port"]
         if type(port) is not int or not 1 <= port <= 65535:
@@ -231,11 +234,18 @@ def _dns(spec: dict) -> dict:
         return {"state": "unknown"}
     record = spec["record"]
     diagnostic = {"name": query.question[0].name.to_text(), "record": record}
+    if transport != "auto":
+        diagnostic["transport"] = transport.upper()
     result = {"state": "unknown", "dns": diagnostic}
     try:
-        response, used_tcp = dns.query.udp_with_fallback(query, ip, timeout=TIMEOUT, port=port)
+        if transport == "auto":
+            response, used_tcp = dns.query.udp_with_fallback(query, ip, timeout=TIMEOUT, port=port)
+            diagnostic["transport"] = "TCP" if used_tcp else "UDP"
+        else:
+            send = dns.query.tcp if transport == "tcp" else dns.query.udp
+            response = send(query, ip, timeout=TIMEOUT, port=port)
         rcode = response.rcode()
-        diagnostic.update(rcode=dns.rcode.to_text(rcode), transport="TCP" if used_tcp else "UDP")
+        diagnostic["rcode"] = dns.rcode.to_text(rcode)
         if rcode in {dns.rcode.SERVFAIL, dns.rcode.NXDOMAIN}:
             return {**result, "state": "unreachable"}
         if rcode != dns.rcode.NOERROR:
@@ -249,6 +259,9 @@ def _dns(spec: dict) -> dict:
             if expected and addresses != expected:
                 return {**result, "state": "unreachable", "reason": "dns_address_mismatch"}
         return {**result, "state": "reachable"}
+    except dns.query.UnexpectedSource:
+        diagnostic["transport"] = "UDP"
+        return {**result, "reason": "dns_unexpected_source"}
     except (TimeoutError, dns.exception.Timeout):
         return {**result, "reason": "timeout"}
     except (ConnectionRefusedError, ConnectionResetError):

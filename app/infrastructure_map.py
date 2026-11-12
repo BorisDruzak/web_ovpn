@@ -408,8 +408,10 @@ def _public_dns_check(value: object) -> dict:
         return {}
     result = {"name": name, "record": record}
     rcode, transport = value.get("rcode"), value.get("transport")
-    if isinstance(rcode, str) and re.fullmatch(r"[A-Z0-9]{1,16}", rcode) and transport in ("UDP", "TCP"):
-        result.update(rcode=rcode, transport=transport)
+    if transport in ("UDP", "TCP"):
+        result["transport"] = transport
+    if isinstance(rcode, str) and re.fullmatch(r"[A-Z0-9]{1,16}", rcode) and "transport" in result:
+        result["rcode"] = rcode
         addresses = value.get("addresses")
         if record in ("A", "AAAA") and isinstance(addresses, list):
             result["addresses"] = [address for item in addresses[:16] if (address := _network_address(item))
@@ -573,7 +575,7 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         diagnostic = _public_dns_check(check.get("dns"))
         if diagnostic:
             result["dns"] = diagnostic
-            if reason in ("dns_no_answer", "dns_address_mismatch"):
+            if reason in ("dns_no_answer", "dns_address_mismatch", "dns_unexpected_source"):
                 result["reason"] = reason
     if check.get("method") == "OpenVPN Management":
         configured_port = check.get("configuredPort")
@@ -1524,7 +1526,7 @@ def summarize_services(graph: dict) -> dict:
         checks.extend(
             {"check": check["method"], "status": check_status.get(check["state"], "unknown"),
              "required": check.get("required") is True,
-             **{key: check[key] for key in ("source", "checkedAt", "stale", "reason", "path", "port", "target", "pppoe", "rtspStatus")
+             **{key: check[key] for key in ("source", "checkedAt", "stale", "reason", "path", "port", "target", "pppoe", "rtspStatus", "dns")
                 if key in check and check[key] is not None and check[key] != ""}}
             for check in node["serviceChecks"] if check.get("required") or (
                 state == "unknown" and check.get("supplemental") and check["state"] != "reachable"

@@ -1075,6 +1075,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         icmp_route_mismatch: 'Выбран другой маршрут UI_VPN, ICMP не отправлен',
         transport_error: 'Ошибка сетевого запроса', unexpected_response: 'Ответ не соответствует запросу',
         dns_no_answer: 'Нет записи запрошенного типа', dns_address_mismatch: 'Адреса не совпадают с ожидаемыми',
+        dns_unexpected_source: 'DNS-ответ пришёл не с адреса запроса',
         http_content_type: 'Неожиданный тип ответа', http_body_limit: 'Ответ превышает лимит проверки',
         http_invalid_json: 'Ответ не содержит ожидаемый объект JSON',
         http_reported_unavailable: 'Приложение сообщило о сбое',

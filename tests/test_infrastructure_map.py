@@ -795,6 +795,49 @@ def test_malformed_service_probe_config_cannot_leave_observer_green():
         assert public["serviceChecks"][0]["reason"] == "probe_configuration"
 
 
+def test_dns_probe_reports_tcp_and_unexpected_udp_source_separately(monkeypatch):
+    import dns.message
+    import dns.rrset
+
+    from app import infrastructure_service_probes as probes
+    from app.infrastructure_map import _public_service_check
+
+    ip = "192.0.2.53"
+    spec = {"type": "dns", "ip": ip, "port": 53, "name": "service.example.", "record": "A"}
+
+    def tcp(query, target, **kwargs):
+        assert target == ip and kwargs["port"] == 53
+        response = dns.message.make_response(query)
+        response.answer.append(dns.rrset.from_text("service.example.", 60, "IN", "A", "192.0.2.10"))
+        return dns.message.from_wire(response.to_wire())
+
+    def udp(*args, **kwargs):
+        raise probes.dns.query.UnexpectedSource("unexpected address")
+
+    monkeypatch.setattr(probes.dns.query, "tcp", tcp)
+    monkeypatch.setattr(probes.dns.query, "udp", udp)
+    node = {"id": "dns", "kind": "Сервис", "probeTargetIP": ip}
+    probes.apply_service_probes([node], {"dns": [{**spec, "transport": mode} for mode in ("tcp", "udp")]})
+    good, unknown = [_public_service_check(check, datetime.now(timezone.utc)) for check in node["serviceChecks"]]
+    assert (good["state"], good["dns"]["transport"]) == ("reachable", "TCP")
+    assert (unknown["state"], unknown["dns"]["transport"], unknown["reason"]) == ("unknown", "UDP", "dns_unexpected_source")
+
+
+def test_gateway_segment_service_binds_only_to_its_canonical_gateway():
+    from app.infrastructure_collect import build_graph
+
+    context = {"devices": [{"id": "firewall", "name": "Firewall", "kind": "router", "management_ip": "192.0.2.1"}],
+               "segments": [{"id": "lan", "gateway_device": "firewall", "gateway": "198.51.100.1", "cidr": "198.51.100.0/24"}]}
+    bindings = {"asset_services": {
+        "dns": {"asset": "firewall", "label": "DNS", "gateway_segment": "lan"},
+        "other": {"asset": "firewall", "label": "Other", "gateway_segment": "missing"},
+    }}
+    graph = build_graph(context, {}, {}, {}, bindings, datetime.now(timezone.utc))
+    nodes = {node["id"]: node for node in graph["nodes"]}
+    assert nodes["dns"]["probeTargetIP"] == "198.51.100.1"
+    assert nodes["other"]["probeTargetIP"] is None
+
+
 def test_dns_probe_requires_an_answer_to_the_actual_query(monkeypatch):
     import dns.message
     import dns.rrset

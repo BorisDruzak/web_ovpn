@@ -1350,7 +1350,12 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         asset = spec["asset"]
         if asset in address_by_asset and service_id not in nodes:
             item = node(service_id, spec["label"], "Сервис", nodes[asset]["site"], "UI_VPN")
-            if spec.get("require_network_identity") is True:
+            if "gateway_segment" in spec:
+                gateways = [segment["gateway"] for segment in context.get("segments", [])
+                            if segment["id"] == spec["gateway_segment"] and segment.get("gateway_device") == asset
+                            and segment.get("gateway")]
+                item["probeTargetIP"] = gateways[0] if len(gateways) == 1 and spec.get("require_network_identity") is not True else None
+            elif spec.get("require_network_identity") is True:
                 item["probeTargetIP"] = None
                 identity_services.setdefault(asset, []).append(item)
             else:
