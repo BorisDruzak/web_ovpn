@@ -32,6 +32,7 @@ MAX_SNAPSHOT_BYTES = 1_000_000
 MAX_AGE = timedelta(minutes=25)
 MAX_DOWNSTREAM_SWITCHES = 12
 SERVICE_PROBE_MAX_AGE = timedelta(minutes=5)
+PROBE_TRANSITION_MAX_AGE = timedelta(hours=24)
 STP_ROOT_PATH_MAX_AGE = timedelta(minutes=5)
 TRANSCEIVER_MAX_AGE = timedelta(minutes=5)
 PORT_LINK_CHECK_MAX_AGE = timedelta(minutes=5)
@@ -257,6 +258,22 @@ def _service_reachability(observation: object, checks: list[dict], now: datetime
         return {**reachability, "state": "unreachable",
                 "checkedAt": min(check["checkedAt"] for check in primary), "stale": False}
     return {**reachability, "state": "unknown"}
+
+
+def public_probe_transition(value: object, reachability: dict, now: datetime) -> dict:
+    if not isinstance(value, dict) or reachability.get("source") != "Проверка сервиса":
+        return {}
+    before, after = value.get("from"), value.get("to")
+    previous = _time(value.get("previousCheckedAt"))
+    current = _time(value.get("checkedAt"))
+    latest = _time(reachability.get("checkedAt"))
+    if (before not in ("reachable", "unreachable") or after not in ("reachable", "unreachable")
+            or before == after or after != reachability.get("state")
+            or previous is None or current is None or latest is None
+            or not timedelta(0) < current - previous <= SERVICE_PROBE_MAX_AGE
+            or not now - PROBE_TRANSITION_MAX_AGE <= current <= latest <= now):
+        return {}
+    return {"from": before, "to": after, "previousCheckedAt": previous.isoformat(), "checkedAt": current.isoformat()}
 
 
 def _public_port(row: dict, now: datetime) -> dict:
@@ -1146,13 +1163,16 @@ def _public_node(row: dict, now: datetime) -> dict:
     downstream = (_public_downstream(row.get("downstream"), ports, stp_path, now)
                   if row.get("kind") == NETWORK_KINDS[0] else {})
     firmware = _public_firmware(row.get("firmware"), now) if row.get("kind") in NETWORK_KINDS else {}
+    reachability = _service_reachability(row.get("reachability"), service_checks, now)
+    transition = public_probe_transition(row.get("probeTransition"), reachability, now) if row.get("kind") == "Сервис" else {}
     return {
         **{key: _text(row.get(key)) for key in ("id", "name", "kind", "site", "origin", "pveHost")},
         "guest": row.get("guest") is True,
         "vmid": row.get("vmid") if type(row.get("vmid")) is int else None,
         "aliases": [_text(value) for value in aliases[:12] if isinstance(value, str)] if isinstance(aliases, list) else [],
         "sourceStatus": next((state for state in STATES if any(source["status"] == state for source in fresh)), "unknown"),
-        "reachability": _service_reachability(row.get("reachability"), service_checks, now),
+        "reachability": reachability,
+        **({"probeTransition": transition} if transition else {}),
         "sources": sources,
         "properties": properties,
         **({"resources": resources} if resources else {}),
@@ -2126,6 +2146,7 @@ def summarize_services(graph: dict) -> dict:
                         key=lambda check: (not check["required"], priority[check["status"]]))
         services.append({
             "id": node["id"], "name": node["name"], "status": state, "reachability": node["reachability"],
+            **({"probeTransition": node["probeTransition"]} if "probeTransition" in node else {}),
             "hosts": sorted(hosts.get(node["id"], ())), "dependencies": node["serviceAvailability"],
             "requiredChecks": {"passed": totals["ok"], "failed": totals["critical"] + totals["warn"],
                                "unconfirmed": totals["unknown"]},

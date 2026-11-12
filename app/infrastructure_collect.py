@@ -53,7 +53,8 @@ from .infrastructure_map import (
     RX_SILENCE_MAX_INTERVALS, RX_SILENCE_MAX_WINDOW, SERVICE_PROBE_MAX_AGE, SHARED_LLDP_KIND, SHARED_LLDP_SOURCE,
     STP_ROOT_PATH_MAX_AGE,
     TRANSCEIVER_MAX_AGE,
-    index_port_states, inventory_link_sources, observation_is_fresh, port_label_key,
+    _public_service_check, _service_reachability, index_port_states, inventory_link_sources,
+    observation_is_fresh, port_label_key, public_probe_transition,
     project_hypervisor_disks, project_hypervisor_lvm_thin, project_hypervisor_zfs,
 )
 from .infrastructure_port_ssh import collect_proxmox_port_states
@@ -3177,6 +3178,44 @@ def _previous_snapshot(path: Path, context_sha: str) -> dict:
     return previous
 
 
+def _add_service_probe_transitions(graph: dict, previous: dict) -> None:
+    if not previous:
+        return
+    now = datetime.fromisoformat(graph["snapshotAt"])
+    prior = {node["id"]: node for node in previous["nodes"][:600]
+             if isinstance(node, dict) and isinstance(node.get("id"), str) and node.get("kind") == "Сервис"}
+
+    def observe(node):
+        raw = node.get("serviceChecks")
+        checks = [_public_service_check(row, now) for row in raw[:16]
+                  if isinstance(row, dict) and row.get("source") == "UI_VPN"]
+        reachability = _service_reachability(node.get("reachability"), checks, now)
+        identity = Counter(
+            (c["method"], c.get("target"), c.get("port"), c.get("path"), c.get("via"),
+             c.get("dns", {}).get("name"), c.get("dns", {}).get("record"))
+            for c in checks if c.get("required") and not c.get("component")
+        )
+        return reachability, identity
+
+    for node in graph["nodes"]:
+        old = prior.get(node["id"])
+        if (node.get("kind") != "Сервис" or not old or node.get("name") != old.get("name")
+                or not isinstance(node.get("serviceChecks"), list) or not isinstance(old.get("serviceChecks"), list)):
+            continue
+        before, before_identity = observe(old)
+        after, after_identity = observe(node)
+        if (not after_identity or before_identity != after_identity or before["source"] != after["source"]
+                or not before["checkedAt"] or not after["checkedAt"] or before["checkedAt"] >= after["checkedAt"]
+                or before["state"] not in ("reachable", "unreachable")):
+            continue
+        change = old.get("probeTransition")
+        if before["state"] != after["state"]:
+            change = {"from": before["state"], "to": after["state"],
+                      "previousCheckedAt": before["checkedAt"], "checkedAt": after["checkedAt"]}
+        if transition := public_probe_transition(change, after, now):
+            node["probeTransition"] = transition
+
+
 def _add_guest_io_rates(graph: dict, previous: dict) -> None:
     prior = {node["id"]: node for node in previous.get("nodes", [])[:600]
              if isinstance(node, dict) and isinstance(node.get("id"), str) and node.get("guest") is True}
@@ -3421,6 +3460,7 @@ def main() -> int:
         if collection_issues:
             graph["collectionIssues"] = collection_issues
         previous = _previous_snapshot(args.output, graph["contextSha256"])
+        _add_service_probe_transitions(graph, previous)
         _add_lldp_port_deltas(graph, previous)
         if "proxmox" in collection_issues:
             _retain_proxmox_inventory(graph, previous)

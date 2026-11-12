@@ -7,6 +7,45 @@ import pytest
 from test_context_api import make_client
 
 
+def test_service_probe_transition_tracks_confirmed_recovery(tmp_path):
+    from app.infrastructure_collect import _add_service_probe_transitions
+    from app.infrastructure_map import load_infrastructure_map, summarize_services
+
+    now = datetime.now(timezone.utc)
+    before = now - timedelta(minutes=2)
+
+    def snapshot(at, state, target="192.0.2.30"):
+        stamp = at.isoformat()
+        check = {"source": "UI_VPN", "method": "HTTP", "state": state, "checkedAt": stamp,
+                 "required": True, "target": target, "port": 3000, "path": "/health"}
+        return {"schema": 1, "snapshotAt": stamp, "nodes": [
+            {"id": "git", "name": "Git", "kind": "Сервис", "serviceChecks": [check],
+             "reachability": {**check, "source": "Проверка сервиса"}},
+        ], "links": []}
+
+    previous = snapshot(before, "unreachable")
+    current = snapshot(now, "reachable")
+    _add_service_probe_transitions(current, previous)
+    transition = {"from": "unreachable", "to": "reachable", "previousCheckedAt": before.isoformat(),
+                  "checkedAt": now.isoformat()}
+    assert current["nodes"][0]["probeTransition"] == transition
+    after = now + timedelta(minutes=2)
+    steady = snapshot(after, "reachable")
+    _add_service_probe_transitions(steady, current)
+    assert steady["nodes"][0]["probeTransition"] == transition
+    path = tmp_path / "infra.json"
+    path.write_text(json.dumps(steady), encoding="utf-8")
+    public = load_infrastructure_map(path, after)
+    assert public["nodes"][0]["probeTransition"] == transition
+    assert summarize_services(public)["serviceAudit"]["services"][0]["probeTransition"] == transition
+    assert "probeTransition" not in load_infrastructure_map(path, after + timedelta(days=1))["nodes"][0]
+    for old in (snapshot(before, "unknown"), snapshot(before, "unreachable", "192.0.2.31"),
+                snapshot(before - timedelta(minutes=8), "unreachable")):
+        changed = snapshot(now, "reachable")
+        _add_service_probe_transitions(changed, old)
+        assert "probeTransition" not in changed["nodes"][0]
+
+
 def test_map_colors_use_node_and_confirmed_service_availability(tmp_path):
     from app.infrastructure_map import load_infrastructure_map
 
