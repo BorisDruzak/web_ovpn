@@ -1988,7 +1988,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             if attachment:
                 port, observed = attachment
                 edge(router, asset, "Путь по MAC-таблице", "MikroTik · ARP + FDB",
-                     details=f"{address} · {bridge}", ports=(port, ""), at=observed)
+                     details=f"{address} · {bridge}", ports=(port, ""), at=observed, management_address=address)
                 if archived := _inventory_ipv4_interface(devices[asset], address, now):
                     edge(router, asset, "Путь по MAC-таблице", "GitHub", False, ports=("", archived[0]), at=archived[1])
         for endpoint in (router, asset):

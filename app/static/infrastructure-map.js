@@ -700,6 +700,15 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       const key = [label, path.gateway].join('|');
       if (rendered.has(key)) continue;
       rendered.add(key);
+      if (path.routerAttachment) {
+        const {routerId, port, source, checkedAt} = path.routerAttachment;
+        const router = byId.get(routerId)?.name ?? routerId;
+        const row = make('li');
+        row.append(make('strong', label), make('small', [source, formatTime(checkedAt)].join(' · ')),
+          switchPortButton(routerId, router, port));
+        list.append(row);
+        continue;
+      }
       const {hostPort, switchPort} = path.physicalPair;
       const guest = byId.get(path.guestId)?.name ?? path.guestId;
       const host = byId.get(path.hypervisorId)?.name ?? path.hypervisorId;
@@ -717,7 +726,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       }
       list.append(row);
     }
-    panel.append(make('h3', 'Путь до коммутатора'), list);
+    panel.append(make('h3', paths.every(path => path.routerAttachment) ? 'Порт маршрутизатора' : 'Путь до коммутатора'), list);
     return panel;
   }
 
@@ -1810,7 +1819,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         panel.dataset.section = 'services-on-port';
         const services = make('ul', null, 'map-detail-list');
         const bases = {host_mac: 'MAC устройства', host_lacp: 'LACP хоста', host_management: 'Интерфейс управления',
-          guest_gateway: 'Вход через шлюз', guest_local_udp: 'Привязка к интерфейсу ВМ'};
+          guest_gateway: 'Вход через шлюз', guest_local_udp: 'Привязка к интерфейсу ВМ', router_mac: 'ARP и FDB маршрутизатора'};
         for (const service of serviceGroup.services) {
           const row = make('li');
           const open = make('button', service.name);

@@ -4904,7 +4904,7 @@ def test_hypervisor_fdb_path_reports_management_interface_without_claiming_direc
 
 def test_transit_peer_management_port_requires_fresh_arp_fdb_and_active_ethernet(tmp_path):
     from app.infrastructure_collect import build_graph
-    from app.infrastructure_map import load_infrastructure_map, summarize_topology
+    from app.infrastructure_map import load_infrastructure_map, summarize_guest_attachment, summarize_topology
 
     now = datetime.now(timezone.utc)
     at = now.isoformat()
@@ -4916,6 +4916,7 @@ def test_transit_peer_management_port_requires_fresh_arp_fdb_and_active_ethernet
                                 {"name": "eth0", "address": address + "/24", "observed_at": inventory_stamp},
                                 {"name": "eth2", "address": "192.0.2.2/30", "observed_at": inventory_stamp},
                             ]}}],
+               "services": [{"id": "coordinator-web", "name": "Coordinator web", "device": "coordinator"}],
                "segments": [{"id": "transit", "cidr": "192.0.2.0/30",
                              "local_address": "192.0.2.1", "gateway_device": "rb"}]}
     bindings = {"transit_links": {"transit": {"asset": "coordinator", "source": "main",
@@ -4937,6 +4938,10 @@ def test_transit_peer_management_port_requires_fresh_arp_fdb_and_active_ethernet
 
     def lan(at=now, public_at=now):
         graph = build_graph(context, network, {}, {}, bindings, at)
+        service = next(node for node in graph["nodes"] if node["id"] == "coordinator-web")
+        service["serviceChecks"] = [{"source": "UI_VPN", "method": "HTTPS", "port": 8080,
+                                     "state": "reachable", "checkedAt": at.isoformat(), "target": ip}
+                                    for ip in (address, "192.0.2.2")]
         path.write_text(json.dumps(graph), encoding="utf-8")
         return [e for e in load_infrastructure_map(path, public_at)["links"] if e["a"] == "rb" and e["b"] == "coordinator"]
 
@@ -4946,7 +4951,7 @@ def test_transit_peer_management_port_requires_fresh_arp_fdb_and_active_ethernet
                 "speedBps": None, "checkedAt": at, "stale": False}
     live, inventory = link["portEvidence"]
     assert live == {"a": "ether7", "b": "", "source": "MikroTik · ARP + FDB", "at": at,
-                    "confirmed": True, "portStates": {"a": expected}}
+                    "confirmed": True, "managementAddress": address, "portStates": {"a": expected}}
     assert inventory == {"a": "", "b": "eth0", "source": "GitHub", "at": inventory_stamp, "confirmed": False}
     public = load_infrastructure_map(path, now, include_guest_attachments=True)
     audit = summarize_topology(public)["topologyAudit"]
@@ -4956,6 +4961,13 @@ def test_transit_peer_management_port_requires_fresh_arp_fdb_and_active_ethernet
     assert row["observedPaths"] == [{"portA": "ether7", "portB": "", "source": "MikroTik · ARP + FDB", "checkedAt": at}]
     assert not any(audit["directLinks"].values())
     assert public["pendingPortPairs"][0]["archivedPortSides"] == ["b"]
+    service_path, = summarize_guest_attachment(public, "coordinator-web")["attachment"]["servicePaths"]
+    assert service_path == {"target": address, "port": 8080, "method": "HTTPS", "checkedAt": at,
+                            "addressCheckedAt": at, "routerAttachment": {"routerId": "rb", "port": "ether7",
+                            "source": "MikroTik · ARP + FDB", "checkedAt": at}}
+    reverse, = summarize_guest_attachment(public, "rb")["attachment"]["servicePorts"]
+    endpoint, = reverse["services"][0]["probeEndpoints"]
+    assert reverse["port"] == "ether7" and endpoint["target"] == address
     expired_audit = summarize_topology(load_infrastructure_map(path, now + timedelta(hours=1)))["topologyAudit"]
     assert expired_audit["pendingTotal"] == 0
     ports = next(node["ports"] for node in load_infrastructure_map(path, now)["nodes"] if node["id"] == "rb")
