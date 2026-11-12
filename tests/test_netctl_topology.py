@@ -322,6 +322,8 @@ def _topology_identities() -> tuple[object, ...]:
 def test_reconcile_topology_classifies_links_is_idempotent_and_records_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from dataclasses import replace
+
     from netctl import topology_reconcile
 
     conn = _topology_db(tmp_path)
@@ -356,9 +358,15 @@ def test_reconcile_topology_classifies_links_is_idempotent_and_records_change(
         ).fetchone()[0]) == watermark
         assert conn.execute("SELECT count(*) FROM switch_link_events").fetchone()[0] == 2
 
-        second = topology_reconcile.reconcile_topology(conn, "2026-07-22T08:01:00Z", {})
+        refreshed_at = "2026-07-22T08:01:00Z"
+        refreshed = tuple(replace(evidence, observed_at=refreshed_at) for evidence in initial)
+        monkeypatch.setattr(topology_reconcile, "collect_link_evidence", lambda _conn, _identities: refreshed)
+        second = topology_reconcile.reconcile_topology(conn, refreshed_at, {})
         assert second["counts"]["events"] == 0
         assert conn.execute("SELECT count(*) FROM switch_link_events").fetchone()[0] == 2
+        for row in conn.execute("SELECT last_seen_at, evidence_json FROM current_switch_links"):
+            assert row["last_seen_at"] == refreshed_at
+            assert all(evidence["observed_at"] == refreshed_at for evidence in json.loads(row["evidence_json"]))
 
         changed = (
             _link_evidence(1, "ifindex:2", 2, "physical:24", "intent", 90),

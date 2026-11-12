@@ -228,10 +228,18 @@ def _row_public(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+def _semantic_link(payload: dict[str, Any]) -> dict[str, Any]:
+    link = {key: value for key, value in payload.items() if key not in {"observed_at", "evidence"}}
+    # The collection timestamp can also change the order of otherwise stable observations.
+    link["evidence"] = sorted(
+        json.dumps({key: value for key, value in item.items() if key != "observed_at"}, sort_keys=True)
+        for item in payload["evidence"]
+    )
+    return link
+
+
 def _semantic_equal(before: dict[str, Any], after: CurrentSwitchLink) -> bool:
-    public = link_public(after)
-    public.pop("observed_at")
-    return before == public
+    return _semantic_link(before) == _semantic_link(link_public(after))
 
 
 def _events(
