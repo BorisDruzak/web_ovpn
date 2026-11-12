@@ -171,6 +171,38 @@ def test_qemu_prelaunch_reports_guest_state_backup_lock_and_configured_bridge(tm
     assert node["properties"]["Блокировка Proxmox"] == "Резервное копирование"
 
 
+def test_guest_network_reports_an_empty_configuration_only_after_a_successful_read(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    pve = {"at": at, "cluster": [], "nodes": [{"node": "pve1", "status": "online"}],
+           "guests": [{"vmid": 127, "node": "pve1", "type": "lxc", "status": "running"}],
+           "configs": {"127": {"networkConfigRead": True}}}
+    path = tmp_path / "snapshot.json"
+
+    def read(when=now):
+        path.write_text(json.dumps(build_graph({}, {}, {}, pve, {}, now)), encoding="utf-8")
+        return next(node for node in load_infrastructure_map(path, when)["nodes"] if node.get("vmid") == 127)
+
+    node = read()
+    assert node["guestNetwork"] == {"checkedAt": at, "configured": 0, "enabled": 0, "disabled": 0}
+    assert node["mapStatus"] == "unknown"
+    assert node["reachability"]["method"] == "Адаптеры Proxmox не заданы"
+    assert "guestNetwork" not in read(now + timedelta(hours=1))
+    pve["configs"]["127"].update(
+        net0="name=eth0,bridge=vmbr0,hwaddr=02:00:00:00:00:01",
+        net1="name=eth1,bridge=vmbr1,hwaddr=02:00:00:00:00:02,link_down=1",
+        net2="name=eth2",
+    )
+    node = read()
+    assert node["guestNetwork"] == {"checkedAt": at, "configured": 3, "enabled": 1, "disabled": 1}
+    assert node["reachability"]["method"] == ""
+    pve["configs"]["127"] = {}
+    assert "guestNetwork" not in read()
+
+
 def test_cluster_health_distinguishes_quorum_members_and_api(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map

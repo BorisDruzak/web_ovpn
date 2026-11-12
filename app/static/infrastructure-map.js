@@ -498,6 +498,15 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     propertiesSection.append(make('h3', 'Доступность'), properties);
     const measurements = Object.entries(node.properties ?? {})
       .filter(([name, value]) => value && !items[name]);
+    if (node.guestNetwork) {
+      const {configured, enabled, disabled} = node.guestNetwork;
+      const unresolved = configured - enabled - disabled;
+      const network = configured ? [
+        'настроено ' + configured, 'включено ' + enabled,
+        disabled && 'отключено ' + disabled, unresolved && 'без сведений о мосте ' + unresolved,
+      ].filter(Boolean).join(' · ') : 'Не заданы';
+      measurements.push(['Адаптеры Proxmox', network]);
+    }
     if (measurements.length) {
       const list = make('dl');
       for (const [name, value] of measurements) {

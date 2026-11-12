@@ -451,6 +451,17 @@ def project_hypervisor_lvm_thin(row: object, now: datetime) -> dict:
             "warningThresholdPercent": LVM_THIN_WARNING_PERCENT, "pools": pools} if pools else {}
 
 
+def _public_guest_network(row: object, now: datetime) -> dict:
+    if not isinstance(row, dict) or not observation_is_fresh(row.get("checkedAt"), now):
+        return {}
+    counts = {key: row.get(key) for key in ("configured", "enabled", "disabled")}
+    if any(type(value) is not int or not 0 <= value <= 256 for value in counts.values()):
+        return {}
+    if counts["enabled"] + counts["disabled"] > counts["configured"]:
+        return {}
+    return {"checkedAt": _time(row["checkedAt"]).isoformat(), **counts}
+
+
 def _public_guest_storage(row: object, now: datetime) -> dict:
     if not isinstance(row, dict) or not observation_is_fresh(row.get("checkedAt"), now):
         return {}
@@ -524,6 +535,7 @@ def _public_node(row: dict, now: datetime) -> dict:
         zfs_pools = project_hypervisor_zfs(row.get("zfsPools"), now)
         lvm_thin_pools = project_hypervisor_lvm_thin(row.get("lvmThinPools"), now)
     guest_storage = _public_guest_storage(row.get("guestStorage"), now) if row.get("guest") is True else {}
+    guest_network = _public_guest_network(row.get("guestNetwork"), now) if row.get("guest") is True else {}
     required = row.get("requiredObserverChecks")
     required_names = dict.fromkeys(
         name for name in required[:80] if isinstance(name, str) and re.fullmatch(r"[a-z0-9_]{1,64}", name)
@@ -545,6 +557,7 @@ def _public_node(row: dict, now: datetime) -> dict:
         **({"zfsPools": zfs_pools} if zfs_pools else {}),
         **({"lvmThinPools": lvm_thin_pools} if lvm_thin_pools else {}),
         **({"guestStorage": guest_storage} if guest_storage else {}),
+        **({"guestNetwork": guest_network} if guest_network else {}),
         "ports": [port for port in ports if port["name"]],
         "serviceChecks": [_public_service_check(check, now) for check in _rows(row.get("serviceChecks"), 16)],
         "checks": [

@@ -1352,6 +1352,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             item.pop("reachability", None)
             config = pve.get("configs", {}).get(str(vmid), {})
             interfaces = guest_interfaces.get(str(vmid), {})
+            configured_nics = {name for name in config if re.fullmatch(r"net[0-9]+", name)}
             if observation_is_fresh(pve_at, now):
                 lock = guest.get("lock")
                 if isinstance(lock, str) and re.fullmatch(r"[a-z][a-z0-9-]{0,31}", lock):
@@ -1359,6 +1360,10 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 disks = _guest_disks(config, guest.get("type")) if not guest.get("template") else []
                 if disks:
                     item["guestStorage"] = {"checkedAt": pve_at, "disks": disks}
+                if not guest.get("template") and config.get("networkConfigRead") is True:
+                    disabled_count = sum(disabled for _, _, disabled, _ in interfaces.values())
+                    item["guestNetwork"] = {"checkedAt": pve_at, "configured": len(configured_nics),
+                                            "enabled": len(interfaces) - disabled_count, "disabled": disabled_count}
                 for service, spec in guest_services.get(str(vmid), []):
                     mac = str(spec.get("mac") or "").lower()
                     if mac_counts[mac] != 1 or mac not in guest_macs.get(str(vmid), set()):
@@ -1386,11 +1391,12 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                             or datetime.fromisoformat(checked["checkedAt"]) >= datetime.fromisoformat(observation["checkedAt"])):
                         observation = checked
                         item["properties"]["IP проверки по ARP"] = address
-                configured_nics = {name for name in config if re.fullmatch(r"net[0-9]+", name)}
                 if (guest.get("type") == "qemu" and config.get("directNetworkOnly") is True
                         and interfaces and configured_nics == interfaces.keys()
                         and all(disabled for _, _, disabled, _ in interfaces.values())):
                     observation = _observation("unreachable", "Proxmox", "Все адаптеры ВМ отключены", pve_at)
+                if not observation and config.get("networkConfigRead") is True and not configured_nics:
+                    observation = _observation("unknown", "Proxmox", "Адаптеры Proxmox не заданы", pve_at)
                 if observation:
                     item["reachability"] = observation
             item["properties"].update({"VMID": str(vmid), "Узел Proxmox": host, "Состояние ВМ": label})
@@ -1611,6 +1617,7 @@ def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: set[s
         selected = {name: value for name, value in config.items() if PVE_DISK_DEVICE.fullmatch(name)}
         if key in guests or not guest.get("template"):
             selected.update({name: value for name, value in config.items() if re.fullmatch(r"net[0-9]+", name)})
+            selected["networkConfigRead"] = True
             if guest["type"] == "qemu":
                 selected["directNetworkOnly"] = not any(
                     re.fullmatch(r"args|hookscript|(?:hostpci|usb)[0-9]+", name) for name in config
