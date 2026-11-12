@@ -116,7 +116,7 @@ def test_operator_flow_only_uses_workstationctl(component_service, monkeypatch):
         output = io.StringIO()
         assert cli.main(['--json', 'setup', *args], settings=settings, stdout=output) == 0
         return json.loads(output.getvalue())
-    assert command('components', 'list')['catalog_version'] == 1
+    assert command('components', 'list')['catalog_version'] == 2
     plan = command('component', 'plan', '--machine', component_service[2].uuid, '--component', 'software.onlyoffice')
     applied = command('component', 'apply', plan['plan_id'], '--confirm-sha256', plan['sha256'])
     engine = SetupExecutionEngine(settings, components=service)
