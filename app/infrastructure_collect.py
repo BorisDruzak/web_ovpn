@@ -577,6 +577,30 @@ def _router_layer2_observation(sources: list[dict], name: str, interface: str, m
     return None
 
 
+def _refresh_lacp_peer_arp(context: dict, network: dict, now: datetime) -> None:
+    devices = {device["id"]: device for device in context.get("devices", [])}
+    addresses = Counter(device.get("management_ip") for device in devices.values())
+    arp_rows = network.get("arp", [])
+    mappings = _arp_mappings(arp_rows, now)
+    for report in network.get("lacp", []):
+        device = devices.get(report["asset"], {})
+        address = device.get("management_ip")
+        if addresses[address] != 1 or address not in mappings:
+            continue
+        mac, _ = mappings[address]
+        declared = {value.lower() for value in device.get("mac_addresses", []) if MAC.fullmatch(value)}
+        if (declared and mac not in declared) or not any(member["mac"] == mac for member in report["members"]):
+            continue
+        locations = {(row["source"], row["interface"]) for row in arp_rows
+                     if row.get("ip") == address and str(row.get("mac") or "").lower() == mac
+                     and row.get("source") and row.get("interface") and observation_is_fresh(row.get("last_seen_at"), now)}
+        if len(locations) != 1:
+            continue
+        (router, interface), = locations
+        if observation := _router_layer2_observation(network["sources"], router, interface, mac, address=address):
+            report["partnerArp"] = {"address": address, "mac": mac, "checkedAt": observation["checkedAt"]}
+
+
 def _collect_asset_mac_probes(context: dict, sources: list[dict], configured: dict) -> dict:
     ownership = {}
     for device in context.get("devices", []):
@@ -2631,6 +2655,10 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         mac, arp_at = arp_mappings[address]
         if declared_macs[asset] and mac not in declared_macs[asset]:
             continue
+        verified = report.get("partnerArp", {})
+        if (verified.get("address") == address and verified.get("mac") == mac
+                and observation_is_fresh(verified.get("checkedAt"), now)):
+            arp_at = max(arp_at, datetime.fromisoformat(verified["checkedAt"]))
         matching = [member for member in report["members"] if member["mac"] == mac]
         peer_counts = Counter(member["partner_port"] for member in matching)
         confirmed = [member for member in matching if peer_counts[member["partner_port"]] == 1]
@@ -3463,6 +3491,7 @@ def main() -> int:
             network["pppoe"] = _collect_pppoe(context, network["sources"], bindings.get("pppoe_internet_checks"))
             if lacp_links:
                 network["lacp"] = asyncio.run(_collect_lacp(network, lacp_links, datetime.now(timezone.utc)))
+                _refresh_lacp_peer_arp(context, network, datetime.now(timezone.utc))
             network["stp_root_paths"], network["stp_designated_ports"] = asyncio.run(
                 _collect_stp_observations(network["sources"], network.get("switches", []), datetime.now(timezone.utc))
             )

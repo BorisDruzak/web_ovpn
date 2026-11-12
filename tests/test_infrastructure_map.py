@@ -3264,8 +3264,8 @@ def test_lacp_confirms_only_ports_whose_partner_matches_fresh_arp(tmp_path):
     assert mac not in path.read_text(encoding="utf-8")
 
 
-def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tmp_path):
-    from app.infrastructure_collect import build_graph
+def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tmp_path, monkeypatch):
+    from app.infrastructure_collect import build_graph, _refresh_lacp_peer_arp
     from app.infrastructure_map import load_infrastructure_map, summarize_topology
 
     now = datetime.now(timezone.utc)
@@ -3323,6 +3323,23 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
     assert read()[0] == "ok"
     network["arp"][0]["last_seen_at"] = (now - timedelta(minutes=9)).isoformat()
     assert read()[0] == "unknown"
+    network["arp"][0].update(source="router", interface="bridge-lan")
+    calls = []
+
+    def probe(sources, source, interface, expected_mac, *, address):
+        calls.append((source, interface, expected_mac, address))
+        return {"state": "reachable", "checkedAt": at}
+
+    monkeypatch.setattr("app.infrastructure_collect._router_layer2_observation", probe)
+    _refresh_lacp_peer_arp({"devices": devices}, network, now)
+    assert calls == [("router", "bridge-lan", mac, "192.0.2.14")]
+    assert read()[0] == "ok" and service_ports() == [("ge6", ["host_lacp"]), ("ge7", ["host_lacp"])]
+    assert network["arp"][0]["last_seen_at"] == (now - timedelta(minutes=9)).isoformat()
+    report.pop("partnerArp")
+    network["arp"].append({**network["arp"][0], "mac": "02:00:00:00:00:13"})
+    _refresh_lacp_peer_arp({"devices": devices}, network, now)
+    assert len(calls) == 1 and read()[0] == "unknown"
+    network["arp"].pop()
     network["arp"][0]["last_seen_at"] = at
     report["members"].pop()
     assert read()[0] == "unknown"
