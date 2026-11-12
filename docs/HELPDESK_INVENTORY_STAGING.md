@@ -106,5 +106,22 @@ require review. The role invokes native Setup once and keeps its local
 receipts. A locally installed pair requires verification through Endpoint
 registration and heartbeat.
 
-Endpoint-side assignment enforcement, an authoritative registration receipt
-for inventory and a corresponding Windows assignment remain staging work.
+Endpoint issues a hardware-bound assignment with a 30-minute lifetime.
+The panel retains the approved card revision, controller machine and
+network keys with the original apply request. The inventory sync reads the
+provider receipt with SDK 0.2.1 and a separate
+`ENDPOINT_PLATFORM_INSTALLATION_TOKEN_FILE` credential with scope
+`enrollment.installation-receipts.read`. Use the same Endpoint service client
+identity as the assignment issuer, with separate credentials for the two
+scopes. The ID and token stay on the server.
+
+A confirmed receipt with a fresh heartbeat creates one audited binding
+after a fresh recheck of the approved card and controller target. The
+inventory sync recovers uncertain controller admission through the original
+read-only receipt. During an unresolved directed installation, matching MAC
+observations stay as candidates. Existing manual decisions and conflicting
+bindings require operator review.
+
+The controller still needs to obtain the trusted hardware fingerprint and
+issue the assignment before native installation. A corresponding Windows
+Setup handoff and staging deployment remain pending.

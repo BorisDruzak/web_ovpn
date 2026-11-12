@@ -129,6 +129,16 @@ ENDPOINT_PLATFORM_TIMEOUT_SECONDS=5
 ENDPOINT_PLATFORM_SMOKE_DEVICE_ID=<approved Device UUID>
 ```
 
+For directed installation receipt reads on staging, set
+`ENDPOINT_PLATFORM_INSTALLATION_TOKEN_FILE` to a separate absolute,
+root-managed token file, for example
+`/etc/openvpn-web/endpoint-installation-receipts.token`. Use owner/group
+`root:openvpn-web`, mode `0640`, and scope
+`enrollment.installation-receipts.read` on the service client that owns the
+installation assignments. The verifier applies the same file checks to
+this optional setting. The standard context credential keeps its existing
+scopes and serves the context smoke.
+
 The origin must be HTTPS with no user information, query, fragment or path
 beyond `/`. Timeout is finite, greater than zero and no more than 120 seconds.
 Keep one assignment per line and no duplicate Endpoint keys. The verifier

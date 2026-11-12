@@ -25,7 +25,7 @@ from .journal import JournalService, error_details, public_payload, safe_code
 from .models import DirectoryLink, Finding, SourceRun, SourceSnapshot, WorkstationRequest
 from .service import WorkstationsService
 from .sources import MAX_AGE, SourceError, valid_uuid, coherence_reasons
-from .projection import relationship_revision, device_aliases
+from .projection import relationship_revision, device_aliases, mac_key
 from ..inventory.models import (
     InventoryAsset, InventoryAssetType, InventoryExternalBinding, InventoryExternalBindingStatus, InventoryPCDetails,
 )
@@ -279,7 +279,7 @@ def endpoint_install_platform(os_name):
     return None
 
 
-def endpoint_install_target(db, asset_id):
+def endpoint_install_evidence(db, asset_id):
     asset, os_name, linked = endpoint_install_asset(db, asset_id)
     if linked or endpoint_install_platform(os_name) != 'alt':
         raise HTTPException(409, 'workstations_endpoint_asset_unavailable')
@@ -294,9 +294,19 @@ def endpoint_install_target(db, asset_id):
             or row.get('inventory_revision') != asset.manual_revision or not row.get('machine_uuid')):
         raise HTTPException(409, 'workstations_endpoint_target_unconfirmed')
     try:
-        return valid_uuid(row['machine_uuid'])
+        machine_uuid = valid_uuid(row['machine_uuid'])
     except SourceError:
         raise HTTPException(409, 'workstations_endpoint_target_unconfirmed') from None
+    network_keys = sorted({
+        key for value in row.get('network_keys', [])
+        if isinstance(value, str) and value.startswith('mac:') and (key := mac_key(value[4:]))
+    })
+    return machine_uuid, network_keys
+
+
+def endpoint_install_target(db, asset_id):
+    machine_uuid, _ = endpoint_install_evidence(db, asset_id)
+    return machine_uuid
 
 
 def endpoint_component_published():
@@ -330,6 +340,8 @@ def apply(plan_id: Annotated[str, Field(pattern=r'^setup-(?:component-)?[0-9a-f]
     prefix = 'setup-' if body.kind == 'full_setup' else 'setup-component-'
     if plan_id != prefix + body.sha256:
         raise HTTPException(422, 'workstations_confirmation_mismatch')
+    if db.get(WorkstationRequest, body.request_id) is not None:
+        return start('plans.apply', body, owner, plan_id=plan_id)
     if body.kind == 'component':
         scoped = list(db.scalars(select(WorkstationRequest).where(
             WorkstationRequest.action == 'component_plans.create', WorkstationRequest.status == 'succeeded',
@@ -348,8 +360,14 @@ def apply(plan_id: Annotated[str, Field(pattern=r'^setup-(?:component-)?[0-9a-f]
                 re.escape(assignment_prefix) + r'[0-9a-f]{32}', installation_id,
             ):
                 raise HTTPException(409, 'workstations_endpoint_installation_assignment_required')
-            if endpoint_install_target(db, params['_inventory_asset_id']) != params['machine_uuid']:
+            asset_id = params['_inventory_asset_id']
+            machine_uuid, network_keys = endpoint_install_evidence(db, asset_id)
+            if machine_uuid != params['machine_uuid']:
                 raise HTTPException(409, 'workstations_endpoint_target_unconfirmed')
+            return start('plans.apply', body, owner, plan_id=plan_id, _endpoint_installation={
+                'asset_id': asset_id, 'asset_revision': db.get(InventoryAsset, asset_id).manual_revision,
+                'machine_uuid': machine_uuid, 'installation_id': installation_id, 'network_keys': network_keys,
+            })
     return start('plans.apply', body, owner, plan_id=plan_id)
 
 

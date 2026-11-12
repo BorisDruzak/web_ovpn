@@ -37,7 +37,10 @@ class WorkstationsService:
         if action not in ACTIONS or not isinstance(actor, str) or not 1 <= len(actor) <= 160:
             raise HTTPException(422, 'workstations_action_invalid')
         parameters = copy.deepcopy(parameters)
-        digest = fingerprint([action, parameters])
+        intent_parameters = dict(parameters)
+        if action == 'plans.apply':
+            intent_parameters.pop('_endpoint_installation', None)
+        digest = fingerprint([action, intent_parameters])
         with self.factory() as db:
             existing = db.get(WorkstationRequest, request_id)
             if existing is not None:
@@ -60,9 +63,9 @@ class WorkstationsService:
                 return self.start(action, parameters, actor=actor, request_id=request_id)
         try:
             value, created = panel_operations.register(actor, 'workstations.' + action, ACTIONS[action],
-                json.dumps([request_id, parameters], sort_keys=True).encode(),
+                json.dumps([request_id, intent_parameters], sort_keys=True).encode(),
                 lambda: self._execute(request_id), factory=self.factory,
-                intent=json.dumps(parameters, sort_keys=True).encode())
+                intent=json.dumps(intent_parameters, sort_keys=True).encode())
             with self.factory() as db:
                 row = db.get(WorkstationRequest, request_id)
                 if created:
@@ -127,6 +130,8 @@ class WorkstationsService:
             else:
                 if action == 'component_plans.create':
                     params.pop('_inventory_asset_id', None)
+                elif action == 'plans.apply':
+                    params.pop('_endpoint_installation', None)
                 data = self.client.call(action, params, request_id=request_id, scope='execute')
             data = public_payload(data)
         except Exception as exc:
@@ -197,9 +202,13 @@ class WorkstationsService:
                 return result
             valid_uuid(data.get('machine_uuid'))
             with self.factory() as db:
+                locked = db.execute(update(WorkstationRequest).where(
+                    WorkstationRequest.id == result['request_id'], WorkstationRequest.actor == actor,
+                    WorkstationRequest.action == 'plans.apply', WorkstationRequest.status == 'unknown',
+                ).values(status='unknown')).rowcount
                 row = db.get(WorkstationRequest, result['request_id'])
-                if row.actor != actor or row.action != 'plans.apply' or row.status != 'unknown':
-                    return self._public(row)
+                if locked != 1:
+                    return self._public(row) if row is not None and row.actor == actor else result
                 if data.get('plan_id') != row.parameters_json['plan_id'] or data.get('plan_sha256') != row.parameters_json['sha256']:
                     return result
                 row.data_json = public_payload({key: data[key] for key in

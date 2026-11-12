@@ -85,6 +85,7 @@ class Settings:
     session_cookie_name: str
     session_cookie_secure: bool
     api_permissions: str
+    endpoint_platform_installation_token_file: Path | None = None
     helpdesk_inventory_token_hash: str = ''
     helpdesk_inventory_status_base_url: str = ''
     helpdesk_inventory_status_token_file: str = ''
@@ -165,6 +166,11 @@ def get_settings() -> Settings:
         ),
         endpoint_platform_ca_file=_path_env(
             "ENDPOINT_PLATFORM_CA_FILE", "/etc/openvpn-web/endpoint-platform-ca.pem"
+        ),
+        endpoint_platform_installation_token_file=(
+            Path(installation_token) if (installation_token := os.environ.get(
+                "ENDPOINT_PLATFORM_INSTALLATION_TOKEN_FILE", ""
+            ).strip()) else None
         ),
         endpoint_platform_timeout_seconds=_positive_float_env("ENDPOINT_PLATFORM_TIMEOUT_SECONDS", 5.0),
         endpoint_platform_smoke_device_id=_optional_uuid_env("ENDPOINT_PLATFORM_SMOKE_DEVICE_ID"),

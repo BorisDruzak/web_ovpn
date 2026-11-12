@@ -31,25 +31,40 @@ class EndpointPlatformServiceScopeDenied(EndpointPlatformServiceError):
         super().__init__("endpoint_platform_scope_denied")
 
 
+class EndpointPlatformInstallationUnavailable(EndpointPlatformServiceError):
+    def __init__(self) -> None:
+        super().__init__("endpoint_installation_unavailable")
+
+
+class EndpointPlatformInstallationConflict(EndpointPlatformServiceError):
+    def __init__(self) -> None:
+        super().__init__("endpoint_installation_conflict")
+
+
 class EndpointPlatformServiceClient:
     """Expose only the safe SDK methods consumed by the adapter layer."""
 
-    def __init__(self, settings: Settings) -> None:
-        if not settings.endpoint_platform_enabled:
+    def __init__(self, settings: Settings, *, installation: bool = False) -> None:
+        token_file = (
+            settings.endpoint_platform_installation_token_file if installation else settings.endpoint_platform_token_file
+        )
+        if not settings.endpoint_platform_enabled or token_file is None:
             raise EndpointPlatformServiceDisabled()
-        if (
-            not settings.endpoint_platform_token_file.is_absolute()
-            or not settings.endpoint_platform_ca_file.is_absolute()
-        ):
+        if not token_file.is_absolute() or not settings.endpoint_platform_ca_file.is_absolute():
             raise EndpointPlatformServiceUnavailable()
         try:
+            if installation and token_file.resolve() == settings.endpoint_platform_token_file.resolve():
+                raise EndpointPlatformServiceUnavailable()
             from endpoint_platform_client import EndpointPlatformClient
 
             self._client = EndpointPlatformClient(
                 settings.endpoint_platform_base_url,
-                token_file=settings.endpoint_platform_token_file,
+                token_file=token_file,
                 ca_file=settings.endpoint_platform_ca_file,
-                timeout_seconds=settings.endpoint_platform_timeout_seconds,
+                timeout_seconds=(
+                    min(3.0, settings.endpoint_platform_timeout_seconds)
+                    if installation else settings.endpoint_platform_timeout_seconds
+                ),
             )
         except Exception:
             # Configuration, import, TLS setup and token failures must not
@@ -85,8 +100,17 @@ class EndpointPlatformServiceClient:
             self._client.compare_context, device_id, from_snapshot_id, to_snapshot_id
         )
 
+    def issue_inventory_installation(self, installation_id: str, hardware_fingerprint: str, platform: str) -> Any:
+        return self._call(
+            lambda: self._client.issue_inventory_installation(installation_id, hardware_fingerprint, platform),
+            installation=True,
+        )
+
+    def lookup_inventory_installation(self, installation_id: str) -> Any:
+        return self._call(lambda: self._client.lookup_inventory_installation(installation_id), installation=True)
+
     @staticmethod
-    def _call(method: Any, *args: object) -> Any:
+    def _call(method: Any, *args: object, installation: bool = False) -> Any:
         try:
             return method(*args)
         except EndpointPlatformServiceError:
@@ -96,6 +120,11 @@ class EndpointPlatformServiceClient:
             # or serialize exception text at this boundary.
             if EndpointPlatformServiceClient._is_scope_denied(exc):
                 raise EndpointPlatformServiceScopeDenied() from None
+            if installation:
+                if getattr(exc, "status_code", None) == 409:
+                    raise EndpointPlatformInstallationConflict() from None
+                if getattr(exc, "status_code", None) == 404:
+                    raise EndpointPlatformInstallationUnavailable() from None
             raise EndpointPlatformServiceUnavailable() from None
 
     @staticmethod
@@ -113,3 +142,7 @@ class EndpointPlatformServiceClient:
 
 def get_endpoint_platform_client(settings: Settings) -> EndpointPlatformServiceClient:
     return EndpointPlatformServiceClient(settings)
+
+
+def get_endpoint_installation_client(settings: Settings) -> EndpointPlatformServiceClient:
+    return EndpointPlatformServiceClient(settings, installation=True)

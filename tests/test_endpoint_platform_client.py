@@ -86,3 +86,47 @@ def test_service_client_degrades_when_sdk_or_local_configuration_is_unavailable(
     assert "missing.token" not in str(exc.value)
     assert "endpoint_platform_unavailable" in str(exc.value)
     reset_settings_cache()
+
+
+def test_inventory_assignment_client_uses_separate_scope_token(monkeypatch, tmp_path):
+    from dataclasses import replace
+    from types import SimpleNamespace
+    import sys
+
+    from app.config import get_settings
+    from app.endpoint_platform_client import (
+        EndpointPlatformInstallationConflict, EndpointPlatformServiceDisabled,
+        EndpointPlatformServiceUnavailable, get_endpoint_installation_client, get_endpoint_platform_client,
+    )
+
+    normal = tmp_path / "context.token"
+    directed = tmp_path / "install.token"
+    ca = tmp_path / "endpoint.pem"
+    paths = []
+
+    class SDK:
+        def __init__(self, origin, *, token_file, ca_file, timeout_seconds):
+            paths.append((token_file, ca_file))
+
+        def issue_inventory_installation(self, installation_id, fingerprint, platform):
+            return installation_id, fingerprint, platform
+
+        def lookup_inventory_installation(self, installation_id):
+            error = RuntimeError(installation_id)
+            error.status_code = 409
+            raise error
+
+    monkeypatch.setitem(sys.modules, "endpoint_platform_client", SimpleNamespace(EndpointPlatformClient=SDK))
+    settings = replace(get_settings(), endpoint_platform_enabled=True, endpoint_platform_token_file=normal,
+                       endpoint_platform_ca_file=ca, endpoint_platform_installation_token_file=directed)
+    client = get_endpoint_installation_client(settings)
+    get_endpoint_platform_client(settings)
+    assert paths == [(directed, ca), (normal, ca)]
+    assert client.issue_inventory_installation("fixture-id", "fixture-fingerprint", "linux")[-1] == "linux"
+    with pytest.raises(EndpointPlatformInstallationConflict) as failure:
+        client.lookup_inventory_installation("fixture-private-id")
+    assert "fixture-private-id" not in str(failure.value)
+    with pytest.raises(EndpointPlatformServiceUnavailable):
+        get_endpoint_installation_client(replace(settings, endpoint_platform_installation_token_file=normal))
+    with pytest.raises(EndpointPlatformServiceDisabled):
+        get_endpoint_installation_client(replace(settings, endpoint_platform_installation_token_file=None))

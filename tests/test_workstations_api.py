@@ -294,6 +294,23 @@ def test_inventory_endpoint_plan_uses_only_the_fresh_exact_workstation(tmp_path,
     assert len(calls) == 1
     stale = False
     assert client.post(apply_url, json=apply_body, headers=headers).status_code == 200
+    assert calls[-1] == ("plans.apply", {
+        "plan_id": plan_id,
+        "_endpoint_installation": {
+            "asset_id": asset_id, "machine_uuid": machine, "asset_revision": revision,
+            "installation_id": f"inventory-{asset_id}-{machine}-" + "a" * 32, "network_keys": [],
+        },
+    })
+    with session_scope() as db:
+        user = db.scalar(select(WebUser).where(WebUser.username == "admin"))
+        db.add(WorkstationRequest(
+            id=apply_body["request_id"], actor=f"user:{user.id}", action="plans.apply",
+            permission="workstations:apply", intent_sha256="c" * 64, status="succeeded",
+            parameters_json={"plan_id": plan_id, "kind": "component", "sha256": sha},
+            data_json={"installation_binding_state": "connected"},
+        ))
+    stale = True
+    assert client.post(apply_url, json=apply_body, headers=headers).status_code == 200
     assert calls[-1] == ("plans.apply", {"plan_id": plan_id})
 
 

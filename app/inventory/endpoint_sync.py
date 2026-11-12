@@ -14,10 +14,11 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
-from sqlalchemy import or_, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import inspect, or_, select, update
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
-from ..db import init_inventory_endpoint_schema, session_scope
+from ..config import get_settings
+from ..db import get_sessionmaker, init_inventory_endpoint_schema, session_scope
 from ..endpoint_agent_network import (
     mark_endpoint_agent_refresh_failed,
     store_endpoint_agent_statuses,
@@ -26,6 +27,8 @@ from ..endpoint_agent_network import (
 from ..endpoint_context_adapter import get_endpoint_context_adapter
 from ..endpoint_platform_client import (
     EndpointPlatformServiceDisabled,
+    EndpointPlatformServiceError,
+    get_endpoint_installation_client,
     EndpointPlatformServiceScopeDenied,
     EndpointPlatformServiceUnavailable,
 )
@@ -235,6 +238,16 @@ def _session_fields(snapshot):
     return {"current_user": user} if user is not None else {}
 
 
+def _installation_reservations(db):
+    from ..workstations.endpoint_receipts import installation_reservations
+    from ..workstations.models import WorkstationRequest
+
+    if not inspect(db.connection()).has_table(WorkstationRequest.__tablename__):
+        return {"awaiting_installation": frozenset(), "reserved_mac_keys": frozenset()}
+    assets, mac_keys = installation_reservations(db)
+    return {"awaiting_installation": assets, "reserved_mac_keys": mac_keys}
+
+
 def sync_confirmed_bindings(
     db, adapter, now: datetime, *, clock=None, full_pass=None
 ) -> SyncResult:
@@ -256,7 +269,9 @@ def sync_confirmed_bindings(
     if len(by_device) != len(identities):
         raise EndpointPlatformServiceUnavailable()
     service = InventoryEndpointService()
-    service.reconcile_candidates(db, identities, now)
+    service.reconcile_candidates(
+        db, identities, now, **_installation_reservations(db),
+    )
     bindings = db.scalars(
         select(InventoryExternalBinding).where(*service._active())
     ).all()
@@ -509,7 +524,9 @@ def _prepare_pass(adapter, owner, now):
         # Dry-run canonical discovery to select only confirmed UUIDs to fetch.
         # Roll it back before any upstream wait, and revalidate on final apply.
         with db.begin_nested() as provisional:
-            InventoryEndpointService().reconcile_candidates(db, identities, now)
+            InventoryEndpointService().reconcile_candidates(
+                db, identities, now, **_installation_reservations(db),
+            )
             device_ids = db.scalars(
                 select(InventoryExternalBinding.external_id).where(
                     *InventoryEndpointService._active()
@@ -524,6 +541,22 @@ def _prepare_pass(adapter, owner, now):
             snapshots[device_id] = adapter.read_profiles(UUID(device_id))
             _renew(owner, now + timedelta(seconds=time.monotonic() - started))
     return _PreparedAdapter(identities, snapshots, full)
+
+
+def _sync_installation_receipts(clock):
+    settings = get_settings()
+    if not settings.workstations_enabled or settings.endpoint_platform_installation_token_file is None:
+        return
+    from ..workstations.endpoint_receipts import sync_installation_receipts
+
+    try:
+        client = get_endpoint_installation_client(settings)
+        try:
+            sync_installation_receipts(get_sessionmaker(), client, clock=clock)
+        finally:
+            client.close()
+    except (EndpointPlatformServiceError, SQLAlchemyError):
+        log.warning("inventory.endpoint_installation_receipts outcome=unavailable")
 
 
 def run_inventory_endpoint_sync(now: datetime | None = None, *, clock=None) -> int:
@@ -541,6 +574,7 @@ def run_inventory_endpoint_sync(now: datetime | None = None, *, clock=None) -> i
             if not acquire_endpoint_sync_lease(db, now):
                 return 0
             owner = db.get(InventoryEndpointSyncControl, 1).lease_owner
+        _sync_installation_receipts(clock)
         adapter = get_endpoint_context_adapter()
         prepared = _prepare_pass(adapter, owner, now)
         applied_at = _utc(clock())

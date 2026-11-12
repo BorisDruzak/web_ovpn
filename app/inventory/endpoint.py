@@ -267,7 +267,9 @@ class InventoryEndpointService:
         return anchors
 
     def reconcile_candidates(
-        self, db: Session, identities: Sequence[Mapping[str, Any]], now: datetime
+        self, db: Session, identities: Sequence[Mapping[str, Any]], now: datetime,
+        *, awaiting_installation: frozenset[str] = frozenset(),
+        reserved_mac_keys: frozenset[str] = frozenset(),
     ) -> list[InventoryExternalBinding]:
         """Reconcile a complete current identity snapshot; never re-match bound PCs.
 
@@ -284,7 +286,7 @@ class InventoryEndpointService:
                 for value in values:
                     asset_index[(method, value)].add(asset_id)
         matches = defaultdict(lambda: defaultdict(set))
-        collected = {}
+        collected, reserved_devices = {}, set()
         for identity in identities:
             device = identity.get("id")
             at = _parsed(identity.get("baseline_collected_at"))
@@ -296,6 +298,8 @@ class InventoryEndpointService:
             values = defaultdict(set)
             keys = identity.get("baseline_mac_keys")
             for key in keys if isinstance(keys, list) else []:
+                if isinstance(key, str) and key in reserved_mac_keys:
+                    reserved_devices.add(device)
                 if isinstance(key, str) and key.startswith("mac-") and len(key) == 16:
                     try:
                         values["mac_exact"].add(normalize_mac(key[4:]))
@@ -387,6 +391,8 @@ class InventoryEndpointService:
                 and len(mac_assets[device]) == len(mac_devices[asset_id]) == 1
                 and device not in bound_devices
                 and asset_id not in previously_bound_assets
+                and asset_id not in awaiting_installation
+                and device not in reserved_devices
             )
             if row is None:
                 row = InventoryExternalBinding(
@@ -460,6 +466,40 @@ class InventoryEndpointService:
         self._audit(db, row, "confirm", actor, now)
         db.flush()
         return row
+
+    def confirm_installation(
+        self, db: Session, asset: InventoryAsset, device_id: str, expected_revision: int,
+        now: datetime, *, request_id: str, registered_at: datetime, heartbeat_at: datetime,
+    ) -> None:
+        """Confirm an exact installation proof and preserve earlier operator decisions."""
+        rows = list(db.scalars(select(InventoryExternalBinding).where(
+            InventoryExternalBinding.asset_id == asset.id,
+            InventoryExternalBinding.source == SOURCE,
+            InventoryExternalBinding.external_id == device_id,
+        )))
+        if any(row.status == Status.CONFIRMED and row.ended_at is None for row in rows):
+            return
+        if any(row.status in (Status.ENDED, Status.REJECTED, Status.REPLACED) for row in rows):
+            raise InventoryEndpointConflict("Endpoint installation conflicts with binding history")
+        self._unique(db, asset.id, device_id)
+        InventoryService().claim_revision(db, asset, expected_revision)
+        row = next((item for item in rows if item.status == Status.CANDIDATE and item.ended_at is None), None)
+        actor = "inventory-endpoint-installation"
+        if row is None:
+            row = InventoryExternalBinding(
+                asset_id=asset.id, source=SOURCE, external_id=device_id,
+                first_seen_at=now, created_at=now, created_by=actor,
+            )
+            db.add(row)
+        row.status = Status.CONFIRMED
+        row.binding_method = "installation_receipt"
+        row.confidence = 100
+        row.last_verified_at = row.updated_at = now
+        row.evidence_json = {
+            "registered_at": _timestamp(registered_at), "heartbeat_at": _timestamp(heartbeat_at),
+        }
+        db.flush()
+        self._audit(db, row, "confirm_installation", actor, now, workstation_request_id=request_id)
 
     def reject_binding(
         self, db: Session, asset_id: str, binding_id: str, actor: str, now: datetime

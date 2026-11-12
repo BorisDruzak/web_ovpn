@@ -172,6 +172,7 @@ def load_environment(path: Path, service_gid: int) -> None:
 def validate_settings(settings) -> None:
     url = urlsplit(settings.endpoint_platform_base_url)
     timeout = settings.endpoint_platform_timeout_seconds
+    installation_token = settings.endpoint_platform_installation_token_file
     if (
         url.scheme != "https" or not url.hostname or url.username or url.password
         or url.query or url.fragment or url.path not in ("", "/")
@@ -179,6 +180,10 @@ def validate_settings(settings) -> None:
         or not math.isfinite(timeout) or not 0 < timeout <= 120
         or not settings.endpoint_platform_token_file.is_absolute()
         or not settings.endpoint_platform_ca_file.is_absolute()
+        or (installation_token is not None and (
+            not installation_token.is_absolute()
+            or installation_token == settings.endpoint_platform_token_file
+        ))
     ):
         raise VerificationError("endpoint_platform_config_invalid")
 
@@ -248,6 +253,8 @@ def main(argv: list[str] | None = None) -> int:
                 raise VerificationError("endpoint_platform_sdk_install_failed")
         verify_installed(manifest)
         check_managed_file(settings.endpoint_platform_token_file, gid, secret=True)
+        if settings.endpoint_platform_installation_token_file is not None:
+            check_managed_file(settings.endpoint_platform_installation_token_file, gid, secret=True)
         check_managed_file(settings.endpoint_platform_ca_file, gid, secret=False)
         try:
             ssl.create_default_context(cafile=str(settings.endpoint_platform_ca_file))

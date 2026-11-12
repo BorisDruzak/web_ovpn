@@ -328,3 +328,12 @@ endpoint_platform_gate
     assert ("enable --now inventory-endpoint-sync.timer" in result.stdout) == enabled
     if status == 1:
         assert "ENDPOINT_PLATFORM_ENABLED=0" in result.stdout
+
+
+def test_installation_receipt_token_path_is_optional_absolute_and_separate(verifier, tmp_path):
+    default = replace(settings(), endpoint_platform_installation_token_file=None)
+    verifier.validate_settings(default)
+    verifier.validate_settings(replace(default, endpoint_platform_installation_token_file=tmp_path / "receipt.token"))
+    for unsafe in (Path("relative.token"), default.endpoint_platform_token_file):
+        with pytest.raises(verifier.VerificationError, match="endpoint_platform_config_invalid"):
+            verifier.validate_settings(replace(default, endpoint_platform_installation_token_file=unsafe))
