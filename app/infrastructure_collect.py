@@ -1522,6 +1522,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                     "rootUsedBytes": host.get("disk"), "rootTotalBytes": host.get("maxdisk"),
                     "uptimeSeconds": host.get("uptime"),
                 }
+                if isinstance(node_status := pve.get("nodeStatus"), dict):
+                    item["resourceCapacity"] = node_status.get(key, {})
                 disks = project_hypervisor_disks(pve.get("disks", {}).get(key), now)
                 if disks:
                     item["hardwareDisks"] = disks
@@ -1887,6 +1889,20 @@ def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: set[s
             return []
         return [row for row in rows[:128] if isinstance(row, dict)] if isinstance(rows, list) else []
 
+    def read_node_status(node):
+        try:
+            row = get(f"nodes/{quote(node, safe='')}/status")
+        except (URLError, TimeoutError, ValueError, KeyError):
+            return node, {}
+        if not isinstance(row, dict):
+            return node, {}
+        status = {"checkedAt": datetime.now(timezone.utc).isoformat()}
+        for key, fields in (("rootfs", ("avail", "total")), ("swap", ("used", "total")),
+                            ("memory", ("free", "available", "total"))):
+            if isinstance(values := row.get(key), dict):
+                status[key] = {field: values.get(field) for field in fields}
+        return node, status
+
     def read_physical_ports(node):
         rows = read_list(f"nodes/{quote(node, safe='')}/network?type=eth")
         checked_at = datetime.now(timezone.utc).isoformat()
@@ -1926,6 +1942,7 @@ def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: set[s
                   and (str(guest["vmid"]) in guests or guest.get("status") == "running"
                        or (not guest.get("template") and guest["node"] in online_nodes))]
     with ThreadPoolExecutor(max_workers=6) as pool:
+        result["nodeStatus"] = dict(pool.map(read_node_status, sorted(online_nodes)))
         result["physicalPorts"] = dict(pool.map(read_physical_ports, sorted(online_nodes)))
         result["disks"] = dict(pool.map(read_disks, sorted(online_nodes)))
         result["zfs"] = dict(pool.map(read_zfs, sorted(online_nodes)))

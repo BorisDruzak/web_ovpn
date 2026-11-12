@@ -539,6 +539,26 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       list.append(make('dt', 'Опрос ресурсов'), make('dd', formatTime(checkedAt)));
       propertiesSection.append(make('h3', 'Ресурсы Proxmox'), list);
     }
+    if (node.resourceCapacity) {
+      const {root, swap, memory, thresholds, checkedAt, stale} = node.resourceCapacity;
+      const number = new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 1});
+      const measure = (bytes, total) => `${number.format(bytes / 2**30)} ГиБ (${number.format(100 * bytes / total)}%)`;
+      const list = make('dl');
+      const rootText = root.status === 'unknown' ? 'Нет подтверждения' : measure(root.availableBytes, root.totalBytes);
+      const swapText = swap.status === 'unknown' ? 'Нет подтверждения' : swap.status === 'not_configured'
+        ? 'Не настроен' : measure(swap.usedBytes, swap.totalBytes);
+      list.append(make('dt', 'Доступно на разделе /'), make('dd', rootText + (root.status === 'warn'
+        ? ` · порог ${thresholds.rootFreePercent}%` : '')),
+        make('dt', 'Занято в swap'), make('dd', swapText + (swap.status === 'warn'
+          ? ` · порог ${thresholds.swapUsedPercent}%` : '')));
+      if (memory) {
+        const available = memory.availableBytes !== undefined;
+        list.append(make('dt', available ? 'Доступная память' : 'Свободная память по Proxmox'),
+          make('dd', measure(available ? memory.availableBytes : memory.freeBytes, memory.totalBytes)));
+      }
+      if (checkedAt) list.append(make('dt', 'Опрос ёмкости'), make('dd', formatTime(checkedAt) + (stale ? ' · устарел' : '')));
+      propertiesSection.append(make('h3', 'Ёмкость узла'), list);
+    }
     if (node.hardwareDisks) {
       const {checkedAt, disks} = node.hardwareDisks;
       const panel = make('details', null, 'map-port-panel');

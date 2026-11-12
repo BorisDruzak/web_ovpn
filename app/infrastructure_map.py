@@ -22,6 +22,9 @@ MAX_AGE = timedelta(minutes=25)
 SERVICE_PROBE_MAX_AGE = timedelta(minutes=5)
 STP_ROOT_PATH_MAX_AGE = timedelta(minutes=5)
 PORT_LINK_CHECK_MAX_AGE = timedelta(minutes=5)
+RESOURCE_CAPACITY_MAX_AGE = timedelta(minutes=5)
+ROOT_FREE_WARNING_PERCENT = 10
+SWAP_USED_WARNING_PERCENT = 90
 BACKUP_PROBE_METHOD = "Копия Proxmox"
 BACKUP_SERVICE_ID = "proxmox-pbs-backups"
 STATES = ("critical", "warn", "ok", "unknown")
@@ -533,6 +536,42 @@ def _public_hypervisor_resources(row: object, now: datetime) -> dict:
     return values
 
 
+def _public_resource_capacity(row: dict, now: datetime) -> dict:
+    stamp = _time(row.get("checkedAt"))
+    result = {"root": {"status": "unknown"}, "swap": {"status": "unknown"},
+              "thresholds": {"rootFreePercent": ROOT_FREE_WARNING_PERCENT, "swapUsedPercent": SWAP_USED_WARNING_PERCENT}}
+    if stamp is None or stamp > now:
+        return result
+    result["checkedAt"] = stamp.isoformat()
+    result["stale"] = now - stamp > RESOURCE_CAPACITY_MAX_AGE
+    if result["stale"]:
+        return result
+
+    for group, input_key, output_key, fields in (
+        ("rootfs", "avail", "root", {"avail": "availableBytes"}),
+        ("swap", "used", "swap", {"used": "usedBytes"}),
+        ("memory", "free", "memory", {"free": "freeBytes", "available": "availableBytes"}),
+    ):
+        sample = row.get(group)
+        if not isinstance(sample, dict):
+            continue
+        amount, total = sample.get(input_key), sample.get("total")
+        if type(amount) is not int or type(total) is not int or not 0 <= amount <= total < 2**53:
+            continue
+        if total == 0:
+            if group == "swap":
+                result["swap"] = {"status": "not_configured", "usedBytes": 0, "totalBytes": 0}
+            continue
+        values = {target: value for source, target in fields.items()
+                  if type(value := sample.get(source)) is int and 0 <= value <= total}
+        result[output_key] = {**values, "totalBytes": total}
+        if group == "rootfs":
+            result["root"]["status"] = "warn" if 100 * amount <= ROOT_FREE_WARNING_PERCENT * total else "ok"
+        elif group == "swap":
+            result["swap"]["status"] = "warn" if 100 * amount >= SWAP_USED_WARNING_PERCENT * total else "ok"
+    return result
+
+
 def project_hypervisor_disks(row: object, now: datetime) -> dict:
     if not isinstance(row, dict) or not observation_is_fresh(row.get("checkedAt"), now):
         return {}
@@ -669,11 +708,14 @@ def _public_node(row: dict, now: datetime) -> dict:
     observer = next((source for source in sources if source["name"] == "Server Observer"), None)
     aliases = row.get("aliases")
     resources = {}
+    capacity = {}
     hardware_disks = {}
     zfs_pools = {}
     lvm_thin_pools = {}
     if row.get("kind") == "Гипервизор" and any(s["name"] == "Proxmox" and s["status"] == "ok" for s in fresh):
         resources = _public_hypervisor_resources(row.get("resources"), now)
+        if isinstance(resource_capacity := row.get("resourceCapacity"), dict):
+            capacity = _public_resource_capacity(resource_capacity, now)
         hardware_disks = project_hypervisor_disks(row.get("hardwareDisks"), now)
         zfs_pools = project_hypervisor_zfs(row.get("zfsPools"), now)
         lvm_thin_pools = project_hypervisor_lvm_thin(row.get("lvmThinPools"), now)
@@ -723,6 +765,7 @@ def _public_node(row: dict, now: datetime) -> dict:
         "sources": sources,
         "properties": properties,
         **({"resources": resources} if resources else {}),
+        **({"resourceCapacity": capacity} if capacity else {}),
         **({"hardwareDisks": hardware_disks} if hardware_disks else {}),
         **({"zfsPools": zfs_pools} if zfs_pools else {}),
         **({"lvmThinPools": lvm_thin_pools} if lvm_thin_pools else {}),
@@ -766,6 +809,8 @@ def _map_statuses(nodes: dict, links: list[dict]) -> None:
             checks.append("warn")
         if any(pool["capacityStatus"] == "warn" for pool in node.get("lvmThinPools", {}).get("pools", [])):
             checks.append("warn")
+        if capacity := node.get("resourceCapacity"):
+            checks.extend(capacity[key]["status"] for key in ("root", "swap"))
         if node["kind"] == CLUSTER_KIND:
             cluster = {check["method"]: check["state"] for check in node["serviceChecks"]}
             checks.extend(check_state.get(cluster.get(method), "unknown") for method in CLUSTER_HEALTH_METHODS)

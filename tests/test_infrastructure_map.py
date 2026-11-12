@@ -399,6 +399,38 @@ def test_hypervisor_resources_require_current_online_node_data(tmp_path):
     assert read()["resources"] == {"checkedAt": now.isoformat(), "cpuRatio": 0.42}
 
 
+def test_proxmox_capacity_uses_available_root_space_and_reports_missing_data(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    stamp = now.isoformat()
+    status = {"checkedAt": stamp, "rootfs": {"avail": 100, "free": 400, "total": 1000},
+              "swap": {"used": 0, "total": 0}, "memory": {"free": 22, "total": 1000}}
+    pve = {"at": stamp, "cluster": [], "nodes": [{"node": "pve1", "status": "online"}], "guests": [],
+           "nodeStatus": {"pve1": status}}
+    path = tmp_path / "infrastructure.json"
+
+    def read(at=now):
+        path.write_text(json.dumps(build_graph({}, {}, {}, pve, {}, now)), encoding="utf-8")
+        return next(node for node in load_infrastructure_map(path, at)["nodes"] if node["id"] == "pve1")
+
+    node = read()
+    assert node["resourceCapacity"]["root"] == {"availableBytes": 100, "totalBytes": 1000, "status": "warn"}
+    assert node["resourceCapacity"]["swap"]["status"] == "not_configured"
+    assert node["resourceCapacity"]["memory"]["freeBytes"] == 22
+    assert node["mapStatus"] == "warn" and node["reachability"]["state"] == "reachable"
+    status["rootfs"]["avail"] = 101
+    assert read()["mapStatus"] == "ok"
+    status["swap"] = {"used": 90, "total": 100}
+    assert read()["mapStatus"] == "warn"
+    status["swap"]["used"] = True
+    assert read()["mapStatus"] == "unknown"
+    assert read(now + timedelta(minutes=6))["resourceCapacity"]["root"] == {"status": "unknown"}
+    pve["nodeStatus"].clear()
+    assert read()["mapStatus"] == "unknown"
+
+
 def test_backup_state_requires_a_valid_watchdog_report(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map
@@ -2107,6 +2139,8 @@ def test_proxmox_physical_port_inventory_preserves_admin_state_without_carrier(t
         "cluster/status": [],
         "cluster/resources?type=node": [{"node": "pve1", "status": "online"}, {"node": "pve2", "status": "online"}],
         "cluster/resources?type=vm": [],
+        "nodes/pve1/status": {"rootfs": {"avail": 900, "total": 1000}, "swap": {"used": 0, "total": 100},
+                              "memory": {"free": 70, "available": 200, "total": 1000}, "private": "ignore"},
         "nodes/pve1/network?type=eth": [
             {"iface": "eno1", "type": "eth", "exists": 1, "active": 1},
             {"iface": "eno2", "type": "eth", "exists": 1},
@@ -2118,7 +2152,7 @@ def test_proxmox_physical_port_inventory_preserves_admin_state_without_carrier(t
     class Opener:
         def open(self, request, timeout):
             path = request.full_url.split("/api2/json/", 1)[1]
-            if path == "nodes/pve2/network?type=eth":
+            if path in {"nodes/pve2/network?type=eth", "nodes/pve2/status"}:
                 raise HTTPError(request.full_url, 403, "Forbidden", {}, None)
             return BytesIO(json.dumps({"data": responses.get(path, [])}).encode())
 
@@ -2139,6 +2173,9 @@ def test_proxmox_physical_port_inventory_preserves_admin_state_without_carrier(t
         ("eno1", True, "unknown"), ("eno2", False, "unknown"),
     ]
     assert not nodes["pve2"]["ports"]
+    assert nodes["pve1"]["resourceCapacity"]["memory"]["availableBytes"] == 200
+    assert nodes["pve1"]["mapStatus"] == "ok" and nodes["pve2"]["mapStatus"] == "unknown"
+    assert "private" not in json.dumps(pve["nodeStatus"])
     link = next(e for e in graph["links"] if e["kind"] == "Сетевое соединение")
     assert not link["confirmed"]
     report, = link["portEvidence"]
