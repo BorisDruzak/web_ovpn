@@ -94,6 +94,29 @@ def _traffic_points(rows: list[sqlite3.Row], *, switch: bool) -> list[dict]:
     return points
 
 
+def _broadcast_coverage(rows: list[sqlite3.Row], points: list[dict]) -> dict:
+    valid_intervals = sum(
+        point["in_broadcast_pps"] is not None or point["out_broadcast_pps"] is not None
+        for point in points
+    )
+    if valid_intervals:
+        return {"status": "measured", "valid_intervals": valid_intervals}
+    if not rows:
+        return {"status": "no_samples", "valid_intervals": 0}
+    counters = [
+        row for row in rows
+        if "counter_discontinuity_ticks" in row.keys()
+        and (row["in_broadcast_packets"] is not None or row["out_broadcast_packets"] is not None)
+    ]
+    if not counters:
+        status = "no_counters"
+    elif all(row["counter_discontinuity_ticks"] is None for row in counters):
+        status = "missing_discontinuity_marker"
+    else:
+        status = "no_valid_intervals"
+    return {"status": status, "valid_intervals": 0}
+
+
 def read_diagnostics(
     conn: sqlite3.Connection, source: str, interface: str, *, now: datetime | None = None,
 ) -> dict:
@@ -140,4 +163,6 @@ def read_diagnostics(
         ).fetchall()
         result["selected"] = selected
         result["points"] = _traffic_points(rows, switch=switch)
+        if switch:
+            result["broadcast_coverage"] = _broadcast_coverage(rows, result["points"])
     return result

@@ -42,6 +42,14 @@
         {% else %}За этот период нет интервалов, по которым можно надёжно вычислить скорость.{% endif %}
       </p>
       {% endif %}
+      {% if diagnostics.broadcast_coverage is defined and diagnostics.broadcast_coverage.status != 'measured' %}
+      <p>{{ {
+        'no_samples': 'Широковещание · нет опросов порта.',
+        'no_counters': 'Широковещание · коммутатор не предоставил счётчики.',
+        'missing_discontinuity_marker': 'Широковещание · нет признака непрерывности счётчика.',
+        'no_valid_intervals': 'Широковещание · нет пригодных интервалов между опросами.'
+      }.get(diagnostics.broadcast_coverage.status) }}</p>
+      {% endif %}
       {% if diagnostics.points %}
       <details>
         <summary>Таблица измерений</summary>
