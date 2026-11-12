@@ -43,6 +43,12 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   };
   const formatTime = value => new Intl.DateTimeFormat('ru-RU', { timeZone:'Asia/Yekaterinburg', dateStyle:'short', timeStyle:'short' }).format(new Date(value));
   const formatPortSpeed = bps => bps ? (bps / 1e6).toLocaleString('ru-RU') + ' Мбит/с' : '';
+  const formatStpPort = ({state, enabled, checkedAt}) => {
+    const states = {disabled: 'отключено', blocking: 'блокировка', listening: 'прослушивание',
+      learning: 'обучение', forwarding: 'пересылка', broken: 'ошибка'};
+    const settings = {true: 'параметр STP включён', false: 'параметр STP выключен'};
+    return ['Состояние STP ' + states[state], settings[enabled], 'SNMP', formatTime(checkedAt)].filter(Boolean).join(' · ');
+  };
   const source = root.querySelector('#map-sources');
   const availability = root.querySelector('#map-availability');
   const availabilityLabels = {
@@ -1029,6 +1035,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           row.append(make('small', [mode[duplex], configured[autoNegotiation], 'SNMP · ' + formatTime(checkedAt)]
             .filter(Boolean).join(' · ')));
         }
+        if (selectedPort && port.stpPort) row.append(make('small', formatStpPort(port.stpPort)));
         if (selectedPort && port.transceiver) {
           const {formFactor, vendor, media, nominalBps, checkedAt} = port.transceiver;
           const rate = nominalBps && 'номинал ' + (nominalBps / 1e9).toLocaleString('ru-RU') + ' Гбит/с';
@@ -1329,6 +1336,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
               const {text, checkedAt} = port.configuredLabel;
               li.append(make('small', `${port.name} · Подпись на коммутаторе · ${text} · ${formatTime(checkedAt)}`));
             }
+            if (port.stpPort) li.append(make('small', `${port.name} · ${formatStpPort(port.stpPort)}`));
             if (port.telemetry) {
               const {rxBps, txBps, rxErrors, txErrors, rxDiscards, txDiscards, intervalSeconds, checkedAt} = port.telemetry;
               const number = new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 2});

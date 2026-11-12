@@ -10,6 +10,8 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from netctl.snmp.interfaces import BRIDGE_STP_PORT_STATES
+
 from .endpoint_context_adapter import get_endpoint_context_adapter
 from .endpoint_platform_client import EndpointPlatformServiceError
 from .server_observer import STALE_AFTER as SERVER_OBSERVER_MAX_AGE
@@ -264,6 +266,12 @@ def _public_port(row: dict, now: datetime) -> dict:
             details["autoNegotiation"] = autoneg
         if details:
             result["linkMode"] = {"checkedAt": _time(mode["checkedAt"]).isoformat(), **details}
+    stp = row.get("stpPort")
+    if (fresh and isinstance(stp, dict) and stp.get("state") in BRIDGE_STP_PORT_STATES.values()
+            and observation_is_fresh(stp.get("checkedAt"), now, max_age=STP_ROOT_PATH_MAX_AGE)):
+        result["stpPort"] = {"checkedAt": _time(stp["checkedAt"]).isoformat(), "state": stp["state"]}
+        if type(stp.get("enabled")) is bool:
+            result["stpPort"]["enabled"] = stp["enabled"]
     neighbor_count = row.get("lldpNeighborCount")
     if result["state"] == "up" and type(neighbor_count) is int and 1 <= neighbor_count <= 65535:
         result["lldpNeighborCount"] = neighbor_count
@@ -1388,7 +1396,8 @@ def summarize_topology(graph: dict) -> dict:
                     for side, port in declared.get("portStates", {}).items() if port.get("lldpNeighbors")}
             observations = {
                 side: {key: port[key] for key in ("name", "state", "speedBps", "checkedAt", "source", "linkMode",
-                                                  "telemetry", "fdbLearned", "transceiver", "configuredLabel") if key in port}
+                                                  "stpPort", "telemetry", "fdbLearned", "transceiver",
+                                                  "configuredLabel") if key in port}
                 for side, port in declared.get("portStates", {}).items() if port["state"] != "unknown"
             }
             pending[(a, b, declared["a"], declared["b"])] = {

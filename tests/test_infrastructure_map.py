@@ -2001,6 +2001,55 @@ def test_switch_link_mode_uses_negotiated_duplex_and_current_interface_identity(
     assert all("linkMode" not in p for p in expired["ports"])
 
 
+def test_bridge_stp_state_is_fresh_and_independent_of_physical_link(tmp_path):
+    import asyncio
+
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map, summarize_topology
+    from netctl.snmp import interfaces, oids
+    from netctl.snmp.models import CapabilityResult, SnmpVarBind
+    from netctl.snmp.outcomes import SnmpOutcome
+
+    class Transport:
+        async def walk(self, oid, *, capability):
+            kind, samples = {
+                oids.DOT1D_BASE_PORT_IFINDEX: ("integer", {15: 5015, 22: 5022}),
+                oids.DOT1D_STP_PORT_STATE: ("integer", {15: 1, 22: 5, 5015: 6}),
+                oids.DOT1D_STP_PORT_ENABLE: ("integer", {15: 1, 22: 2}),
+                oids.IF_NAME: ("octet_string", {5015: b"Slot0/15", 5022: b"previous"}),
+            }[oid]
+            return CapabilityResult(capability, SnmpOutcome.SUCCESS_WITH_ROWS,
+                                    tuple(SnmpVarBind((*oid, index), kind, value) for index, value in samples.items()))
+
+    now = datetime.now(timezone.utc)
+    stamp = now.isoformat()
+    samples = asyncio.run(interfaces.read_bridge_stp_ports(Transport()))
+    assert samples[5015] == {"port": "Slot0/15", "state": "disabled", "enabled": True}
+    assert 15 not in samples
+    context = {"devices": [{"id": key, "name": key, "kind": "switch", "management_ip": ip}
+                           for key, ip in (("dgs", "192.0.2.1"), ("peer", "192.0.2.2"))],
+               "links": [{"relation": "connected_to", "endpoint_a": {"device": "dgs", "interface": "Slot0/15"},
+                          "endpoint_b": {"device": "peer", "interface": "Port1"}, "state": {"verified": False}}]}
+    network = {"sources": [{"name": "dgs", "host": "192.0.2.1", "driver": "snmp_switch", "enabled": True}],
+               "ports": [{"source": "dgs", "collector_run_id": 1, "if_index": index, "port_key": label,
+                          "name": label, "oper_status": "up", "last_seen_at": stamp}
+                         for index, label in [(5015, "Slot0/15"), (5022, "Slot0/22")]],
+               "stp_ports": {"dgs": {"checkedAt": stamp, "ports": samples}}}
+    path = tmp_path / "map.json"
+    path.write_text(json.dumps(build_graph(context, network, {}, {}, {}, now)), encoding="utf-8")
+
+    graph = load_infrastructure_map(path, now)
+    switch = next(node for node in graph["nodes"] if node["id"] == "dgs")
+    ports = {port["name"]: port for port in switch["ports"]}
+    observed = {"checkedAt": stamp, "state": "disabled", "enabled": True}
+    assert ports["Slot0/15"]["state"] == "up" and ports["Slot0/15"]["stpPort"] == observed
+    assert "stpPort" not in ports["Slot0/22"]
+    audit = summarize_topology(graph)["topologyAudit"]
+    assert audit["pending"][0]["portObservations"]["a"]["stpPort"] == observed
+    expired = load_infrastructure_map(path, now + timedelta(minutes=6))
+    assert all("stpPort" not in port for node in expired["nodes"] for port in node["ports"])
+
+
 def test_snr_transceiver_inventory_uses_the_current_interface_identity(tmp_path):
     import asyncio
 

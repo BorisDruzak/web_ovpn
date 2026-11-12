@@ -6,6 +6,8 @@ from collections.abc import Iterable, Mapping
 from .models import CapabilityResult, SnmpVarBind, SwitchPort
 from .oids import (
     DOT1D_BASE_PORT_IFINDEX,
+    DOT1D_STP_PORT_ENABLE,
+    DOT1D_STP_PORT_STATE,
     IF_ADMIN_STATUS,
     IF_ALIAS,
     IF_DESCR,
@@ -33,6 +35,7 @@ _INTERFACE_COLUMNS = (
 _SNR_MODULE_ENTRY = (1, 3, 6, 1, 4, 1, 57206, 7, 100, 30, 3, 1)
 _SNR_SPEED_DUPLEX = (1, 3, 6, 1, 4, 1, 57206, 7, 100, 3, 2, 1, 14)
 _DOT3_STATS_DUPLEX = (1, 3, 6, 1, 2, 1, 10, 7, 2, 1, 19)
+BRIDGE_STP_PORT_STATES = {1: "disabled", 2: "blocking", 3: "listening", 4: "learning", 5: "forwarding", 6: "broken"}
 
 
 async def _indexed_port_column(transport, oid: tuple[int, ...], capability: str) -> dict[int, SnmpVarBind]:
@@ -76,6 +79,36 @@ async def read_switch_link_modes(transport, *, snr: bool = False) -> dict[int, d
         if name:
             result[index] = {"port": name, **mode}
     return result
+
+
+async def read_bridge_stp_ports(transport) -> dict[int, dict]:
+    """Resolve BRIDGE-MIB port numbers through the switch's current IF-MIB."""
+    mapping = await _indexed_port_column(transport, DOT1D_BASE_PORT_IFINDEX, "stp_port_mapping")
+    indexes = parse_bridge_port_map(mapping.values())
+    if not indexes:
+        return {}
+    states = await _indexed_port_column(transport, DOT1D_STP_PORT_STATE, "stp_port_state")
+    if not states:
+        return {}
+    enabled = await _indexed_port_column(transport, DOT1D_STP_PORT_ENABLE, "stp_port_enable")
+    names = await _indexed_port_column(transport, IF_NAME, "stp_port_names")
+    ports = {}
+    for bridge_port, index in indexes.items():
+        row = states.get(bridge_port)
+        if (index not in names or row is None or row.value_type != "integer"
+                or type(row.value) is not int or row.value not in BRIDGE_STP_PORT_STATES):
+            continue
+        try:
+            name = _text(names[index], "ifName").strip()
+        except ValueError:
+            continue
+        if not name:
+            continue
+        ports[index] = {"port": name, "state": BRIDGE_STP_PORT_STATES[row.value]}
+        config = enabled.get(bridge_port)
+        if config and config.value_type == "integer" and type(config.value) is int and config.value in (1, 2):
+            ports[index]["enabled"] = config.value == 1
+    return ports
 
 
 async def read_snr_transceivers(transport) -> dict[int, dict]:
