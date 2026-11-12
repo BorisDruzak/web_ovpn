@@ -618,6 +618,7 @@ def _collect_asset_mac_probes(context: dict, sources: list[dict], configured: di
 
 
 LOCAL_GUEST_ARP_METHOD = "Локальный ARP"
+LOCAL_ASSET_ARP_SOURCE = "UI_VPN · локальный ARP"
 
 
 def _collect_local_guest_ipv4(bindings: dict) -> dict:
@@ -683,11 +684,39 @@ def _collect_local_asset_arp(context: dict, bindings: dict) -> list[dict]:
         reading = _local_arp_diagnostic(address, mac)
         if reading.get("state") == "matched":
             return {"ip": address, "mac": mac, "interface": reading["interface"],
-                    "last_seen_at": datetime.now(timezone.utc).isoformat(), "source": "UI_VPN · локальный ARP"}
+                    "last_seen_at": datetime.now(timezone.utc).isoformat(), "source": LOCAL_ASSET_ARP_SOURCE}
         return None
 
     with ThreadPoolExecutor(max_workers=6) as pool:
         return [row for row in pool.map(probe, targets) if row is not None]
+
+
+def _refresh_conflicting_asset_arp(context: dict, network: dict, bindings: dict, now: datetime) -> None:
+    configured = bindings.get("asset_router_arp_refresh")
+    if not isinstance(configured, dict) or not configured:
+        return
+    devices = {device["id"]: device for device in context["devices"]}
+    addresses = Counter(device.get("management_ip") for device in devices.values())
+    arp = defaultdict(list)
+    for row in network.get("arp", []):
+        if observation_is_fresh(row.get("last_seen_at"), now):
+            arp[row.get("ip")].append(row)
+    for asset, spec in configured.items():
+        address = devices.get(asset, {}).get("management_ip")
+        if not address or addresses[address] != 1 or not isinstance(spec, dict):
+            continue
+        source, interface = spec.get("source"), spec.get("interface")
+        if not isinstance(source, str) or not isinstance(interface, str) or not source or not interface:
+            continue
+        local = {row["mac"] for row in arp[address] if row.get("source") == LOCAL_ASSET_ARP_SOURCE}
+        if len(local) != 1:
+            continue
+        mac, = local
+        cached = [row for row in arp[address] if row.get("source") == source and row.get("interface") == interface]
+        if any(str(row.get("mac") or "").lower() != mac for row in cached):
+            if observation := _router_layer2_observation(network["sources"], source, interface, mac, address=address):
+                for row in cached:
+                    row.update(mac=mac, last_seen_at=observation["checkedAt"])
 
 
 def _collect_guest_arp_probes(pve: dict, network: dict, configured: dict, now: datetime,
@@ -3519,6 +3548,7 @@ def main() -> int:
             network = {}
         else:
             start_stage("switch and router observations")
+            _refresh_conflicting_asset_arp(context, network, bindings, datetime.now(timezone.utc))
             asyncio.run(_check_declared_switch_ports(context, network, pve, datetime.now(timezone.utc)))
             network["pppoe"] = _collect_pppoe(context, network["sources"], bindings.get("pppoe_internet_checks"))
             if lacp_links:

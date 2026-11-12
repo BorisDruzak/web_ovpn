@@ -4854,6 +4854,41 @@ def test_local_asset_arp_checks_independent_targets_concurrently(monkeypatch):
     assert [row["ip"] for row in rows] == [d["management_ip"] for d in devices]
 
 
+def test_active_router_arp_supersedes_only_its_own_conflicting_cache(monkeypatch):
+    from app import infrastructure_collect as collector
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    address, expected = "192.0.2.22", "02:00:00:00:00:05"
+    context = {"devices": [{"id": "host", "management_ip": address, "mac_addresses": [expected]}]}
+    bindings = {"asset_local_arp": {"host": expected},
+                "asset_router_arp_refresh": {"host": {"source": "router", "interface": "bridge-lan"}}}
+    local = {"ip": address, "mac": expected, "last_seen_at": at, "source": "UI_VPN · локальный ARP"}
+    cache = {**local, "mac": "02:00:00:00:00:04", "source": "router", "interface": "bridge-lan"}
+    other = {**cache, "interface": "bridge-other"}
+    called = []
+    reply = None
+
+    def refresh(sources, source, interface, mac, *, address):
+        called.append((source, interface, mac, address))
+        return reply
+
+    monkeypatch.setattr(collector, "_router_layer2_observation", refresh)
+    network = {"sources": [], "arp": [cache.copy()]}
+    collector._refresh_conflicting_asset_arp(context, network, bindings, now)
+    assert called == []
+    network["arp"].append(local.copy())
+    collector._refresh_conflicting_asset_arp(context, network, bindings, now)
+    assert collector._arp_mappings(network["arp"], now) == {}
+    reply = {"checkedAt": at}
+    network["arp"].append(other.copy())
+    collector._refresh_conflicting_asset_arp(context, network, bindings, now)
+    assert called == [("router", "bridge-lan", expected, address)] * 2
+    assert network["arp"] == [{**cache, "mac": expected}, local, other]
+    assert collector._arp_mappings(network["arp"], now) == {}
+    assert collector._arp_mappings(network["arp"][:2], now)[address][0] == expected
+
+
 def test_configured_asset_fdb_path_is_scoped_and_requires_a_unique_live_port(monkeypatch, tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map
