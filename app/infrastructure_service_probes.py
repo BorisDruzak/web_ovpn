@@ -226,7 +226,15 @@ def _http_probe(spec: dict) -> dict:
         port = spec["port"]
         if type(port) is not int or not 1 <= port <= 65535:
             raise ValueError("invalid HTTP probe port")
-        return _http(str(ipaddress.ip_address(spec["ip"])), port, spec)
+        retry_refused = spec.get("retry_connection_refused", False)
+        if type(retry_refused) is not bool:
+            raise ValueError("retry_connection_refused requires a boolean")
+        address = str(ipaddress.ip_address(spec["ip"]))
+        result = _http(address, port, spec)
+        if retry_refused and result.get("reason") == "http_connection_refused":
+            sleep(2)
+            return {**_http(address, port, spec), "attempts": 2}
+        return result
     except (KeyError, TypeError, ValueError, OSError):
         return {"state": "unknown", "reason": "http_configuration"}
 

@@ -807,6 +807,29 @@ def test_redfish_root_probe_reports_only_validated_api_version(monkeypatch):
     assert _http_probe({**spec, "type": "http"})["reason"] == "http_configuration"
 
 
+def test_http_probe_retries_one_connection_refusal_when_enabled(monkeypatch):
+    from app import infrastructure_service_probes as probes
+
+    refused = {"state": "unreachable", "reason": "http_connection_refused"}
+    ready = {"state": "reachable", "httpStatus": 200}
+    error = {"state": "unreachable", "reason": "http_status", "httpStatus": 503}
+    spec = {"type": "http", "ip": "192.0.2.1", "port": 8088, "path": "/login"}
+    waiting = []
+    monkeypatch.setattr(probes, "sleep", waiting.append)
+
+    for enabled, responses, expected, waits in (
+        (True, [refused, ready], {**ready, "attempts": 2}, [2]),
+        (True, [refused, refused], {**refused, "attempts": 2}, [2]),
+        (True, [error], error, []),
+        (False, [refused], refused, []),
+    ):
+        pending = iter(responses)
+        waiting.clear()
+        monkeypatch.setattr(probes, "_http", lambda *args: next(pending))
+        assert probes._http_probe({**spec, "retry_connection_refused": enabled}) == expected
+        assert list(pending) == [] and waiting == waits
+
+
 def test_http_probe_accepts_only_bounded_complete_gzip_when_configured(monkeypatch):
     import gzip
     from io import BytesIO
