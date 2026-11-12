@@ -5589,6 +5589,10 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
         {"id": key, "name": key, "kind": kind, **extra} for key, kind, extra in (
             ("directum", "Сервис", {}),
             ("vm", "Виртуальная машина", {"guest": True, "vmid": 103,
+             "resources": {"uptimeSeconds": 300, "checkedAt": stamp},
+             "guestIo": {"networkInBytesPerSecond": 2.3, "networkOutBytesPerSecond": 0,
+                         "diskReadBytesPerSecond": 800, "diskWriteBytesPerSecond": 10,
+                         "checkedAt": stamp, "intervalSeconds": 120},
              "sources": [{"name": "Proxmox", "status": "ok", "label": "Запущена", "at": stamp}]}),
             ("pve", "Гипервизор", {"ports": [vlan_ports["host"]]}),
             ("snr", "Коммутатор", {"ports": [vlan_ports["switch"]]}),
@@ -5620,6 +5624,9 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     assert report["node"]["id"] == "directum"
     guest, = report["guests"]
     assert guest["guest"]["vmid"] == 103 and guest["hypervisor"]["id"] == "pve"
+    traffic = {"networkInBytesPerSecond": 2.3, "networkOutBytesPerSecond": 0,
+               "source": "Proxmox", "checkedAt": stamp, "intervalSeconds": 120}
+    assert guest["networkTraffic"] == traffic
     interface, = guest["interfaces"]
     assert (interface["guestPort"], interface["bridge"]) == ("net0", "vmbr1")
     assert interface["bridgeVlanConfig"] == {"mode": "enabled", "source": "Proxmox API", "checkedAt": stamp}
@@ -5667,6 +5674,7 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     assert audit["interfaceCounts"]["guest_mac"] == 1 and audit["gapTotal"] == 1
     gap, = audit["gaps"]
     assert gap["guest"]["id"] == "vm"
+    assert gap["networkTraffic"] == traffic
     assert gap["interfaces"] == [{"guestPort": "net0", "bridge": "vmbr1", "state": "guest_mac"}]
     raw["links"][1]["portEvidence"][0]["virtual"]["uplinks"] = ["ens7"]
     guest_port = raw["links"][1]["portEvidence"][0]

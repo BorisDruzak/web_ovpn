@@ -673,6 +673,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         row.append(open);
         const vlan = observation.vlan ?? iface.vlan;
         row.append(make('small', [labels[basis], vlan && 'VLAN ' + vlan, formatTime(checkedAt)].filter(Boolean).join(' · ')));
+        if (basis === 'bridge_uplink') row.append(make('small', 'MAC гостя на коммутаторе не подтверждён'));
         if (physicalPair) row.append(make('small',
           ['Физическая пара подтверждена', physicalPair.source, formatTime(physicalPair.checkedAt)].join(' · ')));
         if (vlanMemberships) {

@@ -52,6 +52,7 @@ PPPOE_SOURCE = "RouterOS · PPPoE"
 PPPOE_PARENT_LINK_MAX_AGE = timedelta(minutes=10)
 RESOURCE_CAPACITY_MAX_AGE = timedelta(minutes=5)
 GUEST_IO_MAX_AGE = timedelta(minutes=5)
+GUEST_NETWORK_RATE_FIELDS = ("networkInBytesPerSecond", "networkOutBytesPerSecond")
 LACP_HEALTH_MAX_AGE = timedelta(minutes=5)
 LACP_PARTNER_MAX_AGE = timedelta(minutes=8)
 ROOT_FREE_WARNING_PERCENT = 10
@@ -809,8 +810,7 @@ def _public_guest_io(row: object, resources: dict, now: datetime) -> dict:
     if stamp != resources.get("checkedAt") or interval is None or not 30 <= interval <= GUEST_IO_MAX_AGE.total_seconds():
         return {}
     rates = {}
-    for keys in (("networkInBytesPerSecond", "networkOutBytesPerSecond"),
-                 ("diskReadBytesPerSecond", "diskWriteBytesPerSecond")):
+    for keys in (GUEST_NETWORK_RATE_FIELDS, ("diskReadBytesPerSecond", "diskWriteBytesPerSecond")):
         pair = {key: _number(row.get(key)) for key in keys}
         if all(rate is not None and 0 <= rate < 2**53 for rate in pair.values()):
             rates.update(pair)
@@ -1648,6 +1648,11 @@ def _guest_attachments(nodes: dict, links: list[dict], guest_ids: list[str], now
         guest = {"guest": _attachment_node(nodes[guest_id]), "hypervisor": None, "interfaces": [],
                  "placement": "ambiguous" if len(candidates) > 1 else "unconfirmed"}
         guests[guest_id] = guest
+        io = nodes[guest_id].get("guestIo", {})
+        if all(key in io for key in GUEST_NETWORK_RATE_FIELDS):
+            guest["networkTraffic"] = {"source": "Proxmox", **{
+                key: io[key] for key in (*GUEST_NETWORK_RATE_FIELDS, "checkedAt", "intervalSeconds")
+            }}
         if len(candidates) != 1:
             continue
         edge, = candidates
@@ -1815,7 +1820,8 @@ def summarize_guest_attachment_audit(graph: dict) -> dict:
                     incomplete[-1]["arpDiagnostic"] = interface["arpDiagnostic"]
         if power != "stopped" and (incomplete or not attachment["interfaces"]):
             gaps.append({"guest": attachment["guest"], "hypervisor": attachment["hypervisor"],
-                         "power": power, "placement": attachment["placement"], "interfaces": incomplete})
+                         "power": power, "placement": attachment["placement"], "interfaces": incomplete,
+                         **({"networkTraffic": attachment["networkTraffic"]} if "networkTraffic" in attachment else {})})
 
     gaps.sort(key=lambda gap: (gap["power"] != "running", gap["guest"]["id"]))
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
