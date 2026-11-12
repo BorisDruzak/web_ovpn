@@ -76,6 +76,14 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     availability.textContent = message;
     availability.hidden = !message;
   }
+  function appendRxErrorCounters(parent, counters, portName = '') {
+    const labels = {ifInErrors:'Всего RX', fcsErrors:'FCS', alignmentErrors:'Выравнивание',
+      frameTooLongs:'Длинные кадры', internalMacRxErrors:'Внутренние ошибки MAC', symbolErrors:'Ошибки символов'};
+    const counts = Object.entries(labels).filter(([key]) => key in counters)
+      .map(([key, label]) => `${label} ${counters[key].toLocaleString('ru-RU')}`);
+    const title = [portName, 'Накопленные счётчики SNMP', formatTime(counters.checkedAt)].filter(Boolean).join(' · ');
+    parent.append(make('small', title), make('small', counts.join(' · ')));
+  }
   function renderPortCounterSummary() {
     const panel = root.querySelector('#map-port-counters');
     const summary = panel.querySelector('summary');
@@ -1145,12 +1153,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           }
         }
         if (selectedPort && port.rxErrorCounters) {
-          const labels = {ifInErrors:'Всего RX', fcsErrors:'FCS', alignmentErrors:'Выравнивание',
-            frameTooLongs:'Длинные кадры', internalMacRxErrors:'Внутренние ошибки MAC', symbolErrors:'Ошибки символов'};
-          const counts = Object.entries(labels).filter(([key]) => key in port.rxErrorCounters)
-            .map(([key, label]) => `${label} ${port.rxErrorCounters[key].toLocaleString('ru-RU')}`);
-          row.append(make('small', 'Накопленные счётчики SNMP · ' + formatTime(port.rxErrorCounters.checkedAt)),
-            make('small', counts.join(' · ')));
+          appendRxErrorCounters(row, port.rxErrorCounters);
         }
         list.append(row);
       }
@@ -1451,6 +1454,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
                 `${number.format(intervalSeconds)} с`, formatTime(checkedAt)];
               li.append(make('small', `${port.name} · ${metrics.filter(Boolean).join(' · ')}`));
             }
+            if (port.rxErrorCounters) appendRxErrorCounters(li, port.rxErrorCounters, port.name);
           }
           if (evidence.lacp?.aggregateState) {
             const {side, aggregateState} = evidence.lacp;

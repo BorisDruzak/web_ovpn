@@ -3852,10 +3852,19 @@ def test_switch_port_telemetry_requires_matching_current_collection(tmp_path):
                                  "rxBps": 250000, "txBps": 0, "rxErrors": 2}
     assert port["rxErrorCounters"] == {"checkedAt": at, "ifInErrors": 44, "fcsErrors": 0}
     assert audit == {"measuredPorts": 1, "affectedPorts": 1, "ports": [
-        {"deviceId": "sw", "deviceName": "Switch", "port": "Port7", "telemetry": port["telemetry"]},
+        {"deviceId": "sw", "deviceName": "Switch", "port": "Port7", "telemetry": port["telemetry"],
+         "rxErrorCounters": port["rxErrorCounters"]},
     ]}
     assert read(now + timedelta(minutes=21))[1] == {"measuredPorts": 0, "affectedPorts": 0, "ports": []}
     assert "rxErrorCounters" not in read(now + timedelta(minutes=6))[0]
+    assert "rxErrorCounters" not in read(now + timedelta(minutes=6))[1]["ports"][0]
+    raw_port = network["ports"][0]
+    raw_port["rxErrorCounters"]["checkedAt"] = (now - timedelta(seconds=1)).isoformat()
+    assert "rxErrorCounters" not in read()[0]
+    raw_port["rxErrorCounters"]["checkedAt"] = at
+    raw_port["linkCheck"] = {"state": "down", "checkedAt": (now + timedelta(seconds=1)).isoformat()}
+    assert "rxErrorCounters" not in read(now + timedelta(seconds=1))[0]
+    raw_port.pop("linkCheck")
     sample["in_errors_delta"] = 0
     assert read()[1] == {"measuredPorts": 1, "affectedPorts": 0, "ports": []}
     sample["in_errors_delta"] = 2
@@ -5533,7 +5542,8 @@ def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_pa
                               "ifAlias": "<invalid>\npassword=value",
                               "fdbLearned": {"checkedAt": now, "learnedMacCount": 0, "partial": False},
                               "telemetry": {"checkedAt": now, "intervalSeconds": 60, "rxBps": 0,
-                                            "txBps": 400_000, "private": "excluded"},
+                                            "txBps": 400_000, "rxErrors": 5, "private": "excluded"},
+                              "rxErrorCounters": {"checkedAt": now, "ifInErrors": 44, "fcsErrors": 0},
                               "transceiver": {"checkedAt": now, "formFactor": "SFP+",
                                               "nominalBps": 10**10, "serialNumber": "excluded"}},
                              {"name": "xe3", "state": "up", "checkedAt": "2026-01-01T00:00:00Z",
@@ -5581,7 +5591,8 @@ def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_pa
     assert recorder["portB"] == "" and recorder["portObservations"] == {
         "a": {"name": "ge15", "state": "up", "checkedAt": now, "speedBps": 10**9,
               "fdbLearned": {"checkedAt": now, "learnedMacCount": 0, "partial": False},
-              "telemetry": {"checkedAt": now, "intervalSeconds": 60, "rxBps": 0, "txBps": 400_000},
+              "telemetry": {"checkedAt": now, "intervalSeconds": 60, "rxBps": 0, "txBps": 400_000, "rxErrors": 5},
+              "rxErrorCounters": {"checkedAt": now, "ifInErrors": 44, "fcsErrors": 0},
               "transceiver": {"checkedAt": now, "formFactor": "SFP+", "nominalBps": 10**10}},
     }
     assert recorder["missingPortSides"] == ["b"] and recorder["identifiedPeerSides"] == ["a"]

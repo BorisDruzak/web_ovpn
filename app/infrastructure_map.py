@@ -342,7 +342,8 @@ def _public_port(row: dict, now: datetime) -> dict:
         result["telemetry"] = telemetry
         counters = row.get("rxErrorCounters")
         if (telemetry.get("rxErrors", 0) > 0 and isinstance(counters, dict)
-                and observation_is_fresh(counters.get("checkedAt"), now, max_age=PORT_LINK_CHECK_MAX_AGE)):
+                and observation_is_fresh(counters.get("checkedAt"), now, max_age=PORT_LINK_CHECK_MAX_AGE)
+                and _time(counters["checkedAt"]) >= _time(telemetry["checkedAt"])):
             readings = {key: value for key in RX_ERROR_COLUMNS
                         if type(value := counters.get(key)) is int and 0 <= value < 2**32}
             if "ifInErrors" in readings and len(readings) > 1:
@@ -382,7 +383,7 @@ def _apply_port_link_check(port: dict, row: dict, now: datetime) -> None:
             port["endpointMac"] = {"deviceId": device, "mac": mac, "checkedAt": stamp.isoformat()}
     if state != "up":
         for key in ("lldpChassisCount", "lldpNeighborCount", "lldpNeighbors", "lldpCheckedAt",
-                    "fdbLearned", "fdbVlans", "telemetry", "linkMode"):
+                    "fdbLearned", "fdbVlans", "telemetry", "rxErrorCounters", "linkMode"):
             port.pop(key, None)
 
 
@@ -1373,8 +1374,7 @@ def _summarize_port_counters(nodes: dict) -> dict:
             if any(telemetry.get(key, 0) for key in PORT_COUNTER_KEYS):
                 row = {"deviceId": node["id"], "deviceName": node["name"], "port": port["name"],
                        "telemetry": telemetry}
-                if "configuredLabel" in port:
-                    row["configuredLabel"] = port["configuredLabel"]
+                row.update({key: port[key] for key in ("configuredLabel", "rxErrorCounters") if key in port})
                 affected.append(row)
 
     def severity(row):
@@ -1456,7 +1456,7 @@ def summarize_topology(graph: dict) -> dict:
                     for side, port in declared.get("portStates", {}).items() if port.get("lldpNeighbors")}
             observations = {
                 side: {key: port[key] for key in ("name", "state", "speedBps", "checkedAt", "source", "linkMode",
-                                                  "stpPort", "telemetry", "fdbLearned", "transceiver",
+                                                  "stpPort", "telemetry", "rxErrorCounters", "fdbLearned", "transceiver",
                                                   "configuredLabel") if key in port}
                 for side, port in declared.get("portStates", {}).items() if port["state"] != "unknown"
             }
