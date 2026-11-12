@@ -48,6 +48,12 @@ class PersonInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     full_name: Label
     department: Label
+    work_email: Annotated[str, StringConstraints(
+        strip_whitespace=True, max_length=254, pattern=r"^[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+$",
+    )] | None = None
+    work_phone: Annotated[str, StringConstraints(
+        strip_whitespace=True, max_length=60, pattern=r"^\+?[0-9() .-]*[0-9][0-9() .-]*$",
+    )] | None = None
 
 
 class AssignmentInput(BaseModel):
@@ -109,6 +115,10 @@ def _person_view(person: InventoryPerson) -> dict:
     }
 
 
+def _contacts(person: InventoryPerson) -> dict:
+    return {"work_email": person.work_email, "work_phone": person.work_phone}
+
+
 def _assignment_view(row: InventoryPersonAssignment) -> dict:
     return {
         "assignment_id": row.id,
@@ -150,17 +160,20 @@ def create_person(payload: PersonInput, request: Request, db: Db, actor: Operato
     db.add(person)
     db.flush()
     write_audit(db, request, actor, "inventory.person.create", "ok", target_client=person.id)
-    return _person_view(person)
+    return {**_person_view(person), **_contacts(person)}
 
 
 @operator_router.put("/{person_id}")
 def update_person(person_id: UUID, payload: PersonInput, request: Request, db: Db, actor: Operator) -> dict:
     person = _person(db, person_id)
-    if (person.full_name, person.department) != (payload.full_name, payload.department):
-        person.full_name, person.department = payload.full_name, payload.department
+    fields = payload.model_dump(exclude_unset=True)
+    if any(getattr(person, name) != value for name, value in fields.items()):
+        for name, value in fields.items():
+            setattr(person, name, value)
         person.search_key = _search_key(f"{payload.full_name} {payload.department}")
         write_audit(db, request, actor, "inventory.person.update", "ok", target_client=person.id)
-    return _person_view(person)
+        db.flush()
+    return {**_person_view(person), **_contacts(person)}
 
 
 @operator_router.put("/{person_id}/assignments/{asset_id}")
@@ -322,11 +335,19 @@ def operator_directory(db: Session, q: str, page: int, state: DirectoryState) ->
             "helpdesk_status_available": helpdesk_links is not None}
 
 
-@operator_router.get("/{person_id}", dependencies=[Depends(_operator_read)])
-@helpdesk_router.get("/{person_id}", dependencies=[Depends(_helpdesk)])
-def read_person(person_id: UUID, response: Response, db: Db) -> dict:
-    person = _person(db, person_id)
+def _person_detail(person: InventoryPerson, response: Response, db: Session) -> dict:
     now = utcnow()
     assignments = [item for _, item in _assignment_views(db, InventoryPersonAssignment.person_id == person.id, now)]
     response.headers["Cache-Control"] = "no-store"
     return {**_person_view(person), "observed_at": now, "assignments": assignments}
+
+
+@operator_router.get("/{person_id}", dependencies=[Depends(_operator_read)])
+def read_operator_person(person_id: UUID, response: Response, db: Db) -> dict:
+    person = _person(db, person_id)
+    return {**_person_detail(person, response, db), **_contacts(person)}
+
+
+@helpdesk_router.get("/{person_id}", dependencies=[Depends(_helpdesk)])
+def read_person(person_id: UUID, response: Response, db: Db) -> dict:
+    return _person_detail(_person(db, person_id), response, db)

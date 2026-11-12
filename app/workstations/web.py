@@ -1,6 +1,4 @@
 """Session-only pages; all controller actions go through the scoped JSON API."""
-from urllib.parse import urlsplit
-
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -8,6 +6,7 @@ from sqlalchemy.orm import Session
 from ..auth import require_user
 from ..config import get_settings
 from ..db import get_db
+from ..endpoint_platform_client import endpoint_console_origin
 from ..permissions import check_user_permission, user_has_permission
 from .api import (
     DeviceKey, JobID, UUIDText, endpoint_component_published, endpoint_install_asset,
@@ -36,17 +35,8 @@ def workstations(request: Request, view: str = Query('devices', pattern='^(devic
 
 
 def _enrollment_console():
-    settings = get_settings()
-    if not settings.endpoint_platform_enabled:
-        return None
-    try:
-        url = urlsplit(settings.endpoint_platform_base_url.strip())
-        if (url.scheme != 'https' or not url.hostname or url.username is not None or url.query or url.fragment
-                or url.path not in ('', '/') or '\\' in url.netloc or any(ch.isspace() for ch in url.netloc)):
-            return None
-        return f'https://{url.netloc}/admin/enrollment'
-    except ValueError:
-        return None
+    origin = endpoint_console_origin(get_settings())
+    return f'{origin}/admin/enrollment' if origin else None
 
 
 @router.get('/workstations/inventory/{asset_id}/endpoint-agent')

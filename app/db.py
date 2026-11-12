@@ -392,6 +392,12 @@ def _migrate_inventory_schema(engine) -> None:
             columns = {column["name"] for column in inspector.get_columns("inventory_pc_details")}
             if "os_version" not in columns:
                 connection.execute(text("ALTER TABLE inventory_pc_details ADD COLUMN os_version VARCHAR(255)"))
+        if "inventory_people" in table_names:
+            columns = {column["name"] for column in inspector.get_columns("inventory_people")}
+            if "work_email" not in columns:
+                connection.execute(text("ALTER TABLE inventory_people ADD COLUMN work_email VARCHAR(254)"))
+            if "work_phone" not in columns:
+                connection.execute(text("ALTER TABLE inventory_people ADD COLUMN work_phone VARCHAR(60)"))
         if "inventory_assets" in table_names:
             columns = {column["name"] for column in inspector.get_columns("inventory_assets")}
             if "notes" in columns:

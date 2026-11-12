@@ -10,6 +10,12 @@ An operator can find employees by name or department, add or edit a profile,
 search for a PC, and assign it as primary or shared. The same flow opens from
 an existing PC card with that PC selected. The employee card displays the
 current Endpoint presence and the reason recorded for completed assignments.
+Operators can enter an optional work email and telephone. These fields are
+available on the employee detail and its operator write endpoints. Existing
+operator updates that omit contact fields preserve the saved values. The
+Helpdesk service response and employee directory summaries omit contacts.
+A confirmed Endpoint UUID opens its exact console device card at the configured
+HTTPS Endpoint origin, which requires its own authenticated session.
 The directory counts employees in each filter across the search results before
 pagination. Use the filters to find employees without assigned PCs, missing agents,
 offline agents, unavailable presence data, or bindings that require review.
@@ -58,8 +64,9 @@ status). An offline response requires a recent successful presence observation.
 A UUID remains valid as an inventory association even when presence is unknown.
 The response is display data; diagnostics still require Helpdesk's own policy.
 
-The current change adds two tables on the application's normal schema
-initialization. There is no automatic employee import or migration from legacy
+The application's normal schema initialization creates the employee and assignment
+tables and adds nullable work contact columns to existing employee tables.
+There is no automatic employee import or migration from legacy
 text. Verify with synthetic people and a separate SQLite database; the
 production web installer is not the staging procedure.
 

@@ -18,6 +18,7 @@ from ..permissions import user_has_permission
 from ..auth import csrf_token, current_user, require_user, verify_csrf, verify_api_csrf
 from ..config import get_settings
 from ..db import get_db
+from ..endpoint_platform_client import endpoint_console_origin
 from ..netctl_client import run_netctl
 from starlette.concurrency import run_in_threadpool
 from .lookup import InventoryLookup, InventoryLookupError, classify_identifier
@@ -1101,7 +1102,7 @@ def inventory_people(request: Request, q: str = Query("", max_length=120), page:
 def inventory_person(person_id: UUID, request: Request, asset_id: UUID | None = None,
                      pc_q: str = Query("", max_length=120), pc_page: int = Query(1, ge=1), db: Session = Depends(get_db)):
     people_api._operator_read(request, db)
-    person = people_api.read_person(person_id, Response(), db)
+    person = people_api.read_operator_person(person_id, Response(), db)
     assignment = InventoryPersonAssignment
     history = db.scalars(select(assignment).where(
         assignment.person_id == str(person_id), assignment.ended_at.is_not(None),
@@ -1110,6 +1111,7 @@ def inventory_person(person_id: UUID, request: Request, asset_id: UUID | None = 
     links = helpdesk_status.read_links([str(person_id)])
     account = links.get(str(person_id)) if links is not None else None
     return _people_page(request, db, {"person": person, "history": history, "pc_q": pc_q,
+                                      "endpoint_console_origin": endpoint_console_origin(get_settings()),
                                       "pc_search": pc_search, "chosen_pc": _chosen_pc(db, asset_id),
                                       "helpdesk_status_available": links is not None, "helpdesk_account": account,
                                       "helpdesk_profile_url": helpdesk_status.profile_url(account) if account else None})
@@ -1121,12 +1123,23 @@ async def _person_form(request: Request, db: Session) -> str:
     return actor
 
 
+async def _person_contact_fields(request: Request) -> dict:
+    form = await request.form()
+    fields = {}
+    for name in ("work_email", "work_phone"):
+        if name in form:
+            value = form[name]
+            fields[name] = (value.strip() or None) if isinstance(value, str) else value
+    return fields
+
+
 @router.post("/inventory/people")
 async def inventory_person_create(request: Request, full_name: str = Form(min_length=1, max_length=240),
                                   department: str = Form(min_length=1, max_length=240),
                                   asset_id: UUID | None = Form(None), db: Session = Depends(get_db)):
     actor = await _person_form(request, db)
-    payload = _people_payload(people_api.PersonInput, full_name=full_name, department=department)
+    payload = _people_payload(people_api.PersonInput, full_name=full_name, department=department,
+                              **await _person_contact_fields(request))
     person = people_api.create_person(payload, request, db, actor)
     query = f"?asset_id={asset_id}" if asset_id else ""
     return _redirect(f"/inventory/people/{person['inventory_person_id']}{query}")
@@ -1136,7 +1149,8 @@ async def inventory_person_create(request: Request, full_name: str = Form(min_le
 async def inventory_person_edit(person_id: UUID, request: Request, full_name: str = Form(min_length=1, max_length=240),
                                 department: str = Form(min_length=1, max_length=240), db: Session = Depends(get_db)):
     actor = await _person_form(request, db)
-    payload = _people_payload(people_api.PersonInput, full_name=full_name, department=department)
+    payload = _people_payload(people_api.PersonInput, full_name=full_name, department=department,
+                              **await _person_contact_fields(request))
     people_api.update_person(person_id, payload, request, db, actor)
     return _redirect(f"/inventory/people/{person_id}")
 

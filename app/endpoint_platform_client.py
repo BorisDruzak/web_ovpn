@@ -8,8 +8,25 @@ all local/upstream failures into a redacted availability signal for the UI.
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlsplit
 
 from .config import Settings
+
+
+def endpoint_console_origin(settings: Settings) -> str | None:
+    if not settings.endpoint_platform_enabled:
+        return None
+    try:
+        url = urlsplit(settings.endpoint_platform_base_url.strip())
+        port = url.port
+        if (url.scheme != "https" or not url.hostname or url.username is not None
+                or url.path not in {"", "/"} or url.query or url.fragment
+                or "\\" in url.netloc or any(char.isspace() for char in url.netloc)
+                or port == 0):
+            return None
+        return f"https://{url.netloc}"
+    except ValueError:
+        return None
 
 
 class EndpointPlatformServiceError(RuntimeError):

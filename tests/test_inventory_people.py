@@ -78,6 +78,63 @@ def test_directory_requires_dedicated_credential_and_never_matches_names(staging
         json={"full_name": "Test", "department": "Test"}).status_code == 401
 
 
+def test_contacts_stay_in_operator_card_and_endpoint_links_require_confirmed_device(staging, monkeypatch):
+    from app.config import get_settings
+    from app.db import session_scope
+    from app.inventory.models import InventoryExternalBinding, InventoryExternalBindingStatus
+
+    client, csrf, service = staging
+    monkeypatch.setenv("ENDPOINT_PLATFORM_BASE_URL", "https://endpoint.fixture.invalid")
+    get_settings.cache_clear()
+    profile = {"full_name": "Тестовый сотрудник", "department": "Тестовый отдел"}
+    contacts = {"work_email": "fixture@example.invalid", "work_phone": "+7 000 111-22-33"}
+    created = client.post(OPERATOR, headers=csrf, json={**profile, **contacts})
+    assert created.status_code == 201
+    person = created.json()["inventory_person_id"]
+    detail = f"{OPERATOR}/{person}"
+    assert client.put(detail, headers=csrf, json=profile).status_code == 200
+    assert {key: client.get(detail).json()[key] for key in contacts} == contacts
+    response = client.get(f"{INTERNAL}/{person}", headers=service)
+    assert response.status_code == 200 and not (contacts.keys() & response.json().keys())
+    assert not (contacts.keys() & client.get(OPERATOR).json()["people"][0].keys())
+
+    confirmed, candidate = (_create_asset(custom_name=name) for name in ("Confirmed", "Candidate"))
+    confirmed_device, candidate_device = str(uuid4()), str(uuid4())
+    for asset in (confirmed, candidate):
+        assert _assign(client, csrf, person, asset, "primary").status_code == 200
+    with session_scope() as db:
+        for asset, device, status in (
+            (confirmed, confirmed_device, InventoryExternalBindingStatus.CONFIRMED),
+            (candidate, candidate_device, InventoryExternalBindingStatus.CANDIDATE),
+        ):
+            db.add(InventoryExternalBinding(asset_id=asset, external_id=device, status=status,
+                binding_method="manual", confidence=100, created_by="fixture"))
+    page = client.get(f"/inventory/people/{person}")
+    assert all(value in page.text for value in contacts.values())
+    assert f'https://endpoint.fixture.invalid/admin/devices/{confirmed_device}' in page.text
+    assert candidate_device not in page.text
+    monkeypatch.setenv("ENDPOINT_PLATFORM_BASE_URL", "https://endpoint.fixture.invalid:broken")
+    get_settings.cache_clear()
+    assert "/admin/devices/" not in client.get(f"/inventory/people/{person}").text
+    assert client.put(detail, headers=csrf, json={**profile, "work_email": None}).json()["work_email"] is None
+
+
+def test_contact_columns_upgrade_existing_inventory_and_are_repeatable(tmp_path):
+    from sqlalchemy import create_engine, text
+    from app.db import _migrate_inventory_schema
+
+    engine = create_engine(f"sqlite:///{(tmp_path / 'old-inventory.sqlite').as_posix()}")
+    with engine.begin() as db:
+        db.execute(text("CREATE TABLE inventory_people (id TEXT PRIMARY KEY, full_name TEXT, department TEXT)"))
+        db.execute(text("INSERT INTO inventory_people VALUES ('existing', 'Fixture Name', 'Fixture Department')"))
+    _migrate_inventory_schema(engine)
+    _migrate_inventory_schema(engine)
+    with engine.connect() as db:
+        row = db.execute(text("SELECT id, full_name, department, work_email, work_phone FROM inventory_people")).one()
+        assert tuple(row) == ("existing", "Fixture Name", "Fixture Department", None, None)
+    engine.dispose()
+
+
 def test_assignments_are_idempotent_allow_shared_use_and_preserve_history(staging):
     from app.db import session_scope
     from app.models import WebAuditLog

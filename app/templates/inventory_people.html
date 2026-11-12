@@ -6,6 +6,8 @@
 {% if person %}
   <p><a href="/inventory/people">Все сотрудники</a></p>
   <p>{{ person.department }} · ID сотрудника <code>{{ person.inventory_person_id }}</code></p>
+  {% if person.work_email %}<p>Рабочая почта · {{ person.work_email }}</p>{% endif %}
+  {% if person.work_phone %}<p>Рабочий телефон · {{ person.work_phone }}</p>{% endif %}
   <p>Профиль обновлён <time datetime="{{ person.profile_updated_at.isoformat() }}">{{ person.profile_updated_at.strftime('%d.%m.%Y %H:%M') }} UTC</time></p>
   {% if helpdesk_account %}
     <p>Helpdesk связан · {{ helpdesk_account.user_login }}{% if helpdesk_profile_url %} · <a href="{{ helpdesk_profile_url }}">Открыть профиль в Helpdesk</a>{% endif %}</p>
@@ -17,6 +19,8 @@
       <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
       <label>ФИО <input name="full_name" required maxlength="240" value="{{ person.full_name }}"></label>
       <label>Подразделение <input name="department" required maxlength="240" value="{{ person.department }}"></label>
+      <label>Рабочая почта <input type="email" name="work_email" maxlength="254" value="{{ person.work_email or '' }}"></label>
+      <label>Рабочий телефон <input type="tel" name="work_phone" maxlength="60" value="{{ person.work_phone or '' }}"></label>
       <button class="button" type="submit">Сохранить</button>
     </form>
   </details>
@@ -34,6 +38,9 @@
     <div class="inventory-search-controls">
       {% if row.endpoint_binding_state == 'confirmed' %}
         <a class="button secondary" href="/inventory/assets/{{ row.inventory_asset_id }}#endpoint-heading">Обновить состояние агента</a>
+        {% if endpoint_console_origin and row.endpoint_device_id %}
+          <a class="button secondary" href="{{ endpoint_console_origin }}/admin/devices/{{ row.endpoint_device_id }}">Открыть устройство в Endpoint</a>
+        {% endif %}
       {% else %}
         <a class="button secondary" href="/inventory/assets/{{ row.inventory_asset_id }}#endpoint-heading">Привязать Endpoint Agent</a>
         {% if row.endpoint_binding_state == 'unbound' %}
@@ -121,6 +128,8 @@
       {% if chosen_pc %}<input type="hidden" name="asset_id" value="{{ chosen_pc.id }}">{% endif %}
       <label>ФИО <input name="full_name" required maxlength="240"></label>
       <label>Подразделение <input name="department" required maxlength="240"></label>
+      <label>Рабочая почта <input type="email" name="work_email" maxlength="254"></label>
+      <label>Рабочий телефон <input type="tel" name="work_phone" maxlength="60"></label>
       <button class="button" type="submit">Добавить</button>
     </form>
   </details>

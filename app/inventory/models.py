@@ -491,6 +491,8 @@ class InventoryPerson(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_inventory_id)
     full_name: Mapped[str] = mapped_column(String(240), nullable=False)
     department: Mapped[str] = mapped_column(String(240), nullable=False)
+    work_email: Mapped[str | None] = mapped_column(String(254))
+    work_phone: Mapped[str | None] = mapped_column(String(60))
     search_key: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow, nullable=False)
