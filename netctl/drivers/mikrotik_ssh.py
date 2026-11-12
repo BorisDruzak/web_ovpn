@@ -17,6 +17,10 @@ INTERFACE_COUNTER_COMMAND = (
 )
 
 
+class RouterOSSshTransportError(RuntimeError):
+    """OpenSSH could not complete the remote session."""
+
+
 def parse_routeros_terse(output: str, *, interface_flags: bool = False) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     scalar: dict[str, str] = {}
@@ -127,7 +131,8 @@ class MikroTikSshDriver(NetworkDriver):
             check=False,
         )
         if completed.returncode != 0:
-            raise RuntimeError((completed.stderr or completed.stdout or "ssh command failed").strip())
+            failure = RouterOSSshTransportError if completed.returncode == 255 else RuntimeError
+            raise failure((completed.stderr or completed.stdout or "ssh command failed").strip())
         return completed.stdout
 
     def _interface_counters(self) -> dict[str, dict[str, str]]:

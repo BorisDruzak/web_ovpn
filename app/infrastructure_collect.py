@@ -28,6 +28,7 @@ from netctl.config import DEFAULT_DB_URL, load_secrets
 from netctl.context import load_context_bytes, load_schema, validate_context
 from netctl.db import list_sources, read_context_snapshot
 from netctl.drivers import legacy_driver_for
+from netctl.drivers.mikrotik_ssh import RouterOSSshTransportError
 from netctl.snmp.fdb import read_learned_fdb_port
 from netctl.snmp.interfaces import (
     read_bridge_stp_ports, read_interface_link, read_interface_rx_error_counters,
@@ -1015,6 +1016,8 @@ def _collect_ipsec_policies(sources: list[dict], configured: dict) -> dict:
     def collect(source):
         try:
             policies = legacy_driver_for(source, secrets).read_ipsec_policies()
+        except RouterOSSshTransportError:
+            return source["name"], {"failedAt": datetime.now(timezone.utc).isoformat(), "reason": "ipsec_ssh_unavailable"}
         except Exception:
             return source["name"], {}
         return source["name"], {"at": datetime.now(timezone.utc).isoformat(), "policies": policies}
@@ -1028,6 +1031,9 @@ def _ipsec_policy_checks(feature: dict, remote: str, spec: dict, snapshots: dict
         snapshot = snapshots.get(source, {})
         at = snapshot.get("at")
         if not observation_is_fresh(at, now):
+            failed = snapshot.get("failedAt")
+            if snapshot.get("reason") == "ipsec_ssh_unavailable" and observation_is_fresh(failed, now):
+                return {"source": source, "state": "unknown", "checkedAt": failed, "reason": "ipsec_ssh_unavailable"}
             return {"source": source, "state": "unknown", "checkedAt": None, "reason": "ipsec_observation_unavailable"}
         matches = [policy for policy in snapshot["policies"]
                    if policy.get("peer") == peer and policy.get("src_address") == src
@@ -1051,7 +1057,7 @@ def _ipsec_policy_checks(feature: dict, remote: str, spec: dict, snapshots: dict
     return checks
 
 
-def _collect_ipsec_connectivity(context: dict, sources: list[dict], configured: dict) -> dict:
+def _collect_ipsec_connectivity(context: dict, sources: list[dict], configured: dict, policy_snapshots: dict | None = None) -> dict:
     features = {item["id"]: item for item in context.get("features", []) if item.get("kind") == "policy_based_ipsec"}
     segments = {item["id"]: item["cidr"] for item in context.get("segments", []) if item.get("cidr")}
     devices = {item["id"]: item.get("management_ip") for item in context.get("devices", [])}
@@ -1073,16 +1079,21 @@ def _collect_ipsec_connectivity(context: dict, sources: list[dict], configured: 
             continue
 
         checks = []
+        policy = (policy_snapshots or {}).get(router["name"], {})
         for source, address, probe_once in (
             ("UI_VPN", remote, lambda: probe_icmp(str(remote), source_ip=str(local))),
             (router["name"], local, lambda: legacy_driver_for(router, load_secrets()).ping_ipv4(str(local), str(remote))),
         ):
-            reason = "icmp_reply_unconfirmed"
-            try:
-                replied = probe_once()
-            except (OSError, ValueError, subprocess.SubprocessError):
+            if source == router["name"] and policy.get("reason") == "ipsec_ssh_unavailable":
                 replied = False
-                reason = "icmp_probe_error"
+                reason = "icmp_source_ssh_unavailable"
+            else:
+                reason = "icmp_reply_unconfirmed"
+                try:
+                    replied = probe_once()
+                except (OSError, ValueError, subprocess.SubprocessError):
+                    replied = False
+                    reason = "icmp_probe_error"
             stamp = datetime.now(timezone.utc).isoformat()
             checks.append({**_observation("reachable" if replied else "unknown", source, "ICMP", stamp),
                            "target": str(address), "required": True, **({"reason": reason} if not replied else {})})
@@ -3440,7 +3451,9 @@ def main() -> int:
                 start_stage("IPsec policy observations")
                 network["ipsec"] = _collect_ipsec_policies(network["sources"], bindings["ipsec_links"])
                 start_stage("IPsec connectivity probes")
-                network["ipsec_connectivity"] = _collect_ipsec_connectivity(context, network["sources"], bindings["ipsec_links"])
+                network["ipsec_connectivity"] = _collect_ipsec_connectivity(
+                    context, network["sources"], bindings["ipsec_links"], network["ipsec"],
+                )
             start_stage("guest ARP and switch attachment probes")
             network["guest_arp_diagnostics"] = {}
             network["guest_arp_probes"] = _collect_guest_arp_probes(

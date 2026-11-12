@@ -2961,6 +2961,13 @@ def test_mikrotik_ssh_driver_parses_routeros6_ipsec_without_sensitive_sa(monkeyp
     calls.clear()
     assert driver.read_ipsec_policies() == data["policies"]
     assert len(calls) == 1 and "/ip ipsec policy print" in " ".join(calls[0])
+    from netctl.drivers.mikrotik_ssh import RouterOSSshTransportError
+
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(
+        args[0], 255, stdout="", stderr="ssh: Connection timed out",
+    ))
+    with pytest.raises(RouterOSSshTransportError):
+        driver.read_ipsec_policies()
 
 
 def test_mikrotik_api_policy_read_only_queries_policy(monkeypatch):

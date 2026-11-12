@@ -4533,6 +4533,12 @@ def test_ipsec_path_checks_explicit_sources_in_both_directions(monkeypatch):
     context["devices"][0]["management_ip"] = "203.0.113.30"
     assert collector._collect_ipsec_connectivity(context, sources, configured) == {}
     assert len(calls) == 2
+    context["devices"][0]["management_ip"] = "192.0.2.30"
+    failed = {"branch": {"reason": "ipsec_ssh_unavailable", "failedAt": datetime.now(timezone.utc).isoformat()}}
+    forward, reverse = collector._collect_ipsec_connectivity(context, sources, configured, failed)["office"]
+    assert forward["state"] == "reachable"
+    assert reverse["state"] == "unknown" and reverse["reason"] == "icmp_source_ssh_unavailable"
+    assert calls[2:] == [("ui", "198.51.100.1", "192.0.2.30")]
 
 
 def test_routeros_ping_uses_one_packet_and_rejects_injected_addresses(monkeypatch):

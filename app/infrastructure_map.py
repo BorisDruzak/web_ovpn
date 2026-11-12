@@ -609,6 +609,8 @@ def _public_service_check(check: dict, now: datetime) -> dict:
                     detail = {"source": source, "state": state, "checkedAt": _time(at).isoformat()}
                 elif state == "unreachable" and failure in ("ipsec_policy_missing", "ipsec_phase2_not_established"):
                     detail.update(state=state, checkedAt=_time(at).isoformat(), reason=failure)
+                elif state == "unknown" and failure == "ipsec_ssh_unavailable":
+                    detail.update(checkedAt=_time(at).isoformat(), reason=failure)
             directions.append(detail)
         if remote and len(directions) == 2 and directions[0]["source"] != directions[1]["source"]:
             result["ipsecPolicy"] = {"remoteNetwork": remote, "directions": directions}
@@ -658,6 +660,7 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         if type(round_trip) in (int, float) and 0 <= round_trip <= 3000:
             result["roundTripMs"] = round_trip
         if reason in ("icmp_no_echo_reply", "icmp_reply_unconfirmed", "icmp_unreachable", "icmp_probe_error",
+                      "icmp_source_ssh_unavailable",
                       "icmp_route_unconfirmed", "icmp_route_mismatch"):
             result["reason"] = reason
     sip = result["method"] == "SIP OPTIONS (UDP)"
