@@ -1810,7 +1810,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         panel.dataset.section = 'services-on-port';
         const services = make('ul', null, 'map-detail-list');
         const bases = {host_mac: 'MAC устройства', host_lacp: 'LACP хоста', host_management: 'Интерфейс управления',
-          guest_gateway: 'Вход через шлюз'};
+          guest_gateway: 'Вход через шлюз', guest_local_udp: 'Привязка к интерфейсу ВМ'};
         for (const service of serviceGroup.services) {
           const row = make('li');
           const open = make('button', service.name);
@@ -1822,12 +1822,12 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           for (const probe of service.probeEndpoints ?? []) {
             const address = probe.target.includes(':') ? `[${probe.target}]` : probe.target;
             const count = probe.passed + probe.failed + probe.unconfirmed;
-            const states = count === 1
+            const states = probe.localListener ? ['Открыт локально'] : count === 1
               ? [probe.passed ? 'Отвечает' : probe.failed ? 'Сбой' : 'Нет подтверждения']
               : [probe.passed && `прошли: ${probe.passed}`, probe.failed && `сбои: ${probe.failed}`,
                 probe.unconfirmed && `без подтверждения: ${probe.unconfirmed}`];
             row.append(make('small', [
-              [probe.method, probe.transport].filter(Boolean).join(' '), `${address}:${probe.port}`, ...states,
+              [probe.method, probe.localListener ? '' : probe.transport].filter(Boolean).join(' '), `${address}:${probe.port}`, ...states,
             ].filter(Boolean).join(' · ')));
           }
           services.append(row);

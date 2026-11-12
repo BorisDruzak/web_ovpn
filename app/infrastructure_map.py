@@ -1965,6 +1965,18 @@ def _physical_attachments(nodes: dict, links: list[dict], host_ids: list[str]) -
             for host_id, group in connections.items()]
 
 
+def _attachment_service_checks(service: dict):
+    for check in service["serviceChecks"]:
+        yield check
+        socket = check.get("localUdpSocket", {})
+        if (check["method"] == "OpenVPN Management" and check["source"] == "UI_VPN"
+                and socket.get("state") == "bound"):
+            for address in dict.fromkeys(socket["addresses"]):
+                if address not in ("*", "0.0.0.0", "::"):
+                    yield {**check, "target": address, "port": check["configuredPort"], "state": "reachable",
+                           "method": "Локальный UDP-сокет", "localListener": True}
+
+
 def _service_attachment_paths(service: dict, guests: dict) -> list[dict]:
     addresses = defaultdict(list)
     neighbors = defaultdict(list)
@@ -1984,7 +1996,7 @@ def _service_attachment_paths(service: dict, guests: dict) -> list[dict]:
                 neighbors[key].append((guest, adapter, neighbor["checkedAt"]))
 
     paths = []
-    for check in service["serviceChecks"]:
+    for check in _attachment_service_checks(service):
         if check["source"] != "UI_VPN" or not check["checkedAt"] or check["stale"] or check.get("skipped"):
             continue
         target = check.get("target")
@@ -2007,6 +2019,13 @@ def _service_attachment_paths(service: dict, guests: dict) -> list[dict]:
         if len(candidates) != 1:
             continue
         guest, adapter, address_at = candidates[0]
+        if check.get("localListener"):
+            local = [reading["checkedAt"] for reading in adapter.get("ipv4Observations", [])
+                     if reading["address"] == target and reading["source"] == "UI_VPN"
+                     and reading["method"].startswith("Локальный интерфейс ")]
+            if not local:
+                continue
+            address_at = max(local)
         bases = {"guest_mac", "bridge_uplink"} if vlan else {"guest_mac"}
         observations = [row for row in adapter["switchObservations"]
                         if row["basis"] in bases and "physicalPair" in row]
@@ -2018,6 +2037,7 @@ def _service_attachment_paths(service: dict, guests: dict) -> list[dict]:
                       "guestId": guest["guest"]["id"], "guestPort": adapter["guestPort"], "bridge": adapter["bridge"],
                       "hypervisorId": guest["hypervisor"]["id"], "switchId": observation["switch"]["id"],
                       "physicalPair": observation["physicalPair"],
+                      **({"localListener": True} if check.get("localListener") else {}),
                       **({"localNeighbor": adapter["localNeighbor"]} if vlan else {}),
                       **({"gateway": gateway} if gateway else {})})
     return paths
@@ -2130,6 +2150,8 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime) -> dict:
                 basis = "host_management"
             elif path.get("gateway"):
                 basis = "guest_gateway"
+            elif path.get("localListener"):
+                basis = "guest_local_udp"
             else:
                 basis = "guest_path"
             switch, port = path["switchId"], path["physicalPair"]["switchPort"]
@@ -2147,15 +2169,17 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime) -> dict:
         selected = path_checks.get((switch, port, key), set())
         physical = bool(bases & {"host_mac", "host_lacp"})
         probes = {}
-        for check in node["serviceChecks"]:
+        for check in _attachment_service_checks(node):
             target, number, method, checked_at = check_key(check)
+            local = check.get("localListener") is True
             if (not target or number is None or not method or not checked_at or check["stale"] or check.get("skipped")
-                    or check["source"] != "UI_VPN" or not (physical or check_key(check) in selected)):
+                    or check["source"] != "UI_VPN" or not ((physical and not local) or check_key(check) in selected)):
                 continue
-            transport = check.get("dns", {}).get("transport", "")
+            transport = "UDP" if local else check.get("dns", {}).get("transport", "")
             probe = probes.setdefault((target, number, method, transport), {
                 "target": target, "port": number, "method": method,
                 **({"transport": transport} if transport else {}),
+                **({"localListener": True} if local else {}),
                 "passed": 0, "failed": 0, "unconfirmed": 0,
             })
             count = {"reachable": "passed", "unreachable": "failed"}.get(check["state"], "unconfirmed")
