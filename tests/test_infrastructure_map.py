@@ -1369,6 +1369,9 @@ def test_lldp_neighbor_count_on_ports_and_declared_links_uses_current_poll(tmp_p
     stamp = now.isoformat()
     devices = [{"id": key, "name": key, "kind": "switch", "management_ip": f"192.0.2.{index}"}
                for index, key in enumerate(("a", "b"), 1)]
+    devices[0]["mac_addresses"] = ["00:11:22:33:44:66"]
+    devices[1]["mac_addresses"] = ["00:11:22:33:44:55"]
+    devices.append({"id": "c", "name": "C", "kind": "server", "mac_addresses": ["00:11:22:33:44:66"]})
     context = {"devices": devices, "links": [{
         "endpoint_a": {"device": "a", "interface": "ge1"}, "endpoint_b": {"device": "b", "interface": "ge1"},
         "relation": "connected_to",
@@ -1403,8 +1406,10 @@ def test_lldp_neighbor_count_on_ports_and_declared_links_uses_current_poll(tmp_p
     assert "lldpNeighborCount" not in report["portStates"]["b"]
     details = nodes["a"]["ports"][0]["lldpNeighbors"]
     assert [row["portId"] for row in details] == ["eth0", "eth1", "eth0"]
-    assert details[0] == {"chassisId": "00:11:22:33:44:55", "portId": "eth0", "systemName": "Phone"}
+    assert details[0] == {"chassisId": "00:11:22:33:44:55", "portId": "eth0", "systemName": "Phone",
+                          "inventoryDeviceId": "b"}
     assert details[2]["hostName"] == "workstation"
+    assert "inventoryDeviceId" not in details[2]
     assert "private" not in json.dumps(details) and "192.0.2.90" not in json.dumps(details)
     pending, = summarize_topology(public)["topologyAudit"]["pending"]
     assert pending["lldpObservations"] == {"a": {"checkedAt": stamp, "neighbors": details}}

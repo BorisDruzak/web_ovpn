@@ -258,6 +258,10 @@ def _public_port(row: dict, now: datetime) -> dict:
         for neighbor in _rows(row.get("lldpNeighbors"), min(neighbor_count, 16)):
             reading = {key: value for key in ("systemName", "chassisId", "portId", "hostName")
                        if (value := _text(neighbor.get(key), 64)) and re.fullmatch(r"[\w .:/-]+", value)}
+            device = neighbor.get("inventoryDeviceId")
+            if (re.fullmatch(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}", reading.get("chassisId", ""))
+                    and isinstance(device, str) and re.fullmatch(r"[a-z0-9][a-z0-9-]{0,127}", device)):
+                reading["inventoryDeviceId"] = device
             if reading.get("chassisId") or reading.get("systemName"):
                 neighbors.append(reading)
         if neighbors:

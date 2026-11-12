@@ -980,10 +980,18 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           observed.append(make('summary', `Объявления LLDP (${count} из ${port.lldpNeighborCount})`),
             make('small', formatTime(port.lldpCheckedAt)));
           const neighbors = make('ul', null, 'map-detail-list');
-          for (const {systemName, chassisId, portId, hostName} of port.lldpNeighbors) {
-            const peer = [systemName, chassisId && 'шасси ' + chassisId, portId && 'порт ' + portId,
+          for (const {systemName, chassisId, portId, hostName, inventoryDeviceId} of port.lldpNeighbors) {
+            const peer = [systemName, chassisId && 'шасси ' + chassisId, portId && 'ID порта ' + portId,
               hostName && hostName !== systemName && 'имя по MAC ' + hostName];
-            neighbors.append(make('li', peer.filter(Boolean).join(' · ')));
+            const entry = make('li', peer.filter(Boolean).join(' · '));
+            const device = byId.get(inventoryDeviceId);
+            if (device) {
+              const open = make('button', device.name);
+              open.type = 'button';
+              open.addEventListener('click', () => select(device.id));
+              entry.append(' · ', open);
+            }
+            neighbors.append(entry);
           }
           observed.append(neighbors);
           row.append(observed);

@@ -1589,11 +1589,15 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                                       if isinstance(host.get("hostname"), str) and host["hostname"]
                                       and observation_is_fresh(host.get("last_seen_at"), now)
                                       and fresh_macs_by_ip.get(host.get("ip")) == {mac}}
-                        port["lldpNeighbors"].append({
+                        reading = {
                             "chassisId": mac, "portId": neighbor.get("port_id"),
                             "systemName": neighbor.get("system_name"),
                             "hostName": next(iter(names_seen)) if len(names_seen) == 1 else None,
-                        })
+                        }
+                        owners = declared_devices_by_mac.get(mac, set())
+                        if len(owners) == 1 and key not in owners:
+                            reading["inventoryDeviceId"], = owners
+                        port["lldpNeighbors"].append(reading)
                 learned_vlans = fdb_vlans.get((*scope, port["key"]))
                 if learned_vlans and port["state"] == "up":
                     port["fdbVlans"] = {"checkedAt": port["checkedAt"], "vlans": learned_vlans}
