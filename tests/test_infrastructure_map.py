@@ -4087,6 +4087,43 @@ def test_switch_ports_expose_fresh_link_state_and_age(tmp_path):
     ]
 
 
+def test_switch_collection_check_keeps_failed_fdb_separate_from_host_reachability(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map, summarize_topology
+
+    now = datetime.now(timezone.utc)
+    finished = (now - timedelta(minutes=1)).isoformat()
+    address = "192.0.2.9"
+    report = {"finished_at": finished, "status": "failed", "error_class": "fdb_unavailable"}
+    network = {"sources": [{"name": "sw", "host": address, "driver": "snmp_switch", "enabled": True}],
+               "switch_collection": {"sw": report}, "hosts": [{"ip": address, "last_seen_at": finished,
+                   "availability": {"checked_at": finished, "run_status": "success", "state": "online",
+                                    "reason": "active_probe", "active_method": "icmp"}}]}
+    path = tmp_path / "graph.json"
+
+    def read(when=now):
+        path.write_text(json.dumps(build_graph({}, network, {}, {}, {}, now)), encoding="utf-8")
+        graph = load_infrastructure_map(path, when)
+        node, = graph["nodes"]
+        check, = node["serviceChecks"]
+        return node, check, summarize_topology(graph)["topologyAudit"]["switchCollectionIssues"]
+
+    node, check, issues = read()
+    assert node["reachability"]["state"] == "reachable" and node["mapStatus"] == "warn"
+    assert check["method"] == "Сбор данных SNMP" and check["state"] == "unreachable" and check["required"]
+    assert check["reason"] == "snmp_fdb_unavailable" and check["checkedAt"] == finished
+    assert issues == [{"id": node["id"], "name": node["name"], "state": "unreachable", "checkedAt": finished,
+                       "stale": False, "reason": "snmp_fdb_unavailable"}]
+
+    _, check, _ = read(now + timedelta(minutes=26))
+    assert check["stale"] and check["state"] == "unknown" and "reason" not in check
+    report.update(status="partial", error_class="")
+    assert read()[1]["reason"] == "snmp_collection_partial"
+    report.update(status="success")
+    node, check, issues = read()
+    assert node["mapStatus"] == "ok" and check["state"] == "reachable" and issues == []
+
+
 def test_guest_placement_includes_current_bridge_and_configured_members(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map

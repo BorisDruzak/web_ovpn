@@ -52,7 +52,7 @@ from .infrastructure_map import (
     FIRMWARE_BUILD, FIRMWARE_VERSION, LLDP_FIRMWARE_MAX_AGE, MAX_SNAPSHOT_BYTES, NETWORK_KINDS, PORT_LINK_CHECK_MAX_AGE,
     PPPOE_INTERNET_METHOD, PPPOE_METHOD, PPPOE_SOURCE, PVE_DISK_DEVICE, PVE_STORAGE_ID, RECIPROCAL_MAC_SOURCE,
     RX_SILENCE_MAX_INTERVALS, RX_SILENCE_MAX_WINDOW, SERVICE_PROBE_MAX_AGE, SHARED_LLDP_KIND, SHARED_LLDP_SOURCE,
-    STP_ROOT_PATH_MAX_AGE,
+    SNMP_COLLECTION_METHOD, STP_ROOT_PATH_MAX_AGE,
     TRANSCEIVER_MAX_AGE,
     _public_service_check, _service_reachability, index_port_states, inventory_link_sources,
     observation_is_fresh, port_label_key, public_probe_transition,
@@ -1742,6 +1742,16 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             item["reachability"] = _observation("reachable", "Network Observer", method, collected_at)
         elif direct:
             item["reachability"] = direct
+        if row.get("enabled") and row.get("driver") == "snmp_switch" and "switch_collection" in network:
+            run = network["switch_collection"].get(name, {})
+            state, reason = {
+                "success": ("reachable", ""), "partial": ("unreachable", "snmp_collection_partial"),
+                "failed": ("unreachable", "snmp_collection_failed"),
+            }.get(run.get("status"), ("unknown", "snmp_collection_unconfirmed"))
+            if state == "unreachable" and run.get("error_class") == "fdb_unavailable":
+                reason = "snmp_fdb_unavailable"
+            check = _observation(state, "Network Observer", SNMP_COLLECTION_METHOD, run.get("finished_at") or now.isoformat())
+            item.setdefault("serviceChecks", []).append({**check, "required": True, **({"reason": reason} if reason else {})})
         item["properties"]["Источник сбора"] = name
         if row.get("enabled") and row.get("driver") in {"mikrotik_api", "mikrotik_ssh"} and name in router_ports:
             item["ports"] = router_ports[name]
@@ -3051,6 +3061,19 @@ def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | N
     }
     with read_context_snapshot(DEFAULT_DB_URL) as connection:
         data = {"sources": list_sources(connection), "attachments": query_confirmed_attachment_ports(connection)}
+        data["switch_collection"] = {row["source"]: dict(row) for row in connection.execute(
+            """
+            SELECT s.name AS source, r.finished_at, r.status, r.error_class
+            FROM network_sources AS s
+            JOIN switch_collection_runs AS r ON r.id = (
+                SELECT last.id FROM switch_collection_runs AS last
+                WHERE last.source_id = s.id AND last.status IN ('success', 'partial', 'failed')
+                  AND last.finished_at IS NOT NULL
+                ORDER BY last.started_at DESC, last.id DESC LIMIT 1
+            )
+            WHERE s.enabled = 1 AND s.driver = 'snmp_switch'
+            """
+        )}
         if downstream_links:
             data["downstream_fdb"] = _read_downstream_fdb(connection, data["sources"], downstream_links)
         data["port_telemetry"] = [dict(row) for row in connection.execute(

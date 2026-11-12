@@ -48,6 +48,7 @@ BRIDGE_VLAN_CONFIG_MODES = ("enabled", "disabled", "not_reported")
 ROUTER_NEIGHBOR_MAX_AGE = timedelta(minutes=10)
 MAX_ROUTER_NEIGHBORS = 16
 PPPOE_METHOD = "Сессия PPPoE"
+SNMP_COLLECTION_METHOD = "Сбор данных SNMP"
 PPPOE_INTERNET_METHOD = "ICMP через PPPoE"
 PPPOE_SOURCE = "RouterOS · PPPoE"
 PPPOE_PARENT_LINK_MAX_AGE = timedelta(minutes=10)
@@ -581,6 +582,11 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         "target": _network_address(check.get("target")), "via": _network_address(check.get("via")),
         "path": path if re.fullmatch(r"/[A-Za-z0-9._/-]{0,159}", path) and not path.startswith("//") else "",
     }
+    if (result["method"] == SNMP_COLLECTION_METHOD and result["source"] == "Network Observer"
+            and not result["stale"] and check.get("reason") in (
+                "snmp_fdb_unavailable", "snmp_collection_failed", "snmp_collection_partial", "snmp_collection_unconfirmed",
+            )):
+        result["reason"] = check["reason"]
     pppoe = check.get("pppoe")
     if (result["method"] == PPPOE_METHOD and not result["stale"] and isinstance(pppoe, dict)
             and pppoe.get("state") in ("connected", "disconnected", "disabled")):
@@ -1754,6 +1760,13 @@ def summarize_topology(graph: dict) -> dict:
     lacp_gaps = _lacp_partner_interface_gaps(nodes)
     downstream = [{"id": node["id"], "name": node["name"], **node["downstream"]}
                   for node in nodes.values() if "downstream" in node]
+    collection_issues = [
+        {"id": node["id"], "name": node["name"], "state": check["state"],
+         "checkedAt": check["checkedAt"], "stale": check["stale"],
+         **({"reason": check["reason"]} if "reason" in check else {})}
+        for node in nodes.values() if node["kind"] == NETWORK_KINDS[0]
+        for check in node["serviceChecks"] if check["method"] == SNMP_COLLECTION_METHOD and check["state"] != "reachable"
+    ]
     return {**metadata, "topologyAudit": {"directLinks": counts, "pendingTotal": len(pending),
                                         "inventoryPairs": inventory_pairs[:64],
                                         "portAlertTotal": len(alerts), "portAlerts": alerts[:64],
@@ -1762,6 +1775,8 @@ def summarize_topology(graph: dict) -> dict:
                                         "lacpHealth": lacp[:64],
                                         "lacpPartnerInterfaceGapTotal": len(lacp_gaps),
                                         "lacpPartnerInterfaceGaps": lacp_gaps[:64],
+                                        "switchCollectionIssueTotal": len(collection_issues),
+                                        "switchCollectionIssues": collection_issues[:64],
                                         "downstreamSwitches": downstream[:MAX_DOWNSTREAM_SWITCHES],
                                         "pending": pending[:64]}}
 

@@ -1446,6 +1446,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         transport_error: 'Ошибка сетевого запроса', unexpected_response: 'Ответ не соответствует запросу',
         sip_route_unconfirmed: 'Маршрут UI_VPN не подтверждён, SIP-запрос не отправлен',
         sip_route_mismatch: 'Выбран другой маршрут UI_VPN, SIP-запрос не отправлен',
+        snmp_fdb_unavailable: 'Не получена актуальная таблица MAC',
+        snmp_collection_failed: 'Последний сбор завершился ошибкой',
+        snmp_collection_partial: 'Последний сбор завершился частично',
+        snmp_collection_unconfirmed: 'Нет завершённого опроса',
         dns_no_answer: 'Нет записи запрошенного типа', dns_address_mismatch: 'Адреса не совпадают с ожидаемыми',
         dns_srv_mismatch: 'Имена или порты SRV не совпадают с ожидаемыми',
         dns_unexpected_source: 'DNS-ответ пришёл с другого адреса или порта',
@@ -1531,7 +1535,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const endpoint = [check.method, wireguard?.interface, vlan?.id, check.backupVmid && 'ВМ ' + check.backupVmid,
           check.target, check.ipsecPolicy && '↔ ' + check.ipsecPolicy.remoteNetwork, check.httpHost, check.port, check.path, check.dns?.name,
           check.dns?.record, check.tunnelInterface, check.tunnelAddress, check.smbShare].filter(Boolean).join(' ');
-        const confirmed = ['Маршрут', 'Маршрут · WireGuard', 'OpenVPN TUN', 'OpenVPN UDP-сокет', 'SMB Mount', 'Копия Proxmox', 'IPsec фаза 2']
+        const confirmed = ['Маршрут', 'Маршрут · WireGuard', 'OpenVPN TUN', 'OpenVPN UDP-сокет', 'SMB Mount',
+          'Копия Proxmox', 'IPsec фаза 2', 'Сбор данных SNMP']
           .includes(check.method) ? 'Подтверждён' :
           node.id === data.clusterId ? 'В норме' : 'Отвечает';
         const sessionState = pppoe && {
