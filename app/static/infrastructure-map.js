@@ -136,9 +136,13 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       }
       return make('span', name + ' · ' + (port || 'порт неизвестен'));
     };
-    const pending = pendingPortPairs.map(({a, b, nameA, nameB, portA, portB, observedSources = [], lldpPortIds = []}) => {
+    const pending = pendingPortPairs.map(({a, b, nameA, nameB, portA, portB, observedSources = [], lldpPortIds = [],
+      archivedPortSides = []}) => {
       const item = make('li');
-      item.append(side(a, nameA, portA), ' ↔ ', side(b, nameB, portB));
+      item.append(side(a, nameA, portA));
+      if (archivedPortSides.includes('a')) item.append(' (по архиву)');
+      item.append(' ↔ ', side(b, nameB, portB));
+      if (archivedPortSides.includes('b')) item.append(' (по архиву)');
       const evidence = observedSources.map(source => source === 'netctl FDB' ? 'MAC на порту' : source);
       if (lldpPortIds.length) evidence.push('LLDP Port ID ' + lldpPortIds.join(', '));
       if (evidence.length) item.append(make('small', evidence.join(' · ')));

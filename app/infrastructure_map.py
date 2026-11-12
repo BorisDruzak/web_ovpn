@@ -1622,6 +1622,28 @@ def _topology_port_pairs(nodes: dict, links: list[dict], host_ids: set[str] | No
                 **({"lldpObservations": lldp} if lldp else {}),
                 **({"lldpPeers": declared["lldpPeers"]} if "lldpPeers" in declared else {}),
             }
+    for link in links:
+        if link["kind"] not in ("Транзитный сегмент", "Путь по MAC-таблице"):
+            continue
+        a, b = link["a"], link["b"]
+        reports = link["portEvidence"]
+        archived = {report["b"]: report["at"] for report in reports
+                    if report["source"] == "GitHub" and not report["confirmed"] and not report["a"] and report["b"]}
+        peer_port = next(iter(archived)) if len(archived) == 1 else ""
+        for report in reports:
+            port = report["a"]
+            if (report["source"] not in ("MikroTik · ARP", "MikroTik · ARP + FDB") or not report["confirmed"]
+                    or not port or report["b"] or (a, b, port_key(a, port)) in known_ports):
+                continue
+            reading = observations(report)
+            pending[a, b, port, peer_port] = {
+                "a": a, "b": b, "nameA": nodes[a]["name"], "nameB": nodes[b]["name"],
+                "portA": port, "portB": peer_port, "basis": "router_attachment",
+                "missingPortSides": [] if peer_port else ["b"], "identifiedPeerSides": ["a"],
+                "observedPaths": [{"portA": port, "portB": "", "source": report["source"], "checkedAt": report["at"]}],
+                **({"archivedPortSides": ["b"], "archivedPortAt": {"b": archived[peer_port]}} if peer_port else {}),
+                **({"portObservations": reading} if reading else {}),
+            }
     discovered = {}
     for reports in paths.values():
         for origin, report in reports:
@@ -2727,7 +2749,8 @@ def load_infrastructure_map(
                 {**{key: row[key] for key in ("a", "b", "nameA", "nameB", "portA", "portB")},
                  "observedSources": sorted({reading["source"] for reading in row["observedPaths"]}),
                  "lldpPortIds": sorted({peer["portId"] for peers in row.get("lldpPeers", {}).values()
-                                        for peer in peers if peer.get("portId")})}
+                                        for peer in peers if peer.get("portId")}),
+                 **({"archivedPortSides": row["archivedPortSides"]} if "archivedPortSides" in row else {})}
                 for row in pending[:64]
             ],
             lacpPartnerInterfaceGapTotal=len(lacp_gaps),

@@ -4837,7 +4837,7 @@ def test_hypervisor_fdb_path_reports_management_interface_without_claiming_direc
 
 def test_transit_peer_management_port_requires_fresh_arp_fdb_and_active_ethernet(tmp_path):
     from app.infrastructure_collect import build_graph
-    from app.infrastructure_map import load_infrastructure_map
+    from app.infrastructure_map import load_infrastructure_map, summarize_topology
 
     now = datetime.now(timezone.utc)
     at = now.isoformat()
@@ -4881,6 +4881,16 @@ def test_transit_peer_management_port_requires_fresh_arp_fdb_and_active_ethernet
     assert live == {"a": "ether7", "b": "", "source": "MikroTik · ARP + FDB", "at": at,
                     "confirmed": True, "portStates": {"a": expected}}
     assert inventory == {"a": "", "b": "eth0", "source": "GitHub", "at": inventory_stamp, "confirmed": False}
+    public = load_infrastructure_map(path, now, include_guest_attachments=True)
+    audit = summarize_topology(public)["topologyAudit"]
+    row, = audit["pending"]
+    assert (row["a"], row["portA"], row["b"], row["portB"]) == ("rb", "ether7", "coordinator", "eth0")
+    assert row["archivedPortSides"] == ["b"]
+    assert row["observedPaths"] == [{"portA": "ether7", "portB": "", "source": "MikroTik · ARP + FDB", "checkedAt": at}]
+    assert not any(audit["directLinks"].values())
+    assert public["pendingPortPairs"][0]["archivedPortSides"] == ["b"]
+    expired_audit = summarize_topology(load_infrastructure_map(path, now + timedelta(hours=1)))["topologyAudit"]
+    assert expired_audit["pendingTotal"] == 0
     ports = next(node["ports"] for node in load_infrastructure_map(path, now)["nodes"] if node["id"] == "rb")
     assert ports == [expected, {**expected, "name": "ether9", "state": "disabled"}]
     expired = lan(public_at=now + timedelta(hours=1))[0]
@@ -4890,6 +4900,8 @@ def test_transit_peer_management_port_requires_fresh_arp_fdb_and_active_ethernet
     declared = context["devices"][1]["observed_state"]["ipv4_interfaces"]
     declared.append({**declared[0], "name": "eth3"})
     assert lan()[0]["portEvidence"] == [live]
+    row, = summarize_topology(load_infrastructure_map(path, now))["topologyAudit"]["pending"]
+    assert row["portB"] == "" and row["missingPortSides"] == ["b"]
     declared.pop()
     network["router_bridge_hosts"].append({**learned, "interface": "ether6"})
     assert lan() == []
