@@ -882,8 +882,33 @@ def _local_vlan_probe_specs(context: dict, configured: object) -> dict:
     return specs
 
 
+def _wireguard_probe_specs(context: dict, configured: object, vlans: dict) -> dict:
+    if not isinstance(configured, list):
+        return {}
+    specs = {}
+    for intent in context.get("routing_intent", []):
+        key = intent.get("id")
+        if not isinstance(key, str) or key not in configured or intent.get("status") != "active_verified":
+            continue
+        ingress, interface = intent.get("ingress_interface"), intent.get("default_interface")
+        mark, table = intent.get("mark"), intent.get("routing_table")
+        if (not all(isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", name) for name in (ingress, interface))
+                or not isinstance(mark, str) or not re.fullmatch(r"0x[0-9a-fA-F]{1,8}", mark)
+                or type(table) is not int or not 1 <= table <= 0xffffffff):
+            continue
+        matches = [(service, vlan) for service, vlan in vlans.items()
+                   if vlan["localAsset"] == intent.get("source_device") and vlan["interface"] == ingress]
+        if len(matches) == 1:
+            service, vlan = matches[0]
+            specs[f"policy:{key}"] = {"type": "wireguard_policy", "interface": interface, "ingress": ingress,
+                                     "mark": int(mark, 16), "table": table, "peer": vlan["ip"],
+                                     "report": "/run/openvpn-policy-observer/latest.json",
+                                     "localAsset": vlan["localAsset"], "transitService": service}
+    return specs
+
+
 def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings: dict, now: datetime,
-                *, local_vlan_probes: dict | None = None) -> dict:
+                *, local_vlan_probes: dict | None = None, wireguard_probes: dict | None = None) -> dict:
     nodes = {}
     edges = {}
 
@@ -1028,6 +1053,11 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             node(service_id, f"Транзит VLAN {spec['vlan']}", "Сервис", nodes[spec["localAsset"]]["site"], "UI_VPN")
             for endpoint in (spec["localAsset"], spec["peerAsset"]):
                 edge(endpoint, service_id, "Цель проверки", "Настройки карты")
+    for service_id, spec in (wireguard_probes or {}).items():
+        if spec["localAsset"] in nodes and spec["transitService"] in nodes:
+            node(service_id, f"Выход WireGuard · {spec['interface']}", "Сервис", nodes[spec["localAsset"]]["site"], "UI_VPN")
+            edge(spec["localAsset"], service_id, "Цель проверки", "Настройки карты")
+            edge(service_id, spec["transitService"], "Зависимость сервиса", "Настройки карты")
 
     fresh_lldp = [row for row in network.get("lldp", []) if observation_is_fresh(row.get("observed_at"), now)]
     peers_by_port = {}
@@ -2197,7 +2227,9 @@ def main() -> int:
         elif server.get("freshness") == "stale":
             collection_issues.append("server_observer_stale")
         local_vlan_probes = _local_vlan_probe_specs(context, bindings.get("local_vlan_transits"))
-        graph = build_graph(context, network, server, pve, bindings, now, local_vlan_probes=local_vlan_probes)
+        wireguard_probes = _wireguard_probe_specs(context, bindings.get("wireguard_policy_checks"), local_vlan_probes)
+        graph = build_graph(context, network, server, pve, bindings, now,
+                            local_vlan_probes=local_vlan_probes, wireguard_probes=wireguard_probes)
         if server.get("collected_at"):
             graph["serverObserverAt"] = server["collected_at"]
         probes = {**bindings.get("service_probes", {}),
@@ -2205,7 +2237,7 @@ def main() -> int:
                      for asset, address in bindings.get("asset_ip_checks", {}).items()},
                   **{f"transit:{segment}": [{"type": "icmp", "ip": spec["peer"]}]
                      for segment, spec in transit_links.items()},
-                  **{service_id: [spec] for service_id, spec in local_vlan_probes.items()}}
+                  **{service_id: [spec] for service_id, spec in (local_vlan_probes | wireguard_probes).items()}}
         apply_service_probes(graph["nodes"], probes)
         graph["snapshotAt"] = datetime.now(timezone.utc).isoformat()
         graph["git"] = args.git_revision

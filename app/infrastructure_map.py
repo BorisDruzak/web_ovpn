@@ -392,6 +392,23 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         if reason in ("vlan_probe_error", "vlan_interface_missing", "vlan_id_mismatch",
                       "vlan_link_down", "vlan_address_mismatch", "vlan_route_mismatch"):
             result["reason"] = reason
+    if result["method"] == "Маршрут · WireGuard":
+        policy = check.get("wireguardPolicy")
+        if isinstance(policy, dict):
+            details = {key: policy[key] for key in ("ingress", "interface") if isinstance(policy.get(key), str)
+                       and re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", policy[key])}
+            details.update({key: policy[key] for key in ("mark", "table", "peerCount")
+                            if type(policy.get(key)) is int and 0 <= policy[key] <= 0xffffffff})
+            details.update({key: policy[key] for key in ("markerConfirmed", "routeConfirmed") if type(policy.get(key)) is bool})
+            handshake = _time(policy.get("latestHandshake"))
+            if handshake is not None and handshake <= now:
+                details["latestHandshake"] = handshake.isoformat()
+                if result["state"] == "reachable" and now - handshake > SERVICE_PROBE_MAX_AGE:
+                    result["state"], reason = "unknown", "wireguard_handshake_unconfirmed"
+            result["wireguardPolicy"] = details
+        if reason in ("wireguard_route_unconfirmed", "wireguard_route_mismatch", "wireguard_evidence_unavailable",
+                      "wireguard_mark_unconfirmed", "wireguard_mark_mismatch", "wireguard_handshake_unconfirmed"):
+            result["reason"] = reason
     if result["method"] in ("HTTP", "HTTPS"):
         host = check.get("httpHost")
         if result["method"] == "HTTP" and isinstance(host, str) and re.fullmatch(r"[A-Za-z0-9.-]{1,253}", host):

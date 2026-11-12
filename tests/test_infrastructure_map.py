@@ -3144,6 +3144,53 @@ def test_icmp_via_expected_router_keeps_route_evidence_separate_from_echo(monkey
     assert calls == [target]
 
 
+def test_wireguard_policy_needs_fresh_kernel_route_mark_and_handshake(tmp_path, monkeypatch):
+    from app import infrastructure_service_probes as probes
+    from app.infrastructure_map import _public_service_check
+
+    now = datetime.now(timezone.utc)
+    report = tmp_path / "policy.json"
+    facts = {"checkedAt": now.isoformat(), "markers": {"ens18.50": 1},
+             "wireguard": {"wg0": {"peerCount": 1, "latestHandshake": int(now.timestamp()) - 15}}}
+    route = {"dst": "192.0.2.1", "from": "172.16.50.1", "iif": "ens18.50",
+             "dev": "wg0", "table": "123", "mark": 1, "flags": []}
+    monkeypatch.setattr(probes.subprocess, "check_output", lambda *args, **kwargs: json.dumps([route]).encode())
+    spec = {"type": "wireguard_policy", "interface": "wg0", "ingress": "ens18.50", "mark": 1, "table": 123,
+            "peer": "172.16.50.1", "report": str(report)}
+
+    def read():
+        report.write_text(json.dumps(facts), encoding="utf-8")
+        node = {"id": "policy", "kind": "Сервис"}
+        probes.apply_service_probes([node], {"policy": [spec]})
+        return _public_service_check(node["serviceChecks"][0], datetime.now(timezone.utc))
+
+    check = read()
+    assert check["state"] == "reachable" and check["wireguardPolicy"]["markerConfirmed"]
+    assert check["wireguardPolicy"]["routeConfirmed"] and check["wireguardPolicy"]["peerCount"] == 1
+    facts["wireguard"]["wg0"]["latestHandshake"] = int(now.timestamp()) - 310
+    assert read()["reason"] == "wireguard_handshake_unconfirmed"
+    facts["markers"]["ens18.50"] = 2
+    assert read()["reason"] == "wireguard_mark_mismatch"
+    route["dev"] = "ens18"
+    assert read()["reason"] == "wireguard_route_mismatch"
+
+
+def test_wireguard_report_rejects_ambiguous_marking_and_exports_only_handshake_metadata():
+    import runpy
+    from pathlib import Path
+
+    report = runpy.run_path(str(Path(__file__).resolve().parents[1] / "deploy" / "openvpn-policy-report.py"))
+    prerouting = ["-P PREROUTING ACCEPT", "-A PREROUTING -j VPN_POLICY_MARK"]
+    rules = ["-N VPN_POLICY_MARK", "-A VPN_POLICY_MARK -i ens18.50 -j MARK --set-xmark 0x1/0xffffffff",
+             "-A VPN_POLICY_MARK -s 192.0.2.9/32 -i tun0 -j QUEST_WG"]
+    assert report["markers"](prerouting, rules) == {"ens18.50": 1}
+    assert report["markers"](prerouting, [*rules, "-A VPN_POLICY_MARK -i ens+ -j DROP"]) is None
+    assert report["markers"](prerouting, [*rules, "-A VPN_POLICY_MARK -i ens18.50 -j RETURN"]) == {}
+    assert report["handshakes"](["wg0\tprivate-output-placeholder\t123"]) == {
+        "wg0": {"peerCount": 1, "latestHandshake": 123},
+    }
+
+
 def test_local_vlan_probe_requires_expected_link_address_and_route(monkeypatch):
     from app import infrastructure_service_probes as probes
     from app.infrastructure_map import _public_service_check

@@ -789,16 +789,29 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         vlan_link_down: 'Интерфейс VLAN не поднят',
         vlan_address_mismatch: 'Локальный адрес не совпал',
         vlan_route_mismatch: 'Маршрут к соседу проходит вне ожидаемого VLAN',
+        wireguard_route_unconfirmed: 'Маршрут ядра не подтверждён',
+        wireguard_route_mismatch: 'Ядро выбрало другой маршрут',
+        wireguard_evidence_unavailable: 'Нет свежего отчёта о маркировке и WireGuard',
+        wireguard_mark_unconfirmed: 'Входная маркировка не подтверждена',
+        wireguard_mark_mismatch: 'Фактическая метка отличается',
+        wireguard_handshake_unconfirmed: 'Нет свежего handshake с однозначно определённым пиром',
       };
       for (const check of node.serviceChecks) {
         const row = make('li');
         const backup = [check.backupCompletedAt && 'Завершено ' + formatTime(check.backupCompletedAt),
           check.backupMaxAgeHours && 'Порог ' + check.backupMaxAgeHours + ' ч'].filter(Boolean).map(text => ' · ' + text).join('');
         const vlan = check.vlanTransit;
-        const endpoint = [check.method, vlan?.id, check.backupVmid && 'ВМ ' + check.backupVmid,
+        const wireguard = check.wireguardPolicy;
+        const policy = wireguard ? [wireguard.ingress && 'Вход ' + wireguard.ingress,
+          wireguard.mark !== undefined && 'метка 0x' + wireguard.mark.toString(16),
+          wireguard.table && 'таблица ' + wireguard.table,
+          wireguard.latestHandshake && 'handshake ' + formatTime(wireguard.latestHandshake)]
+          .filter(Boolean).map(text => ' · ' + text).join('') : '';
+        const endpoint = [check.method, wireguard?.interface, vlan?.id, check.backupVmid && 'ВМ ' + check.backupVmid,
           check.target, check.httpHost, check.port, check.path, check.dns?.name,
           check.dns?.record, check.tunnelInterface, check.tunnelAddress, check.smbShare].filter(Boolean).join(' ');
-        const confirmed = ['Маршрут', 'OpenVPN TUN', 'SMB Mount', 'Копия Proxmox'].includes(check.method) ? 'Подтверждён' :
+        const confirmed = ['Маршрут', 'Маршрут · WireGuard', 'OpenVPN TUN', 'SMB Mount', 'Копия Proxmox']
+          .includes(check.method) ? 'Подтверждён' :
           node.id === data.clusterId ? 'В норме' : 'Отвечает';
         const result = check.skipped ? 'Не запущена' :
           ({reachable:confirmed, unreachable:'Сбой проверки'}[check.state] ?? 'Нет подтверждения');
@@ -840,7 +853,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           title.type = 'button';
           title.addEventListener('click', () => select(guests[0].id));
         }
-        row.append(title, make('small', result + http + postgresql + smb + (reason ? ' · ' + reason + errorSource : '') + backup + dns + rtt + attempts + gateway + egress + management + scope + source + time + identity + (check.stale ? ' · устарело' : '')));
+        row.append(title, make('small', result + http + postgresql + smb + (reason ? ' · ' + reason + errorSource : '') + backup + policy + dns + rtt + attempts + gateway + egress + management + scope + source + time + identity + (check.stale ? ' · устарело' : '')));
         list.append(row);
       }
       propertiesSection.append(make('h3', 'Проверки'), list);

@@ -656,6 +656,68 @@ def _local_vlan_transit(spec: dict) -> dict:
     return {**target, **_icmp_check(address, source_ip=source, interface=name)}
 
 
+def _wireguard_policy(spec: dict) -> dict:
+    ingress, interface = spec.get("ingress"), spec.get("interface")
+    mark, table = spec.get("mark"), spec.get("table")
+    unknown = {"state": "unknown", "reason": "wireguard_route_unconfirmed"}
+    if (not all(isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", name) for name in (ingress, interface))
+            or not all(type(value) is int and 1 <= value <= 0xffffffff for value in (mark, table))):
+        return unknown
+    details = {"ingress": ingress, "interface": interface, "mark": mark, "table": table}
+    result = {"wireguardPolicy": details}
+    try:
+        source = str(ipaddress.IPv4Address(spec.get("peer")))
+        destination = "192.0.2.1"
+        rows = json.loads(subprocess.check_output(
+            ["/usr/sbin/ip", "-j", "-4", "route", "get", destination, "from", source,
+             "iif", ingress, "mark", str(mark)], timeout=TIMEOUT, stderr=subprocess.DEVNULL,
+        ))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return {**result, **unknown}
+    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
+        return {**result, **unknown}
+    row, = rows
+    flags = row.get("flags")
+    if not isinstance(flags, list):
+        return {**result, **unknown}
+    details["routeConfirmed"] = (row.get("dev") == interface and str(row.get("table")) == str(table)
+                                 and row.get("iif") == ingress and row.get("from") == source
+                                 and row.get("dst") == destination and row.get("mark") == mark and "linkdown" not in flags)
+    if not details["routeConfirmed"]:
+        return {**result, "state": "unreachable", "reason": "wireguard_route_mismatch"}
+    unknown = {"state": "unknown", "reason": "wireguard_evidence_unavailable"}
+    try:
+        with open(spec["report"], "rb") as handle:
+            data = handle.read(16_385)
+        if len(data) > 16_384:
+            return {**result, **unknown}
+        evidence = json.loads(data)
+        stamp = datetime.fromisoformat(evidence["checkedAt"])
+        now = datetime.now(timezone.utc)
+        if not 0 <= (now - stamp).total_seconds() <= 300:
+            return {**result, **unknown}
+    except (OSError, KeyError, TypeError, ValueError, RecursionError):
+        return {**result, **unknown}
+    markings = evidence.get("markers")
+    observed_mark = markings.get(ingress) if isinstance(markings, dict) else None
+    if type(observed_mark) is not int:
+        return {**result, "state": "unknown", "reason": "wireguard_mark_unconfirmed"}
+    details["markerConfirmed"] = observed_mark == mark
+    if not details["markerConfirmed"]:
+        return {**result, "state": "unreachable", "reason": "wireguard_mark_mismatch"}
+    wireguard = evidence.get("wireguard")
+    peer = wireguard.get(interface) if isinstance(wireguard, dict) else None
+    if not isinstance(peer, dict) or type(peer.get("peerCount")) is not int:
+        return {**result, **unknown}
+    details["peerCount"] = peer["peerCount"]
+    handshake = peer.get("latestHandshake")
+    if type(handshake) is int and 0 < handshake <= int(now.timestamp()):
+        details["latestHandshake"] = datetime.fromtimestamp(handshake, timezone.utc).isoformat()
+    if peer["peerCount"] != 1 or "latestHandshake" not in details or now.timestamp() - handshake > 300:
+        return {**result, "state": "unknown", "reason": "wireguard_handshake_unconfirmed"}
+    return {**result, "state": "reachable"}
+
+
 def _icmp_via_router(ip: str, gateway: object) -> dict:
     unknown = {"state": "unknown", "reason": "icmp_route_unconfirmed"}
     if not isinstance(ip, str) or not isinstance(gateway, str):
@@ -770,7 +832,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                    "smb_mount": "SMB Mount",
                    "zabbix_api": "Zabbix API", "postgresql": "PostgreSQL SSLRequest",
                    "openvpn_management": "OpenVPN Management", "openvpn_tunnel": "OpenVPN TUN",
-                   "sip_options": "SIP OPTIONS (UDP)", "icmp": "ICMP", "vlan_transit": "ICMP · VLAN"}
+                   "sip_options": "SIP OPTIONS (UDP)", "icmp": "ICMP", "vlan_transit": "ICMP · VLAN",
+                   "wireguard_policy": "Маршрут · WireGuard"}
         checks = []
         primary = []
         management_observation = None
@@ -800,6 +863,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                            else _icmp_check(spec.get("ip")))
             elif protocol == "vlan_transit":
                 details = _local_vlan_transit(spec)
+            elif protocol == "wireguard_policy":
+                details = _wireguard_policy(spec)
             elif protocol == "postgresql":
                 details = _postgresql(spec)
             elif protocol == "smb":

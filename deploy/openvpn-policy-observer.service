@@ -1,0 +1,18 @@
+[Unit]
+Description=Collect OpenVPN policy and WireGuard observations for UI_VPN
+
+[Service]
+Type=oneshot
+User=root
+Group=openvpn-web
+ExecStart=/usr/bin/python3 -I /usr/local/libexec/openvpn-policy-report
+RuntimeDirectory=openvpn-policy-observer
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+TimeoutStartSec=12s
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_NET_ADMIN
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
