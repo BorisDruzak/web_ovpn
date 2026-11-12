@@ -50,6 +50,9 @@
     <dt>Отправитель / получатель, Мбит/с</dt>
     <dd>{{ '%.2f' | format(result.result.sender_mbps) }} / {{ '%.2f' | format(result.result.receiver_mbps) }}</dd>
     <dt>Повторные передачи TCP</dt><dd>{{ result.result.retransmits if result.result.retransmits is not none else '—' }}</dd>
+    {% if result.result.preconnect_retries is defined %}
+    <dt>Повтор подключения</dt><dd>{{ result.result.preconnect_retries }}</dd>
+    {% endif %}
     {% endif %}
     {% if result.result.source_address is defined %}
     <dt>Заданный источник</dt><dd>{{ result.result.source_address }}{% if result.result.bind_interface is defined %} · {{ result.result.bind_interface }}{% endif %}</dd>

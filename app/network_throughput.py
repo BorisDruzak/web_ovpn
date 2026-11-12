@@ -5,6 +5,7 @@ import json
 import math
 import re
 import subprocess
+import time
 from typing import Literal
 
 
@@ -94,6 +95,24 @@ def _confirmed_connection(
     return {"source_address": source_address, "peer_address": peer, "peer_port": port}
 
 
+def _connection_refused_before_transfer(completed: subprocess.CompletedProcess) -> bool:
+    if not completed.returncode:
+        return False
+    try:
+        report = json.loads(completed.stdout)
+        error = report.get("error")
+        return (
+            isinstance(error, str)
+            and error.startswith("unable to connect to server")
+            and error.endswith("Connection refused")
+            and report["start"]["connected"] == []
+            and report["intervals"] == []
+            and report["end"] == {}
+        )
+    except (AttributeError, KeyError, RecursionError, TypeError, ValueError):
+        return False
+
+
 def run_throughput(
     peer: str,
     port: int,
@@ -140,15 +159,27 @@ def run_throughput(
         argv.extend(("--bind", source_address))
     if bind_interface is not None:
         argv.extend(("--bind-dev", bind_interface))
+    timeout = duration_seconds + 5
+    deadline = time.monotonic() + timeout
     try:
-        completed = subprocess.run(
-            argv,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            timeout=duration_seconds + 5,
-            check=False,
-        )
+        for attempt in range(2):
+            completed = subprocess.run(
+                argv,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=timeout,
+                check=False,
+            )
+            if attempt or not _connection_refused_before_transfer(completed):
+                break
+            retry_delay = 0.5
+            if deadline - time.monotonic() <= retry_delay:
+                break
+            time.sleep(retry_delay)
+            timeout = deadline - time.monotonic()
+            if timeout <= 0:
+                break
     except OSError:
         return {"status": "unavailable", "result": None}
     except subprocess.TimeoutExpired:
@@ -179,6 +210,8 @@ def run_throughput(
             response["connection"] = _confirmed_connection(
                 report, source_address, peer, port
             )
+        if attempt:
+            response["result"]["preconnect_retries"] = attempt
     except (
         AttributeError,
         KeyError,

@@ -20,6 +20,30 @@ def _iperf_output(*, reverse=False, retransmits=4):
     ).encode()
 
 
+@pytest.mark.parametrize("connected", [[], [{"local_port": 4444}]])
+def test_retries_only_a_refused_connection_before_a_test_started(monkeypatch, connected):
+    first = json.dumps({
+        "start": {"connected": connected}, "intervals": [], "end": {},
+        "error": "unable to connect to server: Connection refused",
+    }).encode()
+    calls = []
+    monkeypatch.setattr("time.sleep", lambda _: None)
+
+    def run(argv, **kwargs):
+        calls.append(kwargs["timeout"])
+        if len(calls) == 1:
+            return subprocess.CompletedProcess(argv, 1, stdout=first)
+        return subprocess.CompletedProcess(argv, 0, stdout=_iperf_output())
+
+    monkeypatch.setattr(subprocess, "run", run)
+    result = run_throughput("192.0.2.10", 5202, "send", duration_seconds=4, bitrate_mbps=5)
+    if connected:
+        assert len(calls) == 1 and result["status"] == "failed"
+    else:
+        assert len(calls) == 2 and calls[1] <= calls[0]
+        assert result["status"] == "ok" and result["result"]["preconnect_retries"] == 1
+
+
 @pytest.mark.parametrize("direction, reverse", [("send", False), ("receive", True)])
 def test_uses_one_paced_tcp_stream_and_reports_both_endpoints(
     monkeypatch, direction, reverse
