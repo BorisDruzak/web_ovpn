@@ -634,8 +634,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     for (const path of paths) {
       const endpoint = path.target + (path.port ? ':' + path.port : '');
       const label = [path.method, endpoint].join(' · ');
-      if (rendered.has(label)) continue;
-      rendered.add(label);
+      const key = [label, path.gateway].join('|');
+      if (rendered.has(key)) continue;
+      rendered.add(key);
       const {hostPort, switchPort} = path.physicalPair;
       const guest = byId.get(path.guestId)?.name ?? path.guestId;
       const host = byId.get(path.hypervisorId)?.name ?? path.hypervisorId;
@@ -645,6 +646,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         : [`${guest} ${path.guestPort}`, path.bridge, `${host} ${hostPort}`].join(' → ');
       row.append(make('strong', label), make('small', connection),
         switchPortButton(path.switchId, target, switchPort));
+      if (path.gateway) {
+        row.append(make('small', 'Вход через шлюз ' + path.gateway));
+      }
       if (path.localNeighbor) {
         row.append(make('small', `VLAN ${path.localNeighbor.vlan} · соседство на ${path.localNeighbor.interface} · физическая пара аплинка`));
       }
@@ -1718,7 +1722,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const panel = make('details', null, 'map-port-panel');
         panel.dataset.section = 'services-on-port';
         const services = make('ul', null, 'map-detail-list');
-        const bases = {host_mac: 'MAC устройства', host_lacp: 'LACP хоста', host_management: 'Интерфейс управления'};
+        const bases = {host_mac: 'MAC устройства', host_lacp: 'LACP хоста', host_management: 'Интерфейс управления',
+          guest_gateway: 'Вход через шлюз'};
         for (const service of serviceGroup.services) {
           const row = make('li');
           const open = make('button', service.name);

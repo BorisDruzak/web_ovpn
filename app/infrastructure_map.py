@@ -1834,6 +1834,7 @@ def _service_attachment_paths(service: dict, guests: dict) -> list[dict]:
             continue
         target = check.get("target")
         vlan = check.get("vlanTransit")
+        gateway = None
         if vlan:
             peer = vlan.get("peer", {})
             if peer.get("state") != "matched":
@@ -1841,6 +1842,13 @@ def _service_attachment_paths(service: dict, guests: dict) -> list[dict]:
             candidates = neighbors.get((target, peer["asset"], peer["guestPort"], vlan["id"], vlan["interface"]), [])
         else:
             candidates = addresses.get(target, [])
+            route = check.get("localRoute", {})
+            next_hop = route.get("gateway")
+            if (not candidates and target and next_hop and next_hop != target
+                    and route.get("state") == "reachable" and next_hop == route.get("expectedGateway")
+                    and route.get("sourceIP") and route.get("interface")):
+                candidates = addresses.get(next_hop, [])
+                gateway = next_hop
         if len(candidates) != 1:
             continue
         guest, adapter, address_at = candidates[0]
@@ -1855,7 +1863,8 @@ def _service_attachment_paths(service: dict, guests: dict) -> list[dict]:
                       "guestId": guest["guest"]["id"], "guestPort": adapter["guestPort"], "bridge": adapter["bridge"],
                       "hypervisorId": guest["hypervisor"]["id"], "switchId": observation["switch"]["id"],
                       "physicalPair": observation["physicalPair"],
-                      **({"localNeighbor": adapter["localNeighbor"]} if vlan else {})})
+                      **({"localNeighbor": adapter["localNeighbor"]} if vlan else {}),
+                      **({"gateway": gateway} if gateway else {})})
     return paths
 
 
@@ -1958,8 +1967,13 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime) -> dict:
 
     for service, paths in service_paths.items():
         for path in paths:
-            record(path["switchId"], path["physicalPair"]["switchPort"], service,
-                   "host_management" if path.get("management") else "guest_path")
+            if path.get("management"):
+                basis = "host_management"
+            elif path.get("gateway"):
+                basis = "guest_gateway"
+            else:
+                basis = "guest_path"
+            record(path["switchId"], path["physicalPair"]["switchPort"], service, basis)
     evidence = _physical_service_port_evidence(nodes, links)
     for service, hosts in service_hosts.items():
         if len(hosts) == 1:

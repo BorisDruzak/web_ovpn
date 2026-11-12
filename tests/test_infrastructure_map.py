@@ -5919,6 +5919,25 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     assert [service["id"] for service in switch_ports[0]["services"]] == ["directum"]
     switch = client.get(url + "&node_id=snr", headers=headers).json()["infrastructure"]["attachment"]
     assert switch["servicePorts"] == switch_ports
+    route = {"state": "reachable", "gateway": address["address"], "expectedGateway": address["address"],
+             "sourceIP": "192.0.2.20", "interface": "ens18"}
+    routed = {**check, "method": "DNS", "port": 53, "target": "198.51.100.1", "localRoute": route}
+    raw["nodes"][0]["serviceChecks"] = [routed]
+    routed_path = {**service_path, "target": routed["target"], "port": 53, "method": "DNS",
+                   "gateway": route["gateway"]}
+    assert read()["servicePaths"] == [routed_path]
+    browser = client.get(browser_endpoint).json()["infrastructure"]
+    assert browser["servicePaths"] == {"directum": [routed_path]}
+    assert browser["servicePorts"]["snr"][0]["services"][0]["basis"] == ["guest_gateway"]
+    route["state"] = "unreachable"
+    assert read()["servicePaths"] == []
+    route["state"] = "reachable"
+    route["expectedGateway"] = "192.0.2.99"
+    assert read()["servicePaths"] == []
+    route["expectedGateway"] = route["gateway"]
+    raw["links"][1]["portEvidence"].append({**adapter, "b": "net1"})
+    assert read()["servicePaths"] == []
+    raw["links"][1]["portEvidence"].pop()
     raw["nodes"][0].pop("serviceChecks")
     adapter["virtual"].pop("ipv4Observations")
     raw["links"][1]["portEvidence"][0]["virtual"]["uplinks"] = ["eno1"]
