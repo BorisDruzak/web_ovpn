@@ -1788,6 +1788,40 @@ def _physical_attachments(nodes: dict, links: list[dict], host_ids: list[str]) -
             for host_id, group in connections.items()]
 
 
+def _service_attachment_paths(service: dict, guests: dict) -> list[dict]:
+    addresses = defaultdict(list)
+    for guest in guests.values():
+        for adapter in guest["interfaces"]:
+            if adapter["linkDisabled"] or adapter["bridgeActive"] is not True:
+                continue
+            observed = {}
+            for reading in adapter.get("ipv4Observations", []):
+                ip, checked_at = reading["address"], reading["checkedAt"]
+                observed[ip] = max(observed.get(ip, checked_at), checked_at)
+            for ip, checked_at in observed.items():
+                addresses[ip].append((guest, adapter, checked_at))
+
+    paths = []
+    for check in service["serviceChecks"]:
+        if check["source"] != "UI_VPN" or not check["checkedAt"] or check["stale"] or check.get("skipped"):
+            continue
+        candidates = addresses.get(check.get("target"), [])
+        if len(candidates) != 1:
+            continue
+        guest, adapter, address_at = candidates[0]
+        observations = [row for row in adapter["switchObservations"]
+                        if row["basis"] == "guest_mac" and "physicalPair" in row]
+        if len(observations) != 1:
+            continue
+        observation, = observations
+        paths.append({"target": check["target"], "port": check["port"], "method": check["method"],
+                      "checkedAt": check["checkedAt"], "addressCheckedAt": address_at,
+                      "guestId": guest["guest"]["id"], "guestPort": adapter["guestPort"], "bridge": adapter["bridge"],
+                      "hypervisorId": guest["hypervisor"]["id"], "switchId": observation["switch"]["id"],
+                      "physicalPair": observation["physicalPair"]})
+    return paths
+
+
 def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
     nodes = {node["id"]: node for node in graph["nodes"]}
     anchor = nodes.get(node_id)
@@ -1805,7 +1839,9 @@ def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
     return {**metadata, "attachment": {"node": _attachment_node(anchor) if anchor else None,
                                        "guestTotal": len(guest_ids), "guests": list(guests.values()),
                                        "physicalHostTotal": len(host_ids),
-                                       "physicalHosts": _physical_attachments(nodes, links, host_ids[:12])}}
+                                       "physicalHosts": _physical_attachments(nodes, links, host_ids[:12]),
+                                       **({"servicePaths": _service_attachment_paths(anchor, guests)}
+                                          if anchor and anchor["kind"] == "Сервис" and len(guest_ids) <= 12 else {})}}
 
 
 def summarize_guest_attachment_audit(graph: dict) -> dict:

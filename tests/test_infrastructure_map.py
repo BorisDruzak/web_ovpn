@@ -5754,6 +5754,31 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
         "switch": {"egress": "untagged", "pvid": True, "source": "SNMP", "checkedAt": stamp},
     }}
     old = (datetime.fromisoformat(stamp) - timedelta(minutes=11)).isoformat()
+    check = {"method": "LDAP", "source": "UI_VPN", "state": "reachable", "port": 389,
+             "target": "192.0.2.11", "checkedAt": stamp}
+    address = {"address": check["target"], "source": "UI_VPN", "method": "ICMP · ARP", "checkedAt": stamp}
+    adapter, = raw["links"][1]["portEvidence"]
+    adapter["virtual"]["ipv4Observations"] = [address]
+    raw["nodes"][0]["serviceChecks"] = [check, {**check, "target": "192.0.2.12"}]
+    service_path, = read()["servicePaths"]
+    assert service_path == {"target": "192.0.2.11", "port": 389, "method": "LDAP", "checkedAt": stamp,
+                            "guestId": "vm", "guestPort": "net0", "bridge": "vmbr1", "hypervisorId": "pve",
+                            "switchId": "snr", "physicalPair": match["physicalPair"], "addressCheckedAt": stamp}
+    raw["links"][1]["portEvidence"].append({**adapter, "b": "net1"})
+    assert read()["servicePaths"] == []
+    raw["links"][1]["portEvidence"].pop()
+    expired = (datetime.fromisoformat(stamp) - timedelta(minutes=26)).isoformat()
+    address["checkedAt"] = expired
+    assert read()["servicePaths"] == []
+    address["checkedAt"] = stamp
+    check["checkedAt"] = expired
+    assert read()["servicePaths"] == []
+    check["checkedAt"] = stamp
+    adapter["virtual"]["uplinks"] = ["eno1"]
+    assert read()["servicePaths"] == []
+    adapter["virtual"]["uplinks"] = ["ens7"]
+    raw["nodes"][0].pop("serviceChecks")
+    adapter["virtual"].pop("ipv4Observations")
     host = vlan_ports["host"]
     host["checkedAt"] = host["vlanMemberships"]["checkedAt"] = old
     observation, = read()["guests"][0]["interfaces"][0]["switchObservations"]
