@@ -3690,7 +3690,9 @@ def test_switch_port_telemetry_requires_matching_current_collection(tmp_path):
     def read(when=now):
         path.write_text(json.dumps(build_graph(context, network, {}, {}, {}, now)), encoding="utf-8")
         graph = load_infrastructure_map(path, when)
-        return graph["nodes"][0]["ports"][0], summarize_topology(graph)["topologyAudit"]["portCounterAudit"]
+        audit = summarize_topology(graph)["topologyAudit"]["portCounterAudit"]
+        assert graph["portCounterAudit"] == audit
+        return graph["nodes"][0]["ports"][0], audit
 
     port, audit = read()
     assert port["telemetry"] == {"checkedAt": at, "intervalSeconds": 300,

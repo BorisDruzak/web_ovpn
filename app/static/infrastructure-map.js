@@ -70,6 +70,28 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     availability.textContent = message;
     availability.hidden = !message;
   }
+  function renderPortCounterSummary() {
+    const panel = root.querySelector('#map-port-counters');
+    const summary = panel.querySelector('summary');
+    const list = panel.querySelector('ul');
+    const activeLink = list.contains(document.activeElement) ? document.activeElement.href : '';
+    const {affectedPorts = 0, ports = []} = data.portCounterAudit ?? {};
+    panel.hidden = !affectedPorts;
+    summary.textContent = 'Ошибки и отбросы на портах · ' + affectedPorts;
+    const counters = {rxErrors:'Ошибки RX', txErrors:'Ошибки TX', rxDiscards:'Отбросы RX', txDiscards:'Отбросы TX'};
+    list.replaceChildren(...ports.map(({deviceId, deviceName, port, configuredLabel, telemetry}) => {
+      const item = make('li');
+      const link = make('a', `${deviceName} · ${port}` + (configuredLabel ? ` · ${configuredLabel.text}` : ''));
+      link.href = '?' + new URLSearchParams({node: deviceId, port});
+      const counts = Object.entries(counters).filter(([key]) => telemetry[key] > 0)
+        .map(([key, label]) => `${label} ${telemetry[key].toLocaleString('ru-RU')}`);
+      item.append(link, make('small', [...counts, `${telemetry.intervalSeconds} с`, formatTime(telemetry.checkedAt)].join(' · ')));
+      return item;
+    }));
+    if (activeLink && !panel.hidden) {
+      ([...list.querySelectorAll('a')].find(link => link.href === activeLink) ?? summary).focus({preventScroll: true});
+    }
+  }
   function renderSnapshotHeader() {
     source.replaceChildren();
     if (data.snapshotAt) source.append('Снимок · ' + formatTime(data.snapshotAt) + ' (ЕКБ)');
@@ -81,6 +103,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       source.append(' · ', canonical);
     }
     showAvailability();
+    renderPortCounterSummary();
     root.querySelector('#map-port-alert-legend').hidden = !data.links.some(edge => edge.portAlerts?.length);
     for (const section of ['.map-views', '.map-legend', '#map-search']) {
       root.querySelector(section).hidden = !data.nodes.length;

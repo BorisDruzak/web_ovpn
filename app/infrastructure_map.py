@@ -1433,7 +1433,7 @@ def summarize_topology(graph: dict) -> dict:
     return {**metadata, "topologyAudit": {"directLinks": counts, "pendingTotal": len(pending),
                                         "inventoryPairs": inventory_pairs[:64],
                                         "portAlertTotal": len(alerts), "portAlerts": alerts[:64],
-                                        "portCounterAudit": _summarize_port_counters(nodes),
+                                        "portCounterAudit": graph.get("portCounterAudit") or _summarize_port_counters(nodes),
                                         "stpRootPaths": stp, "stpRoots": roots, "vlanAudits": vlan_audits[:64],
                                         "lacpHealth": lacp[:64],
                                         "downstreamSwitches": downstream[:MAX_DOWNSTREAM_SWITCHES],
@@ -1985,6 +1985,7 @@ def load_infrastructure_map(
     return {
         **empty, "availability": "stale" if now - stamp > MAX_AGE else "ready",
         "snapshotAt": stamp.isoformat(), "nodes": list(nodes.values()), "links": links,
+        "portCounterAudit": _summarize_port_counters(nodes),
         "clusterId": cluster_id, "nodeOrder": node_ids("nodeOrder"),
         "overviewGuests": node_ids("overviewGuests"),
         "git": revision if re.fullmatch(r"[0-9a-f]{40}", revision) else "",

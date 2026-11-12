@@ -31,6 +31,11 @@
 #infra-map-review .map-legend { list-style: none; display: flex; flex-wrap: wrap; gap: 6px 17px; margin: 13px 0; padding: 0; font-size: 12px; color: var(--map-muted); }
 #infra-map-review .map-legend li { display: flex; align-items: center; gap: 6px; }
 #infra-map-review .map-legend .map-port-alert { width: 16px; border-top: 2px dashed var(--map-warn); }
+#infra-map-review #map-port-counters { margin: 0 0 12px; }
+#infra-map-review #map-port-counters summary { padding: 8px 0; color: var(--map-warn); cursor: pointer; }
+#infra-map-review #map-port-counters ul { list-style: none; margin: 0 0 0 15px; padding: 0; }
+#infra-map-review #map-port-counters li { margin: 5px 0; overflow-wrap: anywhere; }
+#infra-map-review #map-port-counters small { display: block; color: var(--map-muted); }
 #infra-map-review [data-state="ok"] { --node-color: var(--map-ok); }
 #infra-map-review [data-state="warn"] { --node-color: var(--map-warn); }
 #infra-map-review [data-state="critical"] { --node-color: var(--map-critical); }
