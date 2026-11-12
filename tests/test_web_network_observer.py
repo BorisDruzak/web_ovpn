@@ -2662,7 +2662,8 @@ def test_loop_panel_shows_port_broadcast_as_context(tmp_path, monkeypatch):
                 "until": "2026-11-12T19:05:00Z", "interval_seconds": 300,
                 "in_pps": 12.5, "out_pps": 4.0}
     device = {"source": "switch-1", "status": "mac_flapping",
-              "coverage": {"fdb": {"status": "recent"}, "stp": {"status": "unavailable"},
+              "coverage": {"fdb": {"status": "insufficient", "reason": "partial_fdb_poll"},
+                           "stp": {"status": "unavailable"},
                            "broadcast": {"status": "recent", "sampled_ports": 2, "valid_intervals": 1}},
               "evidence": [{"ports": ["ether1", "ether2"], "vlan_id": 20, "mac": "00:11:22:33:44:55",
                             "broadcast_intervals": [interval]}]}
@@ -2670,7 +2671,9 @@ def test_loop_panel_shows_port_broadcast_as_context(tmp_path, monkeypatch):
         "loops": {"status": "mac_flapping", "since": "start", "until": "end", "sources": [device]},
     })
     api = client.get("/api/v1/network/diagnostics/loops?source=switch-1", headers=headers)
-    assert api.json()["data"]["result"]["sources"][0]["evidence"][0]["broadcast_intervals"] == [interval]
+    report = api.json()["data"]["result"]["sources"][0]
+    assert report["coverage"]["fdb"]["reason"] == "partial_fdb_poll"
+    assert report["evidence"][0]["broadcast_intervals"] == [interval]
     csrf = login(client)
     panel = client.post("/network/diagnostics/checks", data={
         "csrf_token": csrf, "check": "loop_check", "source": "switch-1",
@@ -2678,6 +2681,7 @@ def test_loop_panel_shows_port_broadcast_as_context(tmp_path, monkeypatch):
     assert panel.status_code == 200
     assert "Широковещание" in panel.text and "12.5 / 4.0 пак/с" in " ".join(panel.text.split())
     assert "Обнаружено повторное перемещение MAC" in panel.text
+    assert "FDB · часть записей не разобрана" in panel.text
 
 
 def test_sources_page_renders_unknown_without_collect_control(tmp_path, monkeypatch):

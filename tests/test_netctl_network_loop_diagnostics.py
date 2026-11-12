@@ -35,10 +35,10 @@ def add_source(conn, source_id, name, *, driver="snmp_switch", enabled=True):
     )
 
 
-def add_collection(conn, source_id, at, *, status="success"):
+def add_collection(conn, source_id, at, *, status="success", outcomes="{}"):
     return conn.execute(
-        "INSERT INTO switch_collection_runs (source_id, started_at, status) VALUES (?, ?, ?)",
-        (source_id, at, status),
+        "INSERT INTO switch_collection_runs (source_id, started_at, status, outcomes_json) VALUES (?, ?, ?, ?)",
+        (source_id, at, status, outcomes),
     ).lastrowid
 
 
@@ -310,6 +310,40 @@ def test_missing_stp_or_failed_fdb_poll_is_insufficient_data(database):
     assert switch["coverage"]["fdb"]["status"] == "insufficient"
     assert switch["coverage"]["fdb"]["last_observed_at"] == "2026-11-12T12:05:00Z"
     assert switch["coverage"]["stp"]["status"] == "unavailable"
+
+
+@pytest.mark.parametrize("outcomes, expected", [
+    ('{"fdb":"success_with_rows","qbridge_fdb_rejected_rows":"parse_error"}', "insufficient_data"),
+    ('{"fdb":"success_with_rows","if_hc_in_broadcast_packets":"timeout"}', "no_evidence"),
+])
+def test_partial_fdb_poll_cannot_support_no_evidence(database, outcomes, expected):
+    conn, _ = database
+    add_source(conn, 1, "switch")
+    add_event(conn, 1, "2026-11-12T12:05:00Z", PORT_A, PORT_B)
+    add_collection(conn, 1, "2026-11-12T12:10:00Z")
+    add_collection(conn, 1, "2026-11-12T12:15:00Z")
+    add_collection(conn, 1, "2026-11-12T12:20:00Z", status="partial", outcomes=outcomes)
+    add_stp_sample(conn, 1, "2026-11-12T12:25:00Z", 5)
+
+    result = read(conn)
+
+    assert result["status"] == expected
+    if expected == "insufficient_data":
+        assert result["sources"][0]["coverage"]["fdb"]["reason"] == "partial_fdb_poll"
+
+
+def test_complete_polls_without_vlan_evidence_explain_insufficient_data(database):
+    conn, _ = database
+    add_source(conn, 1, "switch")
+    add_event(conn, 1, "2026-11-12T12:05:00Z", PORT_A, PORT_B, vlan=None)
+    add_collection(conn, 1, "2026-11-12T12:10:00Z")
+    add_collection(conn, 1, "2026-11-12T12:15:00Z")
+    add_stp_sample(conn, 1, "2026-11-12T12:20:00Z", 5)
+
+    result = read(conn)
+
+    assert result["status"] == "insufficient_data"
+    assert result["sources"][0]["coverage"]["fdb"]["reason"] == "no_vlan_observations"
 
 
 def test_saved_switch_state_reports_stale_coverage_after_history_has_aged_out(database):

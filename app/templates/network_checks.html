@@ -111,6 +111,13 @@
         <tr><td>{{ device.source }}</td><td>{{ status_labels.get(device.status, device.status) }}</td>
           <td>
             FDB {{ device.coverage.fdb.status }} / STP {{ device.coverage.stp.status }}
+            {% if device.coverage.fdb.reason is defined %}
+            <br>FDB · {{ {
+              'partial_fdb_poll': 'часть записей не разобрана',
+              'too_few_polls': 'меньше трёх опросов в окне',
+              'no_vlan_observations': 'нет наблюдений MAC с VLAN'
+            }.get(device.coverage.fdb.reason, 'недостаточно данных') }}
+            {% endif %}
             {% set broadcast = device.coverage.broadcast %}
             {% if broadcast is defined %}
             <br>Широковещание · {{ {'recent': 'есть интервалы', 'stale': 'устарело', 'insufficient': 'мало данных'}.get(broadcast.status, 'нет данных') }}

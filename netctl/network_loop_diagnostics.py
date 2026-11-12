@@ -241,7 +241,8 @@ def _read_source(
     stp_events = stp_events[:MAX_STP_EVENTS]
     polls = conn.execute(
         """
-        SELECT started_at FROM switch_collection_runs
+        SELECT started_at, json_extract(outcomes_json, '$.qbridge_fdb_rejected_rows') AS fdb_rejections
+        FROM switch_collection_runs
         WHERE source_id = ? AND started_at >= ? AND started_at < ?
           AND status IN ('success', 'partial')
         ORDER BY started_at DESC, id DESC LIMIT ?
@@ -250,7 +251,7 @@ def _read_source(
     ).fetchall()
 
     recent_polls = [
-        poll["started_at"] for poll in polls if _in_window(_timestamp(poll["started_at"]), since, until)
+        poll for poll in polls if _in_window(_timestamp(poll["started_at"]), since, until)
     ]
     fdb_last_at = device["fdb_last_success_at"]
     fdb_last = _timestamp(fdb_last_at)
@@ -263,9 +264,14 @@ def _read_source(
         fdb_status = "unavailable"
         fdb_last_at = None
     if recent_polls:
-        fdb_last_at = recent_polls[0]
+        fdb_last_at = recent_polls[0]["started_at"]
         fdb_status = "insufficient"
-    if len(recent_polls) >= MIN_FDB_POLLS:
+    fdb_reason = None
+    if any(poll["fdb_rejections"] == "parse_error" for poll in recent_polls):
+        fdb_reason = "partial_fdb_poll"
+    elif fdb_status == "insufficient" and len(recent_polls) < MIN_FDB_POLLS:
+        fdb_reason = "too_few_polls"
+    elif len(recent_polls) >= MIN_FDB_POLLS:
         known_vlan = any(row["vlan_id"] is not None for row in events) or conn.execute(
             """
             SELECT 1 FROM current_switch_fdb
@@ -277,6 +283,8 @@ def _read_source(
         ).fetchone() is not None
         if known_vlan:
             fdb_status = "recent"
+        else:
+            fdb_reason = "no_vlan_observations"
     stp_observed = _timestamp(device["stp_observed_at"])
     stp_status = "unavailable"
     if _in_window(stp_observed, since, until):
@@ -290,6 +298,7 @@ def _read_source(
             "events_read": len(events),
             "truncated": fdb_truncated,
             "unmapped_moves": sum(row["vlan_id"] is None and row["event_type"] == "moved" for row in events),
+            **({"reason": fdb_reason} if fdb_reason else {}),
         },
         "stp": {
             "status": stp_status,
