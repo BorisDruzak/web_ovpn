@@ -46,7 +46,7 @@
     const evidence=item.evidence||{};
     return 'Зона: '+(typeof evidence.zone==='string'?evidence.zone:'нет сведений')+' · Имя: '+(typeof evidence.name==='string'?evidence.name:'нет сведений')+'. Запись исключена из сопоставления устройств.';
   }
-  const EVENT = {task_start:'Задача начата',task_ok:'Задача выполнена',task_failed:'Ошибка задачи',task_unreachable:'ПК недоступен',task_skipped:'Задача пропущена',component_start:'Компонент начат',component_completed:'Компонент завершён'};
+  const EVENT = {endpoint_native_rpm_preflight_failed:'Проверка RPM не прошла. Проверьте версию ALT и зависимости на ПК.',task_start:'Задача начата',task_ok:'Задача выполнена',task_failed:'Ошибка задачи',task_unreachable:'ПК недоступен',task_skipped:'Задача пропущена',component_start:'Компонент начат',component_completed:'Компонент завершён'};
   const ACTION = {'plans.create':'Подготовка плана','component_plans.create':'План отдельного компонента','plans.apply':'Постановка в очередь','jobs.verify':'Проверка результата','jobs.cancel':'Отмена задания',
     'links.preview':'Сравнение привязки','links.confirm':'Подтверждение привязки','links.end':'Завершение привязки','link.confirmed':'Привязка подтверждена','link.ended':'Привязка завершена','source.collect':'Чтение источника','reconcile':'Сверка источников','job.stage':'Этап задания'};
   function verificationLabel(value){return ({technical_verified:'Технически проверено',compliant:'Технически проверено',functional_verification_required:'Нужна проверка пользователем',
@@ -283,7 +283,7 @@
       jobOffset=data.next_offset;one('[data-more-jobs]').hidden=jobOffset>=data.total;}
     on(one('[data-refresh-jobs]'),'click',()=>jobs());on(one('[data-more-jobs]'),'click',()=>jobs(false));
     function appendEvent(target,event){const row=el('li'),time=el('time',new Date(event.timestamp).toLocaleString('ru-RU'));time.dateTime=event.timestamp;
-      row.append(time,el('span',[event.sequence?'№ '+event.sequence:null,event.component_id,stageLabel(event.stage),EVENT[event.type]||ACTION[event.action]||event.action,
+      row.append(time,el('span',[event.sequence?'№ '+event.sequence:null,event.component_id,stageLabel(event.stage),EVENT[event.code]||EVENT[event.type]||ACTION[event.action]||event.action,
         STATE[event.status]||({succeeded:'Завершено',success:'Получено',unknown:'UNKNOWN',error:'Ошибка',running:'Выполняется'})[event.status]||event.status,
         event.changed===true?'Изменено':event.changed===false?'Без изменений':null].filter(Boolean).join(' · ')));
       if(event.task_id||event.code||event.actor)row.append(el('small',[event.task_id,event.code,event.actor].filter(Boolean).join(' · '),'mono'));

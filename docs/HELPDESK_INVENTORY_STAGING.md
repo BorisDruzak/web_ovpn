@@ -122,7 +122,10 @@ kit. Before staging publication, put the exact reviewed
 in the catalog. Verify its detached signature and the release manifest with
 the independently trusted publisher key. The controller checks the digest
 before workstation contact and the role checks it again on the target before
-extraction. The existing native coordinator installs the two RPMs together.
+extraction. On the target, RPM tests the exact pair against installed
+dependencies before the role requests Endpoint authority or writes the agent
+configuration. A failure appears in the Setup journal without raw RPM output.
+The existing native coordinator installs the two RPMs together.
 
 The panel generates a private installation ID in the form
 `inventory-<asset-uuid>-<controller-machine-uuid>-<32 lowercase hex digits>`.

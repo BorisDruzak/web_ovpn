@@ -63,6 +63,23 @@ def test_critical_phase_runs_components_between_login_baseline_and_verification(
     assert "loop:" not in rendered
 
 
+def test_native_endpoint_rpm_check_precedes_assignment_and_configuration():
+    role = ROLES / "software_endpoint_agent_native/tasks/main.yml"
+    tasks = next(task["block"] for task in yaml.safe_load(role.read_text()) if "block" in task)
+    names = [task["name"] for task in tasks]
+    check = names.index("Test the published RPM pair on the selected workstation")
+    gate = names.index("Require the RPM pair to be compatible before requesting assignment")
+    assert names.index("Extract the verified archive into private staging") < check < gate
+    assert gate < names.index("Issue the installation assignment on the staging controller")
+    assert gate < names.index("Prepare native configuration only in a fresh slot")
+    assert gate < names.index("Run the existing Endpoint native coordinator")
+    assert tasks[check]["ansible.builtin.command"]["argv"][3:7] == [
+        "/usr/bin/rpm", "-U", "--oldpackage", "--test",
+    ]
+    assert tasks[check]["no_log"] is True
+    assert "delegate_to" not in tasks[check]
+
+
 def test_standard_software_uses_the_published_catalog_role_map() -> None:
     text = (ANSIBLE_ROOT / "roles/standard_software/tasks/main.yml").read_text()
     tasks = yaml.safe_load(text)

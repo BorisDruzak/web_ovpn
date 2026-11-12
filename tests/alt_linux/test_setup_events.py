@@ -24,6 +24,26 @@ def test_optional_network_status_is_visible_without_becoming_a_native_failure(st
     assert 'PRIVATE' not in json.dumps(event)
 
 
+def test_endpoint_rpm_refusal_projects_only_the_fixed_preflight_code():
+    from alt_deploy.setup_events import _allowed_codes
+
+    code = 'endpoint_native_rpm_preflight_failed'
+    task = SimpleNamespace(get_path=lambda: '/roles/software_endpoint_agent_native/tasks/main.yml:1',
+                           tags=['alt_setup_preflight', 'alt_setup_endpoint_rpm_preflight'])
+    result = SimpleNamespace(_task=task, _result={'msg': 'ALT_PREFLIGHT_FAILURE:' + code,
+                                                 'stderr': 'PRIVATE-RPM-DIAGNOSTIC'})
+    endpoint = {'id': 'software.endpoint_agent', 'version': 1}
+    event = safe_task_event(result, component=endpoint, event_type='task_failed')
+    assert event['code'] == code
+    assert 'PRIVATE-RPM-DIAGNOSTIC' not in json.dumps(event)
+    assert code in _allowed_codes(endpoint['id'], {})
+    assert code not in _allowed_codes('domain.ready', {})
+    other = {'id': 'domain.ready', 'version': 1}
+    assert safe_task_event(result, component=other, event_type='task_failed')['code'] == 'component_preflight_failed'
+    result._result['msg'] = 'unexpected failure'
+    assert safe_task_event(result, component=endpoint, event_type='task_failed')['code'] == 'component_preflight_failed'
+
+
 def test_events_never_serialize_secret_results(component_service):
     jobs, plan, settings = jobs_fixture(component_service)
     job = jobs.submit(plan, operation='component')

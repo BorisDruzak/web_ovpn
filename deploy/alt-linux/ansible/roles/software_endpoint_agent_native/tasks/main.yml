@@ -148,6 +148,10 @@
     fail_msg: ALT_PREFLIGHT_FAILURE:endpoint_native_existing_installation_requires_review
 
 - name: Install the exact published native kit
+  vars:
+    endpoint_native_kit_dir: "{{ endpoint_native_tmp.path }}/endpoint-alt-pilot-3.2.183-1"
+    endpoint_native_core_rpm: "{{ endpoint_native_kit_dir }}/endpoint-agent-3.2.183-alt6.x86_64.rpm"
+    endpoint_native_sensor_rpm: "{{ endpoint_native_kit_dir }}/endpoint-agent-user-sensor-3.2.183-alt6.x86_64.rpm"
   block:
     - name: Create private staging directory for the signed kit
       ansible.builtin.tempfile:
@@ -185,6 +189,32 @@
         dest: "{{ endpoint_native_tmp.path }}"
         remote_src: true
 
+    - name: Test the published RPM pair on the selected workstation
+      ansible.builtin.command:
+        expand_argument_vars: false
+        argv:
+          - /usr/bin/timeout
+          - --kill-after=5s
+          - 60s
+          - /usr/bin/rpm
+          - -U
+          - --oldpackage
+          - --test
+          - "{{ endpoint_native_core_rpm }}"
+          - "{{ endpoint_native_sensor_rpm }}"
+      register: endpoint_native_rpm_preflight
+      changed_when: false
+      failed_when: false
+      no_log: true
+      tags: [alt_setup_preflight]
+
+    - name: Require the RPM pair to be compatible before requesting assignment
+      ansible.builtin.assert:
+        that:
+          - endpoint_native_rpm_preflight.rc == 0
+        fail_msg: ALT_PREFLIGHT_FAILURE:endpoint_native_rpm_preflight_failed
+      tags: [alt_setup_preflight, alt_setup_endpoint_rpm_preflight]
+
     - name: Create a private directory for the verified runtime probe
       ansible.builtin.file:
         path: "{{ endpoint_native_tmp.path }}/probe"
@@ -205,7 +235,7 @@
           binary=./opt/endpoint-agent/versions/3.2.183/endpoint-agent/endpoint-agent
           test -f "$binary" && test -x "$binary" && test ! -L "$binary"
       environment:
-        ENDPOINT_NATIVE_CORE_RPM: "{{ endpoint_native_tmp.path }}/endpoint-alt-pilot-3.2.183-1/endpoint-agent-3.2.183-alt6.x86_64.rpm"
+        ENDPOINT_NATIVE_CORE_RPM: "{{ endpoint_native_core_rpm }}"
       changed_when: false
       no_log: true
 
@@ -286,19 +316,17 @@
       ansible.builtin.include_tasks: verify_config.yml
 
     - name: Run the existing Endpoint native coordinator
-      vars:
-        kit: "{{ endpoint_native_tmp.path }}/endpoint-alt-pilot-3.2.183-1"
       ansible.builtin.command:
         expand_argument_vars: false
         argv:
-          - "{{ kit }}/endpoint-agent-setup"
+          - "{{ endpoint_native_kit_dir }}/endpoint-agent-setup"
           - install
           - --core-rpm
-          - "{{ kit }}/endpoint-agent-3.2.183-alt6.x86_64.rpm"
+          - "{{ endpoint_native_core_rpm }}"
           - --user-sensor-rpm
-          - "{{ kit }}/endpoint-agent-user-sensor-3.2.183-alt6.x86_64.rpm"
+          - "{{ endpoint_native_sensor_rpm }}"
           - --public-key
-          - "{{ kit }}/endpoint-rpm-release.asc"
+          - "{{ endpoint_native_kit_dir }}/endpoint-rpm-release.asc"
       environment:
         ENDPOINT_AGENT_DEPLOYMENT_ENVIRONMENT: staging
         CANARY_ENVIRONMENT: staging

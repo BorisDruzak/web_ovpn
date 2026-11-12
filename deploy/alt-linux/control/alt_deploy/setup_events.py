@@ -23,6 +23,7 @@ FIRST_JOIN_CODES = {'first_join_' + value for value in (
     'ad_quota_exhausted', 'ad_rights_unproven', 'ad_principal_unusable',
     'ad_identity_changed', 'ad_preflight_failed', 'native_quota_exhausted')}
 CODES |= FIRST_JOIN_CODES
+ENDPOINT_RPM_PREFLIGHT_FAILED = 'endpoint_native_rpm_preflight_failed'
 NETWORK_FOLDER_CODES = {'network_folders_ok', 'network_folders_partial', 'network_folders_unknown'}
 INPUT_FIELDS = {'schema_version', 'component_id', 'component_version', 'stage', 'task_id', 'type', 'changed', 'code'}
 STAGE_PRIORITY = ('transaction', 'download', 'verify', 'preflight', 'domain_join',
@@ -105,6 +106,8 @@ def _helper_diagnostic(result,component,bindings):
 
 def _allowed_codes(component,scope):
     allowed=CODES
+    if component == 'software.endpoint_agent':
+        allowed = allowed | {ENDPOINT_RPM_PREFLIGHT_FAILED}
     if component == 'desktop.shortcuts':
         allowed = allowed | NETWORK_FOLDER_CODES
     if 'desktop.kwallet_repair' in scope or 'network.final_dns' in scope:
@@ -124,6 +127,10 @@ def safe_task_event(result, *, component, event_type, diagnostic_binding=None,he
             'task_skipped': 'skipped', 'task_start': 'started'}[event_type]
     if event_type == 'task_failed' and stage == 'preflight':
         code = 'component_preflight_failed'
+        if (component['id'] == 'software.endpoint_agent'
+                and 'alt_setup_endpoint_rpm_preflight' in getattr(task, 'tags', ())
+                and result._result.get('msg') == 'ALT_PREFLIGHT_FAILURE:' + ENDPOINT_RPM_PREFLIGHT_FAILED):
+            code = ENDPOINT_RPM_PREFLIGHT_FAILED
     if (event_type == 'task_ok' and component['id'] == 'desktop.shortcuts'
             and 'alt_setup_network_folders_result' in getattr(task, 'tags', ())):
         message = result._result.get('msg')

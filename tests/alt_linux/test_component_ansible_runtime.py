@@ -247,7 +247,7 @@ def test_native_agent_role_refuses_unscoped_invocation(ansible_runtime):
     assert 'changed=0' in result.stdout
 
 
-@pytest.mark.parametrize("case", ["live", "expired", "bad_fingerprint"])
+@pytest.mark.parametrize("case", ["live", "expired", "bad_fingerprint", "incompatible_rpm"])
 def test_real_ansible_endpoint_assignment_gate(ansible_runtime, tmp_path, case):
     executable, project, env = ansible_runtime
     role = SOURCE / "roles/software_endpoint_agent_native/tasks/main.yml"
@@ -255,6 +255,13 @@ def test_real_ansible_endpoint_assignment_gate(ansible_runtime, tmp_path, case):
     start = next(i for i, task in enumerate(block) if task["name"] == "Read the fingerprint with the signed runtime")
     end = next(i for i, task in enumerate(block) if task["name"] == "Require a live Endpoint installation assignment")
     tasks = block[start:end + 1]
+    check = next(i for i, task in enumerate(block)
+                 if task["name"] == "Test the published RPM pair on the selected workstation")
+    rpm_tasks = block[check:check + 2]
+    rpm_result = "PRIVATE-RPM-DIAGNOSTIC" if case == "incompatible_rpm" else None
+    rpm_tasks[0]["ansible.builtin.command"]["argv"] = [
+        sys.executable, "-c", f"import sys; sys.exit({rpm_result!r})",
+    ]
     machine = "22222222-2222-4222-8222-222222222222"
     installation_id = f"inventory-11111111-1111-4111-8111-111111111111-{machine}-" + "a" * 32
     fingerprint = "sha256:" + "b" * 64
@@ -285,7 +292,7 @@ def test_real_ansible_endpoint_assignment_gate(ansible_runtime, tmp_path, case):
     tasks.append({"name": "Reach the simulated native mutation",
                   "ansible.builtin.file": {"path": str(native_reached), "state": "touch"}})
     play = project / "playbooks/synthetic-endpoint-assignment.yml"
-    play.write_text(yaml.safe_dump([{"hosts": "localhost", "gather_facts": False, "tasks": tasks}]))
+    play.write_text(yaml.safe_dump([{"hosts": "localhost", "gather_facts": False, "tasks": rpm_tasks + tasks}]))
     variables = {"setup_inventory_installation_id": installation_id, "machine_uuid": machine,
                  "ansible_connection": "local", "ansible_python_interpreter": sys.executable}
     result = subprocess.run(
@@ -294,12 +301,15 @@ def test_real_ansible_endpoint_assignment_gate(ansible_runtime, tmp_path, case):
     )
     output = result.stdout + result.stderr
     assert (result.returncode == 0) == (case == "live"), output
-    assert invoked.exists() == (case != "bad_fingerprint")
+    assert invoked.exists() == (case in {"live", "expired"})
     assert native_reached.exists() == (case == "live")
     if case == "expired":
         assert "endpoint_native_assignment_unavailable" in output
     if case == "bad_fingerprint":
         assert "endpoint_native_fingerprint_unavailable" in output
+    if case == "incompatible_rpm":
+        assert "endpoint_native_rpm_preflight_failed" in output
+        assert "PRIVATE-RPM-DIAGNOSTIC" not in output
     assert fingerprint not in output and installation_id not in output
 
 
