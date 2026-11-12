@@ -2474,6 +2474,61 @@ def test_downstream_devices_require_the_expected_live_lldp_pair(tmp_path):
     assert "downstream" not in read()[1]
 
 
+def test_downstream_inventory_pair_requires_matching_live_stp_and_fdb(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    core_mac, endpoint_mac = "02:00:00:00:00:01", "02:00:00:00:00:07"
+    context = {
+        "devices": [
+            {"id": "core", "name": "Core", "kind": "switch", "management_ip": "192.0.2.1",
+             "mac_addresses": [core_mac]},
+            {"id": "access", "name": "Access", "kind": "switch", "management_ip": "192.0.2.2"},
+        ],
+        "links": [{"id": "inventory", "relation": "connected_to", "state": {"verified": True},
+                   "endpoint_a": {"device": "core", "interface": "Ge19"},
+                   "endpoint_b": {"device": "access", "interface": "Port1"}}],
+    }
+    def port(source, name, index):
+        return {"source": source, "name": name, "port_key": f"physical:{index}", "bridge_port": index,
+                "oper_status": "up", "last_seen_at": at, "collector_run_id": 2}
+
+    stp = {"rootPortNumber": 1, "designatedBridgeMac": core_mac, "designatedPortId": "83:9b", "checkedAt": at}
+    network = {
+        "sources": [{"id": i, "name": name, "host": f"192.0.2.{i}", "enabled": True, "driver": "snmp_switch"}
+                    for i, name in enumerate(("core", "access"), 1)],
+        "ports": [port("core", "Ge19", 19), port("access", "Port1", 1), port("access", "Port7", 7)],
+        "stp_root_paths": {"access": stp},
+        "downstream_fdb": {"inventory": {
+            "source": "core", "at": at, "macs": [endpoint_mac],
+            "remote": {"source": "access", "readings": [{"mac": endpoint_mac, "name": "Port7", "at": at}]},
+        }},
+    }
+    path = tmp_path / "graph.json"
+    def read(when=now):
+        graph = build_graph(context, network, {}, {}, {"downstream_mac_links": ["inventory"]}, now)
+        path.write_text(json.dumps(graph), encoding="utf-8")
+        return load_infrastructure_map(path, when)
+
+    graph = read()
+    access = next(node for node in graph["nodes"] if node["id"] == "access")
+    assert access["downstream"]["basis"] == "inventory_stp"
+    assert access["downstream"]["stpCheckedAt"] == at
+    assert access["downstream"]["devices"][0]["switchPort"]["name"] == "Port7"
+    assert all(p.get("pairEvidence") != "current" for edge in graph["links"] for p in edge["portEvidence"])
+    assert all("downstream" not in node for node in read(now + timedelta(minutes=6))["nodes"])
+    network["ports"][2]["oper_status"] = "down"
+    assert all("downstream" not in node for node in read()["nodes"])
+    network["ports"][2]["oper_status"] = "up"
+    stp["designatedBridgeMac"] = "02:00:00:00:00:09"
+    assert all("downstream" not in node for node in read()["nodes"])
+    stp["designatedBridgeMac"] = core_mac
+    context["links"][0]["state"]["verified"] = False
+    assert all("downstream" not in node for node in read()["nodes"])
+
+
 def test_downstream_local_probe_requires_unique_observed_address_and_mac(monkeypatch):
     from app import infrastructure_collect as collector
 

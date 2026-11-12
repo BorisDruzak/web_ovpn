@@ -41,9 +41,9 @@ from netctl.switch_queries import (
 from .infrastructure_backup import backup_policy, backup_service_checks, read_proxmox_backup
 from .infrastructure_map import (
     BACKUP_PROBE_METHOD, BACKUP_SERVICE_ID,
-    CLUSTER_HEALTH_METHODS, CLUSTER_KIND, INTERFACE_NAME, MAX_SNAPSHOT_BYTES, NETWORK_KINDS,
+    CLUSTER_HEALTH_METHODS, CLUSTER_KIND, INTERFACE_NAME, MAX_DOWNSTREAM_SWITCHES, MAX_SNAPSHOT_BYTES, NETWORK_KINDS,
     PVE_DISK_DEVICE, PVE_STORAGE_ID, RECIPROCAL_MAC_SOURCE,
-    SHARED_LLDP_KIND, SHARED_LLDP_SOURCE,
+    SHARED_LLDP_KIND, SHARED_LLDP_SOURCE, STP_ROOT_PATH_MAX_AGE,
     index_port_states, observation_is_fresh, port_label_key,
     project_hypervisor_disks, project_hypervisor_lvm_thin, project_hypervisor_zfs,
 )
@@ -928,7 +928,7 @@ def _downstream_links(context: dict, configured: object) -> dict:
     devices = {device["id"]: device for device in context.get("devices", []) if device.get("kind") == "switch"}
     links = {}
     for link in context.get("links", []):
-        if (link.get("id") not in configured[:8] or link.get("relation") != "connected_to"
+        if (link.get("id") not in configured[:MAX_DOWNSTREAM_SWITCHES] or link.get("relation") != "connected_to"
                 or link.get("state", {}).get("intent") == "absent"):
             continue
         a, b = link["endpoint_a"], link["endpoint_b"]
@@ -1947,24 +1947,37 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             remote_ports = index_port_states(nodes[asset].get("ports", []), now)
             local_label = port_label_key(local["interface"])
             remote_label = port_label_key(remote["interface"])
-            upstream_port = local_ports.get(local_label, {}).get("name", local["interface"])
+            local_port = local_ports.get(local_label, {})
+            remote_port = remote_ports.get(remote_label, {})
+            upstream_port = local_port.get("name", local["interface"])
             local_name = port_label_key(upstream_port)
-            remote_name = port_label_key(remote_ports.get(remote_label, {}).get("name", remote_label))
+            remote_name = port_label_key(remote_port.get("name", remote_label))
             reports = [*physical.get("portEvidence", [])]
             if pair in reciprocal_ports:
                 reports.append(reciprocal_ports[pair])
             proof = {}
+            inventory = False
             for row in reports:
                 if (not row["confirmed"] or port_label_key(row[side]) not in {local_label, local_name}
-                        or port_label_key(row[peer]) not in {remote_label, remote_name}
-                        or not observation_is_fresh(row["at"], now)):
+                        or port_label_key(row[peer]) not in {remote_label, remote_name}):
+                    continue
+                if row["source"] == "GitHub" and physical.get("confirmed"):
+                    inventory = True
+                if not observation_is_fresh(row["at"], now):
                     continue
                 stamp = datetime.fromisoformat(row["at"])
                 if row["source"] in {"LLDP UI_VPN", "LLDP · двустороннее"}:
                     proof.setdefault("lldp", []).append(stamp)
                 elif row["source"] in {RECIPROCAL_MAC_SOURCE, "SNMP · двусторонний FDB"}:
                     proof.setdefault("reciprocal_mac", []).append(stamp)
-            basis = next((key for key in ("lldp", "reciprocal_mac") if key in proof), "")
+            stp = nodes[asset].get("stpRootPath", {})
+            if (inventory and local_port.get("state") == remote_port.get("state") == "up"
+                    and stp.get("bridgeDeviceId") == upstream
+                    and port_label_key(stp.get("localPort", "")) == remote_name
+                    and observation_is_fresh(stp.get("checkedAt"), now, max_age=STP_ROOT_PATH_MAX_AGE)):
+                proof["inventory_stp"] = [min(datetime.fromisoformat(reading["checkedAt"])
+                                              for reading in (local_port, remote_port, stp))]
+            basis = next((key for key in ("lldp", "reciprocal_mac", "inventory_stp") if key in proof), "")
             if not basis:
                 continue
             remote_sample = sample.get("remote", {})
@@ -1983,7 +1996,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 if (key not in {remote_label, remote_name} and port.get("state") == "up"
                         and datetime.fromisoformat(port["checkedAt"]) == datetime.fromisoformat(at)):
                     observed_ports[mac] = {"name": name, "checkedAt": at}
-            if basis == "reciprocal_mac" or not own_macs.intersection(learned):
+            if basis != "lldp" or not own_macs.intersection(learned):
                 learned = set(observed_ports)
             if not learned - own_macs:
                 continue
