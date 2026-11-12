@@ -1668,6 +1668,25 @@ def _topology_port_pairs(nodes: dict, links: list[dict], host_ids: set[str] | No
                 **({"portObservations": {"a": reading}} if reading else {}),
                 **({"lldpPeers": {"a": lldp_peers}} if lldp_peers else {}),
             }
+    for link in links:
+        if link["kind"] != SHARED_LLDP_KIND or not link["confirmed"]:
+            continue
+        a, b = link["a"], link["b"]
+        for report in link["portEvidence"]:
+            port = report["a"]
+            key = a, b, port_key(a, port)
+            if (report["source"] != SHARED_LLDP_SOURCE or not report["confirmed"] or not port or report["b"]
+                    or key in known_ports or key in discovered):
+                continue
+            reading = observations(report)
+            discovered[key] = {
+                "a": a, "b": b, "nameA": nodes[a]["name"], "nameB": nodes[b]["name"],
+                "portA": port, "portB": "", "basis": "shared_lldp",
+                "missingPortSides": ["b"], "identifiedPeerSides": ["a"],
+                "observedPaths": [{"portA": port, "portB": "", "source": SHARED_LLDP_SOURCE, "checkedAt": report["at"]}],
+                **({"portObservations": reading} if reading else {}),
+                **({"lldpPeers": report["lldpPeers"]} if "lldpPeers" in report else {}),
+            }
     for row in discovered.values():
         pending[row["a"], row["b"], row["portA"], ""] = row
     return counts, inventory_pairs, alerts, [pending[key] for key in sorted(pending)]
@@ -2629,11 +2648,15 @@ def load_infrastructure_map(
                         lldp_peers = {}
                         for side, peer_side in (("a", "b"), ("b", "a")):
                             port = states.get(side, {})
+                            alternate_chassis = (report.get("sharedLldpChassis")
+                                                 if source == SHARED_LLDP_SOURCE and side == "a" else None)
                             matches = [
                                 {"localPort": port["name"], "checkedAt": port["lldpCheckedAt"],
                                  **{key: neighbor[key] for key in ("chassisId", "portId", "portIdSubtype") if key in neighbor}}
                                 for neighbor in port.get("lldpNeighbors", [])
                                 if neighbor.get("inventoryDeviceId") == edge[peer_side]
+                                or (alternate_chassis and not neighbor.get("inventoryDeviceId")
+                                    and neighbor.get("chassisId") == alternate_chassis)
                             ]
                             if matches:
                                 lldp_peers[side] = matches

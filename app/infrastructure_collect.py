@@ -1433,7 +1433,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
 
     def edge(a, b, kind, source, confirmed=True, details="", ports=None, at=None, vlan=None, virtual=None,
              evidence_only=False, lacp_polled_at=None, expected_vlans=None, inventory_sources=None,
-             learned_endpoint=None, management_address=None):
+             learned_endpoint=None, management_address=None, shared_lldp_chassis=None):
         if a not in nodes or b not in nodes or a == b:
             return
         key = (tuple(sorted((a, b))), kind)
@@ -1463,6 +1463,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 report["learnedEndpoint"] = learned_endpoint
             if management_address:
                 report["managementAddress"] = management_address
+            if shared_lldp_chassis:
+                report["sharedLldpChassis"] = shared_lldp_chassis
             if report not in evidence:
                 evidence.append(report)
         if evidence:
@@ -2072,7 +2074,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                     observed_at = stamp.isoformat()
                 edge(a, neighbor, SHARED_LLDP_KIND, SHARED_LLDP_SOURCE, current_chassis,
                      details=item["properties"].get("Сопоставление LLDP", "") if conflict else "",
-                     ports=(port, ""), at=observed_at)
+                     ports=(port, ""), at=observed_at,
+                     shared_lldp_chassis=chassis_mac if current_chassis and alternate else None)
             else:
                 edge(a, neighbor, "Сетевое соединение", "LLDP UI_VPN", direct and not conflict,
                      details=note.removeprefix(" · "), ports=(port, remote or ""), at=observed_at)

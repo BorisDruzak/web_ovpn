@@ -3023,7 +3023,7 @@ def test_lldp_multiple_neighbors_on_one_port_do_not_confirm_direct_links():
 
 def test_shared_lldp_ports_publish_paths_and_require_live_port_and_unique_chassis(tmp_path):
     from app.infrastructure_collect import build_graph
-    from app.infrastructure_map import load_infrastructure_map
+    from app.infrastructure_map import load_infrastructure_map, summarize_topology
 
     now = datetime.now(timezone.utc)
     at = now.isoformat()
@@ -3067,6 +3067,13 @@ def test_shared_lldp_ports_publish_paths_and_require_live_port_and_unique_chassi
         "portId": "bridge/ether3", "portIdSubtype": "interface_name",
     }]}
     assert "pairEvidence" not in proof
+    audit = summarize_topology(snapshot())["topologyAudit"]
+    row, = audit["pending"]
+    assert (row["basis"], row["a"], row["portA"], row["b"], row["portB"]) == (
+        "shared_lldp", "switch", proof["a"], "one", "",
+    )
+    assert row["lldpPeers"] == proof["lldpPeers"]
+    assert not any(audit["directLinks"].values())
     provenance = {"checkedAt": at, "observerId": "switch", "observerPort": "gigabitEthernet 1/0/48", "source": "LLDP"}
     swt_firmware = {**provenance, "product": "SWT-1318P", "version": "1.2.3", "build": "210419"}
     assert firmware() == {"one": swt_firmware}
@@ -3082,9 +3089,14 @@ def test_shared_lldp_ports_publish_paths_and_require_live_port_and_unique_chassi
     neighbors = [{"identity": "two", "address": address, "mac": unexpected, "last_seen_at": at}]
     network["router_neighbors"] = neighbors
     assert read()["two"]["confirmed"]
+    rows_by_peer = {row["b"]: row for row in summarize_topology(snapshot())["topologyAudit"]["pending"]}
+    assert set(rows_by_peer) == {"one", "two"}
+    assert rows_by_peer["two"]["lldpPeers"]["a"][0]["chassisId"] == unexpected
+    assert rows_by_peer["two"]["portB"] == ""
     assert firmware()["two"] == {**provenance, "product": "RouterOS", "version": "7.19.6"}
     neighbors[0]["last_seen_at"] = (now - timedelta(hours=1)).isoformat()
     assert not read()["two"]["confirmed"]
+    assert [row["b"] for row in summarize_topology(snapshot())["topologyAudit"]["pending"]] == ["one"]
     assert "two" not in firmware()
     neighbors[0]["last_seen_at"] = at
     neighbors.append({**neighbors[0], "mac": first})
