@@ -91,8 +91,33 @@ def persist_route_run(db: Session, *, owner: str, result: dict) -> None:
     db.add(row)
 
 
+def route_history_window(
+    since: str | None, until: str | None, *, assume_utc: bool = False,
+) -> tuple[datetime | None, datetime | None]:
+    def parse(value: str | None) -> datetime | None:
+        if value is None:
+            return None
+        if len(value) > 40 or "T" not in value:
+            raise ValueError("Expected an ISO 8601 timestamp")
+        moment = datetime.fromisoformat(value)
+        if moment.tzinfo is None:
+            if not assume_utc:
+                raise ValueError("A time zone is required")
+            return moment.replace(tzinfo=UTC)
+        return moment.astimezone(UTC)
+
+    try:
+        start, end = parse(since), parse(until)
+    except (ValueError, OverflowError) as exc:
+        raise ValueError("Invalid route history timestamp") from exc
+    if start is not None and end is not None and start >= end:
+        raise ValueError("since must precede until")
+    return start, end
+
+
 def list_route_runs(
     db: Session, *, owner: str, profile: str | None, limit: int,
+    since: datetime | None = None, until: datetime | None = None,
 ) -> list[dict]:
     statement = select(NetworkRouteRun).where(
         NetworkRouteRun.owner.in_((owner, SCHEDULE_OWNER)),
@@ -100,6 +125,10 @@ def list_route_runs(
     )
     if profile is not None:
         statement = statement.where(NetworkRouteRun.profile == profile)
+    if since is not None:
+        statement = statement.where(NetworkRouteRun.checked_at >= since)
+    if until is not None:
+        statement = statement.where(NetworkRouteRun.checked_at < until)
     statement = statement.order_by(NetworkRouteRun.checked_at.desc(), NetworkRouteRun.id.desc()).limit(
         max(0, min(limit, MAX_ROUTE_RUN_LIST))
     )

@@ -221,7 +221,12 @@ TOOLS: dict[str, dict[str, Any]] = {
     ),
     "openvpn_network_route_runs": tool_schema(
         "List route availability results with per-path evidence from scheduled runs and the current actor's manual runs.",
-        {"profile": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}},
+        {
+            "profile": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+            "since": {"type": "string", "format": "date-time", "description": "Inclusive timestamp with time zone"},
+            "until": {"type": "string", "format": "date-time", "description": "Exclusive timestamp with time zone"},
+        },
     ),
     "openvpn_network_run_check": tool_schema(
         "Run a registered network check. route_availability compares configured paths in a catalog profile. iperf3, https_speed and pcap_capture also use profiles. iperf3 and https_speed accept send/receive. loop_check optionally takes a switch source.",
@@ -851,6 +856,7 @@ def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     if name == "openvpn_network_route_runs":
         return api_request("GET", _query_path("/api/v1/network/diagnostics/route-runs", [
             ("profile", arguments.get("profile", "")), ("limit", arguments.get("limit", 20)),
+            ("since", arguments.get("since", "")), ("until", arguments.get("until", "")),
         ]))
     if name == "openvpn_network_run_check":
         return api_request("POST", "/api/v1/network/diagnostics/checks", arguments)

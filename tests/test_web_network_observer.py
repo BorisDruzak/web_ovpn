@@ -2439,6 +2439,51 @@ def test_route_availability_catalog_execution_and_history(tmp_path, monkeypatch)
     assert [call[:-1] for call in calls] == [["path", "probe", "--profile=central-wan", "--probe=rtk"]] * 2
 
 
+def test_route_history_filters_by_profile_and_time_in_api_and_ui(tmp_path, monkeypatch):
+    from app.db import get_sessionmaker
+    from app.network_route_history import persist_route_run
+
+    client, headers = make_client(tmp_path, monkeypatch)
+    since = datetime.now(timezone.utc).replace(second=0, microsecond=0) - timedelta(minutes=30)
+    until = since + timedelta(minutes=5)
+    with get_sessionmaker()() as db:
+        for owner, profile, checked, label in [
+            ("schedule:", "central-wan", since - timedelta(minutes=1), "before-window"),
+            ("schedule:", "central-wan", since, "in-window"),
+            ("schedule:", "central-wan", until, "after-window"),
+            ("schedule:", "archive-ipsec", since, "different-profile"),
+            ("user:another", "central-wan", since, "private-run"),
+        ]:
+            persist_route_run(db, owner=owner, result={
+                "check": "route_availability", "target": profile, "checked_at": checked.isoformat(),
+                "status": "unreachable", "result": {"label": label, "probes": []},
+            })
+        db.commit()
+
+    api = "/api/v1/network/diagnostics/route-runs"
+    params = {
+        "profile": "central-wan",
+        "since": since.astimezone(timezone(timedelta(hours=5))).isoformat(),
+        "until": until.isoformat(),
+    }
+    response = client.get(api, headers=headers, params=params)
+    assert response.status_code == 200
+    assert [row["result"]["label"] for row in response.json()["data"]["runs"]] == ["in-window"]
+    assert client.get(api, headers=headers, params={"since": since.strftime("%Y-%m-%dT%H:%M")}).status_code == 422
+    assert client.get(api, headers=headers, params={"since": until.isoformat(), "until": since.isoformat()}).status_code == 422
+
+    login(client)
+    ui = "/network/diagnostics"
+    params.update(since=since.strftime("%Y-%m-%dT%H:%M"), until=until.strftime("%Y-%m-%dT%H:%M"))
+    page = client.get(ui, params=params)
+    assert page.status_code == 200
+    assert "in-window" in page.text and "Интервал UTC" in page.text
+    assert all(label not in page.text for label in ("before-window", "after-window", "different-profile", "private-run"))
+    empty = client.get(ui, params={**params, "profile": "missing-profile"})
+    assert empty.status_code == 200 and "За выбранный интервал запусков нет" in empty.text
+    assert client.get(ui, params={**params, "until": params["since"]}).status_code == 422
+
+
 def test_network_active_check_uses_shared_throttle(tmp_path, monkeypatch):
     client, headers = make_client(tmp_path, monkeypatch)
     from app import network_checks

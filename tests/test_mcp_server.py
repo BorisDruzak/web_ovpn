@@ -17,9 +17,14 @@ def test_route_availability_mcp_uses_existing_http_check_and_history(monkeypatch
     check = {"check": "route_availability", "profile": "central-wan"}
     server.call_tool("openvpn_network_run_check", check)
     server.call_tool("openvpn_network_route_runs", {"profile": "central-wan", "limit": 3})
+    server.call_tool("openvpn_network_route_runs", {
+        "profile": "central-wan", "since": "2026-11-13T00:05:00+05:00", "until": "2026-11-12T19:11:00Z",
+    })
     assert calls == [
         ("POST", "/api/v1/network/diagnostics/checks", check),
         ("GET", "/api/v1/network/diagnostics/route-runs?profile=central-wan&limit=3"),
+        ("GET", "/api/v1/network/diagnostics/route-runs?profile=central-wan&limit=20"
+                "&since=2026-11-13T00%3A05%3A00%2B05%3A00&until=2026-11-12T19%3A11%3A00Z"),
     ]
     schema = server.TOOLS["openvpn_network_run_check"]["inputSchema"]
     assert "route_availability" in schema["properties"]["check"]["enum"]

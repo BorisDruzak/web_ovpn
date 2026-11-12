@@ -26,6 +26,7 @@
 {% block content %}
 <nav class="toolbar" aria-label="Данные сети">
   <a href="/network/interfaces">История интерфейсов</a>
+  <a href="#route-history">История маршрутов</a>
   <a href="/network/routes">Таблица маршрутов</a>
   <a href="/network/paths">Пути VPN</a>
 </nav>
@@ -240,9 +241,28 @@
   </ul>
 </section>
 {% endif %}
-{% if route_runs %}
-<section class="card">
+<section id="route-history" class="card">
   <h2>История доступности по маршрутам</h2>
+  <form class="toolbar" method="get" action="/network/diagnostics#route-history" aria-label="Интервал UTC">
+    <label>Профиль истории
+      <select name="profile">
+        <option value="">Все профили</option>
+        {% for profile_id, label in route_history_profiles.items() %}
+        <option value="{{ profile_id }}"{% if route_history.profile == profile_id %} selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Начало (UTC) <input type="datetime-local" name="since" value="{{ route_history.since or '' }}"></label>
+    <label>Конец (UTC) <input type="datetime-local" name="until" value="{{ route_history.until or '' }}"></label>
+    <button class="button secondary" type="submit">Показать историю</button>
+  </form>
+  {% if route_history_error %}
+  <p class="alert bad" role="alert">{{ route_history_error }}</p>
+  {% elif not route_runs %}
+  <p>За выбранный интервал запусков нет.</p>
+  {% elif route_runs | length == route_history_limit %}
+  <p>Показаны последние {{ route_history_limit }} запусков.</p>
+  {% endif %}
   {% for run in route_runs %}
   <details>
     <summary>{{ run.result.label }} · {{ route_status(run.status, run.result.probes, status_labels) }} · {{ 'По расписанию' if run.trigger == 'scheduled' else 'Вручную' }}{% if run.result.path_changes %} · Сменился первый узел{% endif %}{% if run.result.probe_changes %} · Изменились статусы проб{% endif %} · <time datetime="{{ run.checked_at }}">{{ run.checked_at }}</time></summary>
@@ -256,7 +276,6 @@
   </details>
   {% endfor %}
 </section>
-{% endif %}
 {% if runs %}
 <section class="card">
   <h2>Последние запуски</h2>

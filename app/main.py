@@ -49,8 +49,8 @@ from .network_checks import (
     CHECKS, CHECK_STATUS_LABELS, NETWORK_CHECK_INPUT, host_availability_action_error,
     interface_history_args, list_network_check_runs, run_audited_network_check,
 )
-from .network_probe_profiles import probe_catalog
-from .network_route_history import list_route_runs
+from .network_probe_profiles import PROFILE_ID_PATTERN, probe_catalog
+from .network_route_history import MAX_ROUTE_RUN_LIST, list_route_runs, route_history_window
 from .endpoint_agent_network import (
     attach_endpoint_agent_statuses,
     endpoint_agent_refresh_status,
@@ -2566,19 +2566,48 @@ def render_network_checks(request: Request, db: Session, *, result=None, values=
     user = current_user(request, db)
     can_run = user_has_permission(user, "network:diagnose")
     sources, _ = net_cli_call(request, ["sources", "list"], timeout=10) if can_run else ({}, "")
+    catalog = probe_catalog()
+    history = {key: request.query_params.get(key) or None for key in ("profile", "since", "until")}
+    profile = history["profile"]
+    history_error = ""
+    route_runs = []
+    history_limit = MAX_ROUTE_RUN_LIST if any(history.values()) else 12
+    try:
+        if profile is not None and not re.fullmatch(PROFILE_ID_PATTERN, profile):
+            raise ValueError("Invalid route profile")
+        start, end = route_history_window(history["since"], history["until"], assume_utc=True)
+    except ValueError:
+        history_error = "Проверьте профиль и границы интервала UTC."
+    else:
+        if user:
+            route_runs = list_route_runs(
+                db, owner="user:" + user.username, profile=profile,
+                limit=history_limit, since=start, until=end,
+            )
+        history.update(
+            since=start.strftime("%Y-%m-%dT%H:%M") if start else None,
+            until=end.strftime("%Y-%m-%dT%H:%M") if end else None,
+        )
+    history_profiles = {row["id"]: row["label"] for row in catalog["routes"]}
+    if profile and not history_error:
+        history_profiles.setdefault(profile, profile)
     return render(request, "network_checks.html", {
         "can_run": can_run,
         "sources": [row for row in sources.get("sources", []) if row.get("enabled")],
         "result": result,
         "runs": list_network_check_runs(db, user.username, 12) if user else [],
-        "route_runs": list_route_runs(db, owner="user:" + user.username, profile=None, limit=12) if user else [],
+        "route_runs": route_runs,
+        "route_history": history,
+        "route_history_profiles": history_profiles,
+        "route_history_error": history_error,
+        "route_history_limit": history_limit,
         "check_titles": {item["check"]: item["title"] for item in CHECKS},
-        "probe_profiles": probe_catalog() if can_run else {},
+        "probe_profiles": catalog if can_run else {},
         "captures": list_captures("user:" + user.username) if can_run and user else [],
         "values": values or {},
         "status_labels": CHECK_STATUS_LABELS,
         "error": error,
-    }, db, status_code=422 if error else 200)
+    }, db, status_code=422 if error or history_error else 200)
 
 
 @app.get("/network/diagnostics", response_class=HTMLResponse)
