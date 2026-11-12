@@ -373,14 +373,14 @@ def _public_service_check(check: dict, now: datetime) -> dict:
             and reason in ("probe_target_unconfirmed", "probe_target_mismatch")):
         return {**result, "target": "", "skipped": True, "reason": reason}
     identified_icmp = result["method"] in ("ICMP · LLDP + ARP", "ICMP · ARP + FDB")
+    if identified_icmp or (result["source"] == "UI_VPN" and "identityCheckedAt" in check):
+        identity_at = check.get("identityCheckedAt")
+        if observation_is_fresh(identity_at, now):
+            result["identityCheckedAt"] = _time(identity_at).isoformat()
+        else:
+            result.update(state="unknown", stale=True)
     icmp = identified_icmp or result["method"] in ("ICMP", "ICMP адреса из инвентаря", "ICMP · VLAN")
     if icmp:
-        identity_at = check.get("identityCheckedAt")
-        if identified_icmp:
-            if observation_is_fresh(identity_at, now):
-                result["identityCheckedAt"] = _time(identity_at).isoformat()
-            else:
-                result.update(state="unknown", stale=True)
         round_trip = check.get("roundTripMs")
         if type(round_trip) in (int, float) and 0 <= round_trip <= 3000:
             result["roundTripMs"] = round_trip

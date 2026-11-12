@@ -55,6 +55,7 @@ KINDS = {
     "endpoint": "Рабочая станция", "firewall_dns_host": "Межсетевой экран и DNS",
     "security_gateway": "Шлюз", "ip_pbx": "АТС", "fxs_gateway": "Телефонный шлюз",
     "management_controller": "Контроллер управления",
+    "video_recorder": "Видеорегистратор",
 }
 HEALTH = {"success": "ok", "ok": "ok", "partial": "warn", "warn": "warn", "critical": "critical"}
 MAC = re.compile(r"(?i)(?:[0-9a-f]{2}:){5}[0-9a-f]{2}")
@@ -1016,11 +1017,16 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             item["serviceChecks"] = _route_checks(intent, route["source"], network.get("routes", []), now,
                                                  host_routes=route.get("host_routes"))
         edge(host, service["id"], "Размещение", "GitHub")
+    identity_services = {}
     for service_id, spec in bindings.get("asset_services", {}).items():
         asset = spec["asset"]
         if asset in address_by_asset and service_id not in nodes:
             item = node(service_id, spec["label"], "Сервис", nodes[asset]["site"], "UI_VPN")
-            item["probeTargetIP"] = address_by_asset[asset]
+            if spec.get("require_network_identity") is True:
+                item["probeTargetIP"] = None
+                identity_services.setdefault(asset, []).append(item)
+            else:
+                item["probeTargetIP"] = address_by_asset[asset]
             edge(asset, service_id, "Размещение", "Настройки карты")
     backup = bindings.get("proxmox_backup_monitor")
     backup_observation = pve.get("backup", {})
@@ -1770,12 +1776,14 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                     checked = min(checked, datetime.fromisoformat(pve_at))
                 edge(switch, asset, "Путь по MAC-таблице", provenance, details=address,
                      ports=(port_label(switch_source, port), remote_port), at=checked.isoformat(), vlan=row["vlan_id"])
-            if (asset_ip_checks.get(asset) == address and declared_devices_by_mac.get(mac) == {asset}
-                    and "probeTargetIdentityAt" not in nodes[asset]):
+            if declared_devices_by_mac.get(mac) == {asset}:
                 checked = min(arp_at, datetime.fromisoformat(max(live)),
-                              max(datetime.fromisoformat(row["observed_at"]) for row in observations))
-                nodes[asset].update(probeTargetIP=address, probeTargetIdentityAt=checked.isoformat(),
-                                    probeTargetIdentityMethod="ICMP · ARP + FDB")
+                              max(datetime.fromisoformat(row["observed_at"]) for row in observations)).isoformat()
+                for item in identity_services.get(asset, []):
+                    item.update(probeTargetIP=address, probeTargetIdentityAt=checked)
+                if asset_ip_checks.get(asset) == address and "probeTargetIdentityAt" not in nodes[asset]:
+                    nodes[asset].update(probeTargetIP=address, probeTargetIdentityAt=checked,
+                                        probeTargetIdentityMethod="ICMP · ARP + FDB")
     for spec in bindings.get("lacp_links", []):
         asset, aggregate = spec["asset"], spec["aggregate"]
         if asset not in nodes:

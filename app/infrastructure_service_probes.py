@@ -860,7 +860,7 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
         identity_method = node.get("probeTargetIdentityMethod")
         if identity_method != "ICMP · ARP + FDB":
             identity_method = "ICMP · LLDP + ARP" if node["kind"] == "Коммутатор" else None
-        identity_at = node.get("probeTargetIdentityAt") if identity_method else None
+        identity_at = node.get("probeTargetIdentityAt") if service or identity_method else None
         for spec in specs:
             protocol = spec["type"]
             method = PROBE_METHODS[protocol]
@@ -913,9 +913,9 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 ) else None,
                 "checkedAt": datetime.now(timezone.utc).isoformat(),
             }
-            if identity_at and protocol == "icmp" and not skip_reason:
+            if identity_at and not skip_reason and (service or protocol == "icmp"):
                 observation["identityCheckedAt"] = identity_at
-                if details["state"] == "reachable":
+                if not service and details["state"] == "reachable":
                     management_observation = {"state": "reachable", "source": "UI_VPN", "method": method,
                                               "checkedAt": identity_at}
             checks.append(observation)

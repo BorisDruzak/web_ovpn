@@ -3071,6 +3071,50 @@ def test_configured_asset_fdb_path_is_scoped_and_requires_a_unique_live_port(mon
     assert "probeTargetIP" not in next(node for node in graph["nodes"] if node["id"] == "gateway")
 
 
+def test_asset_service_can_require_current_fdb_and_arp_identity(monkeypatch, tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+    from app.infrastructure_service_probes import apply_service_probes
+
+    now = datetime.now(timezone.utc)
+    observed = (now - timedelta(minutes=24)).isoformat()
+    ip, mac = "192.0.2.22", "02:00:00:00:00:22"
+    context = {"devices": [{"id": "recorder", "name": "Recorder", "kind": "video_recorder",
+                            "management_ip": ip, "mac_addresses": [mac]}]}
+    network = {"sources": [{"id": 1, "name": "switch", "driver": "snmp_switch", "enabled": True}],
+               "ports": [{"source": "switch", "port_key": "ifindex:15", "name": "ge15", "oper_status": "up",
+                          "last_seen_at": observed}],
+               "arp": [{"ip": ip, "mac": mac, "last_seen_at": observed}],
+               "asset_fdb": [{"source_id": 1, "mac": mac, "port_key": "ifindex:15", "vlan_id": 1,
+                              "observed_at": observed}]}
+    bindings = {"asset_fdb_paths": {"recorder": "switch"},
+                "asset_services": {"recorder-web": {"asset": "recorder", "label": "Web", "require_network_identity": True}}}
+    spec = {"type": "http", "ip": ip, "port": 80, "path": "/login", "body_contains": "login"}
+    calls = []
+
+    def probe(probe_spec):
+        calls.append(probe_spec)
+        return {"state": "reachable", "httpStatus": 200}
+
+    monkeypatch.setattr("app.infrastructure_service_probes._http_probe", probe)
+    snapshot = tmp_path / "map.json"
+
+    def read(when=None):
+        graph = build_graph(context, network, {}, {}, bindings, now)
+        apply_service_probes(graph["nodes"], {"recorder-web": [spec]})
+        snapshot.write_text(json.dumps(graph), encoding="utf-8")
+        return next(node for node in load_infrastructure_map(snapshot, when)["nodes"] if node["id"] == "recorder-web")
+
+    node = read()
+    assert node["mapStatus"] == "ok" and node["serviceChecks"][0]["identityCheckedAt"] == observed
+    assert read(now + timedelta(minutes=2))["mapStatus"] == "unknown"
+    calls.clear()
+    network["asset_fdb"].clear()
+    node = read()
+    assert calls == []
+    assert node["mapStatus"] == "unknown" and node["serviceChecks"][0]["reason"] == "probe_target_unconfirmed"
+
+
 def test_hypervisor_fdb_path_reports_management_interface_without_claiming_direct_cable(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map
