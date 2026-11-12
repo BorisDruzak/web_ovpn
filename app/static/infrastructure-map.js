@@ -599,6 +599,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       row.append(make('strong', [iface.guestPort, iface.bridge, attachment.hypervisor.name].filter(Boolean).join(' → ')));
       const state = iface.linkDisabled ? 'Адаптер отключён' : iface.bridgeActive === false ? 'Мост неактивен' : '';
       if (state) row.append(make('small', state));
+      for (const {address, source, method, checkedAt} of iface.ipv4Observations ?? []) {
+        row.append(make('small', [address, source, method, formatTime(checkedAt)].join(' · ')));
+      }
       if (iface.localNeighbor) {
         const {vlan, interface: localInterface, peerAddress, checkedAt} = iface.localNeighbor;
         row.append(make('small', ['Соседство VLAN ' + vlan + ' подтверждено', localInterface + ' → ' + peerAddress,

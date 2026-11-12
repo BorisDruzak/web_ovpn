@@ -1490,6 +1490,23 @@ def _attachment_node(node: dict) -> dict:
     return {key: node[key] for key in ("id", "name", "kind", "vmid", "mapStatus") if node.get(key) is not None}
 
 
+def _guest_ipv4_observations(value: object, now: datetime) -> list[dict]:
+    observations = []
+    for row in _rows(value, 8):
+        address = row.get("address")
+        if not isinstance(address, str) or not observation_is_fresh(row.get("checkedAt"), now):
+            continue
+        try:
+            address = str(ipaddress.IPv4Address(address))
+        except ValueError:
+            continue
+        source, method = _text(row.get("source"), 64), _text(row.get("method"), 64)
+        if source and method:
+            observations.append({"address": address, "checkedAt": _time(row["checkedAt"]).isoformat(),
+                                 "source": source, "method": method})
+    return observations
+
+
 def _guest_attachments(nodes: dict, links: list[dict], guest_ids: list[str]) -> dict:
     placements = defaultdict(list)
     physical = defaultdict(list)
@@ -1546,6 +1563,8 @@ def _guest_attachments(nodes: dict, links: list[dict], guest_ids: list[str]) -> 
                          "uplinks": virtual["uplinks"], "switchObservations": []}
             if "vlan" in report:
                 interface["vlan"] = report["vlan"]
+            if "ipv4Observations" in virtual:
+                interface["ipv4Observations"] = virtual["ipv4Observations"]
             neighbors = local_neighbors[guest_id, interface["guestPort"]]
             if len(neighbors) == 1 and not virtual["linkDisabled"] and virtual["bridgeActive"] is True:
                 interface["localNeighbor"], = neighbors
@@ -2016,6 +2035,9 @@ def load_infrastructure_map(
                             and observation_is_fresh(match.get("at"), now)
                         ],
                     }
+                    if (evidence[-1]["confirmed"] and not evidence[-1]["virtual"]["linkDisabled"]
+                            and (ipv4_observations := _guest_ipv4_observations(virtual.get("ipv4Observations"), now))):
+                        evidence[-1]["virtual"]["ipv4Observations"] = ipv4_observations
                     switch_uplink = virtual.get("switchUplink")
                     if isinstance(switch_uplink, dict) and evidence[-1]["confirmed"]:
                         switch_id, port = _text(switch_uplink.get("id")), _text(switch_uplink.get("port"), 64)

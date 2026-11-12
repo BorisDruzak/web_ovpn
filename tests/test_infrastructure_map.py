@@ -5842,14 +5842,17 @@ def test_guest_reachability_accepts_current_arp_with_newer_successful_probe():
     assert "reachability" not in guest()
 
 
-def test_guest_arp_probe_requires_on_link_identity_and_current_proxmox_interface(monkeypatch):
+def test_guest_arp_probe_requires_on_link_identity_and_current_proxmox_interface(monkeypatch, tmp_path):
     from app import infrastructure_collect as collector
+    from app.infrastructure_map import load_infrastructure_map, summarize_guest_attachment
 
     now = datetime.now(timezone.utc)
     ip, mac = "192.0.2.21", "02:00:00:00:00:03"
     guest = {"vmid": 108, "node": "pve1", "type": "qemu", "status": "running"}
     config = {"net0": f"virtio={mac},bridge=vmbr0"}
-    pve = {"cluster": [], "nodes": [], "guests": [guest], "configs": {"108": config}}
+    config["net1"] = "virtio=02:00:00:00:00:04,bridge=vmbr1"
+    pve = {"cluster": [], "nodes": [{"node": "pve1", "status": "online"}],
+           "guests": [guest], "configs": {"108": config}}
     arp = {"ip": ip, "mac": mac, "last_seen_at": now.isoformat()}
     network = {"arp": [arp]}
     route = {"dev": "ens18"}
@@ -5867,6 +5870,19 @@ def test_guest_arp_probe_requires_on_link_identity_and_current_proxmox_interface
     node = next(node for node in graph["nodes"] if node.get("vmid") == 108)
     assert node["reachability"]["source"] == "UI_VPN"
     assert node["properties"]["IP проверки по ARP"] == ip
+    path = tmp_path / "infrastructure.json"
+
+    def interfaces():
+        path.write_text(json.dumps(collector.build_graph({}, network, {}, pve, {}, datetime.now(timezone.utc))),
+                        encoding="utf-8")
+        guest, = summarize_guest_attachment(load_infrastructure_map(path), "pve-guest:108")["attachment"]["guests"]
+        return {row["guestPort"]: row for row in guest["interfaces"]}
+
+    addresses = interfaces()
+    assert addresses["net0"]["ipv4Observations"] == [
+        {"address": ip, "checkedAt": node["reachability"]["checkedAt"], "source": "UI_VPN", "method": "ICMP · ARP"},
+    ]
+    assert "ipv4Observations" not in addresses["net1"]
     assert pings == [ip]
     route["gateway"] = "192.0.2.1"
     assert collect() == {}
@@ -5880,6 +5896,7 @@ def test_guest_arp_probe_requires_on_link_identity_and_current_proxmox_interface
     network["arp"].pop()
     config["net0"] += ",link_down=1"
     assert collect() == {}
+    assert "ipv4Observations" not in interfaces()["net0"]
     assert pings == [ip, ip]
 
 

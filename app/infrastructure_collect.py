@@ -2303,11 +2303,22 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                            if INTERFACE_NAME.fullmatch(value) and value != "none"]
                 active = observed_bridge.get("active")
                 switch_ports = []
+                ipv4_observations = {}
                 if status == "ok" and not disabled and interface_mac_counts[mac] == 1 and mac_counts[mac] == 1:
                     switch_ports = [
                         report for report in guest_switch_ports.get(mac, [])
                         if (host, report["id"], report["port"].casefold()) in verified_host_ports
                     ]
+                    if guest_ids[vmid] == 1 and observation_is_fresh(pve_at, now):
+                        for address, observation in arp_checks.get(mac, []):
+                            stamp = observation["checkedAt"]
+                            if ":" in address or not observation_is_fresh(stamp, now):
+                                continue
+                            stamp = datetime.fromisoformat(stamp).astimezone(timezone.utc).isoformat()
+                            if stamp > ipv4_observations.get(address, {}).get("checkedAt", ""):
+                                ipv4_observations[address] = {"address": address, "checkedAt": stamp,
+                                                               "source": observation["source"],
+                                                               "method": observation["method"]}
                 uplink = observed_bridge.get("bridge_ports")
                 if (host in online_hypervisors and active == 1 and observation_is_fresh(pve_at, now)
                         and uplink in pve.get("activePorts", {}).get(host, [])):
@@ -2317,6 +2328,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                         ports[uplink] = max(ports.get(uplink, checked), checked)
                 virtual = {"linkDisabled": disabled, "bridgeActive": bool(active) if active in (0, 1) else None,
                            "uplinks": uplinks, "switchPorts": switch_ports}
+                if ipv4_observations:
+                    virtual["ipv4Observations"] = list(ipv4_observations.values())[:8]
                 edge(host, key, "Размещение ВМ", "Proxmox", details=f"VM {vmid}", at=pve_at,
                      ports=(bridge, name), vlan=vlan, virtual=virtual)
         locations = Counter((host, uplink) for (host, _, _), ports in uplink_evidence.items() for uplink in ports)
