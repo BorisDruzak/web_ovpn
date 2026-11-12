@@ -496,6 +496,8 @@ def test_service_distinguishes_partial_failure_and_unconfirmed_http_responses(mo
                 "/unexpected": (200, b"Sign in"),
                 "/unavailable": (503, b"Unavailable"),
                 "/redirect": (302, b"Redirect"),
+                "/named": (200, b"Healthy") if self.headers["Host"] == f"directum.example:{self.server.server_port}"
+                else (404, b"Wrong host"),
             }[self.path]
             self.send_response(code)
             self.send_header("Content-Type", "text/html")
@@ -511,7 +513,7 @@ def test_service_distinguishes_partial_failure_and_unconfirmed_http_responses(mo
             base = {"ip": "127.0.0.1", "port": server.server_port, "type": "http"}
             client = {**base, "path": "/client", "body_contains": "client.js"}
             paths = ("/healthy", "/unexpected", "/unavailable", "/redirect", "/primary-down",
-                     "/partial", "/all-down", "/incomplete", "/timeout")
+                     "/partial", "/all-down", "/incomplete", "/timeout", "/named", "/bad-host")
             nodes = [{"id": path, "kind": "Сервис"} for path in paths]
             specs = {
                 node["id"]: [client, {**base, "path": node["id"], "body": "Healthy"}] for node in nodes[:4]
@@ -523,12 +525,15 @@ def test_service_distinguishes_partial_failure_and_unconfirmed_http_responses(mo
             timeout = {**base, "path": "/timeout", "body": "Healthy"}
             specs["/incomplete"] = [failed, timeout]
             specs["/timeout"] = [timeout]
+            specs["/named"] = [{**base, "path": "/named", "body": "Healthy", "http_host": "directum.example"}]
+            specs["/bad-host"] = [{**specs["/named"][0], "http_host": "directum.example\r\nX-Injected: value"}]
             apply_service_probes(nodes, specs)
         finally:
             server.shutdown()
             worker.join()
     assert [node["reachability"]["state"] for node in nodes] == [
         "reachable", "reachable", "reachable", "reachable", "unreachable", "reachable", "unreachable", "unknown", "unknown",
+        "reachable", "unknown",
     ]
     assert [[check["state"] for check in node["serviceChecks"]] for node in nodes[:4]] == [
         ["reachable", "reachable"], ["reachable", "unknown"], ["reachable", "unreachable"], ["reachable", "unknown"],
@@ -538,8 +543,11 @@ def test_service_distinguishes_partial_failure_and_unconfirmed_http_responses(mo
     public = {node["id"]: _public_node(node, now) for node in nodes}
     _map_statuses(public, [])
     assert [node["mapStatus"] for node in public.values()] == [
-        "ok", "unknown", "warn", "unknown", "critical", "warn", "critical", "unknown", "unknown",
+        "ok", "unknown", "warn", "unknown", "critical", "warn", "critical", "unknown", "unknown", "ok", "unknown",
     ]
+    assert public["/named"]["serviceChecks"][0]["httpHost"] == "directum.example"
+    assert public["/bad-host"]["serviceChecks"][0]["reason"] == "http_configuration"
+    assert "httpHost" not in public["/bad-host"]["serviceChecks"][0]
     assert public["/timeout"]["serviceChecks"][0]["reason"] == "timeout"
     assert public["/primary-down"]["serviceChecks"][0]["component"] is True
     assert public["/partial"]["serviceChecks"][1]["required"] is True

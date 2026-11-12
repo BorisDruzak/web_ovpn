@@ -307,6 +307,9 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         if reason in ("icmp_no_echo_reply", "icmp_unreachable", "icmp_probe_error"):
             result["reason"] = reason
     if result["method"] in ("HTTP", "HTTPS"):
+        host = check.get("httpHost")
+        if result["method"] == "HTTP" and isinstance(host, str) and re.fullmatch(r"[A-Za-z0-9.-]{1,253}", host):
+            result["httpHost"] = host
         status = check.get("httpStatus")
         if type(status) is int and 100 <= status <= 599:
             result["httpStatus"] = status

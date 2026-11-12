@@ -726,7 +726,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       };
       for (const check of node.serviceChecks) {
         const row = make('li');
-        const endpoint = [check.method, check.target, check.port, check.path, check.dns?.name, check.dns?.record].filter(Boolean).join(' ');
+        const endpoint = [check.method, check.target, check.httpHost, check.port, check.path, check.dns?.name, check.dns?.record].filter(Boolean).join(' ');
         const confirmed = check.method === 'Маршрут' ? 'Подтверждён' : node.id === data.clusterId ? 'В норме' : 'Отвечает';
         const result = check.skipped ? 'Не запущена' :
           ({reachable:confirmed, unreachable:'Сбой проверки'}[check.state] ?? 'Нет подтверждения');

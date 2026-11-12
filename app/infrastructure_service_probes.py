@@ -33,6 +33,12 @@ def _http_path(path: object) -> str:
     return path
 
 
+def _valid_http_hostname(value: object) -> bool:
+    return isinstance(value, str) and len(value) <= 253 and all(
+        re.fullmatch(r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?", label) for label in value.split(".")
+    )
+
+
 def _http(ip: str, port: int, spec: dict) -> dict:
     path = _http_path(spec.get("path"))
     body_expected = spec.get("body")
@@ -54,6 +60,9 @@ def _http(ip: str, port: int, spec: dict) -> dict:
                 raise ValueError("invalid HTTP JSON response fields")
         content_type = content_type or "application/json"
     tls = spec["type"] == "https"
+    http_host = spec.get("http_host")
+    if http_host is not None and (tls or not _valid_http_hostname(http_host)):
+        raise ValueError("invalid HTTP host")
     fingerprint = spec.get("tls_sha256")
     server_name = spec.get("tls_server_name")
     ca_file = spec.get("tls_ca_file")
@@ -61,11 +70,7 @@ def _http(ip: str, port: int, spec: dict) -> dict:
     if server_name is not None or ca_file is not None:
         if not tls or fingerprint is not None:
             raise ValueError("CA verification requires HTTPS without a pinned fingerprint")
-        if server_name is not None and (
-            not isinstance(server_name, str) or len(server_name) > 253
-            or any(not re.fullmatch(r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?", label)
-                   for label in server_name.split("."))
-        ):
+        if server_name is not None and not _valid_http_hostname(server_name):
             raise ValueError("invalid HTTPS certificate name")
         if ca_file is not None and (not isinstance(ca_file, str) or not os.path.isabs(ca_file)):
             raise ValueError("HTTPS CA file requires an absolute path")
@@ -79,6 +84,10 @@ def _http(ip: str, port: int, spec: dict) -> dict:
     connection = (http.client.HTTPSConnection(server_name or ip, port, timeout=TIMEOUT, context=context) if tls
                   else http.client.HTTPConnection(ip, port, timeout=TIMEOUT))
     observed = {}
+    headers = {"Accept-Encoding": "identity"}
+    if http_host is not None:
+        observed["httpHost"] = http_host
+        headers["Host"] = http_host if port == 80 else f"{http_host}:{port}"
     try:
         if server_name:
             with socket.create_connection((ip, port), timeout=TIMEOUT) as transport:
@@ -88,7 +97,7 @@ def _http(ip: str, port: int, spec: dict) -> dict:
             certificate = connection.sock.getpeercert(binary_form=True)
             if not certificate or hashlib.sha256(certificate).hexdigest() != fingerprint.lower():
                 return {"state": "unknown", "reason": "http_certificate_pin"}
-        connection.request("GET", path, headers={"Accept-Encoding": "identity"})
+        connection.request("GET", path, headers=headers)
         response = connection.getresponse()
         observed["httpStatus"] = response.status
         if 500 <= response.status < 600:
