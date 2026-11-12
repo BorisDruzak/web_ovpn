@@ -4831,6 +4831,29 @@ def test_local_asset_arp_requires_inventory_mac_and_a_configured_fdb_source(monk
     assert calls == []
 
 
+def test_local_asset_arp_checks_independent_targets_concurrently(monkeypatch):
+    from threading import Barrier
+
+    from app import infrastructure_collect as collector
+
+    devices = [
+        {"id": f"switch-{index}", "management_ip": f"192.0.2.{index}",
+         "mac_addresses": [f"02:00:00:00:00:{index:02d}"]}
+        for index in (1, 2)
+    ]
+    bindings = {"asset_local_arp": {d["id"]: d["mac_addresses"][0] for d in devices},
+                "asset_fdb_paths": {d["id"]: "upstream" for d in devices}}
+    both_started = Barrier(2)
+
+    def probe(_address, _mac):
+        both_started.wait(timeout=3)
+        return {"state": "matched", "interface": "eth0"}
+
+    monkeypatch.setattr(collector, "_local_arp_diagnostic", probe)
+    rows = collector._collect_local_asset_arp({"devices": devices}, bindings)
+    assert [row["ip"] for row in rows] == [d["management_ip"] for d in devices]
+
+
 def test_configured_asset_fdb_path_is_scoped_and_requires_a_unique_live_port(monkeypatch, tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map

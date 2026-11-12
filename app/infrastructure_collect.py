@@ -667,18 +667,27 @@ def _collect_local_asset_arp(context: dict, bindings: dict) -> list[dict]:
     if not isinstance(configured, dict) or not configured:
         return []
     switch_paths = bindings.get("asset_fdb_paths", {})
-    rows = []
+    targets = []
     for device in context["devices"]:
         asset, address = device["id"], device.get("management_ip")
         mac = str(configured.get(asset, "")).lower()
         if not (asset in switch_paths and address and MAC.fullmatch(mac)
                 and mac in {value.lower() for value in device.get("mac_addresses", [])}):
             continue
+        targets.append((address, mac))
+    if not targets:
+        return []
+
+    def probe(target):
+        address, mac = target
         reading = _local_arp_diagnostic(address, mac)
         if reading.get("state") == "matched":
-            rows.append({"ip": address, "mac": mac, "interface": reading["interface"],
-                         "last_seen_at": datetime.now(timezone.utc).isoformat(), "source": "UI_VPN · локальный ARP"})
-    return rows
+            return {"ip": address, "mac": mac, "interface": reading["interface"],
+                    "last_seen_at": datetime.now(timezone.utc).isoformat(), "source": "UI_VPN · локальный ARP"}
+        return None
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        return [row for row in pool.map(probe, targets) if row is not None]
 
 
 def _collect_guest_arp_probes(pve: dict, network: dict, configured: dict, now: datetime,
