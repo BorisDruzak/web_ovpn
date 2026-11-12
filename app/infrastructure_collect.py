@@ -1068,6 +1068,19 @@ def _add_guest_switch_uplinks(links, nodes: dict, pve: dict, now: datetime) -> N
                 virtual["switchUplink"]["configuredOnly"] = True
 
 
+def _asset_icmp_probes(context: dict, bindings: dict) -> dict:
+    gateways = bindings.get("asset_ip_check_gateways", {})
+    management = {device["id"]: device.get("management_ip") for device in context.get("devices", [])}
+    probes = {}
+    for asset, address in bindings.get("asset_ip_checks", {}).items():
+        probe = {"type": "icmp", "ip": address}
+        if isinstance(gateways, dict) and asset in gateways:
+            gateway = gateways[asset]
+            probe["route_via"] = management.get(gateway) if isinstance(gateway, str) else None
+        probes[asset] = [probe]
+    return probes
+
+
 def _local_vlan_probe_specs(context: dict, configured: object) -> dict:
     specs = {}
     if not isinstance(configured, dict):
@@ -2972,8 +2985,7 @@ def main() -> int:
         if server.get("collected_at"):
             graph["serverObserverAt"] = server["collected_at"]
         probes = {**bindings.get("service_probes", {}),
-                  **{asset: [{"type": "icmp", "ip": address}]
-                     for asset, address in bindings.get("asset_ip_checks", {}).items()},
+                  **_asset_icmp_probes(context, bindings),
                   **{f"transit:{segment}": [{"type": "icmp", "ip": spec["peer"]}]
                      for segment, spec in transit_links.items()},
                   **{service_id: [spec] for service_id, spec in (local_vlan_probes | wireguard_probes).items()}}

@@ -4098,6 +4098,19 @@ def test_route_checks_report_mismatch_inactive_and_missing_observation():
     ]
 
 
+def test_asset_icmp_probes_resolve_expected_gateway_from_inventory():
+    from app.infrastructure_collect import _asset_icmp_probes
+
+    context = {"devices": [{"id": "firewall", "management_ip": "192.0.2.1"}]}
+    bindings = {"asset_ip_checks": {"endpoint": "198.51.100.10", "local": "192.0.2.20", "unresolved": "198.51.100.11"},
+                "asset_ip_check_gateways": {"endpoint": "firewall", "unresolved": "unknown-gateway"}}
+    assert _asset_icmp_probes(context, bindings) == {
+        "endpoint": [{"type": "icmp", "ip": "198.51.100.10", "route_via": "192.0.2.1"}],
+        "local": [{"type": "icmp", "ip": "192.0.2.20"}],
+        "unresolved": [{"type": "icmp", "ip": "198.51.100.11", "route_via": None}],
+    }
+
+
 def test_icmp_via_expected_router_keeps_route_evidence_separate_from_echo(monkeypatch):
     from app import infrastructure_service_probes as probes
     from app.infrastructure_map import _public_service_check
@@ -4110,8 +4123,8 @@ def test_icmp_via_expected_router_keeps_route_evidence_separate_from_echo(monkey
         assert command == ["/usr/sbin/ip", "-j", "-4", "route", "get", target]
         return json.dumps([route]).encode()
 
-    def ping(address):
-        calls.append(address)
+    def ping(address, *, source_ip, interface):
+        calls.append((address, source_ip, interface))
         return {"state": "unknown", "reason": "icmp_no_echo_reply"}
 
     monkeypatch.setattr(probes.subprocess, "check_output", route_output)
@@ -4132,7 +4145,7 @@ def test_icmp_via_expected_router_keeps_route_evidence_separate_from_echo(monkey
     different = check()
     assert different["state"] == "unknown" and different["reason"] == "icmp_route_mismatch"
     assert different["localRoute"]["state"] == "unreachable"
-    assert calls == [target]
+    assert calls == [(target, "192.0.2.30", "ens18")]
 
 
 def test_wireguard_policy_needs_fresh_kernel_route_mark_and_handshake(tmp_path, monkeypatch):

@@ -924,7 +924,7 @@ def _icmp_via_router(ip: str, gateway: object) -> dict:
                  gateway=actual, interface=interface, sourceIP=source)
     if actual != expected:
         return {**unknown, "reason": "icmp_route_mismatch", "localRoute": route}
-    return {**_icmp_check(address), "localRoute": route}
+    return {**_icmp_check(address, source_ip=source, interface=interface), "localRoute": route}
 
 
 def _postgresql(spec: dict) -> dict:
