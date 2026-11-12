@@ -1245,7 +1245,8 @@ def summarize_topology(graph: dict) -> dict:
             lldp = {side: {"checkedAt": port["lldpCheckedAt"], "neighbors": port["lldpNeighbors"]}
                     for side, port in declared.get("portStates", {}).items() if port.get("lldpNeighbors")}
             observations = {
-                side: {key: port[key] for key in ("name", "state", "speedBps", "checkedAt", "source", "linkMode") if key in port}
+                side: {key: port[key] for key in ("name", "state", "speedBps", "checkedAt", "source", "linkMode",
+                                                  "telemetry", "fdbLearned", "transceiver") if key in port}
                 for side, port in declared.get("portStates", {}).items() if port["state"] != "unknown"
             }
             pending[(a, b, declared["a"], declared["b"])] = {

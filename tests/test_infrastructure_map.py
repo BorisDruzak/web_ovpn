@@ -4604,7 +4604,12 @@ def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_pa
         "schema": 1, "snapshotAt": now,
         "nodes": [{"id": "snr", "name": "SNR", "kind": "Коммутатор",
                    "ports": [{"name": "ge12", "state": "down", "checkedAt": now},
-                             {"name": "ge15", "state": "up", "speedBps": 10**9, "checkedAt": now},
+                             {"name": "ge15", "state": "up", "speedBps": 10**9, "checkedAt": now,
+                              "fdbLearned": {"checkedAt": now, "learnedMacCount": 0, "partial": False},
+                              "telemetry": {"checkedAt": now, "intervalSeconds": 60, "rxBps": 0,
+                                            "txBps": 400_000, "private": "excluded"},
+                              "transceiver": {"checkedAt": now, "formFactor": "SFP+",
+                                              "nominalBps": 10**10, "serialNumber": "excluded"}},
                              {"name": "xe3", "state": "up", "checkedAt": "2026-01-01T00:00:00Z"}]},
                   {"id": "recorder", "name": "Recorder", "kind": "Сервер"},
                   {"id": "pve", "name": "pve1", "kind": "Гипервизор", "ports": [{"name": "enp2s0"}]}],
@@ -4639,7 +4644,10 @@ def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_pa
     assert mismatch["portB"] == "enp2s0" and mismatch["observedPaths"] == []
     assert "portObservations" not in mismatch
     assert recorder["portB"] == "" and recorder["portObservations"] == {
-        "a": {"name": "ge15", "state": "up", "checkedAt": now, "speedBps": 10**9},
+        "a": {"name": "ge15", "state": "up", "checkedAt": now, "speedBps": 10**9,
+              "fdbLearned": {"checkedAt": now, "learnedMacCount": 0, "partial": False},
+              "telemetry": {"checkedAt": now, "intervalSeconds": 60, "rxBps": 0, "txBps": 400_000},
+              "transceiver": {"checkedAt": now, "formFactor": "SFP+", "nominalBps": 10**10}},
     }
 
 
