@@ -1734,7 +1734,10 @@ def test_host_list_uses_snapshot_while_details_keep_openvpn_view(tmp_path, monke
             "reason": "active_probe socket timeout",
         },
     }
-    connected = [{"common_name": "alpha", "virtual_address": "192.168.99.44"}]
+    connected = [
+        {"common_name": "unrelated", "virtual_address": "192.168.50.3"},
+        {"common_name": "alpha", "virtual_address": "192.168.99.44"},
+    ]
 
     def api_netctl(args, timeout=None):
         if args[:2] == ["hosts", "list"]:
@@ -1768,6 +1771,7 @@ def test_host_list_uses_snapshot_while_details_keep_openvpn_view(tmp_path, monke
     assert listed.status_code == api_detail.status_code == page_detail.status_code == 200
     assert listed.json()["data"]["hosts"][0]["status"] == "online"
     assert listed.json()["data"]["hosts"][0]["availability"]["reason"] == "active_probe"
+    assert api_detail.json()["data"]["host"]["ip"] == "192.168.99.44"
     assert api_detail.json()["data"]["host"]["status"] == "connected"
     assert "<dt>Статус</dt><dd>Доступен · ICMP</dd>" in page_detail.text
     assert api_detail.json()["data"]["host"]["availability"]["reason"] == "openvpn_management"

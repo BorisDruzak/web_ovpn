@@ -1370,7 +1370,8 @@ def api_network_host_detail(ip: str, actor: str = Depends(require_api_actor)):
         network_list_from(clients, "clients"),
     )
     public_data = dict(data)
-    public_data["host"] = rows[0] if rows else normalize_netctl_host(source_host)
+    selected = next((row for row in rows if row["ip"] == source_host.get("ip")), None)
+    public_data["host"] = selected or normalize_netctl_host(source_host)
     return api_response(public_data)
 
 
