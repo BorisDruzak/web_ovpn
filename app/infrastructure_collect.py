@@ -3463,8 +3463,6 @@ def main() -> int:
         wireguard_probes = _wireguard_probe_specs(context, bindings.get("wireguard_policy_checks"), local_vlan_probes)
         graph = build_graph(context, network, server, pve, bindings, now,
                             local_vlan_probes=local_vlan_probes, wireguard_probes=wireguard_probes)
-        start_stage("downstream address probes")
-        _check_downstream_addresses(graph["nodes"], network, now)
         if server.get("collected_at"):
             graph["serverObserverAt"] = server["collected_at"]
         probes = {**bindings.get("service_probes", {}),
@@ -3472,8 +3470,13 @@ def main() -> int:
                   **{f"transit:{segment}": [{"type": "icmp", "ip": spec["peer"]}]
                      for segment, spec in transit_links.items()},
                   **{service_id: [spec] for service_id, spec in (local_vlan_probes | wireguard_probes).items()}}
-        start_stage("service probes")
-        apply_service_probes(graph["nodes"], probes)
+        start_stage("downstream address and service probes")
+        nodes = graph["nodes"]
+        # Downstream probes update only downstream.devices, while service probes update node-level checks.
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            downstream = pool.submit(_check_downstream_addresses, nodes, network, now)
+            apply_service_probes(nodes, probes)
+            downstream.result()
         start_stage("publish snapshot")
         graph["snapshotAt"] = datetime.now(timezone.utc).isoformat()
         graph["git"] = args.git_revision

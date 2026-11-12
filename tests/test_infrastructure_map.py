@@ -3382,6 +3382,7 @@ def test_collection_keeps_network_fresh_during_proxmox_api_failure(tmp_path, mon
 
 def test_network_observer_failure_keeps_proxmox_and_independent_checks(tmp_path, monkeypatch, capsys):
     import sys
+    from threading import Barrier
     from app import infrastructure_collect as collector
     from app import infrastructure_service_probes as probes
     from app.infrastructure_map import load_infrastructure_map
@@ -3411,9 +3412,22 @@ def test_network_observer_failure_keeps_proxmox_and_independent_checks(tmp_path,
     monkeypatch.setattr(sys, "argv", ["infrastructure_collect", "--context", str(context), "--schema", str(context),
                                      "--server-health", str(context), "--bindings", str(bindings), "--output", str(path),
                                      "--proxmox-url", "https://pve.example", "--proxmox-token-file", str(context)])
-    assert collector.main() == 0
+    concurrent_probes = Barrier(2, timeout=3)
+    apply_service_probes = collector.apply_service_probes
+
+    def downstream(*_):
+        concurrent_probes.wait()
+
+    def service_checks(*args):
+        concurrent_probes.wait()
+        apply_service_probes(*args)
+
+    with monkeypatch.context() as concurrent:
+        concurrent.setattr(collector, "_check_downstream_addresses", downstream)
+        concurrent.setattr(collector, "apply_service_probes", service_checks)
+        assert collector.main() == 0
     journal = capsys.readouterr().err
-    stages = ["Proxmox", "Network Observer database", "build graph", "service probes", "publish snapshot"]
+    stages = ["Proxmox", "Network Observer database", "build graph", "downstream address and service probes", "publish snapshot"]
     positions = [journal.index(f"starting {stage}") for stage in stages]
     assert positions == sorted(positions)
     assert "infrastructure collection: published snapshot in " in journal
