@@ -1766,6 +1766,22 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                     checked = min(checked, datetime.fromisoformat(pve_at))
                 edge(switch, asset, "Путь по MAC-таблице", provenance, details=address,
                      ports=(port_label(switch_source, port), remote_port), at=checked.isoformat(), vlan=row["vlan_id"])
+    for spec in bindings.get("lacp_links", []):
+        asset, aggregate = spec["asset"], spec["aggregate"]
+        if asset not in nodes:
+            continue
+        declared = {
+            local["device"] for row in context.get("links", []) if row.get("relation") == "connected_to"
+            and row.get("state", {}).get("intent") != "absent"
+            for local, peer in ((row["endpoint_a"], row["endpoint_b"]), (row["endpoint_b"], row["endpoint_a"]))
+            if peer["device"] == asset and local.get("interface") == aggregate
+            and nodes.get(local["device"], {}).get("kind") == NETWORK_KINDS[0]
+        }
+        switch = next(iter(declared)) if len(declared) == 1 else source_nodes.get(spec["source"])
+        if switch and switch != asset and nodes[switch]["kind"] == NETWORK_KINDS[0]:
+            nodes[asset].setdefault("lacpExpectations", []).append({
+                "switchId": switch, "aggregate": aggregate, "members": spec["members"],
+            })
     for report in network.get("lacp", []):
         asset = report["asset"]
         address = address_by_asset.get(asset)

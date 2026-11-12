@@ -2022,6 +2022,49 @@ def test_lacp_confirms_only_ports_whose_partner_matches_fresh_arp(tmp_path):
     assert mac not in path.read_text(encoding="utf-8")
 
 
+def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    mac = "02:00:00:00:00:14"
+    devices = [{"id": "pbs", "name": "PBS", "kind": "backup_server", "management_ip": "192.0.2.14"},
+               {"id": "snr", "name": "SNR", "kind": "switch", "management_ip": "192.0.2.254"}]
+    bindings = {"lacp_links": [{"source": "switch", "asset": "pbs", "aggregate": "po1", "members": ["ge6", "ge7"]}]}
+    sources = [{"id": 1, "name": "switch", "enabled": True, "driver": "snmp_switch", "host": "192.0.2.254"}]
+    ports = [{"source": "switch", "port_key": name, "name": name, "oper_status": "up", "last_seen_at": at}
+             for name in ("ge6", "ge7")]
+    report = {**bindings["lacp_links"][0], "expected": 2, "at": at, "members": [
+        {"port": "ge6", "partner_port": 1, "mac": mac}, {"port": "ge7", "partner_port": 2, "mac": mac}]}
+    network = {"sources": sources, "ports": ports, "lacp": [report],
+               "arp": [{"ip": "192.0.2.14", "mac": mac, "last_seen_at": at}]}
+    path = tmp_path / "map.json"
+
+    def read(stamp=now):
+        context = {"devices": devices, "links": [{"endpoint_a": {"device": "snr", "interface": "po1"},
+                    "endpoint_b": {"device": "pbs", "interface": "bond0"}, "relation": "connected_to"}]}
+        graph = build_graph(context, network, {}, {}, bindings, now)
+        next(node for node in graph["nodes"] if node["id"] == "pbs")["reachability"] = {
+            "state": "reachable", "source": "netctl", "method": "ICMP", "checkedAt": at}
+        path.write_text(json.dumps(graph), encoding="utf-8")
+        node = next(node for node in load_infrastructure_map(path, stamp)["nodes"] if node["id"] == "pbs")
+        return node["mapStatus"], node["lacpHealth"][0]
+
+    color, health = read()
+    assert (color, health["status"]) == ("ok", "ok")
+    assert [member["partnerPort"] for member in health["members"]] == [1, 2]
+    report["members"].pop()
+    assert read()[0] == "unknown"
+    ports[1]["oper_status"] = "down"
+    color, health = read()
+    assert (color, health["status"]) == ("warn", "warn")
+    assert health["members"][1] == {"name": "ge7", "status": "down", "checkedAt": at}
+    assert read(now + timedelta(minutes=6))[0] == "unknown"
+    network.clear()
+    assert read()[0] == "unknown"
+
+
 def test_collection_keeps_network_fresh_during_proxmox_api_failure(tmp_path, monkeypatch):
     import hashlib
     import sys

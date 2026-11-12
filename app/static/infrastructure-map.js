@@ -673,6 +673,22 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       list.append(make('dt', 'Конфигурация прочитана'), make('dd', formatTime(node.guestStorage.checkedAt)));
       propertiesSection.append(make('h3', 'Диски по конфигурации Proxmox'), list);
     }
+    if (node.lacpHealth?.length) {
+      const list = make('ul', null, 'map-detail-list');
+      const labels = {forwarding: 'Готов к передаче', down: 'Линк опущен', disabled: 'Порт отключён', unknown: 'Нет подтверждения'};
+      for (const {switchId, aggregate, members} of node.lacpHealth) {
+        const row = make('li');
+        const name = byId.get(switchId).name;
+        const confirmed = members.filter(member => member.status === 'forwarding').length;
+        row.append(make('strong', `${name} ${aggregate} · ${confirmed} из ${members.length} портов`));
+        for (const {name: port, status, checkedAt, partnerPort} of members) {
+          const details = [port, labels[status], partnerPort && `порт партнёра ${partnerPort}`, checkedAt && formatTime(checkedAt)];
+          row.append(make('small', details.filter(Boolean).join(' · ')));
+        }
+        list.append(row);
+      }
+      propertiesSection.append(make('h3', 'Резервирование LACP'), list);
+    }
     if (node.stpRootPath) {
       const {localPort, designatedBridgeMac, designatedPortId, checkedAt, bridgeDeviceId} = node.stpRootPath;
       const list = make('ul', null, 'map-detail-list');

@@ -23,6 +23,7 @@ SERVICE_PROBE_MAX_AGE = timedelta(minutes=5)
 STP_ROOT_PATH_MAX_AGE = timedelta(minutes=5)
 PORT_LINK_CHECK_MAX_AGE = timedelta(minutes=5)
 RESOURCE_CAPACITY_MAX_AGE = timedelta(minutes=5)
+LACP_HEALTH_MAX_AGE = timedelta(minutes=5)
 ROOT_FREE_WARNING_PERCENT = 10
 SWAP_USED_WARNING_PERCENT = 90
 BACKUP_PROBE_METHOD = "Копия Proxmox"
@@ -811,6 +812,7 @@ def _map_statuses(nodes: dict, links: list[dict]) -> None:
             checks.append("warn")
         if capacity := node.get("resourceCapacity"):
             checks.extend(capacity[key]["status"] for key in ("root", "swap"))
+        checks.extend(report["status"] for report in node.get("lacpHealth", []))
         if node["kind"] == CLUSTER_KIND:
             cluster = {check["method"]: check["state"] for check in node["serviceChecks"]}
             checks.extend(check_state.get(cluster.get(method), "unknown") for method in CLUSTER_HEALTH_METHODS)
@@ -925,6 +927,48 @@ def _attach_lacp_port_states(report: dict, edge: dict, nodes: dict, port_states:
         return
 
 
+def _attach_lacp_health(nodes: dict, expectations: dict, links: list[dict], port_states: dict, now: datetime) -> None:
+    forwarding = {}
+    for edge in links:
+        if edge["kind"] != "Сетевое соединение" or not edge["confirmed"]:
+            continue
+        for report in edge["portEvidence"]:
+            lacp = report.get("lacp")
+            if not lacp or not observation_is_fresh(report["at"], now, max_age=LACP_HEALTH_MAX_AGE):
+                continue
+            side = lacp["side"]
+            peer = edge["b" if side == "a" else "a"]
+            key = (peer, edge[side], lacp["aggregate"].casefold(), lacp["member"].casefold())
+            forwarding[key] = (report["at"], lacp["partnerPort"])
+
+    for node_id, configured in expectations.items():
+        for spec in configured:
+            switch_id, aggregate = _text(spec.get("switchId")), _text(spec.get("aggregate"), 32)
+            names = spec.get("members")
+            if (switch_id == node_id or nodes.get(switch_id, {}).get("kind") != NETWORK_KINDS[0]
+                    or not INTERFACE_NAME.fullmatch(aggregate) or not isinstance(names, list)
+                    or not 1 <= len(names) <= 16 or not all(isinstance(name, str) and INTERFACE_NAME.fullmatch(name) for name in names)
+                    or len({name.casefold() for name in names}) != len(names)):
+                continue
+            members = []
+            for name in names:
+                port = port_states.get(switch_id, {}).get(port_label_key(name), {})
+                sample = forwarding.get((node_id, switch_id, aggregate.casefold(), name.casefold()))
+                at = port.get("checkedAt")
+                if (port.get("state") in {"down", "disabled"} and observation_is_fresh(at, now, max_age=LACP_HEALTH_MAX_AGE)
+                        and (not sample or _time(at) >= _time(sample[0]))):
+                    members.append({"name": name, "status": port["state"], "checkedAt": at})
+                elif sample:
+                    members.append({"name": name, "status": "forwarding", "checkedAt": sample[0], "partnerPort": sample[1]})
+                else:
+                    members.append({"name": name, "status": "unknown"})
+            states = {member["status"] for member in members}
+            status = "warn" if states & {"down", "disabled"} else "unknown" if "unknown" in states else "ok"
+            nodes[node_id].setdefault("lacpHealth", []).append({
+                "switchId": switch_id, "aggregate": aggregate, "members": members, "status": status,
+            })
+
+
 def _compare_link_ports(ports: dict) -> dict:
     if set(ports) != {"a", "b"} or any(port["state"] == "unknown" for port in ports.values()):
         return {}
@@ -1034,9 +1078,12 @@ def summarize_topology(graph: dict) -> dict:
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
     stp = [{"id": node["id"], "name": node["name"], **node["stpRootPath"]}
            for node in nodes.values() if "stpRootPath" in node]
+    lacp = [{"id": node["id"], "name": node["name"], **report}
+            for node in nodes.values() for report in node.get("lacpHealth", [])]
     return {**metadata, "topologyAudit": {"directLinks": counts, "pendingTotal": len(pending),
                                         "portAlertTotal": len(alerts), "portAlerts": alerts[:64],
                                         "stpRootPaths": stp,
+                                        "lacpHealth": lacp[:64],
                                         "pending": [pending[key] for key in sorted(pending)[:64]]}}
 
 
@@ -1111,10 +1158,13 @@ def load_infrastructure_map(
     port_states = {}
     endpoint_keys = {}
     agent_keys = {}
+    lacp_expectations = {}
     for row in _rows(raw.get("nodes"), 600):
         node = _public_node(row, now)
         if node["id"] and node["name"] and node["id"] not in nodes:
             nodes[node["id"]] = node
+            if expected := _rows(row.get("lacpExpectations"), 8):
+                lacp_expectations[node["id"]] = expected
             if node["kind"] in (*NETWORK_KINDS[:2], "Гипервизор"):
                 port_states[node["id"]] = index_port_states(_rows(row.get("ports"), 500), now)
             key = _text(row.get("endpointKey"))
@@ -1224,6 +1274,8 @@ def load_infrastructure_map(
                           **({"portAlerts": alerts} if alerts else {})})
     if db is not None and endpoint_keys and now - stamp <= MAX_AGE:
         _attach_endpoint_presence(db, endpoint_keys, nodes, now)
+    if lacp_expectations:
+        _attach_lacp_health(nodes, lacp_expectations, links, port_states, now)
     _map_statuses(nodes, links)
     cluster_id = _text(raw.get("clusterId"))
     _attach_storage_assignments(nodes, links, cluster_id)
