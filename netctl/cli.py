@@ -52,6 +52,7 @@ from .nmap.policy import FingerprintPolicyError, configured_fingerprint_profile,
 from .nmap.runner import run_nmap_fingerprint
 from .nmap.store import ensure_fingerprint, fingerprint_status
 from .network_diagnostics import read_diagnostics
+from .network_loop_diagnostics import read_loop_diagnostics
 from .printer_snmp import inspect_printer_snmp
 from .fingerprint.providers import replace_endpoint_agent_evidence
 from .store import add_device_tag, dashboard_summary, inspect_host, list_device_tags, related_for_host, remove_device_tag, save_collection, set_device_tags
@@ -812,6 +813,12 @@ def cmd_table(args: argparse.Namespace, table: str, key: str) -> tuple[int, dict
 
 
 def cmd_switches(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    if args.switches_command == "loops":
+        try:
+            with read_context_snapshot(args.db) as conn:
+                return 0, ok(loops=read_loop_diagnostics(conn, args.source or None))
+        except sqlite3.Error:
+            return 1, err("loop diagnostics unavailable")
     source = getattr(args, "source", "") or ""
     if source:
         try:
@@ -1799,6 +1806,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     switches_sub.add_parser("status")
     switches_sub.add_parser("unknown-fingerprints")
+    switches_loops = switches_sub.add_parser("loops")
+    switches_loops.add_argument("--source", default="")
     for name in (
         "capabilities",
         "ports",
