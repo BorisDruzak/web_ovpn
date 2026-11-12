@@ -2414,6 +2414,48 @@ def test_downstream_devices_require_the_expected_live_lldp_pair(tmp_path):
     assert "downstream" not in read()[1]
 
 
+def test_downstream_local_probe_requires_unique_observed_address_and_mac(monkeypatch):
+    from app import infrastructure_collect as collector
+
+    now = datetime.now(timezone.utc)
+    ip, mac = "192.0.2.113", "02:00:00:00:00:04"
+    device = {"mac": mac}
+    nodes = [{"downstream": {"devices": [device]}}]
+    host = {"ip": ip, "mac": mac, "last_seen_at": now.isoformat()}
+    network = {"hosts": [host]}
+    probes = []
+
+    def check(address, identity, *, fresh_only=False):
+        probes.append((address, identity, fresh_only))
+        return True
+
+    monkeypatch.setattr(collector, "_probe_on_link_mac", check)
+    collector._check_downstream_addresses(nodes, network, now)
+    assert probes == [(ip, mac, True)]
+    assert device["ip"] == ip and device["reachability"]["state"] == "reachable"
+    assert device["identityCheckedAt"] == device["reachability"]["checkedAt"]
+    probes.clear()
+    device.clear()
+    device["mac"] = mac
+    network["arp"] = [{**host, "mac": "02:00:00:00:00:09"}]
+    collector._check_downstream_addresses(nodes, network, now)
+    assert not probes and device == {"mac": mac}
+
+
+def test_direct_probe_waits_for_neighbor_revalidation_when_required(monkeypatch):
+    from app import infrastructure_collect as collector
+
+    ip, mac = "192.0.2.113", "02:00:00:00:00:04"
+    responses = iter(([{"dev": "eth0"}], [{"dst": ip, "lladdr": mac, "state": ["DELAY"]}],
+                      [{"dst": ip, "lladdr": mac, "state": ["REACHABLE"]}]))
+    waits = []
+    monkeypatch.setattr(collector, "probe_icmp", lambda address: address == ip)
+    monkeypatch.setattr(collector, "sleep", waits.append)
+    monkeypatch.setattr(collector.subprocess, "check_output", lambda *args, **kwargs: json.dumps(next(responses)))
+    assert collector._probe_on_link_mac(ip, mac, fresh_only=True)
+    assert waits == [6]
+
+
 def test_openvpn_requires_connected_daemon_and_active_session(monkeypatch):
     from io import BytesIO
     from app import infrastructure_service_probes as probes
@@ -3949,7 +3991,7 @@ def test_auto_guest_arp_checks_use_unique_local_ip_and_prefer_the_newer_result(m
             "active_method": "icmp", "checked_at": earlier, "run_status": "success"}}
     network = {"arp": [arp], "hosts": [host]}
     calls = []
-    monkeypatch.setattr(collector, "_probe_on_link_guest", lambda address, mac: calls.append((address, mac)) or True)
+    monkeypatch.setattr(collector, "_probe_on_link_mac", lambda address, mac: calls.append((address, mac)) or True)
 
     def collect(configured=None):
         return collector._collect_guest_arp_probes(pve, network, configured or {}, now, auto_on_link=True)
@@ -4021,7 +4063,7 @@ def test_router_layer2_checks_follow_inventory_and_guest_arp_identity(monkeypatc
 
     monkeypatch.setattr(collector, "load_secrets", lambda: {})
     monkeypatch.setattr(collector, "legacy_driver_for", lambda *_: Driver())
-    monkeypatch.setattr(collector, "_probe_on_link_guest", lambda *_: False)
+    monkeypatch.setattr(collector, "_probe_on_link_mac", lambda *_: False)
     network["asset_mac_checks"] = collector._collect_asset_mac_probes(context, [source], bindings["asset_mac_probes"])
     network["guest_arp_probes"] = collector._collect_guest_arp_probes(
         pve, network, {"108": ip}, now, bindings["guest_router_arp_sources"],

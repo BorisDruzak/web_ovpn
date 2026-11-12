@@ -20,6 +20,7 @@ from contextlib import closing
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
+from time import sleep
 from urllib.error import URLError
 from urllib.parse import quote, urlsplit
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
@@ -368,7 +369,7 @@ async def _check_confirmed_switch_ports(context: dict, network: dict, pve: dict,
     await asyncio.gather(*(check(sources[address], wanted) for address, wanted in checks.items()))
 
 
-def _probe_on_link_guest(address: str, mac: str) -> bool:
+def _probe_on_link_mac(address: str, mac: str, *, fresh_only: bool = False) -> bool:
     def ip_query(*args):
         return json.loads(subprocess.check_output(["/usr/sbin/ip", "-j", *args], timeout=2))
 
@@ -378,12 +379,22 @@ def _probe_on_link_guest(address: str, mac: str) -> bool:
             return False
         if not probe_icmp(address):
             return False
-        neighbors = ip_query("neigh", "show", "to", address, "dev", routes[0]["dev"])
+        query = ("neigh", "show", "to", address, "dev", routes[0]["dev"])
+
+        def states() -> set[str]:
+            return {state for row in ip_query(*query) if row.get("dst") == address
+                    and str(row.get("lladdr", "")).lower() == mac for state in row.get("state", [])}
+
+        observed = states()
+        pending = {"DELAY", "PROBE"}
+        if fresh_only and "REACHABLE" not in observed and observed & pending:
+            # Allow Linux to complete neighbor revalidation after sending to a cached MAC.
+            sleep(6)
+            observed = states()
+        accepted = {"REACHABLE"} if fresh_only else {"REACHABLE"} | pending
+        return bool(observed & accepted)
     except (OSError, ValueError, subprocess.SubprocessError):
         return False
-    # Linux moves a cached neighbor to DELAY/PROBE when sending traffic before revalidation.
-    return any(row.get("dst") == address and str(row.get("lladdr", "")).lower() == mac
-               and {"REACHABLE", "DELAY", "PROBE"}.intersection(row.get("state", [])) for row in neighbors)
 
 
 def _router_layer2_observation(sources: list[dict], name: str, interface: str, mac: str,
@@ -457,7 +468,7 @@ def _collect_guest_arp_probes(pve: dict, network: dict, configured: dict, now: d
 
     def check(candidate):
         vmid, address, mac = candidate
-        if _probe_on_link_guest(address, mac):
+        if _probe_on_link_mac(address, mac):
             return mac, address, _observation("reachable", "UI_VPN", "ICMP · ARP", datetime.now(timezone.utc).isoformat())
         name = (router_sources or {}).get(vmid) if vmid in configured else None
         if not name:
@@ -923,6 +934,48 @@ def _downstream_links(context: dict, configured: object) -> dict:
         if address and b["device"] in devices and a.get("interface") and b.get("interface"):
             links[link["id"]] = (address, a, b)
     return links
+
+
+def _check_downstream_addresses(nodes: list[dict], network: dict, now: datetime) -> None:
+    missing = [entry for node in nodes for entry in node.get("downstream", {}).get("devices", []) if "ip" not in entry]
+    if not missing:
+        return
+    observed_macs = {}
+    candidate_ips = {}
+    for source in ("hosts", "arp"):
+        for row in network.get(source, []):
+            mac = str(row.get("mac") or "").lower()
+            if not MAC.fullmatch(mac) or not observation_is_fresh(row.get("last_seen_at"), now):
+                continue
+            try:
+                address = str(ipaddress.IPv4Address(row.get("ip")))
+            except ValueError:
+                continue
+            observed_macs.setdefault(address, set()).add(mac)
+            if source == "hosts":
+                candidate_ips.setdefault(mac, set()).add(address)
+    checks = {}
+    for entry in missing:
+        mac = entry["mac"]
+        addresses = candidate_ips.get(mac, set())
+        if len(addresses) == 1:
+            address, = addresses
+            if observed_macs[address] == {mac}:
+                checks.setdefault((address, mac), []).append(entry)
+
+    def check(pair):
+        address, mac = pair
+        if _probe_on_link_mac(address, mac, fresh_only=True):
+            return _observation("reachable", "UI_VPN", "ICMP · ARP", datetime.now(timezone.utc).isoformat())
+        return None
+
+    targets = sorted(checks)[:16]
+    if targets:
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            for pair, observation in zip(targets, pool.map(check, targets)):
+                if observation:
+                    for entry in checks[pair]:
+                        entry.update(ip=pair[0], identityCheckedAt=observation["checkedAt"], reachability=observation)
 
 
 def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings: dict, now: datetime,
@@ -2396,6 +2449,7 @@ def main() -> int:
         wireguard_probes = _wireguard_probe_specs(context, bindings.get("wireguard_policy_checks"), local_vlan_probes)
         graph = build_graph(context, network, server, pve, bindings, now,
                             local_vlan_probes=local_vlan_probes, wireguard_probes=wireguard_probes)
+        _check_downstream_addresses(graph["nodes"], network, now)
         if server.get("collected_at"):
             graph["serverObserverAt"] = server["collected_at"]
         probes = {**bindings.get("service_probes", {}),
