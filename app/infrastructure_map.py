@@ -1855,28 +1855,63 @@ def _is_service_attachment(edge: dict) -> bool:
     return edge["confirmed"] and edge["kind"] in {"Размещение", "Цель проверки"}
 
 
+def _physical_service_port_evidence(nodes: dict, links: list[dict]) -> dict:
+    evidence = defaultdict(set)
+    for edge in links:
+        if not edge["confirmed"]:
+            continue
+        for report in edge["portEvidence"]:
+            endpoint = report.get("learnedEndpoint")
+            if not endpoint or not report["confirmed"]:
+                continue
+            switch, host = endpoint["switchId"], endpoint["deviceId"]
+            side = "a" if edge["a"] == switch else "b"
+            port = report[side]
+            if port and not nodes[host]["guest"]:
+                evidence[host].add((switch, port, "host_mac"))
+    for host, node in nodes.items():
+        for aggregate in node.get("lacpHealth", []):
+            for member in aggregate["members"]:
+                if member["status"] == "forwarding":
+                    evidence[host].add((aggregate["switchId"], member["name"], "host_lacp"))
+    return evidence
+
+
 def _map_attachments(nodes: dict, links: list[dict], now: datetime) -> dict:
     guests = _guest_attachments(nodes, links, [key for key, node in nodes.items() if node["guest"]], now)
+    service_hosts = defaultdict(set)
     service_guests = defaultdict(dict)
     for edge in links:
         host, service = edge["a"], edge["b"]
-        if host in guests and nodes[service]["kind"] == "Сервис" and _is_service_attachment(edge):
-            service_guests[service][host] = guests[host]
+        if nodes[service]["kind"] == "Сервис" and _is_service_attachment(edge):
+            service_hosts[service].add(host)
+            if host in guests:
+                service_guests[service][host] = guests[host]
     service_paths = {
         service: paths for service, targets in service_guests.items()
         if len(targets) <= 12 and (paths := _service_attachment_paths(nodes[service], targets))
     }
-    port_services = defaultdict(lambda: defaultdict(set))
+    port_services = defaultdict(lambda: defaultdict(lambda: defaultdict(set)))
     port_names = {}
+
+    def record(switch, port, service, basis):
+        key = port_label_key(port)
+        port_names.setdefault((switch, key), port)
+        port_services[switch][key][service].add(basis)
+
     for service, paths in service_paths.items():
         for path in paths:
-            switch, port = path["switchId"], path["physicalPair"]["switchPort"]
-            key = port_label_key(port)
-            port_names.setdefault((switch, key), port)
-            port_services[switch][key].add(service)
+            record(path["switchId"], path["physicalPair"]["switchPort"], service, "guest_path")
+    evidence = _physical_service_port_evidence(nodes, links)
+    for service, hosts in service_hosts.items():
+        if len(hosts) == 1:
+            host, = hosts
+            for switch, port, basis in sorted(evidence.get(host, ())):
+                record(switch, port, service, basis)
     service_ports = {
         switch: [{"port": port_names[switch, port], "total": len(ids),
-                  "services": [_attachment_node(nodes[key]) for key in sorted(ids)[:64]]}
+                  "services": [{**_attachment_node(nodes[key]), "basis": sorted(ids[key])}
+                               for key in sorted(ids)[:64]]}
                  for port, ids in sorted(ports.items())]
         for switch, ports in port_services.items()
     }

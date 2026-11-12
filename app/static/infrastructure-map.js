@@ -1715,12 +1715,15 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const panel = make('details', null, 'map-port-panel');
         panel.dataset.section = 'services-on-port';
         const services = make('ul', null, 'map-detail-list');
+        const bases = {host_mac: 'MAC устройства', host_lacp: 'LACP хоста'};
         for (const service of serviceGroup.services) {
           const row = make('li');
           const open = make('button', service.name);
           open.type = 'button';
           open.addEventListener('click', () => select(service.id));
           row.append(open);
+          const observed = (service.basis ?? []).map(basis => bases[basis]).filter(Boolean);
+          if (observed.length) row.append(make('small', observed.join(' · ')));
           services.append(row);
         }
         panel.append(make('summary', `Сервисы на порту (${serviceGroup.total})`), services);

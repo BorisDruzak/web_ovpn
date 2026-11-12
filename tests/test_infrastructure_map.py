@@ -3149,10 +3149,13 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
 
     def read(stamp=now):
         context = {"devices": devices, "links": [{"endpoint_a": {"device": "snr", "interface": "po1"},
-                    "endpoint_b": {"device": "pbs", "interface": "bond0"}, "relation": "connected_to"}]}
+                    "endpoint_b": {"device": "pbs", "interface": "bond0"}, "relation": "connected_to"}],
+                   "services": [{"id": "pbs-web", "name": "PBS Web", "device": "pbs"}]}
         graph = build_graph(context, network, {}, {}, bindings, now)
         next(node for node in graph["nodes"] if node["id"] == "pbs")["reachability"] = {
             "state": "reachable", "source": "netctl", "method": "ICMP", "checkedAt": at}
+        next(node for node in graph["nodes"] if node["id"] == "pbs-web")["reachability"] = {
+            "state": "reachable", "source": "UI_VPN", "method": "HTTPS", "checkedAt": at}
         path.write_text(json.dumps(graph), encoding="utf-8")
         node = next(node for node in load_infrastructure_map(path, stamp)["nodes"] if node["id"] == "pbs")
         return node["mapStatus"], node["lacpHealth"][0]
@@ -3160,6 +3163,12 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
     color, health = read()
     assert (color, health["status"]) == ("ok", "ok")
     assert [member["partnerPort"] for member in health["members"]] == [1, 2]
+
+    def service_ports():
+        graph = load_infrastructure_map(path, now, include_guest_attachments=True)
+        return [(row["port"], row["services"][0]["basis"]) for row in graph["servicePorts"].get("snr", [])]
+
+    assert service_ports() == [("ge6", ["host_lacp"]), ("ge7", ["host_lacp"])]
     network["arp"][0]["last_seen_at"] = (now - timedelta(minutes=6)).isoformat()
     assert read()[0] == "ok"
     network["arp"][0]["last_seen_at"] = (now - timedelta(minutes=9)).isoformat()
@@ -3171,6 +3180,7 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
     color, health = read()
     assert (color, health["status"]) == ("warn", "warn")
     assert health["members"][1] == {"name": "ge7", "status": "down", "checkedAt": at}
+    assert service_ports() == [("ge6", ["host_lacp"])]
     assert read(now + timedelta(minutes=6))[0] == "unknown"
     network.clear()
     assert read()[0] == "unknown"
@@ -5700,11 +5710,22 @@ def test_attachment_view_includes_physical_service_hosts_and_distinguishes_port_
     assert pending["lldpPeers"] == {"a": [logical_peer]}
     assert pending["portObservations"]["a"]["speedBps"] == 10**10
     assert read("server")["physicalHosts"] == [host]
-    switch, = read("sw")["physicalHosts"]
+    switch_attachment = read("sw")
+    switch, = switch_attachment["physicalHosts"]
+    service_port, = switch_attachment["servicePorts"]
+    assert service_port["port"] == "ge1" and service_port["total"] == 1
+    assert [(service["id"], service["basis"]) for service in service_port["services"]] == [("web", ["host_mac"])]
     assert switch["pendingPortPairs"] == [pending]
     inverse = switch["connections"][0]["ports"][0]
     assert (inverse["hostPort"], inverse["peerPort"]) == ("ge1", "eth0")
     assert read("unbound")["physicalHosts"][0]["pendingPortPairs"] == []
+    raw["links"][1]["confirmed"] = True
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    assert read("sw")["servicePorts"] == []
+    raw["links"][1]["confirmed"] = False
+    raw["links"][3]["observedAt"] = (datetime.fromisoformat(stamp) - timedelta(minutes=26)).isoformat()
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    assert read("sw")["servicePorts"] == []
 
 
 def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path, monkeypatch):
