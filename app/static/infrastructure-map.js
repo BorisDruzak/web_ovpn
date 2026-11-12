@@ -502,10 +502,6 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       return;
     }
     const guest = agentAudit.guests?.find(item => item.id === label.dataset.agentStatus);
-    if (guest?.presence === 'online') {
-      label.textContent = 'На связи · ' + formatTime(guest.lastSeenAt);
-      return;
-    }
     const reasons = {
       duplicate_guest_mac: 'Повторяющийся MAC в Proxmox',
       multiple_registrations: 'Несколько регистраций Endpoint',
@@ -521,8 +517,17 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       no_enabled_network_adapter: 'Нет включённого сетевого адаптера',
       no_unique_network_identity: 'Нет однозначного MAC для сопоставления',
     };
-    label.textContent = reasons[guest?.reason] ?? (guest?.state === 'matched'
-      ? 'Связь не подтверждена' : 'Привязка не подтверждена');
+    label.textContent = guest?.presence === 'online'
+      ? 'На связи · ' + formatTime(guest.lastSeenAt)
+      : reasons[guest?.reason] ?? (guest?.state === 'matched' ? 'Связь не подтверждена' : 'Привязка не подтверждена');
+    const profileLabels = {health_v1: 'Состояние', network_v1: 'Сеть', inventory_v1: 'Инвентарь'};
+    for (const {profile, collectedAt} of guest?.contextProfiles ?? []) {
+      if (Object.hasOwn(profileLabels, profile)) {
+        const row = make('div');
+        row.append(make('small', `${profileLabels[profile]} · ${formatTime(collectedAt)}`));
+        label.append(row);
+      }
+    }
   }
 
   function renderGuestAttachment(attachment) {

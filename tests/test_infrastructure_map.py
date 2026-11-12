@@ -5306,8 +5306,12 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
         def list_agent_network_identities(self):
             if self.unavailable:
                 raise EndpointPlatformServiceError("test")
+            profiles = [{"profile": "health_v1", "collected_at": at},
+                        {"profile": "network_v1", "collected_at": at},
+                        {"profile": "session_v1", "collected_at": at},
+                        {"profile": "inventory_v1", "collected_at": "2099-01-01T00:00:00Z"}]
             return [{"id": str(index), "baseline_mac_keys": [key], "online": True,
-                     "last_seen_at": at, "baseline_collected_at": at}
+                     "last_seen_at": at, "baseline_collected_at": at, "profiles": profiles}
                     for index, key in enumerate([keys[0], keys[1], keys[1]])]
 
         def close(self):
@@ -5325,7 +5329,9 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
     assert (result["total"], result["unmatched"], result["notEligible"]) == (6, 1, 3)
     matched, ambiguous, unmatched, stopped, disabled, unknown_network = result["guests"]
     assert matched == {"id": "vm:1", "name": "VM 1", "vmid": 1, "state": "matched",
-                       "registrations": 1, "presence": "online", "lastSeenAt": at}
+                       "registrations": 1, "presence": "online", "lastSeenAt": at,
+                       "contextProfiles": [{"profile": "health_v1", "collectedAt": at},
+                                           {"profile": "network_v1", "collectedAt": at}]}
     assert ambiguous["state"] == "ambiguous" and "lastSeenAt" not in ambiguous
     assert ambiguous["reason"] == "multiple_registrations"
     assert (unmatched["state"], unmatched["reason"], unmatched["registrations"]) == (
@@ -5335,6 +5341,7 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
     assert disabled["reason"] == "no_enabled_network_adapter"
     assert unknown_network["reason"] == "network_config_unconfirmed"
     assert all("presence" not in row for row in [unmatched, stopped, disabled, unknown_network])
+    assert all("contextProfiles" not in row for row in [ambiguous, unmatched, stopped, disabled, unknown_network])
 
     browser_url = "/network/infrastructure/agents"
     assert client.get(browser_url, follow_redirects=False).status_code == 303

@@ -30,6 +30,7 @@ STP_ROOT_PATH_MAX_AGE = timedelta(minutes=5)
 TRANSCEIVER_MAX_AGE = timedelta(minutes=5)
 PORT_LINK_CHECK_MAX_AGE = timedelta(minutes=5)
 PORT_COUNTER_KEYS = ("rxErrors", "txErrors", "rxDiscards", "txDiscards")
+GUEST_AGENT_PROFILES = ("health_v1", "network_v1", "inventory_v1")
 VLAN_AUDIT_MAX_AGE = timedelta(minutes=10)
 ROUTER_NEIGHBOR_MAX_AGE = timedelta(minutes=10)
 MAX_ROUTER_NEIGHBORS = 16
@@ -1721,6 +1722,16 @@ def _summarize_guest_agents(nodes: dict, keys: dict, conflicts: set[str], identi
                 entry["presence"] = "online" if fresh and identity.get("online") is True else "unconfirmed"
                 if entry["presence"] == "online":
                     entry["lastSeenAt"] = last_seen.isoformat()
+                reports = defaultdict(set)
+                for row in _rows(identity.get("profiles"), 5):
+                    profile = row.get("profile")
+                    collected = _time(row.get("collected_at"))
+                    if profile in GUEST_AGENT_PROFILES and collected is not None and collected <= now:
+                        reports[profile].add(collected)
+                profiles = [{"profile": name, "collectedAt": next(iter(reports[name])).isoformat()}
+                            for name in GUEST_AGENT_PROFILES if len(reports[name]) == 1]
+                if profiles:
+                    entry["contextProfiles"] = profiles
         guests.append(entry)
     counts = Counter(row["state"] for row in guests)
     return {"sourceState": "ready", "total": len(guests), "eligible": len(matches),
