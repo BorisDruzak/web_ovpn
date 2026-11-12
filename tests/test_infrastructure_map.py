@@ -6443,9 +6443,14 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
         "switch": {"egress": "untagged", "pvid": True, "source": "SNMP", "checkedAt": stamp},
     }}
     old = (datetime.fromisoformat(stamp) - timedelta(minutes=11)).isoformat()
-    check = {"method": "LDAP", "source": "UI_VPN", "state": "reachable", "port": 389,
-             "target": "192.0.2.11", "checkedAt": stamp}
-    address = {"address": check["target"], "source": "UI_VPN", "method": "ICMP · ARP", "checkedAt": stamp}
+    from app import infrastructure_service_probes as probes
+
+    monkeypatch.setattr(probes, "_ldap", lambda ip, port, spec: "reachable")
+    service = {"id": "directum", "kind": "Сервис"}
+    probes.apply_service_probes([service], {"directum": [{"type": "ldap", "ip": "192.0.2.11", "port": 389}]})
+    check, = service["serviceChecks"]
+    check["checkedAt"] = stamp
+    address = {"address": "192.0.2.11", "source": "UI_VPN", "method": "ICMP · ARP", "checkedAt": stamp}
     adapter, = raw["links"][1]["portEvidence"]
     adapter["virtual"]["ipv4Observations"] = [address]
     raw["nodes"][0]["serviceChecks"] = [check, {**check, "target": "192.0.2.12"}]

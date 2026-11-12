@@ -1552,7 +1552,7 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 "path": spec.get("path") if protocol in {"http", "https", "zabbix_api", "rtsp_options"} else None,
                 "target": spec.get("ip") if not skip_reason and (
                     protocol in {"icmp", "vlan_transit", "sip_options", "ipmi_lan", "rtsp_options", "ssh_identification", "ftp_features",
-                                 "zabbix_api", "postgresql", "dns", "smb", "tls_certificate", "tcp_connect"}
+                                 "zabbix_api", "postgresql", "dns", "ldap", "smb", "tls_certificate", "tcp_connect"}
                     or protocol in DEPENDENCY_PROTOCOLS or "probeTargetIP" in node
                     or (protocol in {"http", "https"} and spec.get("report_target") is True
                         and details.get("reason") != "http_configuration")
