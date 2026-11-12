@@ -2054,6 +2054,11 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
     color, health = read()
     assert (color, health["status"]) == ("ok", "ok")
     assert [member["partnerPort"] for member in health["members"]] == [1, 2]
+    network["arp"][0]["last_seen_at"] = (now - timedelta(minutes=6)).isoformat()
+    assert read()[0] == "ok"
+    network["arp"][0]["last_seen_at"] = (now - timedelta(minutes=9)).isoformat()
+    assert read()[0] == "unknown"
+    network["arp"][0]["last_seen_at"] = at
     report["members"].pop()
     assert read()[0] == "unknown"
     ports[1]["oper_status"] = "down"

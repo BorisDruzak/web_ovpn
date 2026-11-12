@@ -24,6 +24,7 @@ STP_ROOT_PATH_MAX_AGE = timedelta(minutes=5)
 PORT_LINK_CHECK_MAX_AGE = timedelta(minutes=5)
 RESOURCE_CAPACITY_MAX_AGE = timedelta(minutes=5)
 LACP_HEALTH_MAX_AGE = timedelta(minutes=5)
+LACP_PARTNER_MAX_AGE = timedelta(minutes=8)
 ROOT_FREE_WARNING_PERCENT = 10
 SWAP_USED_WARNING_PERCENT = 90
 BACKUP_PROBE_METHOD = "Копия Proxmox"
@@ -934,12 +935,16 @@ def _attach_lacp_health(nodes: dict, expectations: dict, links: list[dict], port
             continue
         for report in edge["portEvidence"]:
             lacp = report.get("lacp")
-            if not lacp or not observation_is_fresh(report["at"], now, max_age=LACP_HEALTH_MAX_AGE):
+            if not lacp:
+                continue
+            polled_at = lacp.get("polledAt", report["at"])
+            if (not observation_is_fresh(polled_at, now, max_age=LACP_HEALTH_MAX_AGE)
+                    or not observation_is_fresh(report["at"], now, max_age=LACP_PARTNER_MAX_AGE)):
                 continue
             side = lacp["side"]
             peer = edge["b" if side == "a" else "a"]
             key = (peer, edge[side], lacp["aggregate"].casefold(), lacp["member"].casefold())
-            forwarding[key] = (report["at"], lacp["partnerPort"])
+            forwarding[key] = (polled_at, lacp["partnerPort"])
 
     for node_id, configured in expectations.items():
         for spec in configured:
@@ -1210,6 +1215,9 @@ def load_infrastructure_map(
                 if source == "SNMP LACP + ARP":
                     if evidence[-1].get("pairEvidence") == "current":
                         _attach_lacp_port_states(evidence[-1], edge, nodes, port_states)
+                        polled = _time(report.get("lacpPolledAt"))
+                        if "lacp" in evidence[-1] and observed and polled and observed <= polled <= now:
+                            evidence[-1]["lacp"]["polledAt"] = polled.isoformat()
                 elif both_ports or source == SHARED_LLDP_SOURCE or observed_attachment:
                     states = {}
                     for side in ("a", "b"):

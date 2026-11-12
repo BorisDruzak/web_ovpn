@@ -919,7 +919,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         })
 
     def edge(a, b, kind, source, confirmed=True, details="", ports=None, at=None, vlan=None, virtual=None,
-             evidence_only=False):
+             evidence_only=False, lacp_polled_at=None):
         if a not in nodes or b not in nodes or a == b:
             return
         key = (tuple(sorted((a, b))), kind)
@@ -939,6 +939,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 report.update({"source": "Proxmox · конфигурация ВМ", "virtual": virtual})
             if vlan is not None:
                 report["vlan"] = vlan
+            if lacp_polled_at is not None:
+                report["lacpPolledAt"] = lacp_polled_at
             if report not in evidence:
                 evidence.append(report)
         if evidence:
@@ -1800,7 +1802,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         for member in confirmed:
             edge(switch, asset, "Сетевое соединение", "SNMP LACP + ARP", at=checked_at,
                  details=f"LACP: подтверждено {len(confirmed)} из {report['expected']} портов",
-                 ports=(f"{report['aggregate']} / {member['port']}", f"LACP {member['partner_port']}"))
+                 ports=(f"{report['aggregate']} / {member['port']}", f"LACP {member['partner_port']}"),
+                 lacp_polled_at=report["at"])
     for key, observation in network.get("asset_mac_checks", {}).items():
         if key in nodes and observation_is_fresh(observation["checkedAt"], now):
             nodes[key].setdefault("reachability", observation)
