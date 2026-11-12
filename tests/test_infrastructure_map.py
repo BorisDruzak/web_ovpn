@@ -3829,6 +3829,58 @@ def test_infrastructure_map_serves_only_public_snapshot(tmp_path, monkeypatch):
     assert response.headers["cache-control"] == "no-store"
 
 
+def test_service_audit_shares_map_status_and_reports_required_check_gaps(tmp_path, monkeypatch):
+    path = tmp_path / "infrastructure.json"
+    monkeypatch.setenv("INFRASTRUCTURE_MAP_SNAPSHOT_PATH", str(path))
+    now = datetime.now(timezone.utc)
+    stamp = now.isoformat()
+    path.write_text(json.dumps({
+        "schema": 1, "snapshotAt": stamp,
+        "nodes": [
+            {"id": "vm", "name": "VM", "kind": "Сервер"},
+            {"id": "svc", "name": "Directum", "kind": "Сервис",
+             "reachability": {"state": "reachable", "checkedAt": stamp},
+             "sources": [{"name": "Server Observer", "at": stamp}],
+             "requiredObserverChecks": ["c_disk_free", "iis_active"],
+             "checks": [{"name": "c_disk_free", "status": "critical"}],
+             "serviceChecks": [
+                 {"method": "HTTP", "source": "UI_VPN", "state": "reachable", "required": True, "checkedAt": stamp},
+                 {"method": "DNS", "source": "UI_VPN", "state": "unknown", "supplemental": True, "checkedAt": stamp},
+                 {"method": "HTTPS", "source": "UI_VPN", "state": "reachable", "required": True,
+                  "checkedAt": (now - timedelta(minutes=10)).isoformat()},
+             ]},
+            {"id": "vipnet", "name": "ViPNet", "kind": "Сервис",
+             "serviceChecks": [
+                 {"method": "Маршрут", "source": "UI_VPN", "state": "reachable", "required": True,
+                  "component": True, "checkedAt": stamp},
+                 {"method": "ICMP", "source": "UI_VPN", "state": "unknown", "supplemental": True,
+                  "checkedAt": stamp, "reason": "icmp_no_echo_reply"},
+             ]},
+        ],
+        "links": [{"a": "vm", "b": "svc", "kind": "Цель проверки", "confirmed": True}],
+    }), encoding="utf-8")
+    client, headers, _ = make_client(tmp_path, monkeypatch)
+    url = "/api/v1/network/infrastructure"
+    response = client.get(url + "?view=services", headers=headers)
+    assert response.status_code == 200
+    graph = response.json()["infrastructure"]
+    assert "nodes" not in graph and "links" not in graph
+    audit = graph["serviceAudit"]
+    assert audit["total"] == 2 and audit["counts"] == {"critical": 0, "warn": 1, "unknown": 1, "ok": 0}
+    row, vipnet = audit["services"]
+    full = client.get(url, headers=headers).json()["infrastructure"]
+    assert row["id"] == "svc" and row["status"] == full["nodes"][1]["mapStatus"] == "warn"
+    assert row["hosts"] == ["vm"]
+    assert row["requiredChecks"] == {"passed": 1, "failed": 1, "unconfirmed": 2}
+    assert {(c["check"], c["status"], c["stale"]) for c in row["issues"]} == {
+        ("c_disk_free", "critical", False), ("iis_active", "unknown", False), ("HTTPS", "unknown", True),
+    }
+    assert vipnet["requiredChecks"] == {"passed": 1, "failed": 0, "unconfirmed": 0}
+    hint, = vipnet["issues"]
+    assert hint["check"] == "ICMP" and hint["required"] is False and hint["reason"] == "icmp_no_echo_reply"
+    assert response.headers["cache-control"] == "no-store"
+
+
 def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_paths(tmp_path, monkeypatch):
     path = tmp_path / "infrastructure.json"
     monkeypatch.setenv("INFRASTRUCTURE_MAP_SNAPSHOT_PATH", str(path))

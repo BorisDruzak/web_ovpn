@@ -524,13 +524,15 @@ def test_mcp_infrastructure_returns_one_node_and_its_linked_peers(monkeypatch):
 
     def audit_api(method, path):
         assert method == "GET" and path in ("/api/v1/network/infrastructure?view=topology",
-                                            "/api/v1/network/infrastructure?view=agents")
+                                            "/api/v1/network/infrastructure?view=agents",
+                                            "/api/v1/network/infrastructure?view=services")
         return {"status": "ok", "infrastructure": summary}
 
     with monkeypatch.context() as audit:
         audit.setattr(server, "api_request", audit_api)
         assert server.call_tool("openvpn_network_infrastructure", {"view": "topology"})["infrastructure"] == summary
         assert server.call_tool("openvpn_network_infrastructure", {"view": "agents"})["infrastructure"] == summary
+        assert server.call_tool("openvpn_network_infrastructure", {"view": "services"})["infrastructure"] == summary
         with pytest.raises(ValueError):
             server.call_tool("openvpn_network_infrastructure", {"view": "topology", "node_id": "vm:103"})
     scoped = server.call_tool("openvpn_network_infrastructure", {"node_id": "vm:103"})["infrastructure"]

@@ -1139,6 +1139,55 @@ def summarize_topology(graph: dict) -> dict:
                                         "pending": [pending[key] for key in sorted(pending)[:64]]}}
 
 
+def summarize_services(graph: dict) -> dict:
+    nodes = {node["id"]: node for node in graph["nodes"]}
+    hosts = {}
+    for link in graph["links"]:
+        if (link["confirmed"] and link["kind"] in {"Размещение", "Цель проверки"}
+                and nodes[link["a"]]["kind"] != "Сервис" and nodes[link["b"]]["kind"] == "Сервис"):
+            hosts.setdefault(link["b"], set()).add(link["a"])
+
+    priority = {"critical": 0, "warn": 1, "unknown": 2, "ok": 3}
+    check_status = {"reachable": "ok", "unreachable": "critical"}
+    counts = dict.fromkeys(priority, 0)
+    services = []
+    for node in nodes.values():
+        if node["kind"] != "Сервис":
+            continue
+        state = node["mapStatus"]
+        counts[state] += 1
+        checks = [
+            {"check": check["name"], "label": check.get("label", check["name"]),
+             "required": check.get("required") is True,
+             "status": check["status"], "source": "Server Observer",
+             **{key: check[key] for key in ("checkedAt", "stale", "error", "unit", "observed", "warningThreshold")
+                if key in check}}
+            for check in node["checks"] if check.get("required") or check["status"] in ("critical", "warn")
+        ]
+        checks.extend(
+            {"check": check["method"], "status": check_status.get(check["state"], "unknown"),
+             "required": check.get("required") is True,
+             **{key: check[key] for key in ("source", "checkedAt", "stale", "reason", "path", "port", "target")
+                if key in check and check[key] is not None and check[key] != ""}}
+            for check in node["serviceChecks"] if check.get("required") or (
+                state == "unknown" and check.get("supplemental") and check["state"] != "reachable"
+            )
+        )
+        totals = Counter(check["status"] for check in checks if check["required"])
+        issues = sorted((check for check in checks if check["status"] != "ok"),
+                        key=lambda check: (not check["required"], priority[check["status"]]))
+        services.append({
+            "id": node["id"], "name": node["name"], "status": state, "reachability": node["reachability"],
+            "hosts": sorted(hosts.get(node["id"], ())), "dependencies": node["serviceAvailability"],
+            "requiredChecks": {"passed": totals["ok"], "failed": totals["critical"] + totals["warn"],
+                               "unconfirmed": totals["unknown"]},
+            "issueTotal": len(issues), "issues": issues[:6],
+        })
+    services.sort(key=lambda node: (priority[node["status"]], node["name"].casefold(), node["id"]))
+    metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
+    return {**metadata, "serviceAudit": {"total": len(services), "counts": counts, "services": services[:128]}}
+
+
 def _summarize_guest_agents(nodes: dict, keys: dict, identities: list[dict], now: datetime) -> dict:
     from .inventory.endpoint import CANDIDATE_MAX_AGE, STATE_MAX_AGE
 

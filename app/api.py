@@ -35,7 +35,7 @@ from .network_observer import list_from as network_list_from, merge_unified_host
 from .network_paths_adapter import get_network_path, list_network_paths
 from .routeros_backups import list_routeros_backups
 from .server_health_view import build_server_health_view
-from .infrastructure_map import load_infrastructure_map, summarize_topology
+from .infrastructure_map import load_infrastructure_map, summarize_services, summarize_topology
 from .vpnctl_client import VpnctlError, run_vpnctl
 
 CLIENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -1039,7 +1039,7 @@ def api_network_dashboard(actor: str = Depends(require_api_actor)):
 
 @router.get("/network/infrastructure")
 def api_network_infrastructure(
-    view: Literal["topology", "agents"] | None = None,
+    view: Literal["topology", "agents", "services"] | None = None,
     actor: str = Depends(require_api_actor),
     db: Session = Depends(get_db),
 ):
@@ -1061,8 +1061,12 @@ def api_network_infrastructure(
         graph.setdefault("agentAudit", {"sourceState": "unavailable"})
     else:
         graph = load_infrastructure_map(path, db=db)
+        if view == "services":
+            graph = summarize_services(graph)
+        elif view == "topology":
+            graph = summarize_topology(graph)
     return JSONResponse(
-        {"status": "ok", "infrastructure": summarize_topology(graph) if view == "topology" else graph},
+        {"status": "ok", "infrastructure": graph},
         headers={"Cache-Control": "no-store"},
     )
 
