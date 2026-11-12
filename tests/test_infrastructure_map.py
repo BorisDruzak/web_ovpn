@@ -3299,6 +3299,11 @@ def test_transit_port_requires_direct_route_running_ethernet_and_neighbor_arp():
     at = now.isoformat()
     context = {"devices": [{"id": name, "name": name, "kind": "router"} for name in ("rb", "coordinator")],
                "segments": [{"id": "transit", "cidr": "192.0.2.0/30", "local_address": "192.0.2.1", "gateway_device": "rb"}]}
+    inventory_stamp = (now - timedelta(days=30)).isoformat()
+    context["devices"][1]["observed_state"] = {"ipv4_interfaces": [
+        {"name": "eth2", "address": "192.0.2.2/30", "observed_at": inventory_stamp},
+        {"name": "eth0", "address": "198.51.100.20/24", "observed_at": inventory_stamp},
+    ]}
     binding = {"transit_links": {"transit": {"asset": "coordinator", "source": "main",
                                               "peer": "192.0.2.2", "label": "Transit"}}}
     network = {
@@ -3319,6 +3324,7 @@ def test_transit_port_requires_direct_route_running_ethernet_and_neighbor_arp():
     assert service["probeTargetIP"] == "192.0.2.2"
     assert link["confirmed"] and link["portEvidence"][0]["a"] == "ether8"
     assert link["portEvidence"][0]["b"] == ""
+    assert link["portEvidence"][1] == {"a": "", "b": "eth2", "source": "GitHub", "at": inventory_stamp, "confirmed": False}
     network["arp"][0]["interface"] = "bridge1"
     assert build()[0]["probeTargetIP"] is None and build()[1] == []
     network["arp"][0]["interface"] = "ether8"
@@ -3608,9 +3614,13 @@ def test_transit_peer_management_port_requires_fresh_arp_fdb_and_active_ethernet
     now = datetime.now(timezone.utc)
     at = now.isoformat()
     address, mac = "198.51.100.20", "02:00:00:00:00:07"
+    inventory_stamp = (now - timedelta(days=30)).isoformat()
     context = {"devices": [{"id": "rb", "name": "RB", "kind": "router"},
                            {"id": "coordinator", "name": "Coordinator", "kind": "security_gateway",
-                            "management_ip": address}],
+                            "management_ip": address, "observed_state": {"ipv4_interfaces": [
+                                {"name": "eth0", "address": address + "/24", "observed_at": inventory_stamp},
+                                {"name": "eth2", "address": "192.0.2.2/30", "observed_at": inventory_stamp},
+                            ]}}],
                "segments": [{"id": "transit", "cidr": "192.0.2.0/30",
                              "local_address": "192.0.2.1", "gateway_device": "rb"}]}
     bindings = {"transit_links": {"transit": {"asset": "coordinator", "source": "main",
@@ -3639,14 +3649,20 @@ def test_transit_peer_management_port_requires_fresh_arp_fdb_and_active_ethernet
     assert link["kind"] == "Путь по MAC-таблице" and link["confirmed"]
     expected = {"name": "ether7", "source": "RouterOS", "state": "up",
                 "speedBps": None, "checkedAt": at, "stale": False}
-    assert link["portEvidence"] == [{"a": "ether7", "b": "", "source": "MikroTik · ARP + FDB", "at": at,
-                                     "confirmed": True, "portStates": {"a": expected}}]
+    live, inventory = link["portEvidence"]
+    assert live == {"a": "ether7", "b": "", "source": "MikroTik · ARP + FDB", "at": at,
+                    "confirmed": True, "portStates": {"a": expected}}
+    assert inventory == {"a": "", "b": "eth0", "source": "GitHub", "at": inventory_stamp, "confirmed": False}
     ports = next(node["ports"] for node in load_infrastructure_map(path, now)["nodes"] if node["id"] == "rb")
     assert ports == [expected, {**expected, "name": "ether9", "state": "disabled"}]
     expired = lan(public_at=now + timedelta(hours=1))[0]
     assert not expired["confirmed"]
     assert "portStates" not in expired["portEvidence"][0]
     assert lan(at=now + timedelta(hours=1), public_at=now + timedelta(hours=1)) == []
+    declared = context["devices"][1]["observed_state"]["ipv4_interfaces"]
+    declared.append({**declared[0], "name": "eth3"})
+    assert lan()[0]["portEvidence"] == [live]
+    declared.pop()
     network["router_bridge_hosts"].append({**learned, "interface": "ether6"})
     assert lan() == []
     network["router_bridge_hosts"].pop()

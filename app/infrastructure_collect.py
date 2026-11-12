@@ -574,6 +574,27 @@ def _route_checks(intent: dict, source: str, routes: list[dict], now: datetime, 
     return checks
 
 
+def _inventory_ipv4_interface(device: dict, address: str, now: datetime) -> tuple[str, str] | None:
+    state = device.get("observed_state")
+    rows = state.get("ipv4_interfaces") if isinstance(state, dict) else None
+    matches = []
+    for row in rows[:32] if isinstance(rows, list) else ():
+        if not isinstance(row, dict):
+            continue
+        name, observed, interface_address = row.get("name"), row.get("observed_at"), row.get("address")
+        if (not isinstance(name, str) or not INTERFACE_NAME.fullmatch(name)
+                or not isinstance(observed, str) or not isinstance(interface_address, str)):
+            continue
+        try:
+            stamp = datetime.fromisoformat(observed)
+            if stamp.tzinfo is None or stamp > now or str(ipaddress.IPv4Interface(interface_address).ip) != address:
+                continue
+            matches.append((name, stamp.astimezone(timezone.utc).isoformat()))
+        except (OverflowError, ValueError):
+            continue
+    return matches[0] if len(matches) == 1 else None
+
+
 def _transit_port(segment: dict, spec: dict, network: dict, arp_mappings: dict, now: datetime) -> tuple[str, str] | None:
     try:
         subnet = ipaddress.IPv4Network(segment["cidr"])
@@ -1372,6 +1393,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 edge(device, path["id"], "Цель проверки", "Настройки карты")
     arp_mappings = _arp_mappings(network.get("arp", []), now)
     transit_segments = {segment["id"]: segment for segment in context.get("segments", [])}
+    devices = {device["id"]: device for device in context.get("devices", [])}
     for segment_id, spec in bindings.get("transit_links", {}).items():
         segment = transit_segments.get(segment_id, {})
         router, asset = segment.get("gateway_device"), spec.get("asset")
@@ -1385,6 +1407,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             item["probeTargetIP"] = spec["peer"]
             edge(router, asset, "Транзитный сегмент", "MikroTik · ARP",
                  details=f"{segment['local_address']} ↔ {spec['peer']}", ports=(port, ""), at=observed)
+            if archived := _inventory_ipv4_interface(devices[asset], spec["peer"], now):
+                edge(router, asset, "Транзитный сегмент", "GitHub", False, ports=("", archived[0]), at=archived[1])
         bridge = spec.get("lan_bridge")
         address = address_by_asset[asset]
         if isinstance(bridge, str) and addresses.get(address) == [asset]:
@@ -1393,6 +1417,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 port, observed = attachment
                 edge(router, asset, "Путь по MAC-таблице", "MikroTik · ARP + FDB",
                      details=f"{address} · {bridge}", ports=(port, ""), at=observed)
+                if archived := _inventory_ipv4_interface(devices[asset], address, now):
+                    edge(router, asset, "Путь по MAC-таблице", "GitHub", False, ports=("", archived[0]), at=archived[1])
         for endpoint in (router, asset):
             edge(endpoint, item["id"], "Цель проверки", "Настройки карты")
     fdb_reports = []
