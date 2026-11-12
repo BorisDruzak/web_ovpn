@@ -28,7 +28,7 @@ from netctl.config import DEFAULT_DB_URL, load_secrets
 from netctl.context import load_context_bytes, load_schema, validate_context
 from netctl.db import list_sources, read_context_snapshot
 from netctl.drivers import legacy_driver_for
-from netctl.snmp.interfaces import read_interface_link
+from netctl.snmp.interfaces import read_interface_link, read_snr_transceivers
 from netctl.snmp.lacp import read_lacp_members
 from netctl.snmp.stp import read_stp_designated_ports, read_stp_root_path
 from netctl.snmp.transport import SnmpTransport
@@ -45,6 +45,7 @@ from .infrastructure_map import (
     MAX_SNAPSHOT_BYTES, NETWORK_KINDS,
     PPPOE_METHOD, PPPOE_SOURCE, PVE_DISK_DEVICE, PVE_STORAGE_ID, RECIPROCAL_MAC_SOURCE,
     SERVICE_PROBE_MAX_AGE, SHARED_LLDP_KIND, SHARED_LLDP_SOURCE, STP_ROOT_PATH_MAX_AGE,
+    TRANSCEIVER_MAX_AGE,
     index_port_states, observation_is_fresh, port_label_key,
     project_hypervisor_disks, project_hypervisor_lvm_thin, project_hypervisor_zfs,
 )
@@ -322,6 +323,23 @@ async def _collect_stp_observations(sources: list[dict], switches: list[dict], n
             target = roots if profile == "css326" else designated
             target[source["name"]] = observation
     return roots, designated
+
+
+async def _collect_snr_modules(network: dict, now: datetime) -> dict:
+    detected = {row["source"] for row in network.get("switches", [])
+                if row.get("profile_id") == "snr" and observation_is_fresh(row.get("last_success_at"), now)}
+    targets = [source for source in network["sources"] if source.get("enabled")
+               and source.get("driver") == "snmp_switch" and source["name"] in detected]
+
+    async def read(source):
+        try:
+            async with asyncio.timeout(5), SnmpTransport.from_source(source) as transport:
+                ports = await read_snr_transceivers(transport)
+        except (TimeoutError, OSError, ValueError):
+            ports = {}
+        return source["name"], {"ports": ports, "checkedAt": datetime.now(timezone.utc).isoformat()}
+
+    return dict(await asyncio.gather(*(read(source) for source in targets)))
 
 
 async def _check_declared_switch_ports(context: dict, network: dict, pve: dict, now: datetime) -> None:
@@ -1365,9 +1383,17 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                  "speedBps": port.get("speed_bps"), "checkedAt": port.get("last_seen_at")}
                 for port in current
             ]
+            modules = network.get("transceivers", {}).get(name, {})
+            modules_current = (row.get("enabled") and observation_is_fresh(
+                modules.get("checkedAt"), now, max_age=TRANSCEIVER_MAX_AGE))
             for port, raw_port in zip(item["ports"], current):
                 if raw_port.get("linkCheck"):
                     port["linkCheck"] = raw_port["linkCheck"]
+                index = raw_port.get("if_index")
+                if modules_current and type(index) is int and index_counts[index] == 1:
+                    module = modules["ports"].get(index, {})
+                    if module.get("port") == port["name"]:
+                        port["transceiver"] = {**module, "checkedAt": modules["checkedAt"]}
                 scope = (name, latest_run, port["checkedAt"])
                 neighbors = peers_by_sample.get((name, port["key"], latest_run, port["checkedAt"]))
                 if neighbors and port["state"] == "up":
@@ -2732,6 +2758,7 @@ def main() -> int:
             network["stp_root_paths"], network["stp_designated_ports"] = asyncio.run(
                 _collect_stp_observations(network["sources"], network.get("switches", []), datetime.now(timezone.utc))
             )
+            network["transceivers"] = asyncio.run(_collect_snr_modules(network, datetime.now(timezone.utc)))
             if bindings.get("ipsec_links"):
                 network["ipsec"] = _collect_ipsec_policies(network["sources"], bindings["ipsec_links"])
                 network["ipsec_connectivity"] = _collect_ipsec_connectivity(context, network["sources"], bindings["ipsec_links"])

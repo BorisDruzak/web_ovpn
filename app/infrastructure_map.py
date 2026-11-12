@@ -24,6 +24,7 @@ MAX_AGE = timedelta(minutes=25)
 MAX_DOWNSTREAM_SWITCHES = 12
 SERVICE_PROBE_MAX_AGE = timedelta(minutes=5)
 STP_ROOT_PATH_MAX_AGE = timedelta(minutes=5)
+TRANSCEIVER_MAX_AGE = timedelta(minutes=5)
 PORT_LINK_CHECK_MAX_AGE = timedelta(minutes=5)
 ROUTER_NEIGHBOR_MAX_AGE = timedelta(minutes=10)
 MAX_ROUTER_NEIGHBORS = 16
@@ -210,6 +211,15 @@ def _public_port(row: dict, now: datetime) -> dict:
         "checkedAt": stamp.isoformat() if stamp is not None and stamp <= now else None,
         "stale": not fresh,
     }
+    module = row.get("transceiver")
+    if fresh and isinstance(module, dict) and observation_is_fresh(module.get("checkedAt"), now, max_age=TRANSCEIVER_MAX_AGE):
+        fields = {key: value for key in ("vendor", "formFactor", "media")
+                  if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._+/-]{0,31}", value := _text(module.get(key), 32))}
+        if fields.get("formFactor"):
+            result["transceiver"] = {"checkedAt": _time(module["checkedAt"]).isoformat(), **fields}
+            nominal = module.get("nominalBps")
+            if type(nominal) is int and 0 < nominal <= 10**12:
+                result["transceiver"]["nominalBps"] = nominal
     neighbor_count = row.get("lldpNeighborCount")
     if result["state"] == "up" and type(neighbor_count) is int and 1 <= neighbor_count <= 65535:
         result["lldpNeighborCount"] = neighbor_count

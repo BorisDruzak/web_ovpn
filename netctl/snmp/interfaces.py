@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
 
 from .models import CapabilityResult, SnmpVarBind, SwitchPort
@@ -29,6 +30,45 @@ _INTERFACE_COLUMNS = (
     IF_HIGH_SPEED,
     IF_ALIAS,
 )
+_SNR_MODULE_ENTRY = (1, 3, 6, 1, 4, 1, 57206, 7, 100, 30, 3, 1)
+
+
+async def read_snr_transceivers(transport) -> dict[int, dict]:
+    """Read the SNR transceiver inventory columns that contain no serial numbers."""
+    columns = {}
+    for field, number in (("port", 2), ("vendor", 4), ("formFactor", 5), ("media", 6), ("rate", 7)):
+        oid = (*_SNR_MODULE_ENTRY, number)
+        result = await transport.walk(oid, capability="snr_transceiver_" + field)
+        values = {}
+        if result.outcome is SnmpOutcome.SUCCESS_WITH_ROWS:
+            for row in result.rows:
+                if row.oid[:-1] != oid:
+                    values.clear()
+                    break
+                index = row.oid[-1]
+                if index in values or not 1 <= index <= 2_147_483_647:
+                    values.clear()
+                    break
+                try:
+                    values[index] = _text(row, field).strip()
+                except ValueError:
+                    values[index] = ""
+        columns[field] = values
+    modules = {}
+    for index, form in columns["formFactor"].items():
+        name = columns["port"].get(index, "")
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,32}", name) or not re.fullmatch(r"(?:SFP|QSFP)[A-Z0-9+ -]{0,8}", form):
+            continue
+        module = {"port": name, "formFactor": form}
+        for field in ("vendor", "media"):
+            value = columns[field].get(index, "")
+            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._+/-]{0,31}", value) and value.upper() not in {"NULL", "UNKNOWN", "N/A"}:
+                module[field] = value
+        rate = re.fullmatch(r"(\d{1,6})\s*Mbit/s", columns["rate"].get(index, ""))
+        if rate and int(rate[1]) > 0:
+            module["nominalBps"] = int(rate[1]) * 1_000_000
+        modules[index] = module
+    return modules
 
 
 async def read_interface_link(transport, if_index: int, expected_name: str) -> dict:

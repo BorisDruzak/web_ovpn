@@ -978,6 +978,12 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           const vlans = port.fdbVlans.vlans.map(vlan => `${vlan.id} (${vlan.learnedMacCount} MAC)`);
           row.append(make('small', 'VLAN по MAC-таблице · ' + vlans.join(', ')));
         }
+        if (selectedPort && port.transceiver) {
+          const {formFactor, vendor, media, nominalBps, checkedAt} = port.transceiver;
+          const rate = nominalBps && 'номинал ' + (nominalBps / 1e9).toLocaleString('ru-RU') + ' Гбит/с';
+          row.append(make('small', ['Модуль ' + formFactor, vendor, media, rate, 'SNMP · ' + formatTime(checkedAt)]
+            .filter(Boolean).join(' · ')));
+        }
         if (selectedPort && node.kind === 'Коммутатор' && port.state === 'up') {
           const learned = port.fdbLearned;
           const summary = learned

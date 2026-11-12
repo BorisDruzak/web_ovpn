@@ -1746,6 +1746,52 @@ def test_css_root_port_stp_rejects_root_port_change_during_poll():
     assert asyncio.run(read_stp_root_path(Transport(5))) == {}
 
 
+def test_snr_transceiver_inventory_uses_the_current_interface_identity(tmp_path):
+    import asyncio
+
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+    from netctl.snmp.models import CapabilityResult, SnmpVarBind
+    from netctl.snmp.outcomes import SnmpOutcome
+    from netctl.snmp.interfaces import read_snr_transceivers
+
+    class Transport:
+        async def walk(self, oid, *, capability):
+            assert oid[:-1] == (1, 3, 6, 1, 4, 1, 57206, 7, 100, 30, 3, 1)
+            readings = {
+                2: [b"xe1", b"xe2", b"xe3"],
+                4: [b"OEM", b"OEM", b"NULL"],
+                5: [b"SFP+", b"SFP+", b"NULL"],
+                6: [b"UNKNOWN", b"10GBASE-SR", b"NULL"],
+                7: [b"10300Mbit/s", b"10300Mbit/s", b"NULL"],
+            }
+            rows = tuple(SnmpVarBind((*oid, index), "octet_string", value)
+                         for index, value in enumerate(readings[oid[-1]], 5025))
+            return CapabilityResult(capability, SnmpOutcome.SUCCESS_WITH_ROWS, rows)
+
+    now = datetime.now(timezone.utc)
+    stamp = now.isoformat()
+    modules = asyncio.run(read_snr_transceivers(Transport()))
+    assert set(modules) == {5025, 5026}
+    assert modules[5026]["media"] == "10GBASE-SR"
+    context = {"devices": [{"id": "switch", "name": "Switch", "kind": "switch", "management_ip": "192.0.2.1"}]}
+    network = {
+        "sources": [{"name": "snr", "host": "192.0.2.1", "driver": "snmp_switch", "enabled": True}],
+        "ports": [{"source": "snr", "collector_run_id": 1, "if_index": index, "port_key": label,
+                   "name": label, "oper_status": "up", "last_seen_at": stamp}
+                  for index, label in [(5025, "xe1"), (5026, "xe4")]],
+        "transceivers": {"snr": {"checkedAt": stamp, "ports": modules}},
+    }
+    path = tmp_path / "map.json"
+    path.write_text(json.dumps(build_graph(context, network, {}, {}, {}, now)), encoding="utf-8")
+    node, = load_infrastructure_map(path, now)["nodes"]
+    first, second = node["ports"]
+    assert first["transceiver"] == {"checkedAt": stamp, "vendor": "OEM", "formFactor": "SFP+", "nominalBps": 10300000000}
+    assert "transceiver" not in second
+    expired, = load_infrastructure_map(path, now + timedelta(minutes=6))["nodes"]
+    assert "transceiver" not in expired["ports"][0]
+
+
 def test_stp_designated_ports_match_the_local_bridge_and_reject_ambiguous_ids():
     import asyncio
 
