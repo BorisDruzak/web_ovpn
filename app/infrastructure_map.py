@@ -35,6 +35,8 @@ SERVICE_PROBE_MAX_AGE = timedelta(minutes=5)
 STP_ROOT_PATH_MAX_AGE = timedelta(minutes=5)
 TRANSCEIVER_MAX_AGE = timedelta(minutes=5)
 PORT_LINK_CHECK_MAX_AGE = timedelta(minutes=5)
+RX_SILENCE_MAX_WINDOW = timedelta(hours=1)
+RX_SILENCE_MAX_INTERVALS = 6
 PORT_COUNTER_KEYS = ("rxErrors", "txErrors", "rxDiscards", "txDiscards")
 GUEST_AGENT_PROFILES = ("health_v1", "network_v1", "inventory_v1")
 GUEST_AGENT_HEALTH_MAX_AGE = timedelta(minutes=6)
@@ -343,6 +345,8 @@ def _public_port(row: dict, now: datetime) -> dict:
         result["proxmoxActive"] = row["proxmoxActive"]
     if telemetry := _public_port_telemetry(row.get("telemetry"), result, now):
         result["telemetry"] = telemetry
+        if silence := _public_rx_silence(row.get("rxSilence"), telemetry):
+            result["rxSilence"] = silence
         counters = row.get("rxErrorCounters")
         if (telemetry.get("rxErrors", 0) > 0 and isinstance(counters, dict)
                 and observation_is_fresh(counters.get("checkedAt"), now, max_age=PORT_LINK_CHECK_MAX_AGE)
@@ -386,7 +390,7 @@ def _apply_port_link_check(port: dict, row: dict, now: datetime) -> None:
             port["endpointMac"] = {"deviceId": device, "mac": mac, "checkedAt": stamp.isoformat()}
     if state != "up":
         for key in ("lldpChassisCount", "lldpNeighborCount", "lldpNeighbors", "lldpCheckedAt",
-                    "fdbLearned", "fdbVlans", "telemetry", "rxErrorCounters", "linkMode"):
+                    "fdbLearned", "fdbVlans", "telemetry", "rxErrorCounters", "rxSilence", "linkMode"):
             port.pop(key, None)
 
 
@@ -408,6 +412,20 @@ def _public_port_telemetry(sample: object, port: dict, now: datetime) -> dict:
         if type(value) is int and 0 <= value < 2**53:
             metrics[key] = value
     return {"checkedAt": port["checkedAt"], "intervalSeconds": interval, **metrics} if metrics else {}
+
+
+def _public_rx_silence(value: object, telemetry: dict) -> dict:
+    if not isinstance(value, dict) or telemetry.get("rxBps") != 0 or telemetry.get("txBps", 0) <= 0:
+        return {}
+    started, checked = _time(value.get("startedAt")), _time(value.get("checkedAt"))
+    intervals, sent = value.get("intervalCount"), value.get("txBytes")
+    if (started is None or checked is None or checked.isoformat() != telemetry["checkedAt"]
+            or not timedelta(seconds=telemetry["intervalSeconds"]) < checked - started <= RX_SILENCE_MAX_WINDOW
+            or type(intervals) is not int or not 2 <= intervals <= RX_SILENCE_MAX_INTERVALS
+            or type(sent) is not int or not 0 < sent < 2**53):
+        return {}
+    return {"startedAt": started.isoformat(), "checkedAt": checked.isoformat(),
+            "intervalCount": intervals, "txBytes": sent}
 
 
 def _current_port_vlan_rows(sample: object, port: dict) -> list[dict]:
@@ -1463,7 +1481,7 @@ def summarize_topology(graph: dict) -> dict:
                     for side, port in declared.get("portStates", {}).items() if port.get("lldpNeighbors")}
             observations = {
                 side: {key: port[key] for key in ("name", "state", "speedBps", "checkedAt", "source", "linkMode",
-                                                  "stpPort", "telemetry", "rxErrorCounters", "fdbLearned", "transceiver",
+                                                  "stpPort", "telemetry", "rxErrorCounters", "rxSilence", "fdbLearned", "transceiver",
                                                   "configuredLabel") if key in port}
                 for side, port in declared.get("portStates", {}).items() if port["state"] != "unknown"
             }
@@ -1669,7 +1687,7 @@ def _physical_attachments(nodes: dict, links: list[dict], host_ids: list[str]) -
                 if port_states := report.get("portStates"):
                     reading["portStates"] = {
                         sides[side]: {key: state[key] for key in ("name", "state", "speedBps", "checkedAt",
-                                                                "stale", "source", "configuredLabel", "linkMode")
+                                                                "stale", "source", "configuredLabel", "linkMode", "rxSilence")
                                       if key in state}
                         for side, state in port_states.items()
                     }

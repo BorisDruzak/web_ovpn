@@ -92,6 +92,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const title = [portName, 'Накопленные счётчики SNMP', formatTime(counters.checkedAt)].filter(Boolean).join(' · ');
     parent.append(make('small', title), make('small', counts.join(' · ')));
   }
+  function formatRxSilence({startedAt, checkedAt, intervalCount, txBytes}) {
+    const duration = (Date.parse(checkedAt) - Date.parse(startedAt)) / 1000;
+    return `RX 0 байт за ${formatUptime(duration)} · TX ${txBytes.toLocaleString('ru-RU')} байт · ${intervalCount} интервалов SNMP · ${formatTime(checkedAt)}`;
+  }
   function renderPortCounterSummary() {
     const panel = root.querySelector('#map-port-counters');
     const summary = panel.querySelector('summary');
@@ -1193,6 +1197,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         if (selectedPort && port.rxErrorCounters) {
           appendRxErrorCounters(row, port.rxErrorCounters);
         }
+        if (selectedPort && port.rxSilence) row.append(make('small', formatRxSilence(port.rxSilence)));
         list.append(row);
       }
       const up = node.ports.filter(port => proxmox ? port.proxmoxActive : port.state === 'up').length;
@@ -1499,6 +1504,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
               li.append(make('small', `${port.name} · ${metrics.filter(Boolean).join(' · ')}`));
             }
             if (port.rxErrorCounters) appendRxErrorCounters(li, port.rxErrorCounters, port.name);
+            if (port.rxSilence) li.append(make('small', `${port.name} · ${formatRxSilence(port.rxSilence)}`));
           }
           if (evidence.lacp?.aggregateState) {
             const {side, aggregateState} = evidence.lacp;

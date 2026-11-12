@@ -3885,6 +3885,67 @@ def test_switch_port_telemetry_requires_matching_current_collection(tmp_path):
     assert read()[1]["measuredPorts"] == 0
 
 
+def test_switch_rx_silence_requires_continuous_64_bit_samples_on_the_current_port(tmp_path):
+    import sqlite3
+    from app.infrastructure_collect import _read_rx_silence_windows
+    from app.infrastructure_map import load_infrastructure_map, summarize_topology
+
+    now = datetime.now(timezone.utc)
+    stamps = [(now - timedelta(seconds=offset)).isoformat() for offset in (600, 300, 0)]
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("""CREATE TABLE switch_port_counter_samples (
+        id INTEGER PRIMARY KEY, source_id INTEGER, port_key TEXT, collector_run_id INTEGER,
+        if_index INTEGER, observed_at TEXT, octet_counter_bits INTEGER, sys_uptime_ticks INTEGER,
+        in_octets TEXT, out_octets TEXT
+    )""")
+    for index, stamp in enumerate(stamps):
+        conn.execute("INSERT INTO switch_port_counter_samples VALUES (?,1,'p1',?,7,?,64,?,'20',?)",
+                     (index, index + 1, stamp, 60000 + index * 30000, str(1000 + index * 500)))
+    telemetry = {"source_id": 1, "port_key": "p1", "collector_run_id": 3, "observed_at": stamps[-1],
+                 "rx_bps": 0, "tx_bps": 500 * 8 / 300}
+
+    def read(**changes):
+        sample = {**telemetry, **changes}
+        _read_rx_silence_windows(conn, [sample], now)
+        return sample.get("rxSilence")
+
+    silence = read()
+    assert silence == {"startedAt": stamps[0], "checkedAt": stamps[-1],
+                       "intervalCount": 2, "txBytes": 1000}
+    assert read(collector_run_id=4) is None
+    assert read(rx_bps=1) is None
+    assert read(tx_bps=0) is None
+    for column, value, restored in (("if_index", 8, 7), ("sys_uptime_ticks", 1, 90000),
+                                     ("octet_counter_bits", 32, 64), ("in_octets", "19", "20")):
+        conn.execute(f"UPDATE switch_port_counter_samples SET {column}=? WHERE id=1", (value,))
+        assert read() is None
+        conn.execute(f"UPDATE switch_port_counter_samples SET {column}=? WHERE id=1", (restored,))
+
+    path = tmp_path / "map.json"
+    raw_port = {"name": "xe1", "state": "up", "checkedAt": stamps[-1],
+                "telemetry": {"checkedAt": stamps[-1], "intervalSeconds": 300, "rxBps": 0, "txBps": 10},
+                "rxSilence": silence}
+    raw = {"schema": 1, "snapshotAt": stamps[-1], "nodes": [
+        {"id": "sw", "name": "SNR", "kind": "Коммутатор", "ports": [raw_port]},
+        {"id": "pbs", "name": "PBS", "kind": "Сервер"},
+    ], "links": [{"a": "sw", "b": "pbs", "kind": "Сетевое соединение", "portEvidence": [
+        {"a": "xe1", "b": "", "source": "GitHub", "confirmed": False},
+    ]}]}
+
+    def graph(when=now):
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        return load_infrastructure_map(path, when)
+
+    assert graph()["nodes"][0]["ports"][0]["rxSilence"] == silence
+    pending, = summarize_topology(graph())["topologyAudit"]["pending"]
+    assert pending["portObservations"]["a"]["rxSilence"] == silence
+    later = now + timedelta(seconds=1)
+    raw_port["linkCheck"] = {"state": "down", "checkedAt": later.isoformat()}
+    port = graph(later)["nodes"][0]["ports"][0]
+    assert port["state"] == "down" and "rxSilence" not in port
+
+
 def test_rx_error_diagnostics_poll_only_matching_affected_ports(monkeypatch):
     import asyncio
     from app import infrastructure_collect as collector

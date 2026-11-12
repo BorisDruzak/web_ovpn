@@ -48,7 +48,8 @@ from .infrastructure_map import (
     CLUSTER_HEALTH_METHODS, CLUSTER_KIND, INTERFACE_NAME, MAX_DOWNSTREAM_SWITCHES, MAX_ROUTER_NEIGHBORS,
     MAX_SNAPSHOT_BYTES, NETWORK_KINDS, PORT_LINK_CHECK_MAX_AGE,
     PPPOE_INTERNET_METHOD, PPPOE_METHOD, PPPOE_SOURCE, PVE_DISK_DEVICE, PVE_STORAGE_ID, RECIPROCAL_MAC_SOURCE,
-    SERVICE_PROBE_MAX_AGE, SHARED_LLDP_KIND, SHARED_LLDP_SOURCE, STP_ROOT_PATH_MAX_AGE,
+    RX_SILENCE_MAX_INTERVALS, RX_SILENCE_MAX_WINDOW, SERVICE_PROBE_MAX_AGE, SHARED_LLDP_KIND, SHARED_LLDP_SOURCE,
+    STP_ROOT_PATH_MAX_AGE,
     TRANSCEIVER_MAX_AGE,
     index_port_states, inventory_link_sources, observation_is_fresh, port_label_key,
     project_hypervisor_disks, project_hypervisor_lvm_thin, project_hypervisor_zfs,
@@ -1826,6 +1827,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 }
                 if raw_port.get("rxErrorCounters"):
                     port["rxErrorCounters"] = raw_port["rxErrorCounters"]
+                if "rxSilence" in sample:
+                    port["rxSilence"] = sample["rxSilence"]
         if "fdb_entries" in status:
             item["properties"]["Записи MAC-таблицы"] = str(status["fdb_entries"])
     for item in nodes.values():
@@ -2907,6 +2910,58 @@ def _read_downstream_fdb(connection, sources: list[dict], configured: dict) -> d
     return samples
 
 
+def _rx_silence_window(rows: list[sqlite3.Row]) -> dict:
+    if len(rows) < 3 or type(rows[0]["if_index"]) is not int or rows[0]["if_index"] <= 0:
+        return {}
+    index = rows[0]["if_index"]
+    readings = []
+    for row in rows:
+        received, sent, uptime = row["in_octets"], row["out_octets"], row["sys_uptime_ticks"]
+        if (row["if_index"] != index or row["octet_counter_bits"] != 64
+                or type(uptime) is not int or not 0 <= uptime < 2**32
+                or any(not isinstance(octets, str) or not re.fullmatch(r"[0-9]{1,20}", octets)
+                       or int(octets) >= 2**64 for octets in (received, sent))):
+            break
+        try:
+            stamp = datetime.fromisoformat(row["observed_at"])
+        except (TypeError, ValueError):
+            break
+        if stamp.utcoffset() is None:
+            break
+        received, sent = int(received), int(sent)
+        if readings:
+            newer, rx, tx, ticks = readings[-1]
+            interval = (newer - stamp).total_seconds()
+            if (not 0 < interval <= 900 or readings[0][0] - stamp > RX_SILENCE_MAX_WINDOW
+                    or not ticks > uptime or abs((ticks - uptime) / 100 - interval) > 30
+                    or received != rx or sent >= tx):
+                break
+        readings.append((stamp, received, sent, uptime))
+    if len(readings) < 3:
+        return {}
+    latest, _, last_tx, _ = readings[0]
+    earliest, _, first_tx, _ = readings[-1]
+    return {"startedAt": earliest.isoformat(), "checkedAt": latest.isoformat(),
+            "intervalCount": len(readings) - 1, "txBytes": last_tx - first_tx}
+
+
+def _read_rx_silence_windows(connection: sqlite3.Connection, telemetry: list[dict], now: datetime) -> None:
+    candidates = [sample for sample in telemetry if sample["rx_bps"] == 0 and (sample["tx_bps"] or 0) > 0
+                  and observation_is_fresh(sample["observed_at"], now)]
+    for sample in candidates[:32]:
+        rows = list(connection.execute(
+            """
+            SELECT collector_run_id, if_index, observed_at, octet_counter_bits, sys_uptime_ticks, in_octets, out_octets
+            FROM switch_port_counter_samples
+            WHERE source_id = ? AND port_key = ?
+            ORDER BY observed_at DESC, id DESC LIMIT ?
+            """, (sample["source_id"], sample["port_key"], RX_SILENCE_MAX_INTERVALS + 1),
+        ))
+        if (rows and rows[0]["collector_run_id"] == sample["collector_run_id"]
+                and rows[0]["observed_at"] == sample["observed_at"] and (window := _rx_silence_window(rows))):
+            sample["rxSilence"] = window
+
+
 def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | None = None,
                  transit_sources: set[str] | None = None, *, asset_fdb_ips: set[str] | None = None,
                  downstream_links: dict | None = None) -> dict:
@@ -2920,7 +2975,7 @@ def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | N
             data["downstream_fdb"] = _read_downstream_fdb(connection, data["sources"], downstream_links)
         data["port_telemetry"] = [dict(row) for row in connection.execute(
             """
-            SELECT s.name AS source, t.port_key, t.collector_run_id, t.observed_at,
+            SELECT s.name AS source, t.source_id, t.port_key, t.collector_run_id, t.observed_at,
                    t.sample_interval_seconds, t.rx_bps, t.tx_bps, t.in_errors_delta,
                    t.out_errors_delta, t.in_discards_delta, t.out_discards_delta
             FROM current_switch_port_telemetry AS t
@@ -2928,6 +2983,7 @@ def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | N
             WHERE s.enabled = 1 AND s.driver = 'snmp_switch' AND t.telemetry_state = 'ok'
             """
         )]
+        _read_rx_silence_windows(connection, data["port_telemetry"], datetime.now(timezone.utc))
         data["port_vlans"] = [dict(row) for row in connection.execute(
             """
             SELECT s.name AS source, v.port_key, v.if_index, v.collector_run_id, v.observed_at,
