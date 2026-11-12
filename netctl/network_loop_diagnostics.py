@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import UTC, datetime, timedelta
 
-from .switch_telemetry import derive_broadcast_rates
+from .switch_telemetry import broadcast_counters_unreliable, derive_broadcast_rates
 
 WINDOW = timedelta(hours=1)
 MAX_REVERSAL_GAP = timedelta(minutes=15)
@@ -142,7 +142,7 @@ def _broadcast_rates(
 
 def _broadcast_evidence(
     conn: sqlite3.Connection, source_id: int, since: datetime, until: datetime,
-    lower: str, upper: str, findings: list[dict], *, has_history: bool,
+    lower: str, upper: str, findings: list[dict], *, has_history: bool, unreliable: bool,
 ) -> dict:
     coverage = {
         "status": "unavailable", "scope": "port", "last_observed_at": None,
@@ -150,6 +150,8 @@ def _broadcast_evidence(
     }
     for finding in findings:
         finding.update(broadcast_intervals=[], broadcast_truncated=False)
+    if unreliable:
+        return {**coverage, "status": "unreliable_counters"}
     if not has_history:
         return coverage
 
@@ -316,6 +318,7 @@ def _read_source(
     findings = findings[:MAX_FINDINGS]
     coverage["broadcast"] = _broadcast_evidence(
         conn, source_id, since, until, lower, upper, findings, has_history=has_broadcast_history,
+        unreliable=broadcast_counters_unreliable(device["profile_id"], device["sys_descr"]),
     )
     if findings:
         status = "suspected_loop" if findings[0]["stp_events"] else "mac_flapping"
@@ -347,7 +350,7 @@ def read_loop_diagnostics(
         """
         SELECT sources.id, sources.name, sources.site, sources.last_collect_at,
                sources.last_status, stp.observed_at AS stp_observed_at,
-               devices.last_success_at AS fdb_last_success_at
+               devices.last_success_at AS fdb_last_success_at, devices.profile_id, devices.sys_descr
         FROM network_sources AS sources
         LEFT JOIN current_switch_stp_state AS stp ON stp.source_id = sources.id
         LEFT JOIN switch_devices AS devices ON devices.source_id = sources.id

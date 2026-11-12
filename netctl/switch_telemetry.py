@@ -5,6 +5,11 @@ import sqlite3
 from .snmp.models import SwitchCounterSample
 
 
+def broadcast_counters_unreliable(profile_id: str | None, sys_descr: str | None) -> bool:
+    # This firmware reported zero in both directions while its LLDP peer counted broadcasts.
+    return profile_id == "dgs" and sys_descr == "WS6-DGS-1210-52/F1 6.20.007"
+
+
 def _broadcast_delta(current: str | None, previous: str | None) -> int | None:
     if current is None or previous is None:
         return None

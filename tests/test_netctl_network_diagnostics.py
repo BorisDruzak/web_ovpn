@@ -70,6 +70,10 @@ def test_switch_history_derives_errors_and_records_only_stp_changes(tmp_path):
         result = read_diagnostics(conn, "switch", "ifindex:2", now=datetime(2026, 11, 12, 12, 11, tzinfo=UTC))
         conn.execute("UPDATE switch_port_counter_samples SET counter_discontinuity_ticks=NULL")
         no_marker = read_diagnostics(conn, "switch", "ifindex:2", now=datetime(2026, 11, 12, 12, 11, tzinfo=UTC))
+        conn.execute("UPDATE switch_port_counter_samples SET counter_discontinuity_ticks=0, in_broadcast_packets='0', out_broadcast_packets='0'")
+        conn.execute("""INSERT INTO switch_devices (source_id, profile_id, sys_descr, updated_at)
+                     VALUES (1, 'dgs', 'WS6-DGS-1210-52/F1 6.20.007', '2026-11-12T12:10:00Z')""")
+        unreliable = read_diagnostics(conn, "switch", "ifindex:2", now=datetime(2026, 11, 12, 12, 11, tzinfo=UTC))
 
     assert result["points"][1]["in_errors_delta"] == 2
     assert result["points"][1]["rx_bps"] == 500_000_000
@@ -79,6 +83,9 @@ def test_switch_history_derives_errors_and_records_only_stp_changes(tmp_path):
     assert result["broadcast_coverage"] == {"status": "measured", "valid_intervals": 1}
     assert no_marker["broadcast_coverage"] == {"status": "missing_discontinuity_marker", "valid_intervals": 0}
     assert all(p["in_broadcast_pps"] is None for p in no_marker["points"])
+    assert unreliable["broadcast_coverage"] == {"status": "unreliable_counters", "valid_intervals": 0}
+    assert all(p["in_broadcast_pps"] is None and p["out_broadcast_pps"] is None for p in unreliable["points"])
+    assert unreliable["points"][1]["in_errors_delta"] == 2
     assert [event["event_type"] for event in result["stp_events"]] == ["changed", "observed"]
     assert result["stp_events"][0]["changes_delta"] == 2
 

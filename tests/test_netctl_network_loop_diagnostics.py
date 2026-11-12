@@ -83,6 +83,24 @@ def add_broadcast_sample(conn, port_key, at, in_packets, out_packets, *, if_inde
     )
 
 
+def test_firmware_with_unreliable_broadcast_counters_excludes_zeros_from_findings(database):
+    conn, _ = database
+    add_source(conn, 1, "switch")
+    conn.execute("""INSERT INTO switch_devices (source_id, profile_id, sys_descr, updated_at)
+                 VALUES (1, 'dgs', 'WS6-DGS-1210-52/F1 6.20.007', '2026-11-12T12:10:00Z')""")
+    add_event(conn, 1, "2026-11-12T12:05:00Z", PORT_A, PORT_B)
+    add_event(conn, 1, "2026-11-12T12:10:00Z", PORT_B, PORT_A)
+    add_broadcast_sample(conn, PORT_A, "2026-11-12T12:05:00Z", 0, 0)
+    add_broadcast_sample(conn, PORT_A, "2026-11-12T12:10:00Z", 0, 0, uptime=30100)
+
+    [switch] = read(conn)["sources"]
+
+    assert switch["status"] == "mac_flapping"
+    assert switch["coverage"]["broadcast"]["status"] == "unreliable_counters"
+    assert switch["coverage"]["broadcast"]["valid_intervals"] == 0
+    assert switch["evidence"][0]["broadcast_intervals"] == []
+
+
 def test_broadcast_only_correlates_with_matching_port_and_overlapping_movement(database):
     conn, _ = database
     add_source(conn, 1, "switch")

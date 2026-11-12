@@ -3,7 +3,9 @@ from __future__ import annotations
 import sqlite3
 from datetime import UTC, datetime, timedelta
 
-from .switch_telemetry import counter_sample_from_row, derive_broadcast_rates, derive_port_telemetry
+from .switch_telemetry import (
+    broadcast_counters_unreliable, counter_sample_from_row, derive_broadcast_rates, derive_port_telemetry,
+)
 
 HISTORY_HOURS = 24
 MAX_POINTS = 1440
@@ -67,7 +69,7 @@ def _switch_rates(current: sqlite3.Row, previous: sqlite3.Row, elapsed: float) -
     return metrics
 
 
-def _traffic_points(rows: list[sqlite3.Row], *, switch: bool) -> list[dict]:
+def _traffic_points(rows: list[sqlite3.Row], *, switch: bool, unreliable_broadcast: bool) -> list[dict]:
     points = []
     previous = None
     for row in reversed(rows):
@@ -78,7 +80,7 @@ def _traffic_points(rows: list[sqlite3.Row], *, switch: bool) -> list[dict]:
         if elapsed is not None and 0 < elapsed <= MAX_INTERVAL_SECONDS:
             metrics = (_switch_rates(row, previous[1], elapsed) if switch
                        else _router_rates(row, previous[1], elapsed))
-            if switch:
+            if switch and not unreliable_broadcast:
                 broadcast = derive_broadcast_rates(row, previous[1], elapsed)
         point = {
             "observed_at": row["observed_at"],
@@ -205,7 +207,14 @@ def read_diagnostics(
                 (source_id, key, cutoff, MAX_POINTS),
             ).fetchall()
         result["selected"] = selected
-        result["points"] = _traffic_points(rows, switch=switch)
+        model = conn.execute(
+            "SELECT profile_id, sys_descr FROM switch_devices WHERE source_id = ?", (source_id,),
+        ).fetchone() if switch else None
+        unreliable = model is not None and broadcast_counters_unreliable(model["profile_id"], model["sys_descr"])
+        result["points"] = _traffic_points(rows, switch=switch, unreliable_broadcast=unreliable)
         if switch:
-            result["broadcast_coverage"] = _broadcast_coverage(rows, result["points"])
+            result["broadcast_coverage"] = (
+                {"status": "unreliable_counters", "valid_intervals": 0}
+                if unreliable else _broadcast_coverage(rows, result["points"])
+            )
     return result
