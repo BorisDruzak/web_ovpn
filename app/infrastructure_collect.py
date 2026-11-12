@@ -37,7 +37,7 @@ from netctl.switch_queries import FDB_PORT_MATCH, query_confirmed_attachment_por
 
 from .infrastructure_backup import backup_policy, backup_service_checks, read_proxmox_backup
 from .infrastructure_map import (
-    BACKUP_PROBE_METHOD,
+    BACKUP_PROBE_METHOD, BACKUP_SERVICE_ID,
     CLUSTER_HEALTH_METHODS, CLUSTER_KIND, INTERFACE_NAME, MAX_SNAPSHOT_BYTES, NETWORK_KINDS,
     PVE_DISK_DEVICE, PVE_STORAGE_ID, RECIPROCAL_MAC_SOURCE,
     SHARED_LLDP_KIND, SHARED_LLDP_SOURCE,
@@ -951,9 +951,12 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             item["probeTargetIP"] = address_by_asset[asset]
             edge(asset, service_id, "Размещение", "Настройки карты")
     backup = bindings.get("proxmox_backup_monitor")
+    backup_observation = pve.get("backup", {})
+    guest_backup_checks = {}
     if (policy := backup_policy(backup)) and (asset := backup.get("asset")) in nodes:
-        item = node("proxmox-pbs-backups", "Резервное копирование Proxmox", "Сервис", nodes[asset]["site"], "UI_VPN")
-        checks = backup_service_checks(pve.get("backup", {}), policy, now)
+        item = node(BACKUP_SERVICE_ID, "Резервное копирование Proxmox", "Сервис", nodes[asset]["site"], "UI_VPN")
+        checks = backup_service_checks(backup_observation, policy, now)
+        guest_backup_checks = {check["backupVmid"]: check for check in checks if "backupVmid" in check}
         item["serviceChecks"] = checks
         states = {check["state"] for check in checks}
         state = "reachable" if "reachable" in states else "unreachable" if states == {"unreachable"} else "unknown"
@@ -1436,6 +1439,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         guest_interfaces = {key: _guest_interfaces(config) for key, config in pve.get("configs", {}).items()}
         interface_mac_counts = Counter(mac for interfaces in guest_interfaces.values() for _, _, _, mac in interfaces.values())
         uplink_evidence = {}
+        guest_ids = Counter(row["vmid"] for row in pve["guests"])
         for guest in sorted(pve["guests"], key=lambda row: row["vmid"]):
             vmid, host = guest["vmid"], guest["node"]
             binding = bindings.get("guests", {}).get(str(vmid), {})
@@ -1451,6 +1455,16 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 item["aliases"] = [item["name"]]
                 item["name"] = guest.get("name") or item["name"]
             item.update(kind=kind, guest=True, vmid=vmid, pveHost=host)
+            if guest_backup_checks and guest_ids[vmid] == 1 and not guest.get("template"):
+                coverage = "unknown"
+                if vmid in backup_observation.get("guests", set()):
+                    coverage = "scheduled"
+                elif backup_observation and not backup_observation.get("incomplete"):
+                    coverage = "not_scheduled"
+                item["backupCoverage"] = {"state": coverage, "storage": backup["storage"],
+                                          "checkedAt": backup_observation.get("checkedAt", now.isoformat())}
+                if vmid in guest_backup_checks:
+                    item.setdefault("serviceChecks", []).append(guest_backup_checks[vmid])
             prelaunch = guest.get("type") == "qemu" and guest.get("status") == "prelaunch"
             status, label = {
                 "running": ("ok", "Запущена"), "stopped": ("warn", "Выключена"),

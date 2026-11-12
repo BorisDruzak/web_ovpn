@@ -1380,6 +1380,44 @@ def test_proxmox_backup_checks_match_storage_and_guest_and_expire():
     assert check()[102]["reason"] == "backup_no_result"
 
 
+def test_guest_backup_coverage_is_scoped_and_failures_apply_to_the_right_guest():
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import _map_statuses, _public_node
+
+    now = datetime.now(timezone.utc)
+    stamp = now.isoformat()
+    pve = {"cluster": [], "nodes": [{"node": "pve1", "status": "online"}], "at": stamp,
+           "guests": [{"vmid": vmid, "node": "pve1", "name": f"vm-{vmid}", "type": "qemu", "status": "running"}
+                      for vmid in (102, 103, 104)],
+           "backup": {"guests": {102, 104}, "checkedAt": stamp,
+                      "results": {102: {"successful": False, "completedAt": now},
+                                  104: {"successful": True, "completedAt": now}}}}
+    bindings = {"proxmox_backup_monitor": {"asset": "pbs", "storage": "pbs",
+                                           "max_age_hours": {"102": 30, "104": 30}}}
+    context = {"devices": [{"id": "pbs", "name": "PBS", "kind": "backup_server"}]}
+
+    def read(at=now):
+        graph = build_graph(context, {}, {}, pve, bindings, now)
+        nodes = {row["id"]: _public_node(row, at) for row in graph["nodes"]}
+        for vmid in (102, 103, 104):
+            nodes[f"pve-guest:{vmid}"]["reachability"]["state"] = "reachable"
+        _map_statuses(nodes, graph["links"])
+        return [nodes[f"pve-guest:{vmid}"] for vmid in (102, 103, 104)]
+
+    failed, outside, healthy = read()
+    assert failed["backupCoverage"] == {"storage": "pbs", "serviceId": "proxmox-pbs-backups",
+                                        "state": "scheduled", "checkedAt": stamp, "stale": False}
+    assert failed["mapStatus"] == "warn"
+    assert failed["serviceChecks"][0]["reason"] == "backup_task_failed"
+    assert outside["backupCoverage"]["state"] == "not_scheduled" and outside["serviceChecks"] == []
+    assert outside["mapStatus"] == healthy["mapStatus"] == "ok"
+    pve["backup"]["incomplete"] = True
+    assert read()[1]["backupCoverage"]["state"] == "unknown"
+    expired = read(now + timedelta(minutes=6))[0]
+    assert expired["backupCoverage"]["stale"] and expired["backupCoverage"]["state"] == "unknown"
+    assert expired["mapStatus"] == "unknown"
+
+
 def test_proxmox_port_observer_verifies_target_and_only_updates_inventory_ports(tmp_path, monkeypatch):
     from app import infrastructure_port_ssh as observer
     from app.infrastructure_map import _public_port

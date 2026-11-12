@@ -615,6 +615,31 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         make('small', 'Proxmox · ' + formatTime(checkedAt)), list);
       propertiesSection.append(panel);
     }
+    if (node.backupCoverage) {
+      const {storage, serviceId, state, checkedAt, stale} = node.backupCoverage;
+      const labels = {
+        scheduled: 'В активном расписании',
+        not_scheduled: 'Отсутствует в активном расписании',
+        unknown: 'Расписание не подтверждено',
+      };
+      const list = make('ul', null, 'map-detail-list');
+      const row = make('li');
+      const label = labels[state] + ' · ' + storage;
+      if (byId.has(serviceId)) {
+        const open = make('button', label);
+        open.type = 'button';
+        open.addEventListener('click', () => select(serviceId));
+        row.append(open);
+      } else {
+        row.append(make('strong', label));
+      }
+      if (state === 'scheduled' && !node.serviceChecks?.some(check => check.backupVmid === node.vmid)) {
+        row.append(make('small', 'Порог свежести не настроен'));
+      }
+      row.append(make('small', 'Proxmox · ' + formatTime(checkedAt) + (stale ? ' · устарело' : '')));
+      list.append(row);
+      propertiesSection.append(make('h3', 'Резервное копирование'), list);
+    }
     if (node.guestStorage) {
       const list = make('dl');
       const number = new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 2});
@@ -800,7 +825,14 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           (check.smbSigningRequired ? ' · сервер требует подпись' : ' · сервер не требует подпись') : '';
         const scope = check.supplemental ? ' · дополнительная проверка' :
           check.component ? ' · компонент сервиса' : check.required ? ' · проверка доступности' : '';
-        row.append(make('strong', endpoint || 'Проверка'), make('small', result + http + postgresql + smb + (reason ? ' · ' + reason + errorSource : '') + backup + dns + rtt + attempts + gateway + egress + management + scope + source + time + identity + (check.stale ? ' · устарело' : '')));
+        const guests = node.guest || !check.backupVmid ? [] :
+          data.nodes.filter(item => item.guest && item.vmid === check.backupVmid);
+        const title = make(guests.length === 1 ? 'button' : 'strong', endpoint || 'Проверка');
+        if (guests.length === 1) {
+          title.type = 'button';
+          title.addEventListener('click', () => select(guests[0].id));
+        }
+        row.append(title, make('small', result + http + postgresql + smb + (reason ? ' · ' + reason + errorSource : '') + backup + dns + rtt + attempts + gateway + egress + management + scope + source + time + identity + (check.stale ? ' · устарело' : '')));
         list.append(row);
       }
       propertiesSection.append(make('h3', 'Проверки'), list);

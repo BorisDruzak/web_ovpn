@@ -23,6 +23,7 @@ SERVICE_PROBE_MAX_AGE = timedelta(minutes=5)
 STP_ROOT_PATH_MAX_AGE = timedelta(minutes=5)
 PORT_LINK_CHECK_MAX_AGE = timedelta(minutes=5)
 BACKUP_PROBE_METHOD = "Копия Proxmox"
+BACKUP_SERVICE_ID = "proxmox-pbs-backups"
 STATES = ("critical", "warn", "ok", "unknown")
 NETWORK_KINDS = ("Коммутатор", "Маршрутизатор", "Точка доступа", "Сетевое устройство")
 INTERFACE_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}")
@@ -635,6 +636,17 @@ def _public_node(row: dict, now: datetime) -> dict:
         lvm_thin_pools = project_hypervisor_lvm_thin(row.get("lvmThinPools"), now)
     guest_storage = _public_guest_storage(row.get("guestStorage"), now) if row.get("guest") is True else {}
     guest_network = _public_guest_network(row.get("guestNetwork"), now) if row.get("guest") is True else {}
+    backup_coverage = {}
+    backup = row.get("backupCoverage")
+    if row.get("guest") is True and isinstance(backup, dict):
+        storage = backup.get("storage")
+        stamp = _time(backup.get("checkedAt"))
+        state = backup.get("state")
+        if (isinstance(storage, str) and PVE_STORAGE_ID.fullmatch(storage)
+                and stamp is not None and stamp <= now and state in ("scheduled", "not_scheduled", "unknown")):
+            stale = now - stamp > SERVICE_PROBE_MAX_AGE
+            backup_coverage = {"storage": storage, "serviceId": BACKUP_SERVICE_ID, "checkedAt": stamp.isoformat(),
+                               "state": "unknown" if stale else state, "stale": stale}
     required = row.get("requiredObserverChecks")
     required_names = dict.fromkeys(
         name for name in required[:80] if isinstance(name, str) and re.fullmatch(r"[a-z0-9_]{1,64}", name)
@@ -670,6 +682,7 @@ def _public_node(row: dict, now: datetime) -> dict:
         **({"lvmThinPools": lvm_thin_pools} if lvm_thin_pools else {}),
         **({"guestStorage": guest_storage} if guest_storage else {}),
         **({"guestNetwork": guest_network} if guest_network else {}),
+        **({"backupCoverage": backup_coverage} if backup_coverage else {}),
         **({"stpRootPath": stp_path} if stp_path else {}),
         "ports": [port for port in ports if port["name"]],
         "serviceChecks": service_checks,
