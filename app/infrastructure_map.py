@@ -166,6 +166,11 @@ def _public_port(row: dict, now: datetime) -> dict:
         chassis_count = row.get("lldpChassisCount")
         if type(chassis_count) is int and 1 <= chassis_count <= neighbor_count:
             result["lldpChassisCount"] = chassis_count
+    learned = row.get("fdbLearned")
+    if result["state"] == "up" and isinstance(learned, dict) and _time(learned.get("checkedAt")) == stamp:
+        count, partial = learned.get("learnedMacCount"), learned.get("partial")
+        if type(count) is int and 0 <= count < 2**53 and type(partial) is bool:
+            result["fdbLearned"] = {"checkedAt": result["checkedAt"], "learnedMacCount": count, "partial": partial}
     if source in ("RouterOS", "Proxmox"):
         result["source"] = source
     if fresh and source == "Proxmox" and type(row.get("proxmoxActive")) is bool:

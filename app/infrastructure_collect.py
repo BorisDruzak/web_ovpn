@@ -924,6 +924,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
     for row in network.get("port_fdb_vlans", []):
         key = (row["source"], row["collector_run_id"], row["observed_at"], row["port_key"])
         fdb_vlans.setdefault(key, []).append({"id": row["vlan_id"], "learnedMacCount": row["learned_mac_count"]})
+    fdb_learned = {(row["source"], row["collector_run_id"], row["observed_at"], row["port_key"]): row
+                   for row in network.get("port_fdb_learned", [])}
     vlans_by_key, vlans_by_index = {}, {}
     for row in network.get("port_vlans", []):
         scope = (row["source"], row["collector_run_id"], row["observed_at"])
@@ -984,6 +986,11 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 learned_vlans = fdb_vlans.get((*scope, port["key"]))
                 if learned_vlans and port["state"] == "up":
                     port["fdbVlans"] = {"checkedAt": port["checkedAt"], "vlans": learned_vlans}
+                learned = fdb_learned.get((*scope, port["key"]))
+                if learned is not None and port["state"] == "up":
+                    port["fdbLearned"] = {"checkedAt": port["checkedAt"],
+                                          "learnedMacCount": learned["learned_mac_count"],
+                                          "partial": learned["partial"] == 1}
                 index = raw_port.get("if_index")
                 memberships = [row for row in vlans_by_key.get((*scope, port["key"]), [])
                                if index is None or row.get("if_index") in (None, index)]
@@ -1772,6 +1779,23 @@ def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | N
               AND lower(f.status) = 'learned' AND f.vlan_id BETWEEN 1 AND 4094
               AND p.last_seen_at = f.last_seen_at AND p.oper_status = 'up'
             GROUP BY s.name, p.port_key, f.collector_run_id, f.last_seen_at, f.vlan_id
+            """
+        )]
+        data["port_fdb_learned"] = [dict(row) for row in connection.execute(
+            f"""
+            SELECT s.name AS source, p.port_key, p.collector_run_id, p.last_seen_at AS observed_at,
+                   COUNT(DISTINCT lower(f.mac)) AS learned_mac_count,
+                   CASE WHEN json_extract(r.outcomes_json, '$.qbridge_fdb_rejected_rows') = 'parse_error'
+                        THEN 1 ELSE 0 END AS partial
+            FROM switch_ports AS p
+            JOIN network_sources AS s ON s.id = p.source_id
+            JOIN switch_collection_runs AS r ON r.id = p.collector_run_id AND r.source_id = p.source_id
+            LEFT JOIN current_switch_fdb AS f ON {FDB_PORT_MATCH}
+                AND f.last_seen_at = p.last_seen_at AND lower(f.status) = 'learned'
+            WHERE s.enabled = 1 AND s.driver = 'snmp_switch' AND p.oper_status = 'up'
+              AND r.started_at = p.last_seen_at AND r.status IN ('success', 'partial')
+              AND json_extract(r.outcomes_json, '$.fdb') IN ('success_with_rows', 'success_empty')
+            GROUP BY p.source_id, p.port_key
             """
         )]
         data["switch_management_fdb"] = _switch_management_fdb(connection, data["sources"])

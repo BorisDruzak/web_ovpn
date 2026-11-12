@@ -2070,6 +2070,10 @@ def test_switch_vlans_join_current_port_by_unique_ifindex(tmp_path):
                           "oper_status": "up", "last_seen_at": at}],
                "port_vlans": [membership, {**membership, "vlan_id": 1, "untagged": 1, "pvid": 1},
                               {**membership, "vlan_id": 99, "collector_run_id": 10}],
+               "port_fdb_learned": [{**base, "port_key": "ifindex:5012", "observed_at": at,
+                                     "learned_mac_count": 2, "partial": 0},
+                                    {**base, "port_key": "alternate", "observed_at": at,
+                                     "learned_mac_count": 0, "partial": 1}],
                "port_fdb_vlans": [{**base, "port_key": "ifindex:5012", "observed_at": at,
                                    "vlan_id": 30, "learned_mac_count": 2},
                                   {**base, "port_key": "ifindex:5012", "observed_at": at,
@@ -2084,10 +2088,15 @@ def test_switch_vlans_join_current_port_by_unique_ifindex(tmp_path):
         {"id": 1, "egress": "untagged", "pvid": True}, {"id": 20, "egress": "tagged", "pvid": False},
     ]}
     assert read()[0]["fdbVlans"] == {"checkedAt": at, "vlans": [{"id": 30, "learnedMacCount": 2}]}
+    assert read()[0]["fdbLearned"] == {"checkedAt": at, "learnedMacCount": 2, "partial": False}
     assert "vlanMemberships" not in read(now + timedelta(hours=1))[0]
     assert "fdbVlans" not in read(now + timedelta(hours=1))[0]
+    assert "fdbLearned" not in read(now + timedelta(hours=1))[0]
     network["ports"].append({**network["ports"][0], "port_key": "alternate", "name": "ge13"})
     assert all("vlanMemberships" not in port for port in read())
+    assert read()[1]["fdbLearned"] == {"checkedAt": at, "learnedMacCount": 0, "partial": True}
+    network["port_fdb_learned"][1]["collector_run_id"] = 10
+    assert "fdbLearned" not in read()[1]
 
 
 def test_switch_port_telemetry_requires_matching_current_collection(tmp_path):

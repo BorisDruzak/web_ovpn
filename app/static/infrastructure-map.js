@@ -661,6 +661,13 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           const vlans = port.fdbVlans.vlans.map(vlan => `${vlan.id} (${vlan.learnedMacCount} MAC)`);
           row.append(make('small', 'VLAN по MAC-таблице · ' + vlans.join(', ')));
         }
+        if (selectedPort && node.kind === 'Коммутатор' && port.state === 'up') {
+          const learned = port.fdbLearned;
+          const summary = learned
+            ? 'Изученных MAC · ' + learned.learnedMacCount + (learned.partial ? ' · часть строк опроса пропущена' : '')
+            : 'Нет свежего результата MAC-таблицы';
+          row.append(make('small', summary));
+        }
         if (selectedPort && port.telemetry) {
           const number = new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 2});
           const rate = (label, value) => value === undefined ? '' : label + ' ' + number.format(value / 1e6) + ' Мбит/с';
