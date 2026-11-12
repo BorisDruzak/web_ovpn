@@ -43,6 +43,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   };
   const formatTime = value => new Intl.DateTimeFormat('ru-RU', { timeZone:'Asia/Yekaterinburg', dateStyle:'short', timeStyle:'short' }).format(new Date(value));
   const formatPortSpeed = bps => bps ? (bps / 1e6).toLocaleString('ru-RU') + ' Мбит/с' : '';
+  const formatEndpointMac = ({deviceId, mac, checkedAt}) =>
+    [byId.get(deviceId)?.name, mac, 'MAC-таблица SNMP', formatTime(checkedAt)].filter(Boolean).join(' · ');
   const formatStpPort = ({state, enabled, checkedAt}) => {
     const states = {disabled: 'отключено', blocking: 'блокировка', listening: 'прослушивание',
       learning: 'обучение', forwarding: 'пересылка', broken: 'ошибка'};
@@ -1041,6 +1043,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
             .filter(Boolean).join(' · ')));
         }
         if (selectedPort && port.stpPort) row.append(make('small', formatStpPort(port.stpPort)));
+        if (selectedPort && port.endpointMac) row.append(make('small', formatEndpointMac(port.endpointMac)));
         if (selectedPort && port.transceiver) {
           const {formFactor, vendor, media, nominalBps, checkedAt} = port.transceiver;
           const rate = nominalBps && 'номинал ' + (nominalBps / 1e9).toLocaleString('ru-RU') + ' Гбит/с';
@@ -1342,6 +1345,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
               li.append(make('small', `${port.name} · Подпись на коммутаторе · ${text} · ${formatTime(checkedAt)}`));
             }
             if (port.stpPort) li.append(make('small', `${port.name} · ${formatStpPort(port.stpPort)}`));
+            if (port.endpointMac) li.append(make('small', `${port.name} · ${formatEndpointMac(port.endpointMac)}`));
             if (port.telemetry) {
               const {rxBps, txBps, rxErrors, txErrors, rxDiscards, txDiscards, intervalSeconds, checkedAt} = port.telemetry;
               const number = new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 2});

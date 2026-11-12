@@ -350,6 +350,11 @@ def _apply_port_link_check(port: dict, row: dict, now: datetime) -> None:
     speed = sample.get("speedBps")
     port.update(state=state, source="SNMP", checkedAt=stamp.isoformat(), stale=False,
                 speedBps=speed if state == "up" and type(speed) is int and 0 < speed <= 10**15 else None)
+    endpoint = sample.get("endpointMac")
+    if state == "up" and isinstance(endpoint, dict):
+        device, mac = _text(endpoint.get("deviceId"), 160), _text(endpoint.get("mac"), 17)
+        if re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_:.-]{0,159}", device) and re.fullmatch(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}", mac):
+            port["endpointMac"] = {"deviceId": device, "mac": mac, "checkedAt": stamp.isoformat()}
     if state != "up":
         for key in ("lldpChassisCount", "lldpNeighborCount", "lldpNeighbors", "lldpCheckedAt",
                     "fdbLearned", "fdbVlans", "telemetry", "linkMode"):

@@ -358,7 +358,13 @@ async def _collect_switch_port_diagnostics(network: dict, now: datetime) -> tupl
 async def _check_declared_switch_ports(context: dict, network: dict, pve: dict, now: datetime) -> None:
     host_ports = {(host, port["name"]) for host, ports in pve.get("physicalPorts", {}).items()
                   for port in ports if port.get("source") == "Proxmox · sysfs"}
-    switches = {row["id"]: row.get("management_ip") for row in context.get("devices", []) if row["kind"] == "switch"}
+    devices = {row["id"]: row for row in context.get("devices", [])}
+    switches = {key: row.get("management_ip") for key, row in devices.items() if row["kind"] == "switch"}
+    macs = {key: {mac.lower() for mac in row.get("mac_addresses", []) if MAC.fullmatch(mac)}
+            for key, row in devices.items()}
+    mac_owners = Counter(mac for values in macs.values() for mac in values)
+    css_sources = {row["source"] for row in network.get("switches", []) if row.get("profile_id") == "css326"
+                   and observation_is_fresh(row.get("last_success_at"), now)}
     sources = [row for row in network.get("sources", []) if row.get("enabled") and row.get("driver") == "snmp_switch"]
     address_counts = Counter(row.get("host") for row in sources)
     sources = {row["host"]: row for row in sources if row.get("host") and address_counts[row["host"]] == 1}
@@ -386,6 +392,7 @@ async def _check_declared_switch_ports(context: dict, network: dict, pve: dict, 
                                if port_label_key(port["name"]) in by_name}
     checks = {}
     pending = {}
+    access_macs = {}
     for link in context.get("links", []):
         vlan = link.get("vlan")
         state = link.get("state", {})
@@ -396,8 +403,20 @@ async def _check_declared_switch_ports(context: dict, network: dict, pve: dict, 
                 for end in (link["endpoint_a"], link["endpoint_b"])]
         available = [candidates.get(address, {}).get(label) for address, label, _ in ends]
         if state.get("verified") is True:
-            if not all(row is not None or (end["device"], end.get("interface")) in host_ports
-                       for row, (_, _, end) in zip(available, ends)):
+            access = False
+            if isinstance(vlan, dict) and vlan.get("mode") == "access":
+                for row, (address, _, _), (_, _, peer) in zip(available, ends, reversed(ends)):
+                    device = peer["device"]
+                    if (row is None or row["source"] not in css_sources or row.get("bridge_port") != row["if_index"]
+                            or devices.get(device, {}).get("kind") != "endpoint" or not peer.get("interface")
+                            or len(macs[device]) != 1):
+                        continue
+                    mac, = macs[device]
+                    if mac_owners[mac] == 1:
+                        access_macs.setdefault((address, row["if_index"]), set()).add((device, mac))
+                        access = True
+            if not access and not all(row is not None or (end["device"], end.get("interface")) in host_ports
+                                      for row, (_, _, end) in zip(available, ends)):
                 continue
             target = checks
         else:
@@ -421,6 +440,15 @@ async def _check_declared_switch_ports(context: dict, network: dict, pve: dict, 
                         continue
                     if observation:
                         row["linkCheck"] = {**observation, "checkedAt": datetime.now(timezone.utc).isoformat()}
+                    identities = access_macs.get((source["host"], index), ())
+                    if observation.get("state") == "up" and len(identities) == 1:
+                        (device, mac), = identities
+                        try:
+                            if await read_learned_fdb_port(transport, mac) == row["bridge_port"]:
+                                row["linkCheck"].update(endpointMac={"deviceId": device, "mac": mac},
+                                                        checkedAt=datetime.now(timezone.utc).isoformat())
+                        except ValueError:
+                            continue
         except (TimeoutError, OSError, ValueError):
             pass
 

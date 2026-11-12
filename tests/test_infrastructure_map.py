@@ -1778,6 +1778,65 @@ def test_declared_switch_port_checks_cover_unverified_sides_and_exclude_retired_
     assert sum("linkCheck" in row for row in network["ports"]) == 4
 
 
+@pytest.mark.parametrize("learned_port", [7, 8])
+def test_css_access_link_reports_live_mac_only_on_declared_port(monkeypatch, tmp_path, learned_port):
+    import asyncio
+
+    from app import infrastructure_collect as collector
+    from app.infrastructure_map import load_infrastructure_map
+
+    class Transport:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+    now = datetime.now(timezone.utc)
+    stamp = now.isoformat()
+    mac, address = "c0:9b:f4:61:4b:cd", "192.0.2.8"
+
+    async def read_link(_, index, name):
+        assert (index, name) == (7, "Port7")
+        return {"state": "up", "speedBps": 10**9}
+
+    async def read_fdb(_, address):
+        assert address == mac
+        return learned_port
+
+    monkeypatch.setattr(collector.SnmpTransport, "from_source", lambda _: Transport())
+    monkeypatch.setattr(collector, "read_interface_link", read_link)
+    monkeypatch.setattr(collector, "read_learned_fdb_port", read_fdb)
+    context = {
+        "devices": [{"id": "css", "name": "CSS", "kind": "switch", "management_ip": address},
+                    {"id": "pc", "name": "Workstation", "kind": "endpoint", "mac_addresses": [mac.upper()]}],
+        "links": [{"relation": "connected_to", "state": {"verified": True}, "vlan": {"id": 20, "mode": "access"},
+                   "endpoint_a": {"device": "css", "interface": "Port7"},
+                   "endpoint_b": {"device": "pc", "interface": "Ethernet"}}],
+    }
+    network = {
+        "sources": [{"name": "css", "host": address, "driver": "snmp_switch", "enabled": True}],
+        "switches": [{"source": "css", "profile_id": "css326", "last_success_at": stamp}],
+        "ports": [{"source": "css", "name": "Port7", "port_key": "physical:7", "bridge_port": 7,
+                   "if_index": 7, "collector_run_id": 1, "last_seen_at": stamp, "oper_status": "up"}],
+    }
+    asyncio.run(collector._check_declared_switch_ports(context, network, {}, now))
+    collected = datetime.now(timezone.utc)
+    path = tmp_path / "snapshot.json"
+    path.write_text(json.dumps(collector.build_graph(context, network, {}, {}, {}, collected)), encoding="utf-8")
+    graph = load_infrastructure_map(path, collected)
+    edge, = graph["links"]
+    assert edge["confirmed"] and edge["portEvidence"][0]["pairEvidence"] == "verified_inventory"
+    port = edge["portEvidence"][0]["portStates"]["a"]
+    assert port["state"] == "up" and port["speedBps"] == 10**9
+    if learned_port == 7:
+        assert port["endpointMac"] == {"deviceId": "pc", "mac": mac, "checkedAt": port["checkedAt"]}
+    else:
+        assert "endpointMac" not in port
+    expired = load_infrastructure_map(path, collected + timedelta(minutes=6))
+    assert all("endpointMac" not in port for node in expired["nodes"] for port in node["ports"])
+
+
 def test_proxmox_backup_checks_match_storage_and_guest_and_expire():
     from app.infrastructure_collect import build_graph
     from app.infrastructure_backup import backup_service_checks, read_proxmox_backup
