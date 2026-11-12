@@ -628,6 +628,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       };
       const priority = check => check.required && check.status !== 'ok' ? 0 : 1;
       const ordered = [...node.checks].sort((a, b) => priority(a) - priority(b));
+      const backupStates = {succeeded: 'Выполнено', failed: 'Сбой запуска',
+        running: 'Выполняется', unconfirmed: 'Результат не подтверждён'};
       for (const check of ordered) {
         const row = make('li');
         const value = measurement(check.unit, check.observed);
@@ -635,7 +637,13 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const limit = check.unit === 'hours' ? 'предел ' : 'порог предупреждения ';
         const memoryMeasurement = /^(windows|linux)_memory_available_/.test(check.name);
         const status = check.status === 'ok' && memoryMeasurement ? 'Измерено' : states[check.status];
-        const notes = [status, errors[check.error], value, threshold && limit + threshold,
+        const job = check.backupJob;
+        const jobDetails = job ? [backupStates[job.state],
+          job.exitCode !== null && `код ${job.exitCode}`,
+          job.completedAt && `завершено ${formatTime(job.completedAt)}`,
+          job.timerActive === false && 'таймер неактивен',
+          job.timerActive === null && 'состояние таймера не подтверждено'] : [status];
+        const notes = [...jobDetails, errors[check.error], value, threshold && limit + threshold,
           check.required && 'обязательная проверка', check.checkedAt && formatTime(check.checkedAt),
           check.stale && 'устарело'];
         row.append(make('strong', check.label || check.name), make('small', notes.filter(Boolean).join(' · ')));

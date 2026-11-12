@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from .endpoint_context_adapter import get_endpoint_context_adapter
 from .endpoint_platform_client import EndpointPlatformServiceError
 from .server_observer import STALE_AFTER as SERVER_OBSERVER_MAX_AGE
+from .server_observer import valid_acti_backup_job
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -59,6 +60,9 @@ SHARED_LLDP_SOURCE = "LLDP · общий порт"
 OBSERVER_CHECK_LABELS = {
     "watchdog_fresh": "Свежесть отчёта watchdog",
     "backup_snapshot_fresh": "Свежесть резервной копии",
+    "backup_fresh": "Свежесть копии по отчёту ACTI",
+    "backup_check_fresh": "Свежесть проверки восстановления",
+    "backup_job": "Последний запуск резервирования ACTI",
     "backup_snapshot_count": "Снимков в хранилище",
     "repository_capacity": "Ёмкость хранилища копий",
     "c_disk_free": "Свободно на диске C:",
@@ -138,6 +142,13 @@ def _number(value: object) -> int | float | None:
 
 
 def _observer_measurement(check: dict, name: str) -> dict:
+    job = check.get("backup_job")
+    if name == "backup_job" and valid_acti_backup_job(job):
+        completed = job["completed_at"]
+        return {"backupJob": {"state": job["state"], "exitCode": job["exit_code"],
+                              "timerActive": job["timer_active"],
+                              "completedAt": datetime.fromtimestamp(completed, timezone.utc).isoformat()
+                              if completed is not None else None}}
     unit = OBSERVER_METRIC_UNITS.get(name)
     observed = _number(check.get("observed"))
     if unit is None:
@@ -1435,7 +1446,7 @@ def summarize_services(graph: dict) -> dict:
             {"check": check["name"], "label": check.get("label", check["name"]),
              "required": check.get("required") is True,
              "status": check["status"], "source": "Server Observer",
-             **{key: check[key] for key in ("checkedAt", "stale", "error", "unit", "observed", "warningThreshold")
+             **{key: check[key] for key in ("checkedAt", "stale", "error", "unit", "observed", "warningThreshold", "backupJob")
                 if key in check}}
             for check in node["checks"] if check.get("required") or check["status"] in ("critical", "warn")
         ]

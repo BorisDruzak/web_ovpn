@@ -11,7 +11,7 @@ from app.server_observer import load_snapshot_result, parse_utc
 
 _DEFAULT_COLLECTOR = {"status": "ok", "failure_class": "", "message": ""}
 _STATUSES = ("ok", "warn", "critical", "error")
-_CHECK_FIELDS = ("name", "status", "observed", "expected", "latency_ms")
+_CHECK_FIELDS = ("name", "status", "observed", "expected", "latency_ms", "backup_job")
 
 
 def build_server_health_view(path: Path, now: datetime) -> dict[str, Any]:

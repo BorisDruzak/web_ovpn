@@ -46,7 +46,7 @@ SNAPSHOT_FILE_MODE = 0o640
 SNAPSHOT_REPLACE_ATTEMPTS = 3
 SNAPSHOT_REPLACE_RETRY_SECONDS = 0.01
 _PUBLIC_CHECK_FIELDS = frozenset(
-    {"name", "source", "status", "observed", "expected", "latency_ms", "error"}
+    {"name", "source", "status", "observed", "expected", "latency_ms", "error", "backup_job"}
 )
 _STATUS_PRIORITY = {"ok": 0, "warn": 1, "critical": 2, "error": 3}
 _SAFE_CHECK_NAMES = re.compile(r"[a-z][a-z0-9_]{0,63}$")
@@ -671,6 +671,15 @@ def _checks_from_payload(
             _append_service_check(checks, source, payload, service, service + "_active", latency_ms)
         for name in ACTI_FLAGS:
             _append_boolean_check(checks, source, payload, name, name, latency_ms)
+        if "backup_job" in payload:
+            job = payload["backup_job"]
+            status = "warn"
+            if job["state"] == "failed":
+                status = "critical"
+            elif job["state"] == "succeeded" and job["timer_active"] is True:
+                status = "ok"
+            checks.append({"name": "backup_job", "source": source, "status": status,
+                           "backup_job": job, "latency_ms": latency_ms})
     elif role == "file_server":
         _append_service_check(checks, source, payload, "sshd", "sshd_active", latency_ms)
         _append_service_check(checks, source, payload, "smb", "smb_active", latency_ms)
@@ -717,6 +726,20 @@ def _checks_from_payload(
     return checks
 
 
+def valid_acti_backup_job(job: Any) -> bool:
+    if not isinstance(job, dict) or set(job) != {"state", "completed_at", "exit_code", "timer_active"}:
+        return False
+    state, at, code, active = (job[key] for key in ("state", "completed_at", "exit_code", "timer_active"))
+    return (
+        state in ("succeeded", "failed", "running", "unconfirmed")
+        and (at is None or type(at) is int and 0 < at < 10**10)
+        and (code is None or type(code) is int and 0 <= code <= 255 and at is not None)
+        and (active is None or type(active) is bool)
+        and (state != "succeeded" or code == 0)
+        and (state not in ("running", "unconfirmed") or at is None)
+    )
+
+
 def _require_role_payload(role: str, payload: dict[str, Any]) -> None:
     if role == "acti_backup":
         required = {"format", "services", *ACTI_BACKUP_FLAGS}
@@ -735,7 +758,13 @@ def _require_role_payload(role: str, payload: dict[str, Any]) -> None:
         return
     if role == "acti":
         services = payload.get("services")
-        if (set(payload) != {"format", "services", *ACTI_FLAGS} or payload.get("format") != "acti-observer-v1"
+        required = {"format", "services", *ACTI_FLAGS}
+        version = payload.get("format")
+        if version == "acti-observer-v2" and valid_acti_backup_job(payload.get("backup_job")):
+            required.add("backup_job")
+        elif version != "acti-observer-v1":
+            raise _ProbeFailure("unexpected_response")
+        if (set(payload) != required
             or not isinstance(services, dict) or set(services) != set(ACTI_SERVICES)
             or any(type(value) is not bool for value in services.values())
             or any(type(payload.get(field)) is not bool for field in ACTI_FLAGS)):
@@ -892,10 +921,7 @@ def _combined_status(statuses: list[str]) -> str:
 
 def public_check(check: dict[str, Any]) -> dict[str, Any]:
     """Return only a check's API-safe fields, discarding raw probe material."""
-    allowed_fields = {
-        "name", "source", "status", "observed", "expected", "latency_ms", "error"
-    }
-    if not set(check) <= allowed_fields:
+    if not set(check) <= _PUBLIC_CHECK_FIELDS:
         raise ValueError("check fields are not allowed")
     name = check.get("name")
     if not isinstance(name, str) or not _SAFE_CHECK_NAMES.fullmatch(name):
@@ -917,6 +943,10 @@ def public_check(check: dict[str, Any]) -> dict[str, Any]:
         public["latency_ms"] = check["latency_ms"]
     if check.get("error") in _SAFE_ERROR_CATEGORIES:
         public["error"] = check["error"]
+    if "backup_job" in check:
+        if name != "backup_job" or not valid_acti_backup_job(check["backup_job"]):
+            raise ValueError("backup job details are not allowed")
+        public["backup_job"] = check["backup_job"]
     return public
 
 

@@ -49,6 +49,24 @@ def config():
     }
 
 
+def test_acti_v2_daily_job_survives_public_validation():
+    job = {"state": "failed", "completed_at": 1794435967, "exit_code": 1, "timer_active": True}
+    payload = {**acti_payload(), "format": "acti-observer-v2", "backup_job": job}
+    checks = observer._checks_from_payload("acti", "target", payload, 1.0)
+    result = observer.public_check(checks[-1])
+    assert result["name"] == "backup_job"
+    assert result["status"] == "critical"
+    assert result["backup_job"] == job
+
+
+@pytest.mark.parametrize("field,value", [("state", "arbitrary"), ("exit_code", True),
+                                        ("completed_at", "private"), ("timer_active", 1)])
+def test_acti_v2_job_rejects_invalid_fields(field, value):
+    job = {"state": "failed", "completed_at": 1794435967, "exit_code": 1, "timer_active": True, field: value}
+    with pytest.raises(observer._ProbeFailure):
+        observer._checks_from_payload("acti", "target", {**acti_payload(), "format": "acti-observer-v2", "backup_job": job}, 1.0)
+
+
 def test_acti_remote_contract_requires_exact_format_services_and_boolean_fields(
     monkeypatch,
 ):

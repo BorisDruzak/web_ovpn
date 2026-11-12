@@ -1053,7 +1053,10 @@ Its `acti-observer-v1` JSON has exactly `format`, six boolean `services`
 (`frontend`, `api`, `postgres`, `redis`, `worker`, `keycloak`) and the boolean
 fields `worker_heartbeat`, `mounts_verified`, `storage_capacity`,
 `outbox_healthy`, `backup_fresh`, `backup_check_fresh`. Missing, extra or
-incorrectly typed fields fail closed. The source helper, forced SSH key,
+incorrectly typed fields fail closed. The observer also accepts `acti-observer-v2`,
+which adds `backup_job` with the daily systemd job state, UTC completion time,
+process exit code and timer state. Deploy this observer before updating the ACTI
+helper to v2. The source helper, forced SSH key,
 source-address restriction, sudo rule and pinned host key require separately
 verified operational preparation. Never copy an operator's private key.
 

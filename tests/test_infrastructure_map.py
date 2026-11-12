@@ -559,7 +559,7 @@ def test_backup_state_requires_a_valid_watchdog_report(tmp_path):
 
 def test_acti_service_reflects_backup_dependency_on_inventory_host(tmp_path):
     from app.infrastructure_collect import build_graph
-    from app.infrastructure_map import load_infrastructure_map
+    from app.infrastructure_map import load_infrastructure_map, summarize_services
 
     now = datetime.now(timezone.utc)
     stamp = now.isoformat()
@@ -569,7 +569,10 @@ def test_acti_service_reflects_backup_dependency_on_inventory_host(tmp_path):
                     {"name": "backup_snapshot_fresh", "status": "critical"},
                     {"name": "repository_capacity", "status": "ok"}]},
         {"role": "acti", "status": "ok", "observed_at": stamp,
-         "checks": [{"name": "https_ready", "status": "ok"}]},
+         "checks": [{"name": "https_ready", "status": "ok"},
+                    {"name": "backup_job", "status": "critical", "backup_job": {
+                        "state": "failed", "completed_at": 1794435967, "exit_code": 1, "timer_active": True,
+                    }}]},
     ]}
     context = {"devices": [{"id": "fileserver", "name": "File server", "kind": "server"},
                            {"id": "acti-vm", "name": "ACTI VM", "kind": "server",
@@ -593,6 +596,14 @@ def test_acti_service_reflects_backup_dependency_on_inventory_host(tmp_path):
                and l["kind"] == "Зависимость сервиса" and l["confirmed"] for l in links)
     assert nodes["role:acti"]["reachability"]["state"] == "reachable"
     assert any(check["name"] == "https_ready" and check["required"] for check in nodes["role:acti"]["checks"])
+    job, = [check for check in nodes["role:acti"]["checks"] if check["name"] == "backup_job"]
+    assert job["status"] == "critical"
+    assert job["backupJob"] == {"state": "failed", "completedAt": "2026-11-11T22:26:07+00:00",
+                                "exitCode": 1, "timerActive": True}
+    audit = summarize_services(load_infrastructure_map(path, now))["serviceAudit"]["services"]
+    acti, = [service for service in audit if service["id"] == "role:acti"]
+    issue, = [issue for issue in acti["issues"] if issue["check"] == "backup_job"]
+    assert issue["backupJob"] == job["backupJob"]
     assert nodes["role:acti"]["mapStatus"] == nodes["acti-vm"]["mapStatus"] == "warn"
     assert nodes["role:acti"]["serviceAvailability"]["unavailable"] == ["role:acti_backup"]
     report["targets"][0]["checks"][1]["status"] = "ok"

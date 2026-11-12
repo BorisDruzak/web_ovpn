@@ -1830,6 +1830,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                            if valid_report or check["name"] == "watchdog_fresh" else "unknown",
                            "observed": check.get("observed") if valid_report or check["name"] == "watchdog_fresh" else None,
                            "expected": check.get("expected"),
+                           **({"backup_job": check["backup_job"]} if "backup_job" in check else {}),
                            "error": check.get("message") or check.get("error"),
                            "latency": check.get("latency_ms")}
                           for check in target_checks]
