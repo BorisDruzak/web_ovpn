@@ -65,6 +65,7 @@ IF_HC_OUT_OCTETS = numeric_oid("1.3.6.1.2.1.31.1.1.1.10")
 IF_HIGH_SPEED = numeric_oid("1.3.6.1.2.1.31.1.1.1.15")
 IF_ALIAS = numeric_oid("1.3.6.1.2.1.31.1.1.1.18")
 
+DOT1D_BASE_BRIDGE_ADDRESS = numeric_oid("1.3.6.1.2.1.17.1.1.0")
 DOT1D_BASE_PORT_IFINDEX = numeric_oid("1.3.6.1.2.1.17.1.4.1.2")
 DOT1D_FDB_ADDRESS = numeric_oid("1.3.6.1.2.1.17.4.3.1.1")
 DOT1D_FDB_PORT = numeric_oid("1.3.6.1.2.1.17.4.3.1.2")

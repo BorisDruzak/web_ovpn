@@ -30,7 +30,7 @@ from netctl.db import list_sources, read_context_snapshot
 from netctl.drivers import legacy_driver_for
 from netctl.snmp.interfaces import read_interface_link
 from netctl.snmp.lacp import read_lacp_members
-from netctl.snmp.stp import read_stp_root_path
+from netctl.snmp.stp import read_stp_designated_ports, read_stp_root_path
 from netctl.snmp.transport import SnmpTransport
 from netctl.source_identity import list_source_identities
 from netctl.switch_queries import (
@@ -294,20 +294,33 @@ async def _collect_lacp(network: dict, configured: list[dict], now: datetime) ->
     return observations
 
 
-async def _collect_stp_root_paths(sources: list[dict]) -> dict:
-    eligible = [source for source in sources if source.get("enabled") and source.get("driver") == "snmp_switch"
-                and (source.get("driver_options") or {}).get("profile_hint") == "css326"]
+async def _collect_stp_observations(sources: list[dict], switches: list[dict], now: datetime) -> tuple[dict, dict]:
+    profiles = {"css326": read_stp_root_path, "snr": read_stp_designated_ports}
+    observed_profiles = {row["source"]: row.get("profile_id") for row in switches
+                         if observation_is_fresh(row.get("last_success_at"), now)}
+    eligible = [(source, (source.get("driver_options") or {}).get("profile_hint") or observed_profiles.get(source["name"]))
+                for source in sources
+                if source.get("enabled") and source.get("driver") == "snmp_switch"]
+    eligible = [(source, profile) for source, profile in eligible if profile in profiles]
 
-    async def read(source):
+    async def read(source, profile):
         try:
             async with asyncio.timeout(5), SnmpTransport.from_source(source) as transport:
-                observation = await read_stp_root_path(transport)
+                observation = await profiles[profile](transport)
         except (TimeoutError, OSError, ValueError):
             return {}
-        return {**observation, "checkedAt": datetime.now(timezone.utc).isoformat()} if observation else {}
+        if not observation:
+            return {}
+        sample = observation if profile == "css326" else {"ports": observation}
+        return {**sample, "checkedAt": datetime.now(timezone.utc).isoformat()}
 
-    observations = await asyncio.gather(*(read(source) for source in eligible))
-    return {source["name"]: observation for source, observation in zip(eligible, observations) if observation}
+    observations = await asyncio.gather(*(read(source, profile) for source, profile in eligible))
+    roots, designated = {}, {}
+    for (source, profile), observation in zip(eligible, observations):
+        if observation:
+            target = roots if profile == "css326" else designated
+            target[source["name"]] = observation
+    return roots, designated
 
 
 async def _check_declared_switch_ports(context: dict, network: dict, pve: dict, now: datetime) -> None:
@@ -1212,6 +1225,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
     source_nodes = {}
     source_ids = {}
     source_names = {}
+    designated_ports = {}
     for row in network.get("sources", []):
         name = row["name"]
         candidates = addresses.get(str(row.get("host") or ""), []) if row.get("host") else []
@@ -1253,6 +1267,15 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                         if len(owners) == 1 and item["id"] not in owners:
                             item["stpRootPath"]["bridgeDeviceId"], = owners
             index_counts = Counter(port.get("if_index") for port in current)
+            sample = network.get("stp_designated_ports", {}).get(name, {})
+            if row.get("enabled") and observation_is_fresh(sample.get("checkedAt"), now, max_age=STP_ROOT_PATH_MAX_AGE):
+                by_index = {port["if_index"]: port["name"] for port in current
+                            if type(port.get("if_index")) is int and index_counts[port["if_index"]] == 1
+                            and port.get("name") and port.get("oper_status") == "up" and port.get("admin_status") != "down"
+                            and observation_is_fresh(port.get("last_seen_at"), now)}
+                for pair, index in sample["ports"].items():
+                    if index in by_index:
+                        designated_ports.setdefault((key, *pair), []).append((by_index[index], sample["checkedAt"]))
             item["ports"] = [
                 {"name": port.get("name") or port.get("port_key"),
                  "key": port.get("port_key"),
@@ -1312,6 +1335,12 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 }
         if "fdb_entries" in status:
             item["properties"]["Записи MAC-таблицы"] = str(status["fdb_entries"])
+    for item in nodes.values():
+        if stp := item.get("stpRootPath"):
+            matches = designated_ports.get((stp.get("bridgeDeviceId"), stp.get("designatedBridgeId"),
+                                            stp["designatedPortId"]), [])
+            if len(matches) == 1:
+                stp["designatedPortName"], stp["designatedPortCheckedAt"] = matches[0]
     features = {item["id"]: item for item in context.get("features", []) if item.get("kind") == "policy_based_ipsec"}
     segments = {item["id"]: item["cidr"] for item in context.get("segments", []) if item.get("cidr")}
     for feature_id, spec in bindings.get("ipsec_links", {}).items():
@@ -2586,7 +2615,9 @@ def main() -> int:
             asyncio.run(_check_declared_switch_ports(context, network, pve, datetime.now(timezone.utc)))
             if lacp_links:
                 network["lacp"] = asyncio.run(_collect_lacp(network, lacp_links, datetime.now(timezone.utc)))
-            network["stp_root_paths"] = asyncio.run(_collect_stp_root_paths(network["sources"]))
+            network["stp_root_paths"], network["stp_designated_ports"] = asyncio.run(
+                _collect_stp_observations(network["sources"], network.get("switches", []), datetime.now(timezone.utc))
+            )
             if bindings.get("ipsec_links"):
                 network["ipsec"] = _collect_ipsec_policies(network["sources"], bindings["ipsec_links"])
                 network["ipsec_connectivity"] = _collect_ipsec_connectivity(context, network["sources"], bindings["ipsec_links"])

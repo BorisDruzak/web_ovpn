@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Mapping
 from typing import Any
 
 from .interfaces import normalize_mac
 from .models import CapabilityResult, SnmpVarBind, SwitchPort
 from .oids import (
+    DOT1D_BASE_BRIDGE_ADDRESS,
     DOT1D_STP_DESIGNATED_ROOT,
     DOT1D_STP_PORT_DESIGNATED_BRIDGE,
     DOT1D_STP_PORT_DESIGNATED_PORT,
@@ -61,7 +63,35 @@ async def read_stp_root_path(transport: SnmpTransport) -> dict:
             or await root_port() != port):
         return {}
     return {"rootPortNumber": port, "designatedBridgeMac": bridge.value[-6:].hex(":"),
-            "designatedPortId": designated.value.hex(":")}
+            "designatedBridgeId": bridge.value.hex(":"), "designatedPortId": designated.value.hex(":")}
+
+
+async def read_stp_designated_ports(transport: SnmpTransport) -> dict[tuple[str, str], int]:
+    """Read own designated ports on the SNR profile, whose STP rows use ifIndex."""
+    address = _scalar(await transport.get(DOT1D_BASE_BRIDGE_ADDRESS), DOT1D_BASE_BRIDGE_ADDRESS)
+    if (address.value_type != "octet_string" or not isinstance(address.value, bytes)
+            or len(address.value) != 6 or not any(address.value)):
+        return {}
+
+    async def octets(column, capability, size):
+        result = await transport.walk(column, capability=capability)
+        if result.outcome is not SnmpOutcome.SUCCESS_WITH_ROWS:
+            return {}
+        values = {}
+        for row in result.rows:
+            if (row.oid[:-1] != column or not 1 <= row.oid[-1] <= 2_147_483_647
+                    or row.value_type != "octet_string" or not isinstance(row.value, bytes)
+                    or len(row.value) != size or row.oid[-1] in values):
+                return {}
+            values[row.oid[-1]] = row.value
+        return values
+
+    bridges = await octets(DOT1D_STP_PORT_DESIGNATED_BRIDGE, "stp_designated_bridges", 8)
+    ports = await octets(DOT1D_STP_PORT_DESIGNATED_PORT, "stp_designated_ports", 2)
+    pairs = [(index, (bridge.hex(":"), ports[index].hex(":"))) for index, bridge in bridges.items()
+             if bridge[-6:] == address.value and index in ports and any(ports[index])]
+    counts = Counter(pair for _, pair in pairs)
+    return {pair: index for index, pair in pairs if counts[pair] == 1}
 
 
 def parse_stp(

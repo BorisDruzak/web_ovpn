@@ -1684,12 +1684,23 @@ def test_css_root_port_stp_projects_only_fresh_unambiguous_observations():
         "designatedPortId": "80:03", "checkedAt": stamp,
     }
     bridge = {"id": "root", "kind": "switch", "name": "Root",
+              "management_ip": "192.0.2.3",
               "observed_state": {"rstp": {"bridge_id": "32768.2C:C8:1B:9C:31:EA"}}}
     assert read([bridge])["stpRootPath"]["bridgeDeviceId"] == "root"
     assert "bridgeDeviceId" not in read([bridge, {**bridge, "id": "duplicate"}])["stpRootPath"]
     network["ports"].append({**network["ports"][0], "name": "Port14"})
     assert "stpRootPath" not in read()
     network["ports"].pop()
+    bridge_id = "80:00:2c:c8:1b:9c:31:ea"
+    network["stp_root_paths"]["css"]["designatedBridgeId"] = bridge_id
+    network["sources"].append({"name": "snr", "driver": "snmp_switch", "host": "192.0.2.3", "enabled": True})
+    network["ports"].append({"source": "snr", "name": "ge21", "if_index": 5021, "port_key": "ifindex:5021",
+                             "collector_run_id": 1, "last_seen_at": stamp, "oper_status": "up"})
+    network["stp_designated_ports"] = {"snr": {"ports": {(bridge_id, "80:03"): 5021}, "checkedAt": stamp}}
+    assert read([bridge])["stpRootPath"]["designatedPortName"] == "ge21"
+    assert read([bridge])["stpRootPath"]["designatedPortCheckedAt"] == stamp
+    network["stp_root_paths"]["css"]["designatedBridgeId"] = "90:00:2c:c8:1b:9c:31:ea"
+    assert "designatedPortName" not in read([bridge])["stpRootPath"]
     network["stp_root_paths"]["css"]["checkedAt"] = (now - timedelta(minutes=6)).isoformat()
     assert "stpRootPath" not in read()
 
@@ -1712,8 +1723,68 @@ def test_css_root_port_stp_rejects_root_port_change_during_poll():
 
     assert asyncio.run(read_stp_root_path(Transport(13))) == {
         "rootPortNumber": 13, "designatedBridgeMac": "2c:c8:1b:9c:31:ea", "designatedPortId": "80:03",
+        "designatedBridgeId": "80:00:2c:c8:1b:9c:31:ea",
     }
     assert asyncio.run(read_stp_root_path(Transport(5))) == {}
+
+
+def test_stp_designated_ports_match_the_local_bridge_and_reject_ambiguous_ids():
+    import asyncio
+
+    from netctl.snmp.models import CapabilityResult, SnmpVarBind
+    from netctl.snmp.oids import DOT1D_BASE_BRIDGE_ADDRESS, DOT1D_STP_PORT_DESIGNATED_BRIDGE, DOT1D_STP_PORT_DESIGNATED_PORT
+    from netctl.snmp.outcomes import SnmpOutcome
+    from netctl.snmp.stp import read_stp_designated_ports
+
+    mac = bytes.fromhex("f8f082d65929")
+    local_bridge = bytes.fromhex("8000") + mac
+
+    class Transport:
+        async def get(self, oid):
+            assert oid == DOT1D_BASE_BRIDGE_ADDRESS
+            return CapabilityResult("", SnmpOutcome.SUCCESS_WITH_ROWS, (SnmpVarBind(oid, "octet_string", mac),))
+
+        async def walk(self, oid, *, capability):
+            samples = {
+                DOT1D_STP_PORT_DESIGNATED_BRIDGE: {
+                    5021: local_bridge, 5022: b"\x80\x00" + bytes.fromhex("2cc81b9c31ea"),
+                    5023: local_bridge, 5024: local_bridge,
+                },
+                DOT1D_STP_PORT_DESIGNATED_PORT: {
+                    5021: bytes.fromhex("839d"), 5022: bytes.fromhex("839d"),
+                    5023: bytes.fromhex("839f"), 5024: bytes.fromhex("839f"),
+                },
+            }
+            rows = tuple(SnmpVarBind((*oid, idx), "octet_string", value) for idx, value in samples[oid].items())
+            return CapabilityResult(capability, SnmpOutcome.SUCCESS_WITH_ROWS, rows)
+
+    assert asyncio.run(read_stp_designated_ports(Transport())) == {("80:00:f8:f0:82:d6:59:29", "83:9d"): 5021}
+
+
+def test_stp_observer_uses_recent_detected_snr_profile_without_a_hint(monkeypatch):
+    import asyncio
+
+    from app import infrastructure_collect as collector
+
+    class Transport:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+    async def read(_):
+        return {("80:00:f8:f0:82:d6:59:29", "83:9d"): 5021}
+
+    monkeypatch.setattr(collector.SnmpTransport, "from_source", lambda source: Transport())
+    monkeypatch.setattr(collector, "read_stp_designated_ports", read)
+    now = datetime.now(timezone.utc)
+    source = {"name": "snr", "driver": "snmp_switch", "enabled": True}
+    status = {"source": "snr", "profile_id": "snr", "last_success_at": now.isoformat()}
+    roots, designated = asyncio.run(collector._collect_stp_observations([source], [status], now))
+    assert not roots and designated["snr"]["ports"] == {("80:00:f8:f0:82:d6:59:29", "83:9d"): 5021}
+    status["last_success_at"] = (now - timedelta(hours=1)).isoformat()
+    assert asyncio.run(collector._collect_stp_observations([source], [status], now)) == ({}, {})
 
 
 def test_topology_port_alerts_require_confirmed_pairs_and_fresh_states(tmp_path):

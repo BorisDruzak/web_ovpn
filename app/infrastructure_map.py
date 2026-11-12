@@ -834,6 +834,10 @@ def _public_node(row: dict, now: datetime) -> dict:
             bridge_device = _text(stp.get("bridgeDeviceId"))
             if bridge_device:
                 stp_path["bridgeDeviceId"] = bridge_device
+                designated_port = _text(stp.get("designatedPortName"), 64)
+                designated_at = stp.get("designatedPortCheckedAt")
+                if designated_port and observation_is_fresh(designated_at, now, max_age=STP_ROOT_PATH_MAX_AGE):
+                    stp_path.update(designatedPortName=designated_port, designatedPortCheckedAt=_time(designated_at).isoformat())
     downstream = (_public_downstream(row.get("downstream"), ports, stp_path, now)
                   if row.get("kind") == NETWORK_KINDS[0] else {})
     return {
@@ -1466,6 +1470,10 @@ def load_infrastructure_map(
         bridge_id = stp.get("bridgeDeviceId")
         if bridge_id == node_id or nodes.get(bridge_id, {}).get("kind") not in NETWORK_KINDS[:2]:
             stp.pop("bridgeDeviceId", None)
+        remote_port = port_states.get(bridge_id, {}).get(port_label_key(stp.get("designatedPortName", "")), {})
+        if "bridgeDeviceId" not in stp or remote_port.get("state") != "up":
+            stp.pop("designatedPortName", None)
+            stp.pop("designatedPortCheckedAt", None)
         if downstream := node.get("downstream"):
             upstream_id = downstream["upstreamId"]
             if upstream_id == node_id or nodes.get(upstream_id, {}).get("kind") != NETWORK_KINDS[0]:

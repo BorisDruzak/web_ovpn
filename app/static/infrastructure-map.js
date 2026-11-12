@@ -843,7 +843,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       propertiesSection.append(panel);
     }
     if (node.stpRootPath) {
-      const {localPort, designatedBridgeMac, designatedPortId, checkedAt, bridgeDeviceId} = node.stpRootPath;
+      const {localPort, designatedBridgeMac, designatedPortId, checkedAt, bridgeDeviceId,
+        designatedPortName, designatedPortCheckedAt} = node.stpRootPath;
       const list = make('ul', null, 'map-detail-list');
       const row = make('li');
       const port = make('button', localPort);
@@ -853,6 +854,12 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       row.append(port, make('small', 'Назначенный мост · ' + bridge),
         make('small', 'Идентификатор порта STP · ' + designatedPortId),
         make('small', 'SNMP · ' + formatTime(checkedAt)));
+      if (designatedPortName) {
+        const remote = make('button', `Порт назначенного моста ${designatedPortName}`);
+        remote.type = 'button';
+        remote.addEventListener('click', () => selectPort(bridgeDeviceId, designatedPortName));
+        row.append(remote, make('small', 'SNMP · ' + formatTime(designatedPortCheckedAt)));
+      }
       list.append(row);
       propertiesSection.append(make('h3', 'Корневой порт STP'), list);
     }
@@ -1125,9 +1132,11 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           const proof = {current: ' · пара по свежему наблюдению',
                          verified_inventory: ' · пара по подтверждённой записи инвентаря'}[evidence.pairEvidence] ?? '';
           li.append(make('small', ports + vlan + ' · ' + source + time + proof + (evidence.confirmed ? '' : ' · без подтверждения')));
-          for (const {deviceId, localPort, bridgeDeviceId, designatedBridgeMac, designatedPortId, checkedAt} of evidence.stpPaths ?? []) {
+          for (const {deviceId, localPort, bridgeDeviceId, designatedBridgeMac, designatedPortId,
+            designatedPortName, checkedAt} of evidence.stpPaths ?? []) {
             const bridge = byId.get(bridgeDeviceId)?.name ?? designatedBridgeMac;
-            li.append(make('small', `STP · ${byId.get(deviceId).name} ${localPort} → ${bridge} · ${designatedPortId} · ${formatTime(checkedAt)}`));
+            const remote = designatedPortName ? `${bridge} ${designatedPortName}` : bridge;
+            li.append(make('small', `STP · ${byId.get(deviceId).name} ${localPort} → ${remote} · ${designatedPortId} · ${formatTime(checkedAt)}`));
           }
           for (const side of ['a', 'b']) {
             const port = evidence.portStates?.[side];
