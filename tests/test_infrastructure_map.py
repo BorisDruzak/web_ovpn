@@ -4176,6 +4176,61 @@ def test_icmp_diagnostics_distinguish_echo_silence_and_probe_error(monkeypatch):
     assert "raw output" not in json.dumps(checks)
 
 
+def test_rtsp_options_confirms_the_authenticated_service_without_opening_a_stream(monkeypatch):
+    from app import infrastructure_service_probes as probes
+    from app.infrastructure_map import _public_node
+
+    address = "192.0.2.8"
+    status, sequence, challenge = b"401 Unauthorized", b"matching", b"Digest realm=\"redacted\""
+    requests = []
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def settimeout(self, timeout):
+            assert timeout > 0
+
+        def sendall(self, request):
+            requests.append(request)
+            cseq = next(line.split(b": ", 1)[1] for line in request.split(b"\r\n") if line.startswith(b"CSeq: "))
+            self.chunks = [b"RTSP/1.0 " + status + b"\r\nCSeq: " + (cseq if sequence == b"matching" else sequence),
+                           b"\r\n" + (b"WWW-Authenticate: " + challenge + b"\r\n" if challenge else b"") + b"\r\n"]
+
+        def recv(self, size):
+            return self.chunks.pop(0)
+
+    def connect(destination, *, timeout):
+        assert destination == (address, 554)
+        return Connection()
+
+    monkeypatch.setattr(probes.socket, "create_connection", connect)
+    spec = {"type": "rtsp_options", "ip": address, "port": 554, "path": "/Streaming/channels/101"}
+
+    def check(confirmed=True):
+        node = {"id": "video", "kind": "Сервис", "probeTargetIP": address if confirmed else None}
+        probes.apply_service_probes([node], {"video": [spec]})
+        return _public_node(node, datetime.now(timezone.utc))["serviceChecks"][0]
+
+    result = check()
+    assert (result["method"], result["state"], result["rtspStatus"], result["reason"]) == (
+        "RTSP OPTIONS", "reachable", 401, "rtsp_auth_required",
+    )
+    assert "redacted" not in json.dumps(result)
+    assert requests[-1].startswith(b"OPTIONS rtsp://192.0.2.8:554/Streaming/channels/101 RTSP/1.0\r\n")
+    assert check(confirmed=False)["reason"] == "probe_target_unconfirmed"
+    assert len(requests) == 1
+    challenge = b""
+    assert check()["state"] == "unknown"
+    status = b"200 OK"
+    assert check()["state"] == "reachable"
+    sequence = b"0"
+    assert check()["reason"] == "unexpected_response"
+
+
 def test_ipmi_lan_requires_a_matching_rmcp_pong_with_ipmi_support(monkeypatch):
     from app import infrastructure_service_probes as probes
     from app.infrastructure_map import _public_node

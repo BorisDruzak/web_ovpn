@@ -32,7 +32,7 @@ PROBE_METHODS = {
     "smb_mount": "SMB Mount", "zabbix_api": "Zabbix API", "postgresql": "PostgreSQL SSLRequest",
     "openvpn_management": "OpenVPN Management", "openvpn_tunnel": "OpenVPN TUN",
     "sip_options": "SIP OPTIONS (UDP)", "icmp": "ICMP", "vlan_transit": "ICMP · VLAN",
-    "wireguard_policy": "Маршрут · WireGuard", "ipmi_lan": "IPMI LAN (UDP)",
+    "wireguard_policy": "Маршрут · WireGuard", "ipmi_lan": "IPMI LAN (UDP)", "rtsp_options": "RTSP OPTIONS",
 }
 
 
@@ -507,6 +507,55 @@ def _udp_failure(connection: socket.socket, option: tuple[int, int] | None,
     return fallback
 
 
+def _rtsp_options(spec: dict) -> dict:
+    port = spec.get("port")
+    if type(port) is not int or not 1 <= port <= 65535:
+        return {"state": "unknown"}
+    try:
+        ip = ipaddress.ip_address(spec.get("ip"))
+        path = _http_path(spec.get("path"))
+    except ValueError:
+        return {"state": "unknown"}
+    address = str(ip)
+    authority = f"[{address}]" if ip.version == 6 else address
+    cseq = str(uuid.uuid4().int % 2_147_483_646 + 1)
+    request = f"OPTIONS rtsp://{authority}:{port}{path} RTSP/1.0\r\nCSeq: {cseq}\r\n\r\n".encode("ascii")
+    header = bytearray()
+    try:
+        with socket.create_connection((address, port), timeout=TIMEOUT) as connection:
+            connection.sendall(request)
+            deadline = monotonic() + TIMEOUT
+            while b"\r\n\r\n" not in header and len(header) < 8192:
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    return {"state": "unknown", "reason": "timeout"}
+                connection.settimeout(remaining)
+                chunk = connection.recv(8192 - len(header))
+                if not chunk:
+                    break
+                header.extend(chunk)
+    except TimeoutError:
+        return {"state": "unknown", "reason": "timeout"}
+    except ConnectionRefusedError:
+        return {"state": "unreachable", "reason": "rtsp_connection_refused"}
+    except OSError:
+        return {"state": "unknown", "reason": "transport_error"}
+    head, delimiter, _ = bytes(header).partition(b"\r\n\r\n")
+    line, *headers = head.split(b"\r\n")
+    status = re.fullmatch(rb"RTSP/1\.0 ([1-5][0-9]{2})(?: [ -~]*)?", line)
+    fields = [(name.strip().lower(), value.strip()) for field in headers
+              for name, separator, value in [field.partition(b":")] if separator]
+    if not delimiter or not status or [v for k, v in fields if k == b"cseq"] != [cseq.encode("ascii")]:
+        return {"state": "unknown", "reason": "unexpected_response"}
+    code = int(status[1])
+    auth = code == 401 and any(re.match(rb"(?i)(?:Basic|Digest)\s+\S", value)
+                               for name, value in fields if name == b"www-authenticate")
+    if auth:
+        return {"state": "reachable", "rtspStatus": code, "reason": "rtsp_auth_required"}
+    state = "reachable" if 200 <= code < 300 else "unreachable" if code == 404 or code >= 500 else "unknown"
+    return {"state": state, "rtspStatus": code}
+
+
 def _ipmi_lan(spec: dict) -> dict:
     if spec.get("port") != IPMI_PORT or type(spec["port"]) is not int:
         return {"state": "unknown"}
@@ -953,6 +1002,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 details = _sip_options(spec)
             elif protocol == "ipmi_lan":
                 details = _ipmi_lan(spec)
+            elif protocol == "rtsp_options":
+                details = _rtsp_options(spec)
             elif protocol == "dns":
                 details = _dns(spec)
             elif protocol == "icmp":
@@ -980,9 +1031,10 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 **({"component": True} if component else {}),
                 "source": "UI_VPN", "method": method,
                 "port": valid_port,
-                "path": spec.get("path") if protocol in {"http", "https", "zabbix_api"} else None,
+                "path": spec.get("path") if protocol in {"http", "https", "zabbix_api", "rtsp_options"} else None,
                 "target": spec.get("ip") if not skip_reason and (
-                    protocol in {"icmp", "vlan_transit", "sip_options", "ipmi_lan", "zabbix_api", "postgresql", "dns", "smb"}
+                    protocol in {"icmp", "vlan_transit", "sip_options", "ipmi_lan", "rtsp_options",
+                                 "zabbix_api", "postgresql", "dns", "smb"}
                     or "probeTargetIP" in node
                 ) else None,
                 "checkedAt": datetime.now(timezone.utc).isoformat(),

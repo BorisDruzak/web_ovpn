@@ -1059,6 +1059,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         http_tls_certificate: 'Сертификат TLS не прошёл проверку', http_tls_error: 'Ошибка TLS',
         http_bad_response: 'Ответ HTTP неполный или некорректный',
         http_connection_refused: 'Отклонено TCP-соединение', http_connection_reset: 'Сброшено TCP-соединение',
+        rtsp_connection_refused: 'Отклонено TCP-соединение', rtsp_auth_required: 'Требуется авторизация',
         http_configuration: 'Ошибка настройки проверки',
         probe_configuration: 'Некорректный список проверок',
         probe_target_unconfirmed: 'Адрес цели не подтверждён',
@@ -1140,6 +1141,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const dns = [check.dns?.rcode, check.dns?.transport, check.dns?.addresses?.join(', ')]
           .filter(Boolean).map(value => ' · ' + value).join('');
         const http = check.httpStatus ? ' · HTTP ' + check.httpStatus : '';
+        const rtsp = check.rtspStatus ? ' · RTSP ' + check.rtspStatus : '';
         const localRoute = check.localRoute;
         const vlanPeer = vlan?.peer;
         const peer = vlanPeer && ({matched: ' · Сосед ' + vlanPeer.guestPort + ' подтверждён',
@@ -1164,7 +1166,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           title.type = 'button';
           title.addEventListener('click', () => select(guests[0].id));
         }
-        row.append(title, make('small', result + http + postgresql + smb + (reason ? ' · ' + reason + errorSource : '') + backup + policy + dns + rtt + attempts + gateway + egress + management + scope + source + time + identity + (check.stale ? ' · устарело' : '')));
+        row.append(title, make('small', result + http + rtsp + postgresql + smb + (reason ? ' · ' + reason + errorSource : '') + backup + policy + dns + rtt + attempts + gateway + egress + management + scope + source + time + identity + (check.stale ? ' · устарело' : '')));
         list.append(row);
       }
       propertiesSection.append(make('h3', 'Проверки'), list);

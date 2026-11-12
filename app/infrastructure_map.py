@@ -592,6 +592,12 @@ def _public_service_check(check: dict, now: datetime) -> dict:
     code = check.get("responseCode")
     if reason == "sip_response" and type(code) is int and 100 <= code <= 699:
         result["responseCode"] = code
+    rtsp = check.get("rtspStatus")
+    if result["method"] == "RTSP OPTIONS":
+        if type(rtsp) is int and 100 <= rtsp <= 599:
+            result["rtspStatus"] = rtsp
+        if reason == "rtsp_connection_refused" or (rtsp == 401 and reason == "rtsp_auth_required"):
+            result["reason"] = reason
     attempts = check.get("attempts")
     if result["method"] == "SIP OPTIONS (UDP)" and type(attempts) is int and 1 <= attempts <= 3:
         result["attempts"] = attempts
@@ -1436,7 +1442,7 @@ def summarize_services(graph: dict) -> dict:
         checks.extend(
             {"check": check["method"], "status": check_status.get(check["state"], "unknown"),
              "required": check.get("required") is True,
-             **{key: check[key] for key in ("source", "checkedAt", "stale", "reason", "path", "port", "target", "pppoe")
+             **{key: check[key] for key in ("source", "checkedAt", "stale", "reason", "path", "port", "target", "pppoe", "rtspStatus")
                 if key in check and check[key] is not None and check[key] != ""}}
             for check in node["serviceChecks"] if check.get("required") or (
                 state == "unknown" and check.get("supplemental") and check["state"] != "reachable"
