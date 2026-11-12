@@ -491,6 +491,7 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         if reason in ("icmp_no_echo_reply", "icmp_unreachable", "icmp_probe_error",
                       "icmp_route_unconfirmed", "icmp_route_mismatch"):
             result["reason"] = reason
+    if icmp or result["method"] == "DNS":
         route = check.get("localRoute")
         if isinstance(route, dict) and not result["stale"] and route.get("state") in ("reachable", "unreachable", "unknown"):
             details = {"state": route["state"]}
@@ -580,7 +581,8 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         diagnostic = _public_dns_check(check.get("dns"))
         if diagnostic:
             result["dns"] = diagnostic
-            if reason in ("dns_no_answer", "dns_address_mismatch", "dns_unexpected_source"):
+            if reason in ("dns_no_answer", "dns_address_mismatch", "dns_unexpected_source",
+                          "dns_route_unconfirmed", "dns_route_mismatch"):
                 result["reason"] = reason
     if check.get("method") == "OpenVPN Management":
         configured_port = check.get("configuredPort")
@@ -1558,7 +1560,8 @@ def summarize_services(graph: dict) -> dict:
         checks.extend(
             {"check": check["method"], "status": check_status.get(check["state"], "unknown"),
              "required": check.get("required") is True,
-             **{key: check[key] for key in ("source", "checkedAt", "stale", "reason", "path", "port", "target", "pppoe", "rtspStatus", "dns")
+             **{key: check[key] for key in ("source", "checkedAt", "stale", "reason", "path", "port", "target",
+                                            "pppoe", "rtspStatus", "dns", "localRoute")
                 if key in check and check[key] is not None and check[key] != ""}}
             for check in node["serviceChecks"] if check.get("required") or (
                 state == "unknown" and check.get("supplemental") and check["state"] != "reachable"

@@ -823,6 +823,46 @@ def test_dns_probe_reports_tcp_and_unexpected_udp_source_separately(monkeypatch)
     assert (unknown["state"], unknown["dns"]["transport"], unknown["reason"]) == ("unknown", "UDP", "dns_unexpected_source")
 
 
+def test_routed_dns_binds_checked_source_and_skips_wrong_route(monkeypatch):
+    import dns.message
+    import dns.rrset
+
+    from app import infrastructure_service_probes as probes
+    from app.infrastructure_map import _public_service_check
+
+    ip, gateway, source = "198.51.100.53", "192.0.2.1", "192.0.2.10"
+    route = {"dst": ip, "gateway": gateway, "dev": "eth0", "prefsrc": source}
+    monkeypatch.setattr(probes.subprocess, "check_output", lambda *args, **kwargs: json.dumps([route]).encode())
+    calls = []
+
+    def query_udp(query, target, **kwargs):
+        calls.append((target, kwargs.get("source")))
+        response = dns.message.make_response(query)
+        response.answer.append(dns.rrset.from_text("example.test.", 60, "IN", "A", "192.0.2.53"))
+        return dns.message.from_wire(response.to_wire())
+
+    monkeypatch.setattr(probes.dns.query, "udp", query_udp)
+    spec = {"type": "dns", "ip": ip, "port": 53, "name": "example.test.", "record": "A",
+            "transport": "udp", "route_via": gateway}
+
+    def check():
+        node = {"id": "dns", "kind": "Сервис", "probeTargetIP": ip}
+        probes.apply_service_probes([node], {"dns": [spec]})
+        result, = node["serviceChecks"]
+        return _public_service_check(result, datetime.now(timezone.utc))
+
+    result = check()
+    assert result["localRoute"] == {"state": "reachable", "expectedGateway": gateway, "gateway": gateway,
+                                    "interface": "eth0", "sourceIP": source}
+    assert result["state"] == "reachable"
+    route["gateway"] = "192.0.2.2"
+    result = check()
+    assert (result["state"], result["reason"], result["localRoute"]["gateway"]) == (
+        "unknown", "dns_route_mismatch", "192.0.2.2",
+    )
+    assert calls == [(ip, source)]
+
+
 def test_gateway_segment_service_binds_only_to_its_canonical_gateway():
     from app.infrastructure_collect import build_graph
 

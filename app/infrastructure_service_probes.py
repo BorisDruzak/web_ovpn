@@ -237,13 +237,21 @@ def _dns(spec: dict) -> dict:
     if transport != "auto":
         diagnostic["transport"] = transport.upper()
     result = {"state": "unknown", "dns": diagnostic}
+    options = {"timeout": TIMEOUT, "port": port}
+    if "route_via" in spec:
+        route = _local_ipv4_route(ip, spec["route_via"])
+        result["localRoute"] = route
+        if route["state"] != "reachable":
+            reason = "dns_route_mismatch" if route["state"] == "unreachable" else "dns_route_unconfirmed"
+            return {**result, "reason": reason}
+        options["source"] = route["sourceIP"]
     try:
         if transport == "auto":
-            response, used_tcp = dns.query.udp_with_fallback(query, ip, timeout=TIMEOUT, port=port)
+            response, used_tcp = dns.query.udp_with_fallback(query, ip, **options)
             diagnostic["transport"] = "TCP" if used_tcp else "UDP"
         else:
             send = dns.query.tcp if transport == "tcp" else dns.query.udp
-            response = send(query, ip, timeout=TIMEOUT, port=port)
+            response = send(query, ip, **options)
         rcode = response.rcode()
         diagnostic["rcode"] = dns.rcode.to_text(rcode)
         if rcode in {dns.rcode.SERVFAIL, dns.rcode.NXDOMAIN}:
@@ -910,34 +918,41 @@ def _wireguard_policy(spec: dict) -> dict:
     return {**result, "state": "reachable"}
 
 
-def _icmp_via_router(ip: str, gateway: object) -> dict:
-    unknown = {"state": "unknown", "reason": "icmp_route_unconfirmed"}
+def _local_ipv4_route(ip: str, gateway: object) -> dict:
+    route = {"state": "unknown"}
     if not isinstance(ip, str) or not isinstance(gateway, str):
-        return unknown
+        return route
     try:
         address, expected = str(ipaddress.IPv4Address(ip)), str(ipaddress.IPv4Address(gateway))
     except ValueError:
-        return unknown
-    route = {"state": "unknown", "expectedGateway": expected}
+        return route
+    route["expectedGateway"] = expected
     try:
         rows = json.loads(subprocess.check_output(
             ["/usr/sbin/ip", "-j", "-4", "route", "get", address], timeout=TIMEOUT, stderr=subprocess.DEVNULL,
         ))
         if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
-            return {**unknown, "localRoute": route}
+            return route
         row, = rows
         interface = row.get("dev")
         if row.get("dst") != address or not isinstance(interface, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", interface):
-            return {**unknown, "localRoute": route}
+            return route
         actual = str(ipaddress.IPv4Address(row["gateway"])) if row.get("gateway") else ""
         source = str(ipaddress.IPv4Address(row["prefsrc"]))
     except (KeyError, OSError, ValueError, subprocess.SubprocessError):
-        return {**unknown, "localRoute": route}
+        return route
     route.update(state="reachable" if actual == expected else "unreachable",
                  gateway=actual, interface=interface, sourceIP=source)
-    if actual != expected:
-        return {**unknown, "reason": "icmp_route_mismatch", "localRoute": route}
-    return {**_icmp_check(address, source_ip=source, interface=interface), "localRoute": route}
+    return route
+
+
+def _icmp_via_router(ip: str, gateway: object) -> dict:
+    route = _local_ipv4_route(ip, gateway)
+    if route["state"] != "reachable":
+        reason = "icmp_route_mismatch" if route["state"] == "unreachable" else "icmp_route_unconfirmed"
+        return {"state": "unknown", "reason": reason,
+                **({"localRoute": route} if "expectedGateway" in route else {})}
+    return {**_icmp_check(ip, source_ip=route["sourceIP"], interface=route["interface"]), "localRoute": route}
 
 
 def _postgresql(spec: dict) -> dict:
