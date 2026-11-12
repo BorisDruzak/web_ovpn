@@ -350,6 +350,46 @@ def _openvpn_management() -> dict:
     return {"state": "unknown"}
 
 
+def _openvpn_tunnel(spec: dict) -> dict:
+    name, address = spec.get("interface"), spec.get("address")
+    unknown = {"state": "unknown", "reason": "openvpn_tunnel_probe"}
+    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", name) or not isinstance(address, str):
+        return unknown
+    try:
+        expected = ipaddress.IPv4Interface(address)
+        rows = json.loads(subprocess.check_output(
+            ["/usr/sbin/ip", "-j", "-d", "address", "show"], timeout=TIMEOUT,
+        ))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return unknown
+    if not isinstance(rows, list) or any(not isinstance(row, dict) or not isinstance(row.get("ifname"), str) for row in rows):
+        return unknown
+    target = {"tunnelInterface": name, "tunnelAddress": str(expected)}
+    matches = [row for row in rows if row["ifname"] == name]
+    if not matches:
+        return {**target, "state": "unreachable", "reason": "openvpn_tunnel_missing"}
+    if len(matches) != 1:
+        return {**target, **unknown}
+    link = matches[0]
+    flags, link_info, addresses = link.get("flags"), link.get("linkinfo"), link.get("addr_info")
+    if not isinstance(flags, list) or not isinstance(addresses, list) or any(not isinstance(row, dict) for row in addresses):
+        return {**target, **unknown}
+    if not isinstance(link_info, dict) or link_info.get("info_kind") != "tun":
+        return {**target, "state": "unreachable", "reason": "openvpn_tunnel_kind"}
+    tunnel = link_info.get("info_data")
+    if not isinstance(tunnel, dict) or tunnel.get("type") not in ("tun", "tap"):
+        return {**target, **unknown}
+    if tunnel["type"] == "tap":
+        return {**target, "state": "unreachable", "reason": "openvpn_tunnel_kind"}
+    if "UP" not in flags or "LOWER_UP" not in flags:
+        return {**target, "state": "unreachable", "reason": "openvpn_tunnel_down"}
+    if not any(row.get("family") == "inet" and row.get("local") == str(expected.ip)
+               and type(row.get("prefixlen")) is int and row["prefixlen"] == expected.network.prefixlen
+               for row in addresses):
+        return {**target, "state": "unreachable", "reason": "openvpn_tunnel_address"}
+    return {**target, "state": "reachable"}
+
+
 def _enable_udp_error_queue(connection: socket.socket, family: int) -> tuple[int, int] | None:
     if not hasattr(socket, "MSG_ERRQUEUE") or not hasattr(connection, "recvmsg"):
         return None
@@ -593,7 +633,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 skip_reason = "probe_target_mismatch"
         methods = {"http": "HTTP", "https": "HTTPS", "dns": "DNS", "ldap": "LDAP", "smb": "SMB2",
                    "zabbix_api": "Zabbix API", "postgresql": "PostgreSQL SSLRequest",
-                   "openvpn_management": "OpenVPN Management", "sip_options": "SIP OPTIONS (UDP)", "icmp": "ICMP"}
+                   "openvpn_management": "OpenVPN Management", "openvpn_tunnel": "OpenVPN TUN",
+                   "sip_options": "SIP OPTIONS (UDP)", "icmp": "ICMP"}
         checks = []
         primary = []
         for spec in specs:
@@ -610,6 +651,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
             elif protocol == "openvpn_management" and valid_port is not None:
                 details = {**_openvpn_management(), "configuredPort": valid_port}
                 valid_port = None
+            elif protocol == "openvpn_tunnel":
+                details = _openvpn_tunnel(spec)
             elif protocol == "sip_options":
                 details = _sip_options(spec)
             elif protocol == "dns":

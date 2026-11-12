@@ -718,6 +718,11 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         http_configuration: 'Ошибка настройки проверки',
         probe_target_unconfirmed: 'Адрес цели не подтверждён',
         probe_target_mismatch: 'Адрес в настройках проверок не совпал с подтверждённым',
+        openvpn_tunnel_probe: 'Не удалось прочитать параметры туннеля',
+        openvpn_tunnel_missing: 'Туннельный интерфейс отсутствует',
+        openvpn_tunnel_kind: 'Интерфейс другого типа',
+        openvpn_tunnel_down: 'Туннельный интерфейс не поднят',
+        openvpn_tunnel_address: 'На интерфейсе нет ожидаемого адреса',
         postgresql_tls_handshake: 'Не удалось согласовать TLS',
         icmp_identity_unconfirmed: 'Принадлежность адреса этому узлу не подтверждена',
         route_other_gateway: 'Активен другой шлюз', route_inactive: 'Маршрут через ожидаемый шлюз неактивен',
@@ -726,8 +731,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       };
       for (const check of node.serviceChecks) {
         const row = make('li');
-        const endpoint = [check.method, check.target, check.httpHost, check.port, check.path, check.dns?.name, check.dns?.record].filter(Boolean).join(' ');
-        const confirmed = check.method === 'Маршрут' ? 'Подтверждён' : node.id === data.clusterId ? 'В норме' : 'Отвечает';
+        const endpoint = [check.method, check.target, check.httpHost, check.port, check.path, check.dns?.name,
+          check.dns?.record, check.tunnelInterface, check.tunnelAddress].filter(Boolean).join(' ');
+        const confirmed = ['Маршрут', 'OpenVPN TUN'].includes(check.method) ? 'Подтверждён' :
+          node.id === data.clusterId ? 'В норме' : 'Отвечает';
         const result = check.skipped ? 'Не запущена' :
           ({reachable:confirmed, unreachable:'Сбой проверки'}[check.state] ?? 'Нет подтверждения');
         const reason = check.responseCode ? 'SIP ' + check.responseCode : reasons[check.reason];

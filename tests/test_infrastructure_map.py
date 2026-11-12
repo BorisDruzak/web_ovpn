@@ -1859,6 +1859,48 @@ def test_openvpn_requires_connected_daemon_and_active_session(monkeypatch):
     assert "sessionCount" not in check(ready + header + client)
 
 
+def test_openvpn_tunnel_checks_kernel_link_and_address_as_required_component(monkeypatch):
+    from app import infrastructure_service_probes as probes
+    from app.infrastructure_map import _map_statuses, _public_node
+
+    spec = {"type": "openvpn_tunnel", "interface": "tun0", "address": "192.0.2.1/24", "component": True}
+    kernel = [{"ifname": "tun0", "flags": ["UP", "LOWER_UP"],
+               "linkinfo": {"info_kind": "tun", "info_data": {"type": "tun"}},
+               "addr_info": [{"family": "inet", "local": "192.0.2.1", "prefixlen": 24}]}]
+
+    def output(command, *, timeout):
+        assert command == ["/usr/sbin/ip", "-j", "-d", "address", "show"]
+        assert timeout == probes.TIMEOUT
+        return json.dumps(kernel).encode()
+
+    monkeypatch.setattr(probes.subprocess, "check_output", output)
+    monkeypatch.setattr(probes, "_openvpn_management",
+                        lambda: {"state": "reachable", "daemonReady": True, "sessionCount": 1})
+
+    def check():
+        node = {"id": "vpn", "kind": "Сервис"}
+        probes.apply_service_probes([node], {"vpn": [{"type": "openvpn_management", "port": 1194}, spec]})
+        public = _public_node(node, datetime.now(timezone.utc))
+        _map_statuses({"vpn": public}, [])
+        return public["mapStatus"], public["serviceChecks"][1]
+
+    status, result = check()
+    assert status == "ok" and result["state"] == "reachable" and result["component"]
+    assert (result["tunnelInterface"], result["tunnelAddress"]) == ("tun0", "192.0.2.1/24")
+    kernel[0]["flags"] = ["UP"]
+    status, result = check()
+    assert (status, result["state"], result["reason"]) == ("warn", "unreachable", "openvpn_tunnel_down")
+    kernel[0]["flags"] = ["UP", "LOWER_UP"]
+    kernel[0]["addr_info"][0]["prefixlen"] = 25
+    assert check()[1]["reason"] == "openvpn_tunnel_address"
+    kernel[0]["linkinfo"]["info_data"]["type"] = "tap"
+    assert check()[1]["reason"] == "openvpn_tunnel_kind"
+    kernel.clear()
+    assert check()[1]["reason"] == "openvpn_tunnel_missing"
+    kernel.append("invalid kernel data")
+    assert check()[0] == "unknown"
+
+
 def test_network_device_without_management_ip_uses_unique_current_mac_binding():
     from app.infrastructure_collect import build_graph
 

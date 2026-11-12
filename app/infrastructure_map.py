@@ -347,6 +347,18 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         if (result["checkedAt"] and type(sessions) is int and 0 <= sessions <= 4096
                 and type(check.get("daemonReady")) is bool):
             result.update(sessionCount=sessions, daemonReady=check["daemonReady"])
+    if result["method"] == "OpenVPN TUN":
+        name, address = check.get("tunnelInterface"), check.get("tunnelAddress")
+        if isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", name):
+            result["tunnelInterface"] = name
+        if isinstance(address, str) and len(address) <= 18:
+            try:
+                result["tunnelAddress"] = str(ipaddress.IPv4Interface(address))
+            except ValueError:
+                pass
+        if reason in ("openvpn_tunnel_probe", "openvpn_tunnel_missing", "openvpn_tunnel_kind",
+                      "openvpn_tunnel_down", "openvpn_tunnel_address"):
+            result["reason"] = reason
     if check.get("method") == "Маршрут":
         if result["checkedAt"] is None and check.get("state") == "unknown":
             result.update(method="Маршрут", source=_text(check.get("source"), 48))
