@@ -591,6 +591,24 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const uptime = [days ? `${days} д.` : '', hours ? `${hours} ч.` : '', `${minutes} мин.`].filter(Boolean).join(' ');
         list.append(make('dt', 'Время работы'), make('dd', uptime));
       }
+      if (resourceHost.guestIo) {
+        const {networkInBytesPerSecond, networkOutBytesPerSecond, diskReadBytesPerSecond,
+          diskWriteBytesPerSecond, intervalSeconds} = resourceHost.guestIo;
+        const rate = bytes => {
+          if (bytes >= 2**20) return number.format(bytes / 2**20) + ' МиБ/с';
+          if (bytes >= 2**10) return number.format(bytes / 2**10) + ' КиБ/с';
+          return number.format(bytes) + ' Б/с';
+        };
+        if (networkInBytesPerSecond !== undefined) {
+          list.append(make('dt', 'Сеть, приём / передача'),
+            make('dd', rate(networkInBytesPerSecond) + ' / ' + rate(networkOutBytesPerSecond)));
+        }
+        if (diskReadBytesPerSecond !== undefined) {
+          list.append(make('dt', 'Диск, чтение / запись'),
+            make('dd', rate(diskReadBytesPerSecond) + ' / ' + rate(diskWriteBytesPerSecond)));
+        }
+        list.append(make('dt', 'Интервал измерения'), make('dd', number.format(intervalSeconds) + ' с'));
+      }
       list.append(make('dt', 'Опрос ресурсов'), make('dd', formatTime(checkedAt)));
       const section = make('section');
       section.dataset.section = 'proxmox-resources';

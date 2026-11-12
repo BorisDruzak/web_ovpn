@@ -414,6 +414,41 @@ def test_guest_resources_require_unique_running_guest_with_fresh_proxmox_data(tm
     assert "resources" not in read()
 
 
+def test_guest_io_requires_continuous_counter_samples_on_the_same_host(tmp_path):
+    from app.infrastructure_collect import build_graph, _add_guest_io_rates
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(minutes=2)
+    guest = {"vmid": 103, "node": "pve1", "name": "Directum", "type": "qemu", "status": "running",
+             "uptime": 600, "netin": 24000, "netout": 12000, "diskread": 500, "diskwrite": 500}
+    pve = {"at": start.isoformat(), "cluster": [], "nodes": [], "guests": [guest], "configs": {}}
+    previous = build_graph({}, {}, {}, pve, {}, start)
+    assert next(n for n in previous["nodes"] if n.get("guest"))["guestIoCounters"]["netin"] == 24000
+    pve["at"] = now.isoformat()
+    guest.update(uptime=720, netin=48000, diskread=1100, diskwrite=2900)
+    path = tmp_path / "snapshot.json"
+
+    def read(when=now):
+        graph = build_graph({}, {}, {}, pve, {}, now)
+        _add_guest_io_rates(graph, previous)
+        path.write_text(json.dumps(graph), encoding="utf-8")
+        node = next(n for n in load_infrastructure_map(path, when)["nodes"] if n.get("guest"))
+        assert "guestIoCounters" not in node
+        return node.get("guestIo")
+
+    assert read() == {"checkedAt": now.isoformat(), "intervalSeconds": 120,
+                      "networkInBytesPerSecond": 200, "networkOutBytesPerSecond": 0,
+                      "diskReadBytesPerSecond": 5, "diskWriteBytesPerSecond": 20}
+    assert read(now + timedelta(minutes=6)) is None
+    guest["diskread"] = 499
+    assert "diskReadBytesPerSecond" not in read() and "diskWriteBytesPerSecond" not in read()
+    guest["node"] = "pve2"
+    assert read() is None
+    guest.update(node="pve1", uptime=30)
+    assert read() is None
+
+
 def test_hypervisor_resources_require_current_online_node_data(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map

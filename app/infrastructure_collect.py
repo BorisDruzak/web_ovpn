@@ -40,7 +40,7 @@ from netctl.switch_queries import (
 
 from .infrastructure_backup import backup_policy, backup_service_checks, read_proxmox_backup
 from .infrastructure_map import (
-    BACKUP_PROBE_METHOD, BACKUP_SERVICE_ID,
+    BACKUP_PROBE_METHOD, BACKUP_SERVICE_ID, GUEST_IO_MAX_AGE,
     CLUSTER_HEALTH_METHODS, CLUSTER_KIND, INTERFACE_NAME, MAX_DOWNSTREAM_SWITCHES, MAX_SNAPSHOT_BYTES, NETWORK_KINDS,
     PVE_DISK_DEVICE, PVE_STORAGE_ID, RECIPROCAL_MAC_SOURCE,
     SHARED_LLDP_KIND, SHARED_LLDP_SOURCE, STP_ROOT_PATH_MAX_AGE,
@@ -1675,6 +1675,10 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                     "memoryUsedBytes": guest.get("mem"), "memoryTotalBytes": guest.get("maxmem"),
                     "uptimeSeconds": guest.get("uptime"),
                 }
+                counters = {name: guest[name] for name in ("netin", "netout", "diskread", "diskwrite")
+                            if type(guest.get(name)) is int and 0 <= guest[name] < 2**64}
+                if counters:
+                    item["guestIoCounters"] = counters
             item.pop("reachability", None)
             config = pve.get("configs", {}).get(str(vmid), {})
             interfaces = guest_interfaces.get(str(vmid), {})
@@ -2402,18 +2406,57 @@ def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | N
     return data
 
 
-def _retain_proxmox_inventory(graph: dict, path: Path) -> None:
+def _previous_snapshot(path: Path, context_sha: str) -> dict:
     try:
         with path.open("rb") as handle:
             body = handle.read(MAX_SNAPSHOT_BYTES + 1)
         if len(body) > MAX_SNAPSHOT_BYTES:
-            return
+            return {}
         previous = json.loads(body)
     except (OSError, ValueError, RecursionError):
-        return
+        return {}
     if (not isinstance(previous, dict) or previous.get("schema") != 1
-            or previous.get("contextSha256") != graph["contextSha256"]
+            or previous.get("contextSha256") != context_sha
             or not isinstance(previous.get("nodes"), list)):
+        return {}
+    return previous
+
+
+def _add_guest_io_rates(graph: dict, previous: dict) -> None:
+    prior = {node["id"]: node for node in previous.get("nodes", [])[:600]
+             if isinstance(node, dict) and isinstance(node.get("id"), str) and node.get("guest") is True}
+    for node in graph["nodes"]:
+        old = prior.get(node["id"])
+        counters = node.get("guestIoCounters")
+        if not old or not counters or any(old.get(key) != node[key] for key in ("vmid", "pveHost", "kind", "name")):
+            continue
+        old_counters, old_resources = old.get("guestIoCounters"), old.get("resources")
+        if not isinstance(old_counters, dict) or not isinstance(old_resources, dict):
+            continue
+        current = node["resources"]
+        stamp = datetime.fromisoformat(current["checkedAt"])
+        old_stamp = old_resources.get("checkedAt")
+        if not observation_is_fresh(old_stamp, stamp, max_age=GUEST_IO_MAX_AGE):
+            continue
+        interval = (stamp - datetime.fromisoformat(old_stamp)).total_seconds()
+        uptime, prior_uptime = current.get("uptimeSeconds"), old_resources.get("uptimeSeconds")
+        if (interval < 30 or type(uptime) is not int or type(prior_uptime) is not int
+                or not 0 <= prior_uptime < uptime or abs(uptime - prior_uptime - interval) > 30):
+            continue
+        rates = {}
+        for keys, output in (
+            (("netin", "netout"), ("networkInBytesPerSecond", "networkOutBytesPerSecond")),
+            (("diskread", "diskwrite"), ("diskReadBytesPerSecond", "diskWriteBytesPerSecond")),
+        ):
+            if all(type(old_counters.get(key)) is int and 0 <= old_counters[key] <= counters.get(key, -1) for key in keys):
+                rates.update({field: round((counters[key] - old_counters[key]) / interval, 2)
+                              for key, field in zip(keys, output)})
+        if rates:
+            node["guestIo"] = {**rates, "checkedAt": current["checkedAt"], "intervalSeconds": round(interval, 2)}
+
+
+def _retain_proxmox_inventory(graph: dict, previous: dict) -> None:
+    if not previous:
         return
     current = {node["id"]: node for node in graph["nodes"]}
     retained = set()
@@ -2569,8 +2612,11 @@ def main() -> int:
         graph["contextSha256"] = hashlib.sha256(context_raw).hexdigest()
         if collection_issues:
             graph["collectionIssues"] = collection_issues
+        previous = _previous_snapshot(args.output, graph["contextSha256"])
         if "proxmox" in collection_issues:
-            _retain_proxmox_inventory(graph, args.output)
+            _retain_proxmox_inventory(graph, previous)
+        else:
+            _add_guest_io_rates(graph, previous)
         publish_snapshot(args.output, graph)
     except Exception as exc:
         parser.exit(1, f"Снимок инфраструктуры не обновлён ({type(exc).__name__}).\n")

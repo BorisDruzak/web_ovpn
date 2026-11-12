@@ -24,6 +24,7 @@ SERVICE_PROBE_MAX_AGE = timedelta(minutes=5)
 STP_ROOT_PATH_MAX_AGE = timedelta(minutes=5)
 PORT_LINK_CHECK_MAX_AGE = timedelta(minutes=5)
 RESOURCE_CAPACITY_MAX_AGE = timedelta(minutes=5)
+GUEST_IO_MAX_AGE = timedelta(minutes=5)
 LACP_HEALTH_MAX_AGE = timedelta(minutes=5)
 LACP_PARTNER_MAX_AGE = timedelta(minutes=8)
 ROOT_FREE_WARNING_PERCENT = 10
@@ -559,6 +560,22 @@ def _public_proxmox_resources(row: object, now: datetime) -> dict:
     return values
 
 
+def _public_guest_io(row: object, resources: dict, now: datetime) -> dict:
+    if not isinstance(row, dict) or not observation_is_fresh(row.get("checkedAt"), now, max_age=GUEST_IO_MAX_AGE):
+        return {}
+    stamp = _time(row["checkedAt"]).isoformat()
+    interval = _number(row.get("intervalSeconds"))
+    if stamp != resources.get("checkedAt") or interval is None or not 30 <= interval <= GUEST_IO_MAX_AGE.total_seconds():
+        return {}
+    rates = {}
+    for keys in (("networkInBytesPerSecond", "networkOutBytesPerSecond"),
+                 ("diskReadBytesPerSecond", "diskWriteBytesPerSecond")):
+        pair = {key: _number(row.get(key)) for key in keys}
+        if all(rate is not None and 0 <= rate < 2**53 for rate in pair.values()):
+            rates.update(pair)
+    return {**rates, "checkedAt": stamp, "intervalSeconds": interval} if rates else {}
+
+
 def _public_resource_capacity(row: dict, now: datetime) -> dict:
     stamp = _time(row.get("checkedAt"))
     result = {"root": {"status": "unknown"}, "swap": {"status": "unknown"},
@@ -782,6 +799,7 @@ def _public_node(row: dict, now: datetime) -> dict:
             lvm_thin_pools = project_hypervisor_lvm_thin(row.get("lvmThinPools"), now)
     guest_storage = _public_guest_storage(row.get("guestStorage"), now) if row.get("guest") is True else {}
     guest_network = _public_guest_network(row.get("guestNetwork"), now) if row.get("guest") is True else {}
+    guest_io = _public_guest_io(row.get("guestIo"), resources, now) if row.get("guest") is True else {}
     backup_coverage = {}
     backup = row.get("backupCoverage")
     if row.get("guest") is True and isinstance(backup, dict):
@@ -834,6 +852,7 @@ def _public_node(row: dict, now: datetime) -> dict:
         **({"lvmThinPools": lvm_thin_pools} if lvm_thin_pools else {}),
         **({"guestStorage": guest_storage} if guest_storage else {}),
         **({"guestNetwork": guest_network} if guest_network else {}),
+        **({"guestIo": guest_io} if guest_io else {}),
         **({"backupCoverage": backup_coverage} if backup_coverage else {}),
         **({"stpRootPath": stp_path} if stp_path else {}),
         **({"downstream": downstream} if downstream else {}),
