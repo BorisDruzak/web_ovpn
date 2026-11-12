@@ -424,7 +424,7 @@ def _route_checks(intent: dict, source: str, routes: list[dict], now: datetime, 
         check = {
             "state": "unknown", "source": "Network Observer",
             "method": "Маршрут", "target": destination, "via": gateway,
-            "checkedAt": checked_at,
+            "checkedAt": checked_at, "required": True, "component": True,
         }
         checks.append(check)
         if not observation_is_fresh(checked_at, now):

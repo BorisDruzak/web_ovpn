@@ -19,6 +19,7 @@ LOGGER = logging.getLogger(__name__)
 
 MAX_SNAPSHOT_BYTES = 1_000_000
 MAX_AGE = timedelta(minutes=25)
+SERVICE_PROBE_MAX_AGE = timedelta(minutes=5)
 STATES = ("critical", "warn", "ok", "unknown")
 NETWORK_KINDS = ("Коммутатор", "Маршрутизатор", "Точка доступа", "Сетевое устройство")
 INTERFACE_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}")
@@ -130,7 +131,7 @@ def _network_address(value: object) -> str:
         return ""
 
 
-def _public_reachability(value: object, now: datetime) -> dict:
+def _public_reachability(value: object, now: datetime, *, max_age: timedelta = MAX_AGE) -> dict:
     empty = {"state": "unknown", "source": "", "method": "", "checkedAt": None, "stale": False}
     if not isinstance(value, dict) or value.get("state") not in REACHABILITY_STATES:
         return empty
@@ -138,13 +139,28 @@ def _public_reachability(value: object, now: datetime) -> dict:
     if stamp is None or stamp > now:
         return empty
     source = _text(value.get("source"), 48)
-    max_age = SERVER_OBSERVER_MAX_AGE if source == "Server Observer" else MAX_AGE
+    if source == "Server Observer":
+        max_age = SERVER_OBSERVER_MAX_AGE
     stale = now - stamp > max_age
     return {
         "state": "unknown" if stale else value["state"],
         "source": source, "method": _text(value.get("method"), 32),
         "checkedAt": stamp.isoformat(), "stale": stale,
     }
+
+
+def _service_reachability(observation: object, checks: list[dict], now: datetime) -> dict:
+    if not isinstance(observation, dict) or observation.get("source") != "Проверка сервиса":
+        return _public_reachability(observation, now)
+    reachability = _public_reachability(observation, now, max_age=SERVICE_PROBE_MAX_AGE)
+    primary = [check for check in checks if check.get("required") and not check.get("component")]
+    answered = [check["checkedAt"] for check in primary if check["state"] == "reachable"]
+    if answered:
+        return {**reachability, "state": "reachable", "checkedAt": max(answered), "stale": False}
+    if primary and all(check["state"] == "unreachable" for check in primary):
+        return {**reachability, "state": "unreachable",
+                "checkedAt": min(check["checkedAt"] for check in primary), "stale": False}
+    return {**reachability, "state": "unknown"}
 
 
 def _public_port(row: dict, now: datetime) -> dict:
@@ -281,8 +297,9 @@ def _public_dns_check(value: object) -> dict:
 def _public_service_check(check: dict, now: datetime) -> dict:
     path = _text(check.get("path"))
     port = check.get("port")
+    max_age = SERVICE_PROBE_MAX_AGE if check.get("source") == "UI_VPN" and check.get("required") is True else MAX_AGE
     result = {
-        **_public_reachability(check, now),
+        **_public_reachability(check, now, max_age=max_age),
         "port": port if type(port) is int and 1 <= port <= 65535 else None,
         "target": _network_address(check.get("target")), "via": _network_address(check.get("via")),
         "path": path if re.fullmatch(r"/[A-Za-z0-9._/-]{0,159}", path) and not path.startswith("//") else "",
@@ -588,13 +605,14 @@ def _public_node(row: dict, now: datetime) -> dict:
     checks = _rows(row.get("checks"), 80)
     check_counts = Counter(_text(check.get("name"), 64) for check in checks)
     checks.extend({"name": name} for name in required_names if not check_counts[name])
+    service_checks = [_public_service_check(check, now) for check in _rows(row.get("serviceChecks"), 16)]
     return {
         **{key: _text(row.get(key)) for key in ("id", "name", "kind", "site", "origin", "pveHost")},
         "guest": row.get("guest") is True,
         "vmid": row.get("vmid") if type(row.get("vmid")) is int else None,
         "aliases": [_text(value) for value in aliases[:12] if isinstance(value, str)] if isinstance(aliases, list) else [],
         "status": next((state for state in STATES if any(source["status"] == state for source in fresh)), "unknown"),
-        "reachability": _public_reachability(row.get("reachability"), now),
+        "reachability": _service_reachability(row.get("reachability"), service_checks, now),
         "sources": sources,
         "properties": properties,
         **({"resources": resources} if resources else {}),
@@ -604,7 +622,7 @@ def _public_node(row: dict, now: datetime) -> dict:
         **({"guestStorage": guest_storage} if guest_storage else {}),
         **({"guestNetwork": guest_network} if guest_network else {}),
         "ports": [port for port in ports if port["name"]],
-        "serviceChecks": [_public_service_check(check, now) for check in _rows(row.get("serviceChecks"), 16)],
+        "serviceChecks": service_checks,
         "checks": [
             {"name": name,
              **({"label": OBSERVER_CHECK_LABELS[name]} if name in OBSERVER_CHECK_LABELS else {}),

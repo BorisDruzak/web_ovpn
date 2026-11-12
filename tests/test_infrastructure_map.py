@@ -2654,6 +2654,42 @@ def test_route_evidence_is_scoped_and_does_not_mark_service_available():
     assert [(check["target"], check["state"]) for check in node["serviceChecks"]] == [
         ("198.51.100.0/24", "reachable"), ("203.0.113.0/24", "unknown"),
     ]
+    from app.infrastructure_map import _map_statuses, _public_node
+
+    node["reachability"] = {"state": "reachable", "source": "ICMP", "checkedAt": at}
+    public = _public_node(node, now)
+    _map_statuses({"vpn": public}, [])
+    assert public["mapStatus"] == "unknown"
+    node["serviceChecks"][1].update(state="unreachable", checkedAt=at)
+    public = _public_node(node, now)
+    _map_statuses({"vpn": public}, [])
+    assert public["mapStatus"] == "warn"
+
+
+def test_service_availability_expires_using_its_own_probe_evidence():
+    from app.infrastructure_map import _map_statuses, _public_node
+
+    now = datetime.now(timezone.utc)
+    stamp = now.isoformat()
+    stale = (now - timedelta(minutes=6)).isoformat()
+    current = (now - timedelta(minutes=1)).isoformat()
+
+    def check(state, at, **extra):
+        return {"state": state, "method": "HTTP", "source": "UI_VPN", "checkedAt": at, "required": True, **extra}
+
+    def read(*checks):
+        raw = {"id": "app", "kind": "Сервис", "serviceChecks": list(checks),
+               "reachability": {"state": "reachable", "source": "Проверка сервиса", "checkedAt": stamp}}
+        public = _public_node(raw, now)
+        _map_statuses({"app": public}, [])
+        return public["reachability"], public["mapStatus"]
+
+    health, color = read(check("reachable", stale), check("unreachable", stamp), check("reachable", stamp, component=True))
+    assert health["state"] == "unknown" and color == "unknown"
+    health, color = read(check("reachable", current), check("unknown", stamp))
+    assert health["state"] == "reachable" and health["checkedAt"] == current and color == "unknown"
+    health, color = read(check("unreachable", current), check("unreachable", stamp))
+    assert health["state"] == "unreachable" and health["checkedAt"] == current and color == "critical"
 
 
 def test_route_checks_report_mismatch_inactive_and_missing_observation():
