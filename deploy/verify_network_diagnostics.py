@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 import subprocess
 import sys
+from urllib.parse import urlencode
 
 from mcp import openvpn_mcp_server as bridge
 
@@ -26,16 +27,18 @@ MCP_TOOLS = {
 }
 
 
-def route_report(runs: list[dict], now: datetime, max_age: timedelta) -> dict:
+def route_report(runs: list[dict], now: datetime, max_age: timedelta, *, api_runs: list[dict]) -> dict:
     row = next((run for run in runs if run["trigger"] == "scheduled"), None)
     if row is None:
-        return {"status": "missing", "fresh": False, "probes": []}
+        return {"status": "missing", "fresh": False, "run_id": None, "api_matches": False, "probes": []}
     checked_at = datetime.fromisoformat(row["checked_at"])
     probes = [{"id": probe["id"], "status": probe["status"]} for probe in row["result"]["probes"]]
     return {
         "status": row["status"],
+        "run_id": row["id"],
         "checked_at": row["checked_at"],
         "fresh": bool(probes) and timedelta(0) <= now - checked_at <= max_age,
+        "api_matches": row in api_runs,
         "probes": probes,
     }
 
@@ -123,12 +126,13 @@ def verify(script: Path, max_age: timedelta) -> dict:
         mcp_call("openvpn_network_loop_diagnostics"),
     ])
     now = datetime.now(UTC)
-    routes = {
-        profile: route_report(mcp_data(reply)["runs"], now, max_age)
-        for profile, reply in zip(scheduled, history, strict=True)
-    }
-    for profile, expected in scheduled.items():
-        routes[profile]["profile_matches"] = {probe["id"] for probe in routes[profile]["probes"]} == expected
+    routes = {}
+    for (profile, expected), reply in zip(scheduled.items(), history, strict=True):
+        query = urlencode({"profile": profile, "limit": 100})
+        api_runs = bridge.api_request("GET", f"{API}/route-runs?{query}")["data"]["runs"]
+        route = route_report(mcp_data(reply)["runs"], now, max_age, api_runs=api_runs)
+        route["profile_matches"] = {probe["id"] for probe in route["probes"]} == expected
+        routes[profile] = route
     return {
         "contracts": "ok",
         "routes": routes,
@@ -152,7 +156,7 @@ def main() -> int:
         return 1
     print(json.dumps(report, ensure_ascii=False, indent=2))
     routes = report["routes"].values()
-    if any(not (route["fresh"] and route["profile_matches"]) for route in routes):
+    if any(not (route["fresh"] and route["profile_matches"] and route["api_matches"]) for route in routes):
         return 1
     return 2 if args.require_reachable and any(route["status"] != "reachable" for route in routes) else 0
 
