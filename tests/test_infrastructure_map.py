@@ -1950,11 +1950,15 @@ def test_proxmox_port_observer_verifies_target_and_only_updates_inventory_ports(
     context = {"devices": [
         {"id": "pve1", "kind": "hypervisor", "management_ip": "192.0.2.1"},
         {"id": "pve2", "kind": "hypervisor", "management_ip": "192.0.2.2"},
-    ]}
+    ], "links": [{"relation": "connected_to", "state": {"verified": True},
+                   "endpoint_a": {"device": "switch", "interface": "xe3"},
+                   "endpoint_b": {"device": "pve1", "interface": "eth0"},
+                   "vlans": {"untagged": [1], "tagged": [20]}}]}
     for name in ("pve-port-ssh-key", "pve-port-known-hosts"):
         (tmp_path / name).touch()
     calls = []
-    payload = {"hostname": "pve2", "ports": {"eth0": {"state": "up", "speedMbps": 1000},
+    payload = {"hostname": "pve2", "ports": {"eth0": {"state": "up", "speedMbps": 1000,
+                                                  "vlanRanges": [[1, 1, "untagged", True], [2, 4094, "tagged", False]]},
                                          "extra0": {"state": "disabled"}}}
 
     def run(args, **options):
@@ -1973,7 +1977,13 @@ def test_proxmox_port_observer_verifies_target_and_only_updates_inventory_ports(
     assert (public["source"], public["state"], public["speedBps"], public["proxmoxActive"]) == (
         "Proxmox · sysfs", "up", 10**9, True,
     )
+    assert public["vlanMemberships"] == {"checkedAt": public["checkedAt"], "vlans": [
+        {"id": 1, "egress": "untagged", "pvid": True}, {"id": 20, "egress": "tagged", "pvid": False},
+    ]}
     assert ports[1]["state"] == "unknown"
+    payload["ports"]["eth0"]["vlanRanges"].append([20, 20, "untagged", False])
+    observer.collect_proxmox_port_states(context, pve, tmp_path)
+    assert "vlanMemberships" not in _public_port(ports[0], datetime.now(timezone.utc))
 
 
 def test_snr_root_bridge_uses_fresh_port_mapping_without_confirming_a_pair(tmp_path):
