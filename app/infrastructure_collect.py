@@ -2395,9 +2395,9 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             binding = bindings.get("guests", {}).get(str(vmid), {})
             asset = binding.get("asset")
             bound_mac = binding.get("mac")
-            matched = asset in nodes and asset not in overview_guests and _matches_mac(
-                bound_mac, pve.get("configs", {}).get(str(vmid), {}),
-            )
+            config = pve.get("configs", {}).get(str(vmid), {})
+            bound_to_config = _matches_mac(bound_mac, config)
+            matched = asset in nodes and asset not in overview_guests and bound_to_config
             key = asset if matched else f"pve-guest:{vmid}"
             kind = "Контейнер" if guest.get("type") == "lxc" else "Виртуальная машина"
             item = node(key, guest.get("name") or f"ВМ {vmid}", kind, origin="Proxmox")
@@ -2438,7 +2438,6 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 if counters:
                     item["guestIoCounters"] = counters
             item.pop("reachability", None)
-            config = pve.get("configs", {}).get(str(vmid), {})
             interfaces = guest_interfaces.get(str(vmid), {})
             configured_nics = {name for name in config if re.fullmatch(r"net[0-9]+", name)}
             if observation_is_fresh(pve_at, now):
@@ -2454,7 +2453,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                     if keys:
                         item["agentMatchKeys"] = keys
                     enrollment = binding.get("endpoint_device_id")
-                    if (matched and guest_ids[vmid] == 1 and not conflicting
+                    if ((matched or asset is None and bound_to_config) and guest_ids[vmid] == 1 and not conflicting
                             and "mac-" + bound_mac.lower().replace(":", "") in keys
                             and isinstance(enrollment, str) and GUEST_ENROLLMENT_ID.fullmatch(enrollment)):
                         item["agentEnrollmentId"] = enrollment

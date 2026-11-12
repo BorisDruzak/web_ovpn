@@ -2566,6 +2566,9 @@ def _summarize_agent_audit(nodes: dict, keys: dict, conflicts: set[str], identit
              and isinstance(row.get("id"), str) and 0 < len(row["id"]) <= 255}
     if len(by_id) != len(identities) or len(by_id) > 1000:
         return {"sourceState": "unavailable"}
+    historical = {identity_id for identity_id, row in by_id.items()
+                  if row.get("online") is False and (last_seen := _time(row.get("last_seen_at"))) is not None
+                  and now - last_seen > CANDIDATE_MAX_AGE}
     by_mac = defaultdict(set)
     for identity_id, row in by_id.items():
         mac_keys = row.get("baseline_mac_keys")
@@ -2603,6 +2606,10 @@ def _summarize_agent_audit(nodes: dict, keys: dict, conflicts: set[str], identit
             continue
         entry.update(state="ambiguous", registrations=len(candidates))
         enrollment = enrollments.get(node_id)
+        same_mac = len(candidates) > 1 and any(candidates <= by_mac[key] for key in keys.get(node_id, ()))
+        if (enrollment in candidates and candidates - {enrollment} <= historical and same_mac
+                and _guest_agent_online_at(verified.get(enrollment, {}), now, verified_enrollment=True) is not None):
+            candidates = {enrollment}
         if node_id in conflicts:
             entry["reason"] = "duplicate_guest_mac"
         elif enrollment and candidates - {enrollment}:
@@ -2613,18 +2620,12 @@ def _summarize_agent_audit(nodes: dict, keys: dict, conflicts: set[str], identit
             active_mac_registration = len(candidates) > 1
             if active_mac_registration:
                 # Ignore historical duplicates only while the same VM MAC has a single current registration.
-                historical = {
-                    identity_id for identity_id in candidates if by_id[identity_id].get("online") is False
-                    and (last_seen := _time(by_id[identity_id].get("last_seen_at"))) is not None
-                    and now - last_seen > CANDIDATE_MAX_AGE
-                }
                 current = candidates - historical
                 if len(current) != 1:
                     entries.append({**entry, "reason": "multiple_registrations"})
                     continue
                 active_id, = current
-                if (_guest_agent_online_at(by_id[active_id], now) is None
-                        or not any(candidates <= by_mac[key] for key in keys[node_id])):
+                if _guest_agent_online_at(by_id[active_id], now) is None or not same_mac:
                     entries.append({**entry, "reason": "multiple_registrations"})
                     continue
                 candidates = current
