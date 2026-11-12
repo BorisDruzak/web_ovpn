@@ -62,6 +62,8 @@ def test_service_color_includes_required_observer_checks_and_confirmed_dependenc
     def read(component="ok", database="reachable", observer_at=stamp, confirmed=True, cycle=False, missing=False):
         checks = [] if component is None else [{"name": "redis_tcp_6379", "status": component}]
         checks.append({"name": "c_disk_free", "status": "critical"})
+        if component == "error":
+            checks[0]["error"] = "timeout"
         target = {"role": "directum", "status": "critical", "observed_at": observer_at, "checks": checks}
         report = {"freshness": "missing" if missing else "current", "targets": [] if missing else [target]}
         context = {"devices": [{"id": "vm", "name": "VM", "kind": "server"}]}
@@ -84,11 +86,18 @@ def test_service_color_includes_required_observer_checks_and_confirmed_dependenc
     for observed in (read(component="critical"), read(database="unreachable", cycle=True)):
         assert observed["role:directum"]["reachability"]["state"] == "reachable"
         assert observed["role:directum"]["mapStatus"] == "warn"
+        assert observed["role:directum"]["status"] == "warn"
+        assert observed["role:directum"]["sourceStatus"] == "critical"
         assert observed["vm"]["mapStatus"] == "warn"
         assert observed["vm"]["serviceAvailability"]["unavailable"] == []
         assert observed["vm"]["serviceAvailability"]["degraded"] == ["role:directum"]
     assert read(database="unreachable", confirmed=False)["vm"]["mapStatus"] == "ok"
     assert read(component=None)["vm"]["mapStatus"] == "unknown"
+    timed_out = read(component="error")["role:directum"]
+    assert timed_out["status"] == "unknown"
+    assert timed_out["checks"][0]["error"] == "timeout"
+    assert "error" not in read(component="error", observer_at=(now - timedelta(minutes=30)).isoformat())[
+        "role:directum"]["checks"][0]
     assert read(missing=True)["vm"]["mapStatus"] == "unknown"
     assert read(database="unknown")["vm"]["mapStatus"] == "unknown"
     assert read(observer_at=(now - timedelta(minutes=30)).isoformat())["vm"]["mapStatus"] == "unknown"
@@ -582,6 +591,7 @@ def test_service_distinguishes_partial_failure_and_unconfirmed_http_responses(mo
     assert [node["mapStatus"] for node in public.values()] == [
         "ok", "unknown", "warn", "unknown", "critical", "warn", "critical", "unknown", "unknown", "ok", "unknown",
     ]
+    assert [node["status"] for node in public.values()] == [node["mapStatus"] for node in public.values()]
     assert public["/named"]["serviceChecks"][0]["httpHost"] == "directum.example"
     assert public["/bad-host"]["serviceChecks"][0]["reason"] == "http_configuration"
     assert "httpHost" not in public["/bad-host"]["serviceChecks"][0]
@@ -989,8 +999,10 @@ def test_postgresql_probe_requires_protocol_response(monkeypatch):
     assert public()["reason"] == "unexpected_response"
 
 
-def test_observer_service_attaches_to_the_vm_with_the_expected_mac():
+def test_observer_service_attaches_to_the_vm_with_the_expected_mac(monkeypatch):
     from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import _map_statuses, _public_node
+    from app import infrastructure_service_probes as probes
 
     now = datetime.now(timezone.utc)
     mac = "02:00:00:00:00:03"
@@ -1010,6 +1022,20 @@ def test_observer_service_attaches_to_the_vm_with_the_expected_mac():
     item, links = load()
     assert item["reachability"]["source"] == "Server Observer"
     assert [(e["a"], e["source"], e["confirmed"]) for e in links] == [("pve-guest:211", "Proxmox", True)]
+    pve["guests"][0]["status"] = "stopped"
+    stopped, _ = load()
+    assert stopped["reachability"]["state"] == "stopped"
+    assert stopped["reachability"]["source"] == "Proxmox"
+    def unexpected_probe(spec):
+        raise AssertionError("probe ran")
+
+    monkeypatch.setattr(probes, "_http_probe", unexpected_probe)
+    probes.apply_service_probes([stopped], {stopped["id"]: [{"type": "https", "port": 443}]})
+    public = _public_node(stopped, datetime.now(timezone.utc))
+    _map_statuses({public["id"]: public}, [])
+    assert public["status"] == "critical"
+    assert public["serviceChecks"][0]["reason"] == "probe_host_stopped"
+    pve["guests"][0]["status"] = "running"
     assert load(now + timedelta(hours=1))[1] == []
     pve["configs"]["211"]["net0"] = "virtio=02:00:00:00:00:04,bridge=vmbr1"
     assert load()[1] == []

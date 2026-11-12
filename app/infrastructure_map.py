@@ -56,7 +56,16 @@ OBSERVER_CHECK_LABELS = {
     "root_disk_free": "Свободно на корневом разделе",
     "data_disk_free": "Свободно на разделе данных",
     "rxdata_log_bytes": "Размер журналов Directum",
+    "directumrx_active": "Служба Directum RX",
+    "iis_active": "Служба IIS",
+    "mongo_active": "Служба MongoDB",
+    "rabbitmq_active": "Служба RabbitMQ",
+    "redis_active": "Служба Redis",
+    "mongo_tcp_27017": "MongoDB TCP/27017",
+    "rabbitmq_tcp_5672": "RabbitMQ TCP/5672",
+    "redis_tcp_6379": "Redis TCP/6379",
 }
+OBSERVER_CHECK_ERRORS = ("timeout", "transport", "parse", "unexpected_response")
 OBSERVER_METRIC_UNITS = {
     "backup_snapshot_fresh": "hours",
     "backup_snapshot_count": "count",
@@ -370,7 +379,7 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         if check.get("component") is True:
             result["component"] = True
     if (check.get("skipped") is True and result["checkedAt"] and result["state"] == "unknown"
-            and reason in ("probe_target_unconfirmed", "probe_target_mismatch")):
+            and reason in ("probe_target_unconfirmed", "probe_target_mismatch", "probe_host_stopped")):
         return {**result, "target": "", "skipped": True, "reason": reason}
     identified_icmp = result["method"] in ("ICMP · LLDP + ARP", "ICMP · ARP + FDB")
     if identified_icmp or (result["source"] == "UI_VPN" and "identityCheckedAt" in check):
@@ -786,7 +795,7 @@ def _public_node(row: dict, now: datetime) -> dict:
         "guest": row.get("guest") is True,
         "vmid": row.get("vmid") if type(row.get("vmid")) is int else None,
         "aliases": [_text(value) for value in aliases[:12] if isinstance(value, str)] if isinstance(aliases, list) else [],
-        "status": next((state for state in STATES if any(source["status"] == state for source in fresh)), "unknown"),
+        "sourceStatus": next((state for state in STATES if any(source["status"] == state for source in fresh)), "unknown"),
         "reachability": _service_reachability(row.get("reachability"), service_checks, now),
         "sources": sources,
         "properties": properties,
@@ -808,6 +817,9 @@ def _public_node(row: dict, now: datetime) -> dict:
              **({"required": True} if name in required_names else {}),
              "status": _state(check.get("status")) if observer and not observer["stale"]
              and (name not in required_names or check_counts[name] == 1) else "unknown",
+             **({"error": check["error"]} if observer and not observer["stale"]
+                and check_counts[name] == 1 and check.get("status") == "unknown"
+                and check.get("error") in OBSERVER_CHECK_ERRORS else {}),
              "checkedAt": observer["at"] if observer else None, "stale": not observer or observer["stale"],
              **_observer_measurement(check, name), "latency": _number(check.get("latency"))}
             for check in checks
@@ -873,6 +885,7 @@ def _map_statuses(nodes: dict, links: list[dict]) -> None:
             node["mapStatus"] = "ok"
         else:
             node["mapStatus"] = "unknown"
+        node["status"] = node["mapStatus"]
 
 
 def _attach_endpoint_presence(db: Session, keys: dict[str, str], nodes: dict, now: datetime) -> None:

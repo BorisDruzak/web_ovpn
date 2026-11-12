@@ -1582,6 +1582,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         item["checks"] = [{"name": check["name"], "status": HEALTH.get(check["status"], "unknown")
                            if valid_report or check["name"] == "watchdog_fresh" else "unknown",
                            "observed": check.get("observed"), "expected": check.get("expected"),
+                           "error": check.get("error"),
                            "latency": check.get("latency_ms")}
                           for check in target_checks]
         required_checks = configured.get("required_observer_checks", [])
@@ -1671,8 +1672,9 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             vmid, host = guest["vmid"], guest["node"]
             binding = bindings.get("guests", {}).get(str(vmid), {})
             asset = binding.get("asset")
+            bound_mac = binding.get("mac")
             matched = asset in nodes and asset not in overview_guests and _matches_mac(
-                binding.get("mac"), pve.get("configs", {}).get(str(vmid), {}),
+                bound_mac, pve.get("configs", {}).get(str(vmid), {}),
             )
             key = asset if matched else f"pve-guest:{vmid}"
             kind = "Контейнер" if guest.get("type") == "lxc" else "Виртуальная машина"
@@ -1725,12 +1727,21 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                     disabled_count = sum(disabled for _, _, disabled, _ in interfaces.values())
                     item["guestNetwork"] = {"checkedAt": pve_at, "configured": len(configured_nics),
                                             "enabled": len(interfaces) - disabled_count, "disabled": disabled_count}
+                stopped = guest.get("status") == "stopped" and not guest.get("template")
+                if stopped and matched and guest_ids[vmid] == 1 and mac_counts[bound_mac.lower()] == 1:
+                    for role, spec in roles.items():
+                        if spec.get("asset") == key:
+                            nodes["role:" + role]["reachability"] = _observation(
+                                "stopped", "Proxmox", "Состояние ВМ", pve_at,
+                            )
                 for service, spec in guest_services.get(str(vmid), []):
                     mac = str(spec.get("mac") or "").lower()
                     if mac_counts[mac] != 1 or mac not in guest_macs.get(str(vmid), set()):
                         continue
                     edge(key, service["id"], "Размещение", "Proxmox", at=pve_at)
                     service_dependencies(service["id"], spec)
+                    if stopped and guest_ids[vmid] == 1:
+                        service["reachability"] = _observation("stopped", "Proxmox", "Состояние ВМ", pve_at)
                     address = bindings.get("guest_probe_ips", {}).get(str(vmid))
                     if (status == "ok" and arp_mappings.get(address, (None,))[0] == mac
                             and any(nic_mac == mac and not disabled for _, _, disabled, nic_mac in interfaces.values())):

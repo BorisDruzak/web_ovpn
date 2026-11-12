@@ -848,7 +848,9 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
             })
             return node, None
         skip_reason = ""
-        if node["kind"] != "Сервис" or "probeTargetIP" in node:
+        if service and node.get("reachability", {}).get("state") == "stopped":
+            skip_reason = "probe_host_stopped"
+        elif not service or "probeTargetIP" in node:
             target_address = node.get("probeTargetIP")
             if not target_address:
                 skip_reason = "probe_target_unconfirmed"

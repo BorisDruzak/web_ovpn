@@ -19,7 +19,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   const availabilityOf = node => {
     const color = node.mapStatus ?? 'unknown';
     let label = availabilityStates[color];
-    if (node.reachability?.state === 'stopped') label = 'Выключен';
+    if (node.reachability?.state === 'stopped') {
+      label = node.kind === 'Сервис' ? 'Недоступен, ВМ выключена' : 'Выключен';
+    }
     if (color === 'warn' && node.serviceAvailability?.unavailable?.length) label = 'Доступен, есть недоступные сервисы';
     if (node.id === data.clusterId && color === 'warn') label = 'Кластер доступен, есть сбои';
     return {label, color};
@@ -500,6 +502,42 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const columns = make('div', null, 'map-detail-columns');
     const propertiesSection = make('section');
     propertiesSection.append(make('h3', 'Доступность'), properties);
+    if (node.checks?.length) {
+      const panel = make('details', null, 'map-port-panel');
+      panel.dataset.section = 'checks';
+      panel.open = node.checks.some(check => (check.required && check.status !== 'ok')
+        || (check.unit && ['warn', 'critical'].includes(check.status)));
+      const list = make('ul', null, 'map-detail-list');
+      const states = {ok: 'В норме', warn: 'Отклонение', critical: 'Ошибка', unknown: 'Нет подтверждения'};
+      const number = new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 2});
+      const measurement = (unit, value) => {
+        if (!Number.isFinite(value)) return '';
+        if (unit === 'percent') return number.format(value) + '%';
+        if (unit === 'bytes') return number.format(value / 2**30) + ' ГиБ';
+        if (unit === 'hours') return number.format(value) + ' ч';
+        if (unit === 'count') return number.format(value);
+        return '';
+      };
+      const errors = {
+        timeout: 'Нет ответа от проверки', transport: 'Ошибка соединения сборщика',
+        parse: 'Сборщик не смог прочитать ответ', unexpected_response: 'Неожиданный ответ',
+      };
+      const priority = check => check.required && check.status !== 'ok' ? 0 : 1;
+      const ordered = [...node.checks].sort((a, b) => priority(a) - priority(b));
+      for (const check of ordered) {
+        const row = make('li');
+        const value = measurement(check.unit, check.observed);
+        const threshold = measurement(check.unit, check.warningThreshold);
+        const limit = check.unit === 'hours' ? 'предел ' : 'порог предупреждения ';
+        const notes = [states[check.status], errors[check.error], value, threshold && limit + threshold,
+          check.required && 'обязательная проверка', check.checkedAt && formatTime(check.checkedAt),
+          check.stale && 'устарело'];
+        row.append(make('strong', check.label || check.name), make('small', notes.filter(Boolean).join(' · ')));
+        list.append(row);
+      }
+      panel.append(make('summary', 'Проверки Server Observer'), list);
+      propertiesSection.append(panel);
+    }
     const measurements = Object.entries(node.properties ?? {})
       .filter(([name, value]) => value && !items[name]);
     if (node.guestNetwork) {
@@ -830,6 +868,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         probe_configuration: 'Некорректный список проверок',
         probe_target_unconfirmed: 'Адрес цели не подтверждён',
         probe_target_mismatch: 'Адрес в настройках проверок не совпал с подтверждённым',
+        probe_host_stopped: 'ВМ сервиса выключена',
         openvpn_tunnel_probe: 'Не удалось прочитать параметры туннеля',
         openvpn_tunnel_missing: 'Туннельный интерфейс отсутствует',
         openvpn_tunnel_kind: 'Интерфейс другого типа',
@@ -925,36 +964,6 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         list.append(row);
       }
       propertiesSection.append(make('h3', 'Проверки'), list);
-    }
-    if (node.checks?.length) {
-      const panel = make('details', null, 'map-port-panel');
-      panel.dataset.section = 'checks';
-      panel.open = node.checks.some(check => (check.required && check.status !== 'ok')
-        || (check.unit && ['warn', 'critical'].includes(check.status)));
-      const list = make('ul', null, 'map-detail-list');
-      const states = {ok: 'В норме', warn: 'Отклонение', critical: 'Ошибка', unknown: 'Нет подтверждения'};
-      const number = new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 2});
-      const measurement = (unit, value) => {
-        if (!Number.isFinite(value)) return '';
-        if (unit === 'percent') return number.format(value) + '%';
-        if (unit === 'bytes') return number.format(value / 2**30) + ' ГиБ';
-        if (unit === 'hours') return number.format(value) + ' ч';
-        if (unit === 'count') return number.format(value);
-        return '';
-      };
-      for (const check of node.checks) {
-        const row = make('li');
-        const value = measurement(check.unit, check.observed);
-        const threshold = measurement(check.unit, check.warningThreshold);
-        const limit = check.unit === 'hours' ? 'предел ' : 'порог предупреждения ';
-        const notes = [states[check.status], value, threshold && limit + threshold,
-          check.required && 'обязательная проверка', check.checkedAt && formatTime(check.checkedAt),
-          check.stale && 'устарело'];
-        row.append(make('strong', check.label || check.name), make('small', notes.filter(Boolean).join(' · ')));
-        list.append(row);
-      }
-      panel.append(make('summary', 'Проверки Server Observer'), list);
-      propertiesSection.append(panel);
     }
     for (const [key, title] of [['unavailable', 'Недоступные сервисы'], ['degraded', 'Сервисы со сбоями проверок'],
                                 ['unknown', 'Сервисы без подтверждения']]) {
