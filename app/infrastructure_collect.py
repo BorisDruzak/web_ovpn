@@ -1439,14 +1439,18 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                            "observed": check.get("observed"), "expected": check.get("expected"),
                            "latency": check.get("latency_ms")}
                           for check in target_checks]
-        item["requiredObserverChecks"] = configured.get("required_observer_checks", [])
+        required_checks = configured.get("required_observer_checks", [])
+        if role == "acti_backup":
+            required_checks = ["repository_capacity",
+                               *(required_checks if isinstance(required_checks, list) else [])]
+        item["requiredObserverChecks"] = required_checks
         checked_at = target.get("observed_at")
         functional = FUNCTIONAL_CHECKS.get(role)
         if functional and valid_report and observer_current and observation_is_fresh(checked_at, now):
             check_name, method = functional
-            result = next((check["status"] for check in target_checks if check["name"] == check_name), None)
-            if result in {"ok", "critical", "warn"}:
-                state = "reachable" if result == "ok" else "unreachable"
+            results = [check["status"] for check in target_checks if check["name"] == check_name]
+            if results in (["ok"], ["critical"], ["warn"]):
+                state = "reachable" if results == ["ok"] else "unreachable"
                 item["reachability"] = _observation(state, "Server Observer", method, checked_at)
         if host:
             edge(host, item["id"], "Цель проверки", "Настройки карты")

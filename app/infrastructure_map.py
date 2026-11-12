@@ -328,6 +328,8 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         "path": path if re.fullmatch(r"/[A-Za-z0-9._/-]{0,159}", path) and not path.startswith("//") else "",
     }
     reason = check.get("reason")
+    if reason == "probe_configuration" and result["source"] == "UI_VPN" and result["method"] == "Настройки проверки":
+        result["reason"] = reason
     if backup:
         vmid, hours = check.get("backupVmid"), check.get("backupMaxAgeHours")
         if type(vmid) is int and 1 <= vmid <= 999_999_999:

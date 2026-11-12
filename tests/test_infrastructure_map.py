@@ -407,10 +407,12 @@ def test_backup_state_requires_a_valid_watchdog_report(tmp_path):
     target = {"role": "acti_backup", "status": "critical", "observed_at": now.isoformat(), "checks": []}
     path = tmp_path / "infrastructure.json"
 
-    def read(watchdog, snapshot, capacity="ok", freshness="current"):
+    def read(watchdog, snapshot, capacity="ok", freshness="current", *, duplicate=False):
         target["checks"] = [{"name": name, "status": status} for name, status in (
             ("watchdog_fresh", watchdog), ("backup_snapshot_fresh", snapshot), ("repository_capacity", capacity),
         ) if status is not None]
+        if duplicate:
+            target["checks"].append({"name": "backup_snapshot_fresh", "status": "critical"})
         graph = build_graph({}, {}, {"freshness": freshness, "targets": [target]}, {}, {}, now)
         path.write_text(json.dumps(graph), encoding="utf-8")
         node, = load_infrastructure_map(path, now)["nodes"]
@@ -424,7 +426,9 @@ def test_backup_state_requires_a_valid_watchdog_report(tmp_path):
     ]
     assert read(None, "critical")["mapStatus"] == "unknown"
     assert read("ok", "critical")["mapStatus"] == "critical"
-    assert read("ok", "ok", capacity="critical")["mapStatus"] == "ok"
+    assert read("ok", "ok", capacity="critical")["mapStatus"] == "warn"
+    assert read("ok", "ok", capacity=None)["mapStatus"] == "unknown"
+    assert read("ok", "ok", duplicate=True)["mapStatus"] == "unknown"
     assert read("ok", "critical", freshness="stale")["mapStatus"] == "unknown"
 
 
@@ -437,7 +441,8 @@ def test_acti_service_reflects_backup_dependency_on_inventory_host(tmp_path):
     report = {"freshness": "current", "targets": [
         {"role": "acti_backup", "status": "critical", "observed_at": stamp,
          "checks": [{"name": "watchdog_fresh", "status": "ok"},
-                    {"name": "backup_snapshot_fresh", "status": "critical"}]},
+                    {"name": "backup_snapshot_fresh", "status": "critical"},
+                    {"name": "repository_capacity", "status": "ok"}]},
         {"role": "acti", "status": "ok", "observed_at": stamp,
          "checks": [{"name": "https_ready", "status": "ok"}]},
     ]}
@@ -595,6 +600,61 @@ def test_http_probe_matches_json_health_fields_without_fixing_the_version():
             server.shutdown()
             worker.join()
     assert results == ["reachable", "unknown", "unreachable", "unknown", "unknown", "unreachable"]
+
+
+def test_http_probe_checks_nested_boolean_health_fields(monkeypatch):
+    from app.infrastructure_service_probes import _http_probe
+
+    class Response:
+        status = 200
+        payload = {}
+
+        def getheader(self, name, default):
+            return "application/json"
+
+        def read(self, limit):
+            return json.dumps(self.payload).encode()
+
+    class Connection:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def request(self, *args, **kwargs):
+            pass
+
+        def getresponse(self):
+            return response
+
+        def close(self):
+            pass
+
+    response = Response()
+    monkeypatch.setattr("app.infrastructure_service_probes.http.client.HTTPConnection", Connection)
+    spec = {"type": "http", "ip": "192.0.2.10", "port": 80, "path": "/ready",
+            "json_fields": {"ProductName": "Directum RX", "MaintenanceModeState.IsEnabled": False},
+            "json_unavailable": {"ProductName": "Directum RX", "MaintenanceModeState.IsEnabled": True}}
+    for value, expected in [(False, "reachable"), (True, "unreachable"), (0, "unknown"),
+                            ("false", "unknown"), (None, "unknown")]:
+        response.payload = {"ProductName": "Directum RX", "MaintenanceModeState": {"IsEnabled": value}}
+        assert _http_probe(spec)["state"] == expected
+    response.payload = {"ProductName": "Directum RX", "MaintenanceModeState.IsEnabled": False}
+    assert _http_probe(spec)["state"] == "unknown"
+
+
+def test_malformed_service_probe_config_cannot_leave_observer_green():
+    from app.infrastructure_map import _map_statuses, _public_node
+    from app.infrastructure_service_probes import apply_service_probes
+
+    for invalid in ([], {}, [None], [{}] * 5, [{"type": "typo"}]):
+        node = {"id": "service", "kind": "Сервис", "reachability": {
+            "state": "reachable", "source": "Server Observer", "method": "HTTPS",
+            "checkedAt": datetime.now(timezone.utc).isoformat(),
+        }}
+        apply_service_probes([node], {"service": invalid})
+        public = _public_node(node, datetime.now(timezone.utc))
+        _map_statuses({"service": public}, [])
+        assert public["mapStatus"] == "unknown"
+        assert public["serviceChecks"][0]["reason"] == "probe_configuration"
 
 
 def test_dns_probe_requires_an_answer_to_the_actual_query(monkeypatch):

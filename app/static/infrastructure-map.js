@@ -760,6 +760,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         http_bad_response: 'Ответ HTTP неполный или некорректный',
         http_connection_refused: 'Отклонено TCP-соединение', http_connection_reset: 'Сброшено TCP-соединение',
         http_configuration: 'Ошибка настройки проверки',
+        probe_configuration: 'Некорректный список проверок',
         probe_target_unconfirmed: 'Адрес цели не подтверждён',
         probe_target_mismatch: 'Адрес в настройках проверок не совпал с подтверждённым',
         openvpn_tunnel_probe: 'Не удалось прочитать параметры туннеля',

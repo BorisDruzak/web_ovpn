@@ -25,6 +25,13 @@ import dns.rcode
 TIMEOUT = 3
 HTTP_BODY_LIMIT = 32 * 1024
 SIP_OPTIONS_WAIT = (0.5, 1.0, 1.5)
+PROBE_METHODS = {
+    "http": "HTTP", "https": "HTTPS", "dns": "DNS", "ldap": "LDAP", "smb": "SMB2",
+    "smb_mount": "SMB Mount", "zabbix_api": "Zabbix API", "postgresql": "PostgreSQL SSLRequest",
+    "openvpn_management": "OpenVPN Management", "openvpn_tunnel": "OpenVPN TUN",
+    "sip_options": "SIP OPTIONS (UDP)", "icmp": "ICMP", "vlan_transit": "ICMP · VLAN",
+    "wireguard_policy": "Маршрут · WireGuard",
+}
 
 
 def _http_path(path: object) -> str:
@@ -37,6 +44,16 @@ def _valid_http_hostname(value: object) -> bool:
     return isinstance(value, str) and len(value) <= 253 and all(
         re.fullmatch(r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?", label) for label in value.split(".")
     )
+
+
+def _matches_json_fields(document: dict, fields: dict) -> bool:
+    for path, expected in fields.items():
+        value = document
+        for key in path.split("."):
+            value = value.get(key) if isinstance(value, dict) else None
+        if type(value) is not type(expected) or value != expected:
+            return False
+    return True
 
 
 def _http(ip: str, port: int, spec: dict) -> dict:
@@ -55,7 +72,8 @@ def _http(ip: str, port: int, spec: dict) -> dict:
         for fields in (json_fields, json_unavailable):
             if fields is not None and (
                 not isinstance(fields, dict) or not fields
-                or any(not isinstance(key, str) or not key or not isinstance(value, str) for key, value in fields.items())
+                or any(not isinstance(key, str) or not all(key.split(".")) or type(value) not in (str, bool)
+                       for key, value in fields.items())
             ):
                 raise ValueError("invalid HTTP JSON response fields")
         content_type = content_type or "application/json"
@@ -116,9 +134,9 @@ def _http(ip: str, port: int, spec: dict) -> dict:
                 return {**observed, "state": "unknown", "reason": "http_invalid_json"}
             if not isinstance(document, dict):
                 return {**observed, "state": "unknown", "reason": "http_invalid_json"}
-            if json_unavailable and all(document.get(key) == value for key, value in json_unavailable.items()):
+            if json_unavailable and _matches_json_fields(document, json_unavailable):
                 return {**observed, "state": "unreachable", "reason": "http_reported_unavailable"}
-            matches = all(document.get(key) == value for key, value in json_fields.items())
+            matches = _matches_json_fields(document, json_fields)
         elif body_expected:
             payload = response.read(HTTP_BODY_LIMIT + 1)
             matches = payload.strip() == body_expected.encode()
@@ -819,7 +837,15 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
 
     def check(target):
         node, specs = target
-        if not isinstance(specs, list) or not specs or len(specs) > 4 or not all(isinstance(spec, dict) for spec in specs):
+        service = node["kind"] == "Сервис"
+        if (not isinstance(specs, list) or not 1 <= len(specs) <= 4
+                or any(not isinstance(spec, dict) or not isinstance(spec.get("type"), str)
+                       or spec["type"] not in PROBE_METHODS for spec in specs)):
+            node.setdefault("serviceChecks", []).append({
+                "state": "unknown", "reason": "probe_configuration", "source": "UI_VPN",
+                "method": "Настройки проверки", "checkedAt": datetime.now(timezone.utc).isoformat(),
+                **({"required": True} if service else {"supplemental": True}),
+            })
             return node, None
         skip_reason = ""
         if node["kind"] != "Сервис" or "probeTargetIP" in node:
@@ -828,20 +854,14 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 skip_reason = "probe_target_unconfirmed"
             elif any(spec.get("ip") != target_address for spec in specs):
                 skip_reason = "probe_target_mismatch"
-        methods = {"http": "HTTP", "https": "HTTPS", "dns": "DNS", "ldap": "LDAP", "smb": "SMB2",
-                   "smb_mount": "SMB Mount",
-                   "zabbix_api": "Zabbix API", "postgresql": "PostgreSQL SSLRequest",
-                   "openvpn_management": "OpenVPN Management", "openvpn_tunnel": "OpenVPN TUN",
-                   "sip_options": "SIP OPTIONS (UDP)", "icmp": "ICMP", "vlan_transit": "ICMP · VLAN",
-                   "wireguard_policy": "Маршрут · WireGuard"}
         checks = []
         primary = []
         management_observation = None
         identity_at = node.get("probeTargetIdentityAt") if node["kind"] == "Коммутатор" else None
         for spec in specs:
-            protocol = spec.get("type") if isinstance(spec.get("type"), str) else ""
-            method = methods.get(protocol, "")
-            supplemental = node["kind"] != "Сервис" or spec.get("supplemental") is True
+            protocol = spec["type"]
+            method = PROBE_METHODS[protocol]
+            supplemental = not service or spec.get("supplemental") is True
             component = not supplemental and spec.get("component") is True
             if node["kind"] != "Сервис":
                 method = "ICMP · LLDP + ARP" if identity_at else "ICMP адреса из инвентаря"
