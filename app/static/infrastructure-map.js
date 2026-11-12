@@ -1083,7 +1083,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         icmp_route_mismatch: 'Выбран другой маршрут UI_VPN, ICMP не отправлен',
         transport_error: 'Ошибка сетевого запроса', unexpected_response: 'Ответ не соответствует запросу',
         dns_no_answer: 'Нет записи запрошенного типа', dns_address_mismatch: 'Адреса не совпадают с ожидаемыми',
-        dns_unexpected_source: 'DNS-ответ пришёл не с адреса запроса',
+        dns_unexpected_source: 'DNS-ответ пришёл с другого адреса или порта',
+        dns_truncated: 'UDP-ответ DNS усечён',
         dns_route_unconfirmed: 'Маршрут UI_VPN не подтверждён, DNS-запрос не отправлен',
         dns_route_mismatch: 'Выбран другой маршрут UI_VPN, DNS-запрос не отправлен',
         http_content_type: 'Неожиданный тип ответа', http_body_limit: 'Ответ превышает лимит проверки',
@@ -1184,7 +1185,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const time = check.checkedAt ? ' · ' + formatTime(check.checkedAt) : '';
         const identity = check.identityCheckedAt ? ' · Адрес сверён ' + formatTime(check.identityCheckedAt) : '';
         const attempts = check.attempts ? ' · попыток: ' + check.attempts : '';
-        const dns = [check.dns?.rcode, check.dns?.transport, check.dns?.addresses?.join(', ')]
+        const responder = check.dns?.unexpectedResponder;
+        const dns = [check.dns?.rcode, check.dns?.transport, check.dns?.addresses?.join(', '),
+          responder && `Ответ от ${responder.address} · порт ${responder.port}`]
           .filter(Boolean).map(value => ' · ' + value).join('');
         const http = check.httpStatus ? ' · HTTP ' + check.httpStatus : '';
         const rtsp = check.rtspStatus ? ' · RTSP ' + check.rtspStatus : '';

@@ -18,9 +18,10 @@ import uuid
 import zlib
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from time import monotonic, sleep
+from time import monotonic, sleep, time
 
 import dns.exception
+import dns.flags
 import dns.message
 import dns.query
 import dns.rcode
@@ -244,6 +245,33 @@ def _dns_query(spec: dict) -> tuple[dns.message.QueryMessage, set[ipaddress.IPv4
     return dns.message.make_query(name, record), expected_ips
 
 
+def _explicit_dns_udp(query: dns.message.QueryMessage, ip: str, port: int,
+                      source: str | None) -> tuple[dns.message.Message | None, dict | None]:
+    family = socket.AF_INET6 if ":" in ip else socket.AF_INET
+    expiration = time() + TIMEOUT
+    unexpected = None
+    with socket.socket(family, socket.SOCK_DGRAM) as connection:
+        connection.setblocking(False)
+        if source is not None:
+            connection.bind((source, 0))
+        dns.query.send_udp(connection, query, (ip, port), expiration)
+        while time() < expiration:
+            try:
+                response, _, sender = dns.query.receive_udp(connection, expiration=expiration)
+            except dns.exception.Timeout:
+                break
+            except dns.exception.DNSException:
+                continue
+            if not query.is_response(response):
+                continue
+            address = str(ipaddress.ip_address(sender[0]))
+            if (address, sender[1]) == (ip, port):
+                return response, None
+            if response.question == query.question and unexpected is None:
+                unexpected = {"address": address, "port": sender[1]}
+    return None, unexpected
+
+
 def _dns(spec: dict) -> dict:
     transport = spec.get("transport", "auto")
     if transport not in ("auto", "udp", "tcp"):
@@ -273,9 +301,17 @@ def _dns(spec: dict) -> dict:
         if transport == "auto":
             response, used_tcp = dns.query.udp_with_fallback(query, ip, **options)
             diagnostic["transport"] = "TCP" if used_tcp else "UDP"
+        elif transport == "udp":
+            response, unexpected = _explicit_dns_udp(query, ip, port, options.get("source"))
+            if unexpected:
+                diagnostic["unexpectedResponder"] = unexpected
+                return {**result, "state": "unreachable", "reason": "dns_unexpected_source"}
+            if response is None:
+                return {**result, "reason": "timeout"}
+            if response.flags & dns.flags.TC:
+                return {**result, "reason": "dns_truncated"}
         else:
-            send = dns.query.tcp if transport == "tcp" else dns.query.udp
-            response = send(query, ip, **options)
+            response = dns.query.tcp(query, ip, **options)
         rcode = response.rcode()
         diagnostic["rcode"] = dns.rcode.to_text(rcode)
         if rcode in {dns.rcode.SERVFAIL, dns.rcode.NXDOMAIN}:

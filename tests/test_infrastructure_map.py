@@ -2,6 +2,8 @@ import json
 import re
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from test_context_api import make_client
 
 
@@ -837,32 +839,64 @@ def test_malformed_service_probe_config_cannot_leave_observer_green():
         assert public["serviceChecks"][0]["reason"] == "probe_configuration"
 
 
-def test_dns_probe_reports_tcp_and_unexpected_udp_source_separately(monkeypatch):
+@pytest.mark.parametrize("correct_reply", [False, True])
+def test_dns_probe_requires_udp_reply_from_the_queried_endpoint(monkeypatch, correct_reply):
     import dns.message
     import dns.rrset
+    import socket
+    from concurrent.futures import ThreadPoolExecutor
 
     from app import infrastructure_service_probes as probes
-    from app.infrastructure_map import _public_service_check
+    from app.infrastructure_map import _map_statuses, _public_node
 
-    ip = "192.0.2.53"
-    spec = {"type": "dns", "ip": ip, "port": 53, "name": "service.example.", "record": "A"}
+    ip = "127.0.0.1"
 
     def tcp(query, target, **kwargs):
-        assert target == ip and kwargs["port"] == 53
+        assert target == ip and kwargs["port"] == port
         response = dns.message.make_response(query)
         response.answer.append(dns.rrset.from_text("service.example.", 60, "IN", "A", "192.0.2.10"))
         return dns.message.from_wire(response.to_wire())
 
-    def udp(*args, **kwargs):
-        raise probes.dns.query.UnexpectedSource("unexpected address")
-
     monkeypatch.setattr(probes.dns.query, "tcp", tcp)
-    monkeypatch.setattr(probes.dns.query, "udp", udp)
+    monkeypatch.setattr(probes, "TIMEOUT", 0.5)
     node = {"id": "dns", "kind": "Сервис", "probeTargetIP": ip}
-    probes.apply_service_probes([node], {"dns": [{**spec, "transport": mode} for mode in ("tcp", "udp")]})
-    good, unknown = [_public_service_check(check, datetime.now(timezone.utc)) for check in node["serviceChecks"]]
+    with (socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as expected,
+          socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as unexpected,
+          ThreadPoolExecutor(max_workers=1) as executor):
+        expected.bind((ip, 0))
+        unexpected.bind((ip, 0))
+        expected.settimeout(2)
+        port = expected.getsockname()[1]
+        unexpected_port = unexpected.getsockname()[1]
+        spec = {"type": "dns", "ip": ip, "port": port, "name": "service.example.", "record": "A"}
+
+        def reply():
+            request, client = expected.recvfrom(4096)
+            query = dns.message.from_wire(request)
+            response = tcp(query, ip, port=port)
+            expected.sendto(b"invalid DNS", client)
+            unexpected.sendto(response.to_wire(), client)
+            if correct_reply:
+                expected.sendto(response.to_wire(), client)
+
+        exchange = executor.submit(reply)
+        probes.apply_service_probes([node], {"dns": [{**spec, "transport": mode} for mode in ("tcp", "udp")]})
+        exchange.result()
+
+    public = _public_node(node, datetime.now(timezone.utc))
+    _map_statuses({"dns": public}, [])
+    good, udp = public["serviceChecks"]
     assert (good["state"], good["dns"]["transport"]) == ("reachable", "TCP")
-    assert (unknown["state"], unknown["dns"]["transport"], unknown["reason"]) == ("unknown", "UDP", "dns_unexpected_source")
+    assert udp["dns"]["transport"] == "UDP"
+    if correct_reply:
+        assert udp["state"] == "reachable" and public["mapStatus"] == "ok"
+        assert "unexpectedResponder" not in udp["dns"]
+    else:
+        assert (udp["state"], udp["reason"], public["mapStatus"]) == (
+            "unreachable", "dns_unexpected_source", "warn",
+        )
+        assert udp["dns"]["unexpectedResponder"] == {"address": ip, "port": unexpected_port}
+        assert "addresses" not in udp["dns"]
 
 
 def test_routed_dns_binds_checked_source_and_skips_wrong_route(monkeypatch):
@@ -877,13 +911,13 @@ def test_routed_dns_binds_checked_source_and_skips_wrong_route(monkeypatch):
     monkeypatch.setattr(probes.subprocess, "check_output", lambda *args, **kwargs: json.dumps([route]).encode())
     calls = []
 
-    def query_udp(query, target, **kwargs):
-        calls.append((target, kwargs.get("source")))
+    def query_udp(query, target, port, source):
+        calls.append((target, source))
         response = dns.message.make_response(query)
         response.answer.append(dns.rrset.from_text("example.test.", 60, "IN", "A", "192.0.2.53"))
-        return dns.message.from_wire(response.to_wire())
+        return dns.message.from_wire(response.to_wire()), None
 
-    monkeypatch.setattr(probes.dns.query, "udp", query_udp)
+    monkeypatch.setattr(probes, "_explicit_dns_udp", query_udp, raising=False)
     spec = {"type": "dns", "ip": ip, "port": 53, "name": "example.test.", "record": "A",
             "transport": "udp", "route_via": gateway}
 

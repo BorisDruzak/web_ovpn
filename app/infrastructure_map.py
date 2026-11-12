@@ -598,8 +598,15 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         if diagnostic:
             result["dns"] = diagnostic
             if reason in ("dns_no_answer", "dns_address_mismatch", "dns_unexpected_source",
-                          "dns_route_unconfirmed", "dns_route_mismatch"):
+                          "dns_route_unconfirmed", "dns_route_mismatch", "dns_truncated"):
                 result["reason"] = reason
+            if (reason == "dns_unexpected_source" and result["state"] == "unreachable"
+                    and diagnostic.get("transport") == "UDP"
+                    and isinstance(responder := check["dns"].get("unexpectedResponder"), dict)):
+                address = _network_address(responder.get("address"))
+                responder_port = responder.get("port")
+                if address and "/" not in address and type(responder_port) is int and 1 <= responder_port <= 65535:
+                    diagnostic["unexpectedResponder"] = {"address": address, "port": responder_port}
     if check.get("method") == "OpenVPN Management":
         configured_port = check.get("configuredPort")
         sessions = check.get("sessionCount")
