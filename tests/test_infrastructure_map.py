@@ -3113,6 +3113,14 @@ def test_observed_fdb_resolves_ifindex_only_with_matching_live_port_collection()
         assert _read_downstream_fdb(conn, sources, scopes) == {"link": {
             "source": "core", "at": "2026-11-11T18:36:04Z", "macs": ["02:00:00:00:00:23"],
         }}
+        conn.execute("UPDATE switch_ports SET name='gigabitEthernet 1/0/23'")
+        alias_scope = {"link": ("192.0.2.1", {"interface": "Gi1/0/23"}, {})}
+        assert _read_downstream_fdb(conn, sources, alias_scope)["link"]["macs"] == list(macs)
+        conn.execute("""INSERT INTO switch_ports VALUES
+            (1, 'ifindex:49176', 5, 'up', 'Gi1/0/23', '2026-11-11T18:36:04Z', 'up')""")
+        assert _read_downstream_fdb(conn, sources, alias_scope) == {}
+        conn.execute("DELETE FROM switch_ports WHERE port_key='ifindex:49176'")
+        conn.execute("UPDATE switch_ports SET name='Ge23'")
         conn.executescript("""
             INSERT INTO network_sources VALUES (2, 1);
             INSERT INTO switch_ports VALUES (2, 'ifindex:7', 8, 'up', 'Ge7', '2026-11-11T18:36:04Z', 'up');

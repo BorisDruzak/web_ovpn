@@ -1505,7 +1505,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             remote_ports = index_port_states(nodes[asset].get("ports", []), now)
             local_label = port_label_key(local["interface"])
             remote_label = port_label_key(remote["interface"])
-            local_name = port_label_key(local_ports.get(local_label, {}).get("name", local_label))
+            upstream_port = local_ports.get(local_label, {}).get("name", local["interface"])
+            local_name = port_label_key(upstream_port)
             remote_name = port_label_key(remote_ports.get(remote_label, {}).get("name", remote_label))
             evidence = [row["at"] for row in physical.get("portEvidence", []) if row["confirmed"]
                         and row["source"] in {"LLDP UI_VPN", "LLDP · двустороннее"}
@@ -1548,7 +1549,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                         device["reachability"] = _host_observation(host, now)
                 devices.append(device)
             checked_at = min(datetime.fromisoformat(sample["at"]), max(map(datetime.fromisoformat, evidence)))
-            nodes[asset]["downstream"] = {"upstreamId": upstream, "port": local["interface"],
+            nodes[asset]["downstream"] = {"upstreamId": upstream, "port": upstream_port,
                                           "checkedAt": checked_at.isoformat(), "devices": devices}
 
     for a, b, confirmed, ports, observed in fdb_reports:
@@ -2186,15 +2187,26 @@ def _read_downstream_fdb(connection, sources: list[dict], configured: dict) -> d
         if len(eligible) != 1:
             continue
         source, = eligible
+        port_rows = connection.execute("""
+            SELECT port_key, name, collector_run_id FROM switch_ports
+            WHERE source_id = ? AND collector_run_id = (
+                SELECT max(collector_run_id) FROM switch_ports WHERE source_id = ?
+            )
+        """, (source["id"], source["id"]))
+        port_label = port_label_key(local["interface"])
+        candidates = [row for row in port_rows if row["name"] and port_label_key(row["name"]) == port_label]
+        if len(candidates) != 1:
+            continue
+        port, = candidates
         rows = list(connection.execute(f"""
             SELECT DISTINCT lower(f.mac) AS mac, p.port_key, p.last_seen_at
             FROM current_switch_fdb AS f
             JOIN switch_ports AS p ON {FDB_PORT_MATCH}
-            WHERE f.source_id = ? AND p.name = ? COLLATE NOCASE
+            WHERE f.source_id = ? AND p.port_key = ? AND p.collector_run_id = ?
               AND p.oper_status = 'up' AND p.admin_status IS NOT 'down'
               AND f.last_seen_at = p.last_seen_at AND lower(f.status) = 'learned'
             LIMIT 257
-        """, (source["id"], local["interface"])))
+        """, (source["id"], port["port_key"], port["collector_run_id"])))
         readings = {(row["port_key"], row["last_seen_at"]) for row in rows}
         if 1 <= len(rows) <= 256 and len(readings) == 1:
             samples[link_id] = {"source": source["name"], "at": rows[0]["last_seen_at"],
