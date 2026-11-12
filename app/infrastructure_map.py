@@ -75,6 +75,9 @@ CURRENT_PORT_PAIR_SOURCES = {
 }
 SHARED_LLDP_KIND = "Путь через общий порт"
 SHARED_LLDP_SOURCE = "LLDP · общий порт"
+LLDP_FIRMWARE_MAX_AGE = timedelta(minutes=10)
+FIRMWARE_VERSION = r"[0-9]{1,3}(?:\.[0-9]{1,3}){1,3}(?:[a-z][a-z0-9]{0,7})?"
+FIRMWARE_BUILD = r"[0-9]{1,12}"
 OBSERVER_CHECK_LABELS = {
     "watchdog_fresh": "Свежесть отчёта watchdog",
     "backup_snapshot_fresh": "Свежесть резервной копии",
@@ -968,6 +971,21 @@ def _public_downstream(row: object, ports: list[dict], stp_path: dict, now: date
             "deviceCount": len(ordered), "devices": ordered, **stp_evidence}
 
 
+def _public_firmware(value: object, now: datetime) -> dict:
+    if not isinstance(value, dict) or not observation_is_fresh(value.get("checkedAt"), now, max_age=LLDP_FIRMWARE_MAX_AGE):
+        return {}
+    product, version, build = (value.get(key) for key in ("product", "version", "build"))
+    observer, port = _text(value.get("observerId")), _text(value.get("observerPort"), 64)
+    if (product not in ("RouterOS", "SWT-1318P") or not observer or not port
+            or not isinstance(version, str) or not re.fullmatch(FIRMWARE_VERSION, version)):
+        return {}
+    if build is not None and (product != "SWT-1318P" or not isinstance(build, str)
+                              or not re.fullmatch(FIRMWARE_BUILD, build)):
+        return {}
+    return {"product": product, "version": version, "source": "LLDP", "checkedAt": _time(value["checkedAt"]).isoformat(),
+            "observerId": observer, "observerPort": port, **({"build": build} if build is not None else {})}
+
+
 def _public_node(row: dict, now: datetime) -> dict:
     sources = []
     for item in _rows(row.get("sources"), 12):
@@ -1079,6 +1097,7 @@ def _public_node(row: dict, now: datetime) -> dict:
                     stp_path.update(designatedPortName=designated_port, designatedPortCheckedAt=_time(designated_at).isoformat())
     downstream = (_public_downstream(row.get("downstream"), ports, stp_path, now)
                   if row.get("kind") == NETWORK_KINDS[0] else {})
+    firmware = _public_firmware(row.get("firmware"), now) if row.get("kind") in NETWORK_KINDS else {}
     return {
         **{key: _text(row.get(key)) for key in ("id", "name", "kind", "site", "origin", "pveHost")},
         "guest": row.get("guest") is True,
@@ -1100,6 +1119,7 @@ def _public_node(row: dict, now: datetime) -> dict:
         **({"stpRootPath": stp_path} if stp_path else {}),
         **({"stpRoot": stp_root} if stp_root else {}),
         **({"downstream": downstream} if downstream else {}),
+        **({"firmware": firmware} if firmware else {}),
         "ports": [port for port in ports if port["name"]],
         "serviceChecks": service_checks,
         "checks": [
@@ -1523,7 +1543,7 @@ def summarize_topology(graph: dict) -> dict:
 
 
 def _attachment_node(node: dict) -> dict:
-    return {key: node[key] for key in ("id", "name", "kind", "vmid", "mapStatus") if node.get(key) is not None}
+    return {key: node[key] for key in ("id", "name", "kind", "vmid", "mapStatus", "firmware") if node.get(key) is not None}
 
 
 def _guest_ipv4_observations(value: object, now: datetime) -> list[dict]:
@@ -2077,6 +2097,9 @@ def load_infrastructure_map(
                         if isinstance(enrollment, str) and GUEST_ENROLLMENT_ID.fullmatch(enrollment):
                             agent_enrollments[node["id"]] = enrollment
     for node_id, node in nodes.items():
+        observer = node.get("firmware", {}).get("observerId")
+        if observer and (observer == node_id or nodes.get(observer, {}).get("kind") != NETWORK_KINDS[0]):
+            node.pop("firmware")
         root = node.get("stpRoot", {})
         root_id = root.get("rootDeviceId")
         if root_id == node_id or nodes.get(root_id, {}).get("kind") not in NETWORK_KINDS[:2]:

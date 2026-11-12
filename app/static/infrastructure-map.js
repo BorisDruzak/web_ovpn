@@ -795,6 +795,14 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       .filter(([name, value]) => value && !items[name]
         && !(node.resources?.cpuRatio !== undefined && name === 'CPU по Proxmox')
         && !(node.resources?.memoryTotalBytes !== undefined && ['Память по Proxmox', 'Память (выделено)'].includes(name)));
+    if (node.firmware) {
+      const {product, version, build, source, checkedAt, observerId, observerPort} = node.firmware;
+      const observer = byId.get(observerId)?.name;
+      measurements.push(['Версия ПО', [
+        product + ' ' + version, build && 'сборка ' + build, source,
+        observer && observer + ' · ' + observerPort, formatTime(checkedAt),
+      ].filter(Boolean).join(' · ')]);
+    }
     if (node.guestNetwork) {
       const {configured, enabled, disabled} = node.guestNetwork;
       const unresolved = configured - enabled - disabled;

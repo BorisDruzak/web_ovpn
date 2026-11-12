@@ -14,7 +14,7 @@ import ssl
 import subprocess
 import sys
 import tempfile
-from collections import Counter
+from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -46,7 +46,7 @@ from .infrastructure_backup import backup_policy, backup_service_checks, read_pr
 from .infrastructure_map import (
     BACKUP_PROBE_METHOD, BACKUP_SERVICE_ID, GUEST_ENROLLMENT_ID, GUEST_IO_MAX_AGE,
     CLUSTER_HEALTH_METHODS, CLUSTER_KIND, INTERFACE_NAME, MAX_DOWNSTREAM_SWITCHES, MAX_ROUTER_NEIGHBORS,
-    MAX_SNAPSHOT_BYTES, NETWORK_KINDS, PORT_LINK_CHECK_MAX_AGE,
+    FIRMWARE_BUILD, FIRMWARE_VERSION, LLDP_FIRMWARE_MAX_AGE, MAX_SNAPSHOT_BYTES, NETWORK_KINDS, PORT_LINK_CHECK_MAX_AGE,
     PPPOE_INTERNET_METHOD, PPPOE_METHOD, PPPOE_SOURCE, PVE_DISK_DEVICE, PVE_STORAGE_ID, RECIPROCAL_MAC_SOURCE,
     RX_SILENCE_MAX_INTERVALS, RX_SILENCE_MAX_WINDOW, SERVICE_PROBE_MAX_AGE, SHARED_LLDP_KIND, SHARED_LLDP_SOURCE,
     STP_ROOT_PATH_MAX_AGE,
@@ -201,6 +201,16 @@ def _verified_arp_checks(mappings: dict, hosts: dict, now: datetime) -> dict:
         if probe and probe["state"] == "reachable" and datetime.fromisoformat(probe["checkedAt"]) >= arp_at:
             checks.setdefault(mac, []).append((ip, {**probe, "method": probe["method"] + " · ARP"}))
     return checks
+
+
+def _lldp_firmware(description: object) -> tuple[str, str, str | None] | None:
+    if not isinstance(description, str):
+        return None
+    if routeros := re.match(rf"MikroTik RouterOS ({FIRMWARE_VERSION})(?: |$)", description):
+        return "RouterOS", routeros[1], None
+    if swt := re.fullmatch(rf"SWT-1318P Software Version V({FIRMWARE_VERSION}) build ({FIRMWARE_BUILD})", description):
+        return "SWT-1318P", swt[1], swt[2]
+    return None
 
 
 def _reciprocal_lldp(network: dict, rows: list[dict], peers_by_port: dict, arp: dict, now: datetime):
@@ -1974,6 +1984,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             by_mac[mac] = max(by_mac.get(mac, stamp), stamp)
     lldp_port_states = {key: index_port_states(item.get("ports", []), now) for key, item in nodes.items()
                         if item["kind"] == NETWORK_KINDS[0]}
+    firmware_by_device = defaultdict(dict)
     for row in fresh_lldp:
         a = source_nodes.get(row.get("source"))
         name = str(row.get("system_name") or "").casefold()
@@ -2009,15 +2020,23 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                         alternate = (address, min(arp[1], router_macs[chassis_mac]))
                         item["properties"]["Сопоставление LLDP"] += " · текущий MAC подтверждён по ARP и MikroTik"
             observed_at = row["observed_at"]
+            live_port = lldp_port_states.get(a, {}).get(port_label_key(port))
+            current_chassis = (bool(live_port and live_port["state"] == "up")
+                               and (declared_devices_by_mac.get(chassis_mac) == {neighbor} or alternate is not None)
+                               and chassis_ports == {raw_port})
+            if current_chassis:
+                stamp = min(datetime.fromisoformat(observed_at), datetime.fromisoformat(live_port["checkedAt"]))
+                if alternate:
+                    stamp = min(stamp, alternate[1])
+                if (observation_is_fresh(stamp.isoformat(), now, max_age=LLDP_FIRMWARE_MAX_AGE)
+                        and (firmware := _lldp_firmware(row.get("system_description")))):
+                    readings = firmware_by_device[neighbor]
+                    if firmware not in readings or stamp > readings[firmware][0]:
+                        readings[firmware] = (stamp, a, live_port["name"])
             if shared and raw_port:
-                live_port = lldp_port_states.get(a, {}).get(port_label_key(port))
-                confirmed = (bool(live_port and live_port["state"] == "up")
-                             and (declared_devices_by_mac.get(chassis_mac) == {neighbor} or alternate is not None)
-                             and chassis_ports == {raw_port})
-                if confirmed:
-                    stamp = min(datetime.fromisoformat(observed_at), datetime.fromisoformat(live_port["checkedAt"]))
-                    observed_at = min(stamp, alternate[1]).isoformat() if alternate else stamp.isoformat()
-                edge(a, neighbor, SHARED_LLDP_KIND, SHARED_LLDP_SOURCE, confirmed,
+                if current_chassis:
+                    observed_at = stamp.isoformat()
+                edge(a, neighbor, SHARED_LLDP_KIND, SHARED_LLDP_SOURCE, current_chassis,
                      details=item["properties"].get("Сопоставление LLDP", "") if conflict else "",
                      ports=(port, ""), at=observed_at)
             else:
@@ -2059,6 +2078,13 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 observation = _host_observation(host_ips[address], now)
                 if observation:
                     item.setdefault("reachability", observation)
+
+    for device_id, readings in firmware_by_device.items():
+        if len(readings) == 1:
+            ((product, version, build), (stamp, observer, port)), = readings.items()
+            nodes[device_id]["firmware"] = {"product": product, "version": version, "checkedAt": stamp.isoformat(),
+                                            "observerId": observer, "observerPort": port,
+                                            **({"build": build} if build else {})}
 
     for a, b, port_a, port_b, at in _reciprocal_lldp(network, fresh_lldp, peers_by_port, arp_mappings, now):
         local, remote = source_nodes.get(a), source_nodes.get(b)

@@ -2717,7 +2717,7 @@ def test_shared_lldp_ports_publish_paths_and_require_live_port_and_unique_chassi
     at = now.isoformat()
     first, second, unexpected = (f"02:00:00:00:00:0{i}" for i in (1, 2, 3))
     context = {"devices": [{"id": "switch", "name": "switch", "kind": "switch"},
-                           {"id": "one", "name": "one", "kind": "router", "mac_addresses": [first]},
+                           {"id": "one", "name": "one", "kind": "switch", "mac_addresses": [first]},
                            {"id": "two", "name": "two", "kind": "router", "mac_addresses": [second]}],
                "links": [{"relation": "connected_to", "state": {"verified": False,
                           "observed": "lldp_neighbor_on_shared_or_intermediate_l2_path"},
@@ -2731,17 +2731,32 @@ def test_shared_lldp_ports_publish_paths_and_require_live_port_and_unique_chassi
     network = {"sources": [{"id": 1, "name": "switch", "driver": "snmp_switch",
                             "driver_options": {"intent_stable_id": "switch"}}], "ports": [port], "lldp": rows}
     path = tmp_path / "snapshot.json"
+    rows[0]["system_description"] = "SWT-1318P Software Version V1.2.3 build 210419"
+    rows[1]["system_description"] = "MikroTik RouterOS 7.19.6 (stable) cAPGi-5HaxD2HaxD"
 
-    def read(when=now):
+    def snapshot(when=now):
         graph = build_graph(context, network, {}, {}, {}, now)
         path.write_text(json.dumps(graph), encoding="utf-8")
-        return {e["b"]: e for e in load_infrastructure_map(path, when)["links"] if e["a"] == "switch"}
+        return load_infrastructure_map(path, when)
+
+    def read(when=now):
+        return {e["b"]: e for e in snapshot(when)["links"] if e["a"] == "switch"}
+
+    def firmware(when=now):
+        return {n["id"]: n["firmware"] for n in snapshot(when)["nodes"] if "firmware" in n}
 
     links = read()
     assert all(e["kind"] == "Путь через общий порт" for e in links.values())
     assert links["one"]["confirmed"] and not links["two"]["confirmed"]
     proof = next(p for p in links["one"]["portEvidence"] if p["confirmed"])
     assert (proof["a"], proof["b"], proof["portStates"]["a"]["state"]) == ("gigabitEthernet 1/0/48", "", "up")
+    provenance = {"checkedAt": at, "observerId": "switch", "observerPort": "gigabitEthernet 1/0/48", "source": "LLDP"}
+    swt_firmware = {**provenance, "product": "SWT-1318P", "version": "1.2.3", "build": "210419"}
+    assert firmware() == {"one": swt_firmware}
+    assert firmware(now + timedelta(minutes=11)) == {}
+    rows.append({**rows[0], "system_description": "SWT-1318P Software Version V1.2.4 build 210420"})
+    assert firmware() == {}
+    rows.pop()
     assert not read(now + timedelta(hours=1))["one"]["confirmed"]
     address = "192.0.2.22"
     rows[1]["management_addresses"] = [address]
@@ -2750,8 +2765,10 @@ def test_shared_lldp_ports_publish_paths_and_require_live_port_and_unique_chassi
     neighbors = [{"identity": "two", "address": address, "mac": unexpected, "last_seen_at": at}]
     network["router_neighbors"] = neighbors
     assert read()["two"]["confirmed"]
+    assert firmware()["two"] == {**provenance, "product": "RouterOS", "version": "7.19.6"}
     neighbors[0]["last_seen_at"] = (now - timedelta(hours=1)).isoformat()
     assert not read()["two"]["confirmed"]
+    assert "two" not in firmware()
     neighbors[0]["last_seen_at"] = at
     neighbors.append({**neighbors[0], "mac": first})
     assert not read()["two"]["confirmed"]
@@ -2761,11 +2778,17 @@ def test_shared_lldp_ports_publish_paths_and_require_live_port_and_unique_chassi
     context["devices"][1].pop("management_ip")
     rows.append({**rows[0], "local_port_key": "ifindex:47"})
     assert not read()["one"]["confirmed"]
+    assert "one" not in firmware()
     rows.pop()
     rows.pop()
     assert read()["one"]["kind"] == "Путь через общий порт"
     port["oper_status"] = "down"
     assert not read()["one"]["confirmed"]
+    assert firmware() == {}
+    port["oper_status"] = "up"
+    context["links"].clear()
+    assert read()["one"]["kind"] == "Сетевое соединение"
+    assert firmware() == {"one": swt_firmware}
 
 
 def test_fdb_ports_require_fresh_unambiguous_device_identity(tmp_path):
