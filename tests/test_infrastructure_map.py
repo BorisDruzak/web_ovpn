@@ -2433,6 +2433,7 @@ def test_snr_transceiver_inventory_uses_the_current_interface_identity(tmp_path)
     modules = asyncio.run(read_snr_transceivers(Transport()))
     assert set(modules) == {5025, 5026}
     assert modules[5026]["media"] == "10GBASE-SR"
+    modules[5025]["opticalPower"] = {"state": "unavailable", "rxDbm": 8.16}
     context = {"devices": [{"id": "switch", "name": "Switch", "kind": "switch", "management_ip": "192.0.2.1"}]}
     network = {
         "sources": [{"name": "snr", "host": "192.0.2.1", "driver": "snmp_switch", "enabled": True}],
@@ -2445,10 +2446,41 @@ def test_snr_transceiver_inventory_uses_the_current_interface_identity(tmp_path)
     path.write_text(json.dumps(build_graph(context, network, {}, {}, {}, now)), encoding="utf-8")
     node, = load_infrastructure_map(path, now)["nodes"]
     first, second = node["ports"]
-    assert first["transceiver"] == {"checkedAt": stamp, "vendor": "OEM", "formFactor": "SFP+", "nominalBps": 10300000000}
+    assert first["transceiver"] == {"checkedAt": stamp, "vendor": "OEM", "formFactor": "SFP+",
+                                    "nominalBps": 10300000000, "opticalPower": {"state": "unavailable"}}
     assert "transceiver" not in second
     expired, = load_infrastructure_map(path, now + timedelta(minutes=6))["nodes"]
     assert "transceiver" not in expired["ports"][0]
+
+
+def test_snr_transceiver_power_requires_ordered_alarm_limits():
+    import asyncio
+
+    from netctl.snmp.interfaces import read_snr_transceiver_power
+    from netctl.snmp.models import CapabilityResult, SnmpVarBind
+    from netctl.snmp.outcomes import SnmpOutcome
+
+    root = (1, 3, 6, 1, 4, 1, 57206, 7, 100, 30, 1, 1)
+
+    class Transport:
+        async def walk(self, oid, *, capability):
+            assert oid == root
+            readings = {
+                5025: (5025, b"8.16", b"8.16", b"8.16", b"8.16", b"8.16", b"8.16"),
+                5026: (5026, b"-17.25", b"0.5", b"-16", b"-2.75", b"0.5", b"-8"),
+                5027: (5027, b"-", b"0.5", b"-16", b"-2.75", b"0.5", b"-8"),
+                5028: (5030, b"-17", b"0.5", b"-16", b"-2.75", b"0.5", b"-8"),
+            }
+            rows = tuple(SnmpVarBind((*root, column, index), "integer" if column == 1 else "octet_string", value)
+                         for index, sample in readings.items()
+                         for column, value in zip((1, 17, 18, 19, 22, 23, 24), sample))
+            return CapabilityResult(capability, SnmpOutcome.SUCCESS_WITH_ROWS, rows)
+
+    assert asyncio.run(read_snr_transceiver_power(Transport(), {5025, 5026, 5027, 5028})) == {
+        5025: {"state": "unavailable"},
+        5026: {"state": "available", "rxDbm": -17.25, "txDbm": -2.75},
+        5027: {"state": "available", "txDbm": -2.75},
+    }
 
 
 def test_stp_designated_ports_match_the_local_bridge_and_reject_ambiguous_ids():

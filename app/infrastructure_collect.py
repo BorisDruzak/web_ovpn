@@ -31,7 +31,7 @@ from netctl.drivers import legacy_driver_for
 from netctl.snmp.fdb import read_learned_fdb_port
 from netctl.snmp.interfaces import (
     read_bridge_stp_ports, read_interface_link, read_interface_rx_error_counters,
-    read_snr_transceivers, read_switch_link_modes,
+    read_snr_transceiver_power, read_snr_transceivers, read_switch_link_modes,
 )
 from netctl.snmp.lacp import read_lacp_members
 from netctl.snmp.stp import read_stp_designated_ports, read_stp_root_path
@@ -357,6 +357,8 @@ async def _collect_switch_port_diagnostics(network: dict, now: datetime) -> tupl
                     modes = {"ports": ports, "checkedAt": datetime.now(timezone.utc).isoformat()}
                 if snr and (ports := await read_snr_transceivers(transport)):
                     modules = {"ports": ports, "checkedAt": datetime.now(timezone.utc).isoformat()}
+                    for index, power in (await read_snr_transceiver_power(transport, set(ports))).items():
+                        ports[index]["opticalPower"] = power
                 if not snr and (ports := await read_bridge_stp_ports(transport)):
                     stp = {"ports": ports, "checkedAt": datetime.now(timezone.utc).isoformat()}
         except (TimeoutError, OSError, ValueError):

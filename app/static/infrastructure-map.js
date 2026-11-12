@@ -1183,10 +1183,18 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         if (selectedPort && port.stpPort) row.append(make('small', formatStpPort(port.stpPort)));
         if (selectedPort && port.endpointMac) row.append(make('small', formatEndpointMac(port.endpointMac)));
         if (selectedPort && port.transceiver) {
-          const {formFactor, vendor, media, nominalBps, checkedAt} = port.transceiver;
+          const {formFactor, vendor, media, nominalBps, checkedAt, opticalPower} = port.transceiver;
           const rate = nominalBps && 'номинал ' + (nominalBps / 1e9).toLocaleString('ru-RU') + ' Гбит/с';
           row.append(make('small', ['Модуль ' + formFactor, vendor, media, rate, 'SNMP · ' + formatTime(checkedAt)]
             .filter(Boolean).join(' · ')));
+          if (opticalPower?.state === 'unavailable') {
+            row.append(make('small', 'DDM · нет достоверных показаний мощности'));
+          } else if (opticalPower?.state === 'available') {
+            const power = [['RX', opticalPower.rxDbm], ['TX', opticalPower.txDbm]]
+              .filter(([, value]) => value !== undefined)
+              .map(([direction, value]) => direction + ' ' + value.toLocaleString('ru-RU') + ' дБм');
+            row.append(make('small', ['DDM', ...power].join(' · ')));
+          }
         }
         if (selectedPort && node.kind === 'Коммутатор' && port.state === 'up') {
           const learned = port.fdbLearned;

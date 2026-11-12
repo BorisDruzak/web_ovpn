@@ -284,6 +284,14 @@ def _public_port(row: dict, now: datetime) -> dict:
             nominal = module.get("nominalBps")
             if type(nominal) is int and 0 < nominal <= 10**12:
                 result["transceiver"]["nominalBps"] = nominal
+            power = module.get("opticalPower")
+            if isinstance(power, dict) and power.get("state") in ("available", "unavailable"):
+                readings = {key: value for key in ("rxDbm", "txDbm")
+                            if (value := _number(power.get(key))) is not None and -100 <= value <= 30}
+                if power["state"] == "available" and readings:
+                    result["transceiver"]["opticalPower"] = {"state": "available", **readings}
+                elif power["state"] == "unavailable":
+                    result["transceiver"]["opticalPower"] = {"state": "unavailable"}
     mode = row.get("linkMode")
     if (result["state"] == "up" and isinstance(mode, dict)
             and observation_is_fresh(mode.get("checkedAt"), now, max_age=PORT_LINK_CHECK_MAX_AGE)):
@@ -1736,7 +1744,8 @@ def _physical_attachments(nodes: dict, links: list[dict], host_ids: list[str]) -
                 if port_states := report.get("portStates"):
                     reading["portStates"] = {
                         sides[side]: {key: state[key] for key in ("name", "state", "speedBps", "checkedAt",
-                                                                "stale", "source", "configuredLabel", "linkMode", "rxSilence")
+                                                                "stale", "source", "configuredLabel", "linkMode", "rxSilence",
+                                                                "transceiver")
                                       if key in state}
                         for side, state in port_states.items()
                     }

@@ -34,6 +34,7 @@ _INTERFACE_COLUMNS = (
     IF_ALIAS,
 )
 _SNR_MODULE_ENTRY = (1, 3, 6, 1, 4, 1, 57206, 7, 100, 30, 3, 1)
+_SNR_DDM_ENTRY = (1, 3, 6, 1, 4, 1, 57206, 7, 100, 30, 1, 1)
 _SNR_SPEED_DUPLEX = (1, 3, 6, 1, 4, 1, 57206, 7, 100, 3, 2, 1, 14)
 _DOT3_STATS_DUPLEX = (1, 3, 6, 1, 2, 1, 10, 7, 2, 1, 19)
 _DOT3_STATS_ENTRY = _DOT3_STATS_DUPLEX[:-1]
@@ -148,6 +149,50 @@ async def read_snr_transceivers(transport) -> dict[int, dict]:
             module["nominalBps"] = int(rate[1]) * 1_000_000
         modules[index] = module
     return modules
+
+
+async def read_snr_transceiver_power(transport, indexes: set[int]) -> dict[int, dict]:
+    sample = await transport.walk(_SNR_DDM_ENTRY, capability="snr_transceiver_power")
+    if sample.outcome is not SnmpOutcome.SUCCESS_WITH_ROWS:
+        return {}
+    columns = (1, 17, 18, 19, 22, 23, 24)
+    readings: dict[int, dict[int, SnmpVarBind]] = {}
+    for row in sample.rows:
+        suffix = row.oid[len(_SNR_DDM_ENTRY):]
+        if row.oid[:len(_SNR_DDM_ENTRY)] != _SNR_DDM_ENTRY or len(suffix) != 2:
+            return {}
+        column, index = suffix
+        if index in indexes and column in columns:
+            fields = readings.setdefault(index, {})
+            if column in fields:
+                return {}
+            fields[column] = row
+
+    def dbm(row):
+        if row is None:
+            return None
+        try:
+            value = _text(row, "DDM power").strip()
+        except ValueError:
+            return None
+        if not re.fullmatch(r"[+-]?[0-9]{1,3}(?:\.[0-9]{1,3})?", value):
+            return None
+        power = float(value)
+        return power if -100 <= power <= 30 else None
+
+    power = {}
+    for index, fields in readings.items():
+        identity = fields.get(1)
+        if (identity is None or identity.value_type != "integer" or identity.value != index
+                or not (17 in fields or 22 in fields)):
+            continue
+        values = {}
+        for name, actual, high_alarm, low_alarm in (("rxDbm", 17, 18, 19), ("txDbm", 22, 23, 24)):
+            value, high, low = (dbm(fields.get(key)) for key in (actual, high_alarm, low_alarm))
+            if value is not None and low is not None and high is not None and low < high:
+                values[name] = value
+        power[index] = {"state": "available" if values else "unavailable", **values}
+    return power
 
 
 async def _interface_scalar(transport, column, if_index):
