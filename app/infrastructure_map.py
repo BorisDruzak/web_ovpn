@@ -1180,6 +1180,93 @@ def summarize_topology(graph: dict) -> dict:
                                         "pending": [pending[key] for key in sorted(pending)[:64]]}}
 
 
+def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
+    nodes = {node["id"]: node for node in graph["nodes"]}
+    anchor = nodes.get(node_id)
+
+    def describe(node):
+        return {key: node[key] for key in ("id", "name", "kind", "vmid", "mapStatus") if node.get(key) is not None}
+
+    guest_ids = set()
+    if anchor and anchor["guest"]:
+        guest_ids.add(node_id)
+    elif anchor and anchor["kind"] == "Сервис":
+        guest_ids.update(edge["a"] for edge in graph["links"] if edge["b"] == node_id
+                         and edge["confirmed"] and edge["kind"] in {"Размещение", "Цель проверки"}
+                         and nodes[edge["a"]]["guest"])
+
+    placements = defaultdict(list)
+    physical = defaultdict(list)
+    for edge in graph["links"]:
+        if not edge["confirmed"]:
+            continue
+        a, b = edge["a"], edge["b"]
+        if edge["kind"] == "Размещение ВМ" and b in guest_ids and nodes[a]["kind"] == "Гипервизор":
+            placements[b].append(edge)
+        elif edge["kind"] == "Сетевое соединение":
+            if nodes[a]["kind"] == "Гипервизор" and nodes[b]["kind"] == NETWORK_KINDS[0]:
+                host_side, switch_side = "a", "b"
+            elif nodes[b]["kind"] == "Гипервизор" and nodes[a]["kind"] == NETWORK_KINDS[0]:
+                host_side, switch_side = "b", "a"
+            else:
+                continue
+            for report in edge["portEvidence"]:
+                if report.get("pairEvidence") == "current" and report["confirmed"]:
+                    host_port, switch_port = report[host_side], report[switch_side]
+                    physical[edge[host_side], edge[switch_side], port_label_key(switch_port)].append({
+                        "hostPort": host_port, "switchPort": switch_port,
+                        "source": report["source"], "checkedAt": report["at"],
+                    })
+
+    guests = []
+    for guest_id in sorted(guest_ids)[:12]:
+        candidates = placements[guest_id]
+        guest = {"guest": describe(nodes[guest_id]), "hypervisor": None, "interfaces": [],
+                 "placement": "ambiguous" if len(candidates) > 1 else "unconfirmed"}
+        guests.append(guest)
+        if len(candidates) != 1:
+            continue
+        edge, = candidates
+        host_id = edge["a"]
+        guest.update(hypervisor=describe(nodes[host_id]), placement="confirmed")
+        for report in edge["portEvidence"]:
+            virtual = report.get("virtual")
+            if not report["confirmed"] or not virtual or not report["b"]:
+                continue
+            interface = {"guestPort": report["b"], "bridge": report["a"], "checkedAt": report["at"],
+                         "bridgeActive": virtual["bridgeActive"], "linkDisabled": virtual["linkDisabled"],
+                         "uplinks": virtual["uplinks"], "switchObservations": []}
+            if "vlan" in report:
+                interface["vlan"] = report["vlan"]
+            guest["interfaces"].append(interface)
+            matches = [("guest_mac", row) for row in virtual["switchPorts"]] if not virtual["linkDisabled"] else []
+            uplink = virtual.get("switchUplink")
+            if not matches and uplink:
+                configured = virtual["linkDisabled"] or virtual["bridgeActive"] is False or uplink.get("configuredOnly")
+                matches = [("configured_bridge" if configured else "bridge_uplink", uplink)]
+            for basis, match in matches:
+                if not match["port"]:
+                    continue
+                switch_id = match["id"]
+                observation = {"basis": basis, "switch": describe(nodes[switch_id]), "switchPort": match["port"],
+                               "checkedAt": match["at"]}
+                if match.get("vlan") is not None:
+                    observation["vlan"] = match["vlan"]
+                if match.get("viaMacTable"):
+                    observation["viaMacTable"] = True
+                if basis != "configured_bridge" and virtual["bridgeActive"] is True:
+                    pairs = physical[host_id, switch_id, port_label_key(match["port"])]
+                    uplinks = {port_label_key(name) for name in virtual["uplinks"]}
+                    pairs = [pair for pair in pairs if port_label_key(pair["hostPort"]) in uplinks]
+                    if len({port_label_key(pair["hostPort"]) for pair in pairs}) == 1:
+                        observation["physicalPair"] = max(pairs, key=lambda pair: pair["checkedAt"])
+                interface["switchObservations"].append(observation)
+
+    metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
+    return {**metadata, "attachment": {"node": describe(anchor) if anchor else None,
+                                       "guestTotal": len(guest_ids), "guests": guests}}
+
+
 def summarize_services(graph: dict) -> dict:
     nodes = {node["id"]: node for node in graph["nodes"]}
     hosts = {}

@@ -3980,6 +3980,64 @@ def test_infrastructure_map_serves_only_public_snapshot(tmp_path, monkeypatch):
     assert response.headers["cache-control"] == "no-store"
 
 
+def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path, monkeypatch):
+    path = tmp_path / "infrastructure.json"
+    monkeypatch.setenv("INFRASTRUCTURE_MAP_SNAPSHOT_PATH", str(path))
+    stamp = datetime.now(timezone.utc).isoformat()
+    raw = {"schema": 1, "snapshotAt": stamp, "nodes": [
+        {"id": key, "name": key, "kind": kind, **extra} for key, kind, extra in (
+            ("directum", "Сервис", {}),
+            ("vm", "Виртуальная машина", {"guest": True, "vmid": 103}),
+            ("pve", "Гипервизор", {}),
+            ("snr", "Коммутатор", {}),
+        )],
+        "links": [
+            {"a": "vm", "b": "directum", "kind": "Цель проверки", "confirmed": True},
+            {"a": "pve", "b": "vm", "kind": "Размещение ВМ", "source": "Proxmox", "confirmed": True,
+             "observedAt": stamp, "portEvidence": [{"a": "vmbr1", "b": "net0", "source": "Proxmox · конфигурация ВМ",
+                 "confirmed": True, "at": stamp, "virtual": {"bridgeActive": True, "uplinks": ["ens7"],
+                     "switchPorts": [{"id": "snr", "port": "xe3", "at": stamp, "vlan": 1}]}}]},
+            {"a": "snr", "b": "pve", "kind": "Сетевое соединение", "confirmed": True, "portEvidence": [
+                {"a": "xe3", "b": "ens7", "source": "netctl FDB + Proxmox", "confirmed": True, "at": stamp},
+                {"a": "ge12", "b": "eno1", "source": "netctl FDB + Proxmox", "confirmed": True, "at": stamp},
+            ]},
+        ]}
+    client, headers, _ = make_client(tmp_path, monkeypatch)
+    url = "/api/v1/network/infrastructure?view=attachment"
+
+    def read():
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        response = client.get(url + "&node_id=directum", headers=headers)
+        assert response.status_code == 200 and response.headers["cache-control"] == "no-store"
+        report = response.json()["infrastructure"]
+        assert "nodes" not in report and "links" not in report
+        return report["attachment"]
+
+    report = read()
+    assert report["node"]["id"] == "directum"
+    guest, = report["guests"]
+    assert guest["guest"]["vmid"] == 103 and guest["hypervisor"]["id"] == "pve"
+    interface, = guest["interfaces"]
+    assert (interface["guestPort"], interface["bridge"]) == ("net0", "vmbr1")
+    match, = interface["switchObservations"]
+    assert match["basis"] == "guest_mac" and match["switchPort"] == "xe3"
+    assert match["physicalPair"] == {"hostPort": "ens7", "switchPort": "xe3",
+                                      "source": "netctl FDB + Proxmox", "checkedAt": stamp}
+    raw["links"][1]["portEvidence"][0]["virtual"]["uplinks"] = ["eno1"]
+    match, = read()["guests"][0]["interfaces"][0]["switchObservations"]
+    assert "physicalPair" not in match
+    raw["links"][1]["portEvidence"][0]["virtual"]["uplinks"] = ["ens7"]
+    raw["links"][2]["portEvidence"][0]["source"] = "GitHub"
+    match, = read()["guests"][0]["interfaces"][0]["switchObservations"]
+    assert match["basis"] == "guest_mac" and "physicalPair" not in match
+    raw["links"][1]["portEvidence"][0]["virtual"]["linkDisabled"] = True
+    assert read()["guests"][0]["interfaces"][0]["switchObservations"] == []
+    raw["links"][1]["confirmed"] = False
+    guest, = read()["guests"]
+    assert guest["placement"] == "unconfirmed" and guest["interfaces"] == []
+    assert client.get(url, headers=headers).status_code == 422
+
+
 def test_service_audit_shares_map_status_and_reports_required_check_gaps(tmp_path, monkeypatch):
     path = tmp_path / "infrastructure.json"
     monkeypatch.setenv("INFRASTRUCTURE_MAP_SNAPSHOT_PATH", str(path))
