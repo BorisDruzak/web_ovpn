@@ -688,7 +688,8 @@ def test_service_distinguishes_partial_failure_and_unconfirmed_http_responses(mo
             timeout = {**base, "path": "/timeout", "body": "Healthy"}
             specs["/incomplete"] = [failed, timeout]
             specs["/timeout"] = [timeout]
-            specs["/named"] = [{**base, "path": "/named", "body": "Healthy", "http_host": "directum.example"}]
+            specs["/named"] = [{**base, "path": "/named", "body": "Healthy", "http_host": "directum.example",
+                               "report_target": True}]
             specs["/bad-host"] = [{**specs["/named"][0], "http_host": "directum.example\r\nX-Injected: value"}]
             apply_service_probes(nodes, specs)
         finally:
@@ -710,8 +711,11 @@ def test_service_distinguishes_partial_failure_and_unconfirmed_http_responses(mo
     ]
     assert [node["status"] for node in public.values()] == [node["mapStatus"] for node in public.values()]
     assert public["/named"]["serviceChecks"][0]["httpHost"] == "directum.example"
+    assert public["/named"]["serviceChecks"][0]["target"] == "127.0.0.1"
+    assert public["/healthy"]["serviceChecks"][0]["target"] == ""
     assert public["/bad-host"]["serviceChecks"][0]["reason"] == "http_configuration"
     assert "httpHost" not in public["/bad-host"]["serviceChecks"][0]
+    assert public["/bad-host"]["serviceChecks"][0]["target"] == ""
     assert public["/timeout"]["serviceChecks"][0]["reason"] == "timeout"
     assert public["/primary-down"]["serviceChecks"][0]["component"] is True
     assert public["/partial"]["serviceChecks"][1]["required"] is True

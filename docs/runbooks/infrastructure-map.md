@@ -190,6 +190,8 @@
 
 Для HTTP параметр `http_host` задаёт имя в заголовке Host. Соединение устанавливается с настроенным `ip`. Имя видно в карточке и в `serviceChecks[].httpHost`. Для Directum используйте имя клиента во всех трёх HTTP-проверках и добавьте обязательную DNS-проверку с `component: true` через внутренний резолвер. Набор `expected_addresses` должен содержать IP из HTTP-проверок. DNS-проверка использует то же имя, записанное в абсолютной форме с точкой в конце.
 
+Для HTTP и HTTPS параметр `report_target: true` публикует IP соединения в `serviceChecks[].target`. У трёх HTTP-проверок Directum этот параметр включён, чтобы связать адрес сайта с наблюдаемым адаптером ВМ 103. DNS-проверка показывает адрес своего резолвера отдельно.
+
 Для клиентского API Directum задайте `json_fields` как `{"ProductName":"Directum RX","PlatformName":"Sungero","MaintenanceModeState.IsEnabled":false,"MaintenanceModeState.IsSafeModeEnabled":false}` и `json_unavailable` как `{"ProductName":"Directum RX","PlatformName":"Sungero","MaintenanceModeState.IsEnabled":true}`.
 
 Для службы, привязанной к серверу из сетевого контекста, задайте в `asset_services` запись по ID службы с полями `asset` и `label`. Адрес проверки должен совпадать с `management_ip` этого сервера. HTTPS по умолчанию проверяет системную цепочку доверия. Для сервера с самоподписанным сертификатом можно указать сверенный отпечаток `tls_sha256` из 64 шестнадцатеричных символов. При смене сертификата проверьте новый отпечаток перед обновлением привязки. Доступность веб-панели PBS и состояние резервных копий проверяются независимо.

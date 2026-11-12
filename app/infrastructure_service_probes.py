@@ -1459,6 +1459,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                     protocol in {"icmp", "vlan_transit", "sip_options", "ipmi_lan", "rtsp_options", "ssh_identification", "ftp_features",
                                  "zabbix_api", "postgresql", "dns", "smb", "tls_certificate"}
                     or protocol in DEPENDENCY_PROTOCOLS or "probeTargetIP" in node
+                    or (protocol in {"http", "https"} and spec.get("report_target") is True
+                        and details.get("reason") != "http_configuration")
                 ) else None,
                 "checkedAt": datetime.now(timezone.utc).isoformat(),
             }
