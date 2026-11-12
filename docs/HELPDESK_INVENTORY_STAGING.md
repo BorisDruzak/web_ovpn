@@ -70,10 +70,34 @@ The inventory card shows saved candidates, their exact evidence and the
 existing confirm/reject workflow. Its server endpoint still checks current
 card revision and rejects conflicting links.
 
-Open **Установить Endpoint Agent** from the PC card. For Windows, the action
-opens the Enrollment console at the configured HTTPS Endpoint origin. Use
-the existing verified Setup package that embeds the MSI. The handoff carries
-no enrollment credentials and the browser sends no remote command.
+Open **Установить Endpoint Agent** from the PC card. For Windows staging,
+the page offers the exact signed Setup release and a private assignment
+download. Prepare the compatible signed Setup/MSI pair and register the
+release in the staging Endpoint console before setting
+`ENDPOINT_PLATFORM_WINDOWS_INVENTORY_SETUP_RELEASE` to its release UUID.
+The panel requires the fixed staging Endpoint origin and an installation
+service principal with `enrollment.installation-assignments.issue` and
+`enrollment.installation-receipts.read`. Issuance and lookup must use the
+same principal. The regular enrollment-console link remains available in
+environments without a configured Windows inventory release.
+The exact release download requires Endpoint console administrator access.
+Preparing an assignment requires both `workstations:apply` and
+`inventory:write` in the panel.
+
+On the selected Windows PC, run the signed Setup's read-only
+`--inventory-fingerprint` mode, then submit its fingerprint from that
+inventory card with the operator confirmation. The panel checks the exact
+card revision, reserves the request and issues the installation assignment.
+An exact retry by its original operator returns the same assignment and
+expiration. The panel polls an uncertain issue and permits a new request
+after expiry is established. Conflicts require review. Keep the panel
+application secret stable while assignments are open so it can reconstruct
+their IDs. The private download contains the assignment ID and fingerprint.
+Place the downloaded file in an administrator-controlled directory with a protected
+SYSTEM/Administrators-only ACL, then invoke the same signed Setup with
+`--inventory-assignment-file <absolute-local-path>`. The native Setup and
+Endpoint campaign remain responsible for approval and installation. The
+panel waits for the verified receipt before confirming the binding.
 
 For ALT, the page offers **Подготовить план установки** when the controller
 publishes `software.endpoint_agent` and the PC has one ready, unambiguous
@@ -147,5 +171,5 @@ for the probe. The assignment must still cover the native coordinator's
 enrollment requires native recovery. The role cleans up its private
 temporary directory on exit.
 
-The Windows Setup handoff and integrated staging deployment remain
-pending.
+The signed Windows Setup/MSI build, exact release registration and
+integrated staging verification are deployment gates.

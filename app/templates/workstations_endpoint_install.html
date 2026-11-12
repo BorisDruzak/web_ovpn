@@ -6,6 +6,35 @@
   {% if asset.inventory_number and asset.custom_name %}<p>Инв. № {{ asset.inventory_number }}</p>{% endif %}
   {% if state == 'linked' %}
     <p>Агент уже привязан. Текущее состояние доступно в карточке ПК.</p>
+  {% elif state == 'windows_inventory_setup' %}
+    <p><a class="button" href="{{ setup_url }}">Скачать подписанный EndpointAgentSetup</a></p>
+    {% set assignment_state = windows_assignment.state if windows_assignment else 'none' %}
+    {% set states = {'issuance_pending': 'Выдача назначения не подтверждена. Можно повторить исходный запрос.',
+       'waiting_registration': 'Назначение выдано. Ожидается регистрация агента.',
+       'waiting_connection': 'Агент зарегистрирован. Ожидается подтверждение подключения.',
+       'expired': 'Срок назначения истёк. Перед новой установкой проверьте состояние агента на ПК.',
+       'conflict': 'Обнаружен конфликт привязки. Требуется проверка оператором.'} %}
+    {% if windows_assignment and windows_assignment.receipt_unavailable %}
+      <p>Текущее состояние Endpoint временно неизвестно.</p>
+    {% elif assignment_state in states %}<p>{{ states[assignment_state] }}</p>{% endif %}
+    {% if capabilities.apply and windows_assignment_allowed and (assignment_state in ('none', 'expired') or
+        (windows_assignment.request_id and assignment_state in ('issuance_pending', 'waiting_registration'))) %}
+      <ol>
+        <li>На выбранном ПК запустите проверенный Setup от имени администратора с параметром <code>--inventory-fingerprint</code>, перенаправив вывод в канал вывода вызывающего процесса.</li>
+        <li>Вставьте значение <code>hardware_fingerprint</code> и скачайте файл назначения.</li>
+        <li>На выбранном ПК сохраните файл в закрытый локальный каталог администратора. Назначьте владельцем SYSTEM или встроенную группу «Администраторы» и оставьте доступ только этим двум субъектам. Запустите тот же Setup с параметром <code>--inventory-assignment-file</code> и абсолютным путём к файлу. После попытки удалите файл.</li>
+      </ol>
+      <form method="post" data-windows-assignment="{{ asset.id }}" data-asset-revision="{{ asset.manual_revision }}"
+            data-request-id="{{ windows_assignment.request_id if assignment_state != 'expired' and windows_assignment else '' }}">
+        <label for="hardware-fingerprint">Отпечаток выбранного ПК</label>
+        <input id="hardware-fingerprint" data-hardware-fingerprint required maxlength="71" autocomplete="off" spellcheck="false"
+               pattern="sha256:[a-f0-9]{64}">
+        <label><input type="checkbox" data-confirm-inventory-pc required> Подтверждаю, что получил отпечаток на этом ПК</label>
+        <button class="button primary" type="submit">Скачать файл назначения</button>
+      </form>
+    {% endif %}
+    <p role="status" data-endpoint-install-status></p>
+    {% if windows_assignment %}<p><a href="/workstations/inventory/{{ asset.id }}/endpoint-agent">Обновить состояние</a></p>{% endif %}
   {% elif state == 'windows_setup' %}
     <p>Скачайте проверенный EndpointAgentSetup в разделе «Установщик» консоли Endpoint. Запустите пакет на выбранном ПК от имени администратора и дождитесь подтверждения подключения.</p>
     <a class="button primary" href="{{ console_url }}">Открыть установщик в Endpoint</a>

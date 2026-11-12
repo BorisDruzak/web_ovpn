@@ -86,6 +86,7 @@ class Settings:
     session_cookie_secure: bool
     api_permissions: str
     endpoint_platform_installation_token_file: Path | None = None
+    endpoint_platform_windows_inventory_setup_release: UUID | None = None
     helpdesk_inventory_token_hash: str = ''
     helpdesk_inventory_status_base_url: str = ''
     helpdesk_inventory_status_token_file: str = ''
@@ -171,6 +172,9 @@ def get_settings() -> Settings:
             Path(installation_token) if (installation_token := os.environ.get(
                 "ENDPOINT_PLATFORM_INSTALLATION_TOKEN_FILE", ""
             ).strip()) else None
+        ),
+        endpoint_platform_windows_inventory_setup_release=_optional_uuid_env(
+            "ENDPOINT_PLATFORM_WINDOWS_INVENTORY_SETUP_RELEASE"
         ),
         endpoint_platform_timeout_seconds=_positive_float_env("ENDPOINT_PLATFORM_TIMEOUT_SECONDS", 5.0),
         endpoint_platform_smoke_device_id=_optional_uuid_env("ENDPOINT_PLATFORM_SMOKE_DEVICE_ID"),

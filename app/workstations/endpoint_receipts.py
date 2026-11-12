@@ -18,7 +18,9 @@ from ..inventory.endpoint import InventoryEndpointService, InventoryValidationEr
 from ..inventory.models import InventoryAsset, InventoryExternalBinding
 from ..inventory.revision import InventoryRevisionConflict
 from .models import SourceSnapshot, WorkstationRequest
+from .projection import fingerprint
 from .sources import SourceError, valid_uuid
+from .windows_installation import ACTION as WINDOWS_ASSIGNMENT, assignment_window_ended, installation_id_for, lock_card
 
 
 FINAL_STATES = ("connected", "conflict", "expired")
@@ -26,8 +28,8 @@ MAX_PER_PASS = 16
 POLL_BUDGET_SECONDS = 12
 
 
-def _target(row):
-    if row is None or row.status != "succeeded" or row.action != "plans.apply":
+def _target(row, windows_secret=None):
+    if row is None or row.action not in ("plans.apply", WINDOWS_ASSIGNMENT):
         return None
     params, data = row.parameters_json, row.data_json or {}
     if not isinstance(params, dict) or not isinstance(data, dict):
@@ -38,13 +40,22 @@ def _target(row):
     try:
         asset = valid_uuid(target["asset_id"])
         machine = valid_uuid(target["machine_uuid"])
-        installation_id = target["installation_id"]
         revision = target["asset_revision"]
+        if type(revision) is not int or revision < 1:
+            return None
+        if row.action == WINDOWS_ASSIGNMENT:
+            if not windows_secret or row.status not in ("registered", "succeeded"):
+                return None
+            installation_id = installation_id_for(windows_secret, row, asset)
+            if (target.get("platform") == "windows" and asset == machine
+                and target.get("installation_digest") == fingerprint(installation_id)):
+                return asset, machine, revision, installation_id
+            return None
+        installation_id = target["installation_id"]
         sha = params["sha256"]
         if not (
-            isinstance(installation_id, str)
+            row.status == "succeeded" and isinstance(installation_id, str)
             and re.fullmatch(rf"inventory-{asset}-{machine}-[0-9a-f]{{32}}", installation_id)
-            and type(revision) is int and revision > 0
             and re.fullmatch(r"[0-9a-f]{64}", sha)
             and params["kind"] == "component" and params["plan_id"] == "setup-component-" + sha
             and data.get("machine_uuid") == machine
@@ -58,7 +69,7 @@ def _target(row):
 
 
 def _apply(db, row, target, receipt, now):
-    from .api import endpoint_install_target
+    from .api import endpoint_install_asset, endpoint_install_platform, endpoint_install_target
 
     asset_id, machine_uuid, revision, _ = target
     if receipt.state != "connected":
@@ -82,13 +93,17 @@ def _apply(db, row, target, receipt, now):
         return "connected"
     if asset.manual_revision != revision:
         return "conflict"
-    db.get(SourceSnapshot, 'reconciliation', with_for_update=True)
     try:
-        observed_machine = endpoint_install_target(db, asset_id)
+        if row.action == WINDOWS_ASSIGNMENT:
+            _, os_name, linked = endpoint_install_asset(db, asset_id)
+            if linked or endpoint_install_platform(os_name) != 'windows':
+                return "conflict"
+        else:
+            db.get(SourceSnapshot, 'reconciliation', with_for_update=True)
+            if endpoint_install_target(db, asset_id) != machine_uuid:
+                return "conflict"
     except HTTPException as exc:
         return "waiting_connection" if exc.detail == "workstations_endpoint_source_stale" else "conflict"
-    if observed_machine != machine_uuid:
-        return "conflict"
     try:
         with db.begin_nested():
             service.confirm_installation(
@@ -106,7 +121,7 @@ def installation_reservations(db):
     asset_id = target["asset_id"].as_string()
     state = WorkstationRequest.data_json["installation_binding_state"].as_string()
     rows = db.execute(select(asset_id, target["network_keys"]).where(
-        WorkstationRequest.action == "plans.apply",
+        WorkstationRequest.action.in_(("plans.apply", WINDOWS_ASSIGNMENT)),
         WorkstationRequest.status.in_(("registered", "running", "unknown", "succeeded")),
         asset_id.is_not(None),
         (state.is_(None) | (state != "connected")),
@@ -130,15 +145,17 @@ def _locked_request(db, request_id):
     return db.get(WorkstationRequest, request_id, populate_existing=True)
 
 
-def _record_poll(row, now, state=None):
+def _record_poll(row, now, state=None, *, unavailable=False):
     data = dict(row.data_json) if isinstance(row.data_json, dict) else {}
     data["installation_receipt_checked_at"] = now.isoformat()
     if state is not None:
         data["installation_binding_state"] = state
+    if row.action == WINDOWS_ASSIGNMENT:
+        data["installation_receipt_unavailable"] = unavailable
     row.data_json = data
 
 
-def sync_installation_receipts(session_factory, client, *, clock=None):
+def sync_installation_receipts(session_factory, client, *, clock=None, windows_secret=None):
     """Poll admitted plans fairly. Recover uncertain admission using its original receipt."""
     from .client import WorkstationsClient
     from .service import WorkstationsService
@@ -149,15 +166,16 @@ def sync_installation_receipts(session_factory, client, *, clock=None):
     state = WorkstationRequest.data_json["installation_binding_state"].as_string()
     with session_factory() as db:
         candidates = db.execute(select(
-            WorkstationRequest.id, WorkstationRequest.status, WorkstationRequest.actor,
+            WorkstationRequest.id, WorkstationRequest.status, WorkstationRequest.actor, WorkstationRequest.action,
         ).where(
-            WorkstationRequest.action == "plans.apply",
-            WorkstationRequest.status.in_(("succeeded", "unknown")),
-            WorkstationRequest.created_at >= clock() - timedelta(minutes=45),
+            ((WorkstationRequest.action == "plans.apply") & WorkstationRequest.status.in_(("succeeded", "unknown"))
+                & (WorkstationRequest.created_at >= clock() - timedelta(minutes=45)))
+            | ((WorkstationRequest.action == WINDOWS_ASSIGNMENT) & WorkstationRequest.status.in_(("registered", "succeeded"))
+                & bool(windows_secret)),
             WorkstationRequest.parameters_json["_endpoint_installation"]["asset_id"].as_string().is_not(None),
             state.is_(None) | state.not_in(FINAL_STATES),
         ).order_by(checked.is_not(None), checked, WorkstationRequest.created_at).limit(MAX_PER_PASS)).all()
-    for request_id, status, actor in candidates:
+    for request_id, status, actor, action in candidates:
         if time.monotonic() >= deadline:
             break
         if status == "unknown":
@@ -165,35 +183,42 @@ def sync_installation_receipts(session_factory, client, *, clock=None):
             WorkstationsService(client=controller, session_factory=session_factory).operation(request_id, actor=actor)
         with session_factory() as db:
             row = db.get(WorkstationRequest, request_id)
-            target = _target(row)
+            target = _target(row, windows_secret)
         if target is None:
             with session_factory() as db:
                 row = _locked_request(db, request_id)
-                if row and row.status in ("succeeded", "unknown") and _target(row) is None:
+                if row and row.status in ("registered", "succeeded", "unknown") and _target(row, windows_secret) is None:
                     prior = row.data_json.get("installation_binding_state") if isinstance(row.data_json, dict) else None
                     if prior not in FINAL_STATES:
-                        _record_poll(row, clock(), "conflict" if row.status == "succeeded" else None)
+                        _record_poll(row, clock(), "conflict" if row.status != "unknown" else None)
                         db.commit()
             continue
         if time.monotonic() >= deadline:
             break
-        receipt, result, unavailable = None, None, False
+        receipt, result, unavailable, missing = None, None, False, False
         try:
             receipt = client.lookup_inventory_installation(target[3])
         except EndpointPlatformInstallationUnavailable:
-            result = "waiting_registration"
+            missing = True
         except EndpointPlatformInstallationConflict:
             result = "conflict"
         except EndpointPlatformServiceError:
             unavailable = True
         with session_factory() as db:
+            if action == WINDOWS_ASSIGNMENT:
+                lock_card(db, target[0])
             row = _locked_request(db, request_id)
-            if _target(row) != target:
+            if _target(row, windows_secret) != target:
                 continue
             now = clock()
+            if missing:
+                if action != WINDOWS_ASSIGNMENT or row.status == "succeeded":
+                    result = "waiting_registration"
+                if action == WINDOWS_ASSIGNMENT and assignment_window_ended(row, now):
+                    result = "expired"
             if receipt is not None:
                 result = _apply(db, row, target, receipt, now)
-            _record_poll(row, now, result)
+            _record_poll(row, now, result, unavailable=unavailable)
             db.commit()
         if unavailable:
             break

@@ -62,6 +62,38 @@ class ReceiptClient:
         return self.receipt
 
 
+def test_windows_uncertain_issue_expires_after_the_provider_window_and_missing_receipt(database):
+    from app.endpoint_platform_client import EndpointPlatformInstallationUnavailable
+    from app.workstations.projection import fingerprint
+    from app.workstations.windows_installation import ACTION, installation_id_for
+
+    now = datetime.now(timezone.utc)
+    asset, request_id = (str(uuid4()) for _ in range(2))
+    secret = "fixture-only"
+    with database() as db:
+        db.add(InventoryAsset(id=asset, asset_type=InventoryAssetType.PC, manual_revision=1))
+        row = WorkstationRequest(id=request_id, actor="user:former-operator", action=ACTION,
+            permission="workstations:apply", intent_sha256="a" * 64, status="registered",
+            data_json={"last_issue_started_at": (now - timedelta(minutes=33)).isoformat()})
+        assignment_id = installation_id_for(secret, row, asset)
+        row.parameters_json = {"_endpoint_installation": {
+            "asset_id": asset, "machine_uuid": asset, "asset_revision": 1, "platform": "windows",
+            "installation_digest": fingerprint(assignment_id),
+        }}
+        db.add(row)
+        db.commit()
+
+    class NoReceipt:
+        def lookup_inventory_installation(self, value):
+            assert value == assignment_id
+            raise EndpointPlatformInstallationUnavailable()
+
+    sync_installation_receipts(database, NoReceipt(), clock=lambda: now, windows_secret=secret)
+    with database() as db:
+        row = db.get(WorkstationRequest, request_id)
+        assert row.data_json["installation_binding_state"] == "expired"
+
+
 def connected(item):
     from uuid import UUID
 

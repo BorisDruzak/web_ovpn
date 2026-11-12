@@ -548,11 +548,13 @@ def _sync_installation_receipts(clock):
     if not settings.workstations_enabled or settings.endpoint_platform_installation_token_file is None:
         return
     from ..workstations.endpoint_receipts import sync_installation_receipts
+    from ..workstations.windows_installation import STAGING_ORIGIN
 
     try:
         client = get_endpoint_installation_client(settings)
         try:
-            sync_installation_receipts(get_sessionmaker(), client, clock=clock)
+            sync_installation_receipts(get_sessionmaker(), client, clock=clock,
+                windows_secret=settings.app_secret_key if settings.endpoint_platform_base_url == STAGING_ORIGIN else None)
         finally:
             client.close()
     except (EndpointPlatformServiceError, SQLAlchemyError):

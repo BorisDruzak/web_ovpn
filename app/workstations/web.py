@@ -15,6 +15,7 @@ from .api import (
 )
 from .journal import public_payload
 from .models import WorkstationRequest
+from .windows_installation import assignment_status, latest_assignment, setup_release, STAGING_ORIGIN
 
 router = APIRouter()
 
@@ -56,10 +57,16 @@ def workstation_endpoint_install(request: Request, asset_id: UUIDText, db: Sessi
     platform = endpoint_install_platform(os_name)
     console_url = _enrollment_console() if platform == 'windows' and not linked else None
     state = 'platform_unknown'
+    windows_assignment, setup_url = None, None
     if linked:
         state = 'linked'
     elif platform == 'windows':
         state = 'windows_setup' if console_url else 'windows_unavailable'
+        release = setup_release(get_settings())
+        if release:
+            setup_url = f'{STAGING_ORIGIN}/api/admin/console/installer/releases/{release}/download'
+            windows_assignment = assignment_status(latest_assignment(db, asset_id), 'user:' + str(user.id))
+            state = 'windows_inventory_setup'
     elif platform == 'alt':
         state = 'alt_unavailable'
         if get_settings().workstations_enabled and user_has_permission(user, 'workstations:plan'):
@@ -73,7 +80,9 @@ def workstation_endpoint_install(request: Request, asset_id: UUIDText, db: Sessi
                 except Exception:
                     state = 'alt_controller_unavailable'
     return page(request, db, 'workstations_endpoint_install.html', 'endpoint_install', asset=asset,
-                os_name=os_name, state=state, console_url=console_url)
+                os_name=os_name, state=state, console_url=console_url,
+                windows_assignment=windows_assignment, setup_url=setup_url,
+                windows_assignment_allowed=user_has_permission(user, 'inventory:write'))
 
 
 @router.get('/workstations/devices/{device_key}')

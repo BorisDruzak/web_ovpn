@@ -74,6 +74,30 @@ Endpoint Agent 3.2.183 публикуется в каталоге staging как
 регистрации и актуального heartbeat. Подготовка артефакта и
 требования к staging описаны в [инструкции интеграции](HELPDESK_INVENTORY_STAGING.md).
 
+Для Windows откройте установку из карточки ПК и скачайте подписанный
+Setup staging. На выбранном ПК откройте PowerShell 7 от имени администратора,
+укажите путь к скачанному EXE и получите отпечаток через канал вывода:
+
+```powershell
+$start = [Diagnostics.ProcessStartInfo]::new((Resolve-Path -LiteralPath '.\EndpointAgentSetup.exe').Path)
+$start.UseShellExecute = $false
+$start.RedirectStandardOutput = $true
+$start.ArgumentList.Add('--inventory-fingerprint')
+$probe = [Diagnostics.Process]::Start($start)
+$proof = $probe.StandardOutput.ReadToEnd()
+$probe.WaitForExit()
+if ($probe.ExitCode -ne 0) { throw 'Не удалось получить отпечаток ПК' }
+($proof | ConvertFrom-Json).hardware_fingerprint
+```
+
+Вставьте отпечаток в карточку выбранного ПК и скачайте файл назначения.
+На этом же ПК поместите его в закрытый каталог администратора. Установите
+владельца SYSTEM или «Администраторы» и защищённый ACL только для этих
+двух субъектов. Запустите тот же EXE с параметром
+`--inventory-assignment-file` и полным путём к файлу, после попытки удалите
+файл. Обновите состояние в карточке после запуска. «Назначение выдано»
+означает ожидание регистрации и подтверждённого подключения.
+
 ## 1. Что подготовить
 
 Проверенные клиентские поправки gpupdate включены в подготовку ALT до первого

@@ -118,6 +118,12 @@ class RequestBody(Body):
     request_id: UUIDText
 
 
+class WindowsAssignment(RequestBody):
+    expected_revision: int = Field(ge=1)
+    hardware_fingerprint: str = Field(pattern=r'^sha256:[0-9a-f]{64}$', max_length=71)
+    confirmed: Literal[True]
+
+
 class Search(Body):
     query: str = Field(min_length=2, max_length=160)
     limit: int = Field(default=50, ge=1, le=50)
@@ -319,6 +325,20 @@ def require_endpoint_install_operator(request, db, owner):
     if user is None or not owner.startswith('user:'):
         raise HTTPException(403, 'workstations_permission_denied')
     check_user_permission(user, 'inventory:read')
+
+
+@router.post('/inventory/{asset_id}/endpoint-agent-assignment')
+def endpoint_agent_assignment(asset_id: UUIDText, body: WindowsAssignment, request: Request,
+                              owner=Depends(actor), db: Session = Depends(get_db)):
+    from .windows_installation import issue_assignment
+
+    require_endpoint_install_operator(request, db, owner)
+    check_user_permission(current_user(request, db), 'inventory:write')
+    # This single authenticated download carries the private native handoff.
+    return {'status': 'ok', 'data': issue_assignment(
+        db, get_settings(), asset_id=asset_id, actor=owner, request_id=body.request_id,
+        revision=body.expected_revision, hardware_fingerprint=body.hardware_fingerprint,
+    )}
 
 
 @router.post('/inventory/{asset_id}/endpoint-agent-plan')

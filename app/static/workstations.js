@@ -243,6 +243,27 @@
         window.location.assign('/workstations/plans/'+encodeURIComponent(result.plan_id));
       }finally{button.disabled=false;}
     });
+    const windowsAssignment=one('[data-windows-assignment]');
+    on(windowsAssignment,'submit',async()=>{
+      const button=windowsAssignment.querySelector('button');
+      const input=windowsAssignment.querySelector('[data-hardware-fingerprint]');
+      const confirmed=windowsAssignment.querySelector('[data-confirm-inventory-pc]');
+      const target=windowsAssignment.dataset;
+      if(!target.requestId)target.requestId=nonce();
+      button.disabled=true;
+      notice('[data-error]','');
+      try{
+        const result=await request('/inventory/'+encodeURIComponent(target.windowsAssignment)+'/endpoint-agent-assignment',{
+          method:'POST',body:{request_id:target.requestId,expected_revision:Number(target.assetRevision),
+            hardware_fingerprint:input.value,confirmed:confirmed.checked},
+        });
+        const url=URL.createObjectURL(new Blob([JSON.stringify(result.assignment)],{type:'application/json'}));
+        const download=anchor('',url);download.download='endpoint-inventory-assignment.json';download.click();
+        setTimeout(()=>URL.revokeObjectURL(url),1000);
+        input.value='';confirmed.checked=false;
+        notice('[data-endpoint-install-status]','Назначение выдано до '+new Date(result.expires_at).toLocaleString('ru-RU')+'. Ожидается регистрация агента.');
+      }finally{button.disabled=false;}
+    });
     const planNode=one('[data-plan]');if(planNode){
       const plan=JSON.parse(planNode.textContent),form=one('[data-apply-plan]'),button=form.querySelector('button');let submitted=root.dataset.submitted==='true';
       const update=()=>{button.disabled=!canApply(plan,{confirmed:form.elements.confirmed.checked,allowed:permissions.apply,submitted});notice('[data-plan-expiry]',Date.parse(plan.expires_at)<=Date.now()?'Срок плана истёк. Подготовьте новый план.':'');};

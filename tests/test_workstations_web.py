@@ -143,3 +143,95 @@ def test_windows_inventory_install_view_hands_off_to_the_enrollment_console(tmp_
     assert "Fixture Windows PC" in response.text
     assert "https://endpoint.fixture.invalid/admin/enrollment" in response.text
     assert "data-endpoint-plan=" not in response.text
+
+
+def test_windows_staging_assignment_is_owned_retriable_and_binds_only_on_heartbeat(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
+    from fastapi.testclient import TestClient
+    from sqlalchemy import select
+    from app.db import get_sessionmaker, session_scope
+    from app.config import get_settings
+    from app.endpoint_platform_client import EndpointPlatformServiceUnavailable
+    from app.inventory.models import InventoryAsset, InventoryAssetType, InventoryExternalBinding, InventoryPCDetails
+    from app.workstations import windows_installation
+    from app.workstations.endpoint_receipts import sync_installation_receipts
+    from app.workstations.models import WorkstationRequest
+
+    asset_id, request_id, release_id, device_id = (uuid.uuid4() for _ in range(4))
+    fingerprint = 'sha256:' + 'a' * 64
+    now = datetime.now(timezone.utc)
+    calls = []
+
+    class Endpoint:
+        def issue_inventory_installation(self, assignment_id, proof, platform):
+            calls.append(assignment_id)
+            assert proof == fingerprint and platform == 'windows'
+            with session_scope() as db:
+                db.add(InventoryAsset(id=str(uuid.uuid4()), asset_type=InventoryAssetType.PC))
+            if len(calls) == 1:
+                raise EndpointPlatformServiceUnavailable()
+            return SimpleNamespace(issued_at=now, expires_at=now + timedelta(minutes=30))
+
+        def lookup_inventory_installation(self, assignment_id):
+            assert assignment_id == calls[0]
+            return SimpleNamespace(state='connected', device_id=device_id,
+                registered_at=now + timedelta(seconds=4), heartbeat_at=now + timedelta(seconds=5))
+
+        def close(self):
+            pass
+
+    monkeypatch.setenv('WORKSTATIONS_ENABLED', 'true')
+    monkeypatch.setenv('ENDPOINT_PLATFORM_ENABLED', 'true')
+    monkeypatch.setenv('ENDPOINT_PLATFORM_BASE_URL', 'https://endpoint-staging.sosnadmin.local')
+    monkeypatch.setenv('ENDPOINT_PLATFORM_INSTALLATION_TOKEN_FILE', str(tmp_path / 'test.token'))
+    monkeypatch.setenv('ENDPOINT_PLATFORM_WINDOWS_INVENTORY_SETUP_RELEASE', str(release_id))
+    monkeypatch.setattr(windows_installation, 'get_endpoint_installation_client', lambda _: Endpoint())
+    client, _ = _client(tmp_path, monkeypatch)
+    with session_scope() as db:
+        db.add(InventoryAsset(id=str(asset_id), asset_type=InventoryAssetType.PC, manual_revision=1))
+        db.flush()
+        db.add(InventoryPCDetails(asset_id=str(asset_id), os_name='Windows 11'))
+
+    view = f'/workstations/inventory/{asset_id}/endpoint-agent'
+    page = client.get(view)
+    assert f'/installer/releases/{release_id}/download' in page.text and 'data-windows-assignment' in page.text
+    csrf = re.search(r'data-csrf="([^"]+)"', page.text).group(1)
+    api = f'/api/v1/workstations/inventory/{asset_id}/endpoint-agent-assignment'
+    revision = int(re.search(r'data-asset-revision="(\d+)"', page.text).group(1))
+    payload = {'request_id': str(request_id), 'expected_revision': revision, 'hardware_fingerprint': fingerprint, 'confirmed': True}
+    apply_only = TestClient(client.app)
+    login_operator(apply_only, permissions=['workstations:read', 'workstations:apply'])
+    restricted = apply_only.get(view)
+    assert restricted.status_code == 200 and 'data-windows-assignment' not in restricted.text
+    operator_csrf = re.search(r'data-csrf="([^"]+)"', restricted.text).group(1)
+    assert apply_only.post(api, json=payload, headers={'X-CSRF-Token': operator_csrf}).status_code == 403
+    apply_only.close()
+    assert client.post(api, json=payload).status_code == 400
+    headers = {'X-CSRF-Token': csrf}
+    assert client.post(api, json={**payload, 'expected_revision': revision + 1}, headers=headers).status_code == 409
+    assert client.post(api, json=payload, headers=headers).status_code == 503
+    assert f'data-request-id="{request_id}"' in client.get(view).text
+    assert client.post(api, json={**payload, 'request_id': str(uuid.uuid4())}, headers=headers).status_code == 409
+    first = client.post(api, json=payload, headers=headers)
+    assert first.status_code == 200, first.text
+    assert calls == [calls[0], calls[0]]
+    assert 'no-store' in first.headers['cache-control']
+    handoff = first.json()['data']['assignment']
+    assert handoff == {'schema_version': 'endpoint_windows_inventory_assignment_v1',
+                       'installation_id': calls[0], 'hardware_fingerprint': fingerprint}
+    repeated = client.post(api, json=payload, headers=headers)
+    assert repeated.status_code == 200 and repeated.json()['data']['assignment'] == handoff
+    assert client.post(api, json={**payload, 'request_id': str(uuid.uuid4())}, headers=headers).status_code == 409
+    assert client.post(api, json={**payload, 'hardware_fingerprint': 'sha256:' + 'b' * 64}, headers=headers).status_code == 409
+    with session_scope() as db:
+        row = db.get(WorkstationRequest, str(request_id))
+        assert fingerprint not in str(row.parameters_json) and calls[0] not in str(row.parameters_json)
+        assert db.scalar(select(InventoryExternalBinding)) is None
+    assert calls[0] not in client.get(view).text
+    sync_installation_receipts(get_sessionmaker(), Endpoint(), clock=lambda: now + timedelta(seconds=6),
+                               windows_secret=get_settings().app_secret_key)
+    with session_scope() as db:
+        row = db.get(WorkstationRequest, str(request_id))
+        assert row.data_json['installation_binding_state'] == 'connected'
+        assert db.scalar(select(InventoryExternalBinding)).external_id == str(device_id)

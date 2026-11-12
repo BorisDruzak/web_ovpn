@@ -37,7 +37,7 @@ def required_permission(path: str, method: str) -> str | None:
             return 'workstations:diagnose'
         if '/links/' in path:
             return 'workstations:link'
-        if path.endswith(('/apply', '/cancel')):
+        if path.endswith(('/apply', '/cancel', '/endpoint-agent-assignment')):
             return 'workstations:apply'
         if write and (path in ('/workstations/plans', '/workstations/component-plans')
                       or (path.startswith('/workstations/inventory/') and path.endswith('/endpoint-agent-plan'))):

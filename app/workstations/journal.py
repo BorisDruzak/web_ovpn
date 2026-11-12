@@ -34,6 +34,10 @@ def safe_code(code):
 def error_details(code, *, uncertain=False):
     code = safe_code(code)
     workflow_actions={
+        'workstations_endpoint_assignment_unavailable':'Проверьте доступность Endpoint и повторите загрузку для той же карточки и отпечатка.',
+        'workstations_endpoint_assignment_pending':'Откройте карточку заново и продолжите исходное назначение.',
+        'workstations_endpoint_assignment_closed':'Проверьте состояние назначения и агента на выбранном ПК.',
+        'workstations_endpoint_assignment_window_short':'Для запуска Setup требуется не менее 10 минут. Проверьте состояние текущего назначения.',
         'krfb_clients_connected':'Завершите подключение VNC-клиента, если требуется перенастройка KRFB. Приложения и чужой сеанс не закрываются автоматически.',
         'certificates_importer_active':'Дождитесь завершения импорта сертификатов. Контроллер повторно прочитает готовность исходного задания.',
         'graphical_session_unavailable':'Выполните настоящий графический вход выбранного сотрудника. Worker продолжит исходное задание.',
