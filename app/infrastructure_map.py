@@ -700,6 +700,9 @@ def _public_node(row: dict, now: datetime) -> dict:
                 and sum(port["name"] == local_port and port["state"] == "up" for port in ports) == 1):
             stp_path = {"localPort": local_port, "designatedBridgeMac": bridge, "designatedPortId": port_id,
                         "checkedAt": _time(stp["checkedAt"]).isoformat()}
+            bridge_device = _text(stp.get("bridgeDeviceId"))
+            if bridge_device:
+                stp_path["bridgeDeviceId"] = bridge_device
     return {
         **{key: _text(row.get(key)) for key in ("id", "name", "kind", "site", "origin", "pveHost")},
         "guest": row.get("guest") is True,
@@ -964,7 +967,8 @@ def summarize_topology(graph: dict) -> dict:
                 pa, pb = (report["a"], report["b"]) if origin == a else (report["b"], report["a"])
                 if ((pa and port_key(a, pa) == port_key(a, declared["a"]))
                         or (pb and port_key(b, pb) == port_key(b, declared["b"]))):
-                    related.append({"portA": pa, "portB": pb, "source": report["source"], "checkedAt": report["at"]})
+                    related.append({"portA": pa, "portB": pb, "source": report["source"], "checkedAt": report["at"],
+                                    **({"stpPaths": report["stpPaths"]} if "stpPaths" in report else {})})
             pending[(a, b, declared["a"], declared["b"])] = {
                 "a": a, "b": b, "nameA": nodes[a]["name"], "nameB": nodes[b]["name"],
                 "portA": declared["a"], "portB": declared["b"], "observedPaths": related[:8],
@@ -1065,6 +1069,11 @@ def load_infrastructure_map(
                 valid = {key for key in keys[:32] if isinstance(key, str) and re.fullmatch(r"mac-[0-9a-f]{12}", key)}
                 if valid:
                     agent_keys[node["id"]] = valid
+    for node_id, node in nodes.items():
+        stp = node.get("stpRootPath", {})
+        bridge_id = stp.get("bridgeDeviceId")
+        if bridge_id == node_id or nodes.get(bridge_id, {}).get("kind") not in NETWORK_KINDS[:2]:
+            stp.pop("bridgeDeviceId", None)
     links = []
     for row in _rows(raw.get("links"), 2400):
         edge = {key: _text(row.get(key)) for key in ("a", "b", "kind", "source", "details")}
@@ -1101,6 +1110,15 @@ def load_infrastructure_map(
                             states[side] = port
                     if states:
                         evidence[-1]["portStates"] = states
+                if source == RECIPROCAL_MAC_SOURCE and evidence[-1]["confirmed"]:
+                    stp_paths = []
+                    for side, port in evidence[-1].get("portStates", {}).items():
+                        node_id = edge[side]
+                        stp = nodes[node_id].get("stpRootPath", {})
+                        if port["state"] == "up" and stp.get("localPort") == port["name"]:
+                            stp_paths.append({**stp, "deviceId": node_id})
+                    if stp_paths:
+                        evidence[-1]["stpPaths"] = stp_paths
                 vlan = report.get("vlan")
                 if type(vlan) is int and 1 <= vlan <= 4094:
                     evidence[-1]["vlan"] = vlan

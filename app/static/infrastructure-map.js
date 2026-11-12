@@ -654,13 +654,14 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       propertiesSection.append(make('h3', 'Диски по конфигурации Proxmox'), list);
     }
     if (node.stpRootPath) {
-      const {localPort, designatedBridgeMac, designatedPortId, checkedAt} = node.stpRootPath;
+      const {localPort, designatedBridgeMac, designatedPortId, checkedAt, bridgeDeviceId} = node.stpRootPath;
       const list = make('ul', null, 'map-detail-list');
       const row = make('li');
       const port = make('button', localPort);
       port.type = 'button';
       port.addEventListener('click', () => selectPort(id, localPort));
-      row.append(port, make('small', 'Назначенный мост · ' + designatedBridgeMac),
+      const bridge = [byId.get(bridgeDeviceId)?.name, designatedBridgeMac].filter(Boolean).join(' · ');
+      row.append(port, make('small', 'Назначенный мост · ' + bridge),
         make('small', 'Идентификатор порта STP · ' + designatedPortId),
         make('small', 'SNMP · ' + formatTime(checkedAt)));
       list.append(row);
@@ -950,6 +951,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           const proof = {current: ' · пара по свежему наблюдению',
                          verified_inventory: ' · пара по подтверждённой записи инвентаря'}[evidence.pairEvidence] ?? '';
           li.append(make('small', ports + vlan + ' · ' + source + time + proof + (evidence.confirmed ? '' : ' · без подтверждения')));
+          for (const {deviceId, localPort, bridgeDeviceId, designatedBridgeMac, designatedPortId, checkedAt} of evidence.stpPaths ?? []) {
+            const bridge = byId.get(bridgeDeviceId)?.name ?? designatedBridgeMac;
+            li.append(make('small', `STP · ${byId.get(deviceId).name} ${localPort} → ${bridge} · ${designatedPortId} · ${formatTime(checkedAt)}`));
+          }
           for (const side of ['a', 'b']) {
             const port = evidence.portStates?.[side];
             const key = side + ':' + port?.name;

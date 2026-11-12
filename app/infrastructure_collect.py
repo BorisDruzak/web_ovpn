@@ -995,6 +995,14 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             mac, = declared_macs[key]
             if declared_devices_by_mac[mac] == {key}:
                 nodes[key]["endpointKey"] = "mac:" + mac.upper()
+    bridge_owners = {mac: owners.copy() for mac, owners in declared_devices_by_mac.items()}
+    for device in context.get("devices", []):
+        rstp = device.get("observed_state", {}).get("rstp")
+        bridge = rstp.get("bridge_id") if isinstance(rstp, dict) else None
+        if device["kind"] in {"switch", "router"} and isinstance(bridge, str):
+            mac = bridge.rsplit(".", 1)[-1].lower()
+            if MAC.fullmatch(mac):
+                bridge_owners.setdefault(mac, set()).add(device["id"])
     intents = {item["id"]: item for item in context.get("routing_intent", []) if "id" in item}
     for service in context.get("services", []):
         host = service.get("device")
@@ -1146,6 +1154,9 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                     if (root_port.get("oper_status") == "up" and root_port.get("admin_status") != "down"
                             and observation_is_fresh(root_port.get("last_seen_at"), now)):
                         item["stpRootPath"] = {**stp, "localPort": root_port["name"]}
+                        owners = bridge_owners.get(stp["designatedBridgeMac"], set())
+                        if len(owners) == 1 and item["id"] not in owners:
+                            item["stpRootPath"]["bridgeDeviceId"], = owners
             index_counts = Counter(port.get("if_index") for port in current)
             item["ports"] = [
                 {"name": port.get("name") or port.get("port_key"),

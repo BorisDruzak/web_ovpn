@@ -1530,15 +1530,19 @@ def test_css_root_port_stp_projects_only_fresh_unambiguous_observations():
                                     "designatedPortId": "80:03", "checkedAt": stamp}},
     }
 
-    def read():
-        graph = build_graph({}, network, {}, {}, {}, now)
+    def read(devices=()):
+        graph = build_graph({"devices": devices}, network, {}, {}, {}, now)
         assert graph["links"] == []
-        return _public_node(graph["nodes"][0], now)
+        return _public_node(next(node for node in graph["nodes"] if node["name"] == "css"), now)
 
     assert read()["stpRootPath"] == {
         "localPort": "Port13", "designatedBridgeMac": "2c:c8:1b:9c:31:ea",
         "designatedPortId": "80:03", "checkedAt": stamp,
     }
+    bridge = {"id": "root", "kind": "switch", "name": "Root",
+              "observed_state": {"rstp": {"bridge_id": "32768.2C:C8:1B:9C:31:EA"}}}
+    assert read([bridge])["stpRootPath"]["bridgeDeviceId"] == "root"
+    assert "bridgeDeviceId" not in read([bridge, {**bridge, "id": "duplicate"}])["stpRootPath"]
     network["ports"].append({**network["ports"][0], "name": "Port14"})
     assert "stpRootPath" not in read()
     network["ports"].pop()
@@ -3521,6 +3525,41 @@ def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_pa
     observed, = pending["observedPaths"]
     assert (observed["portA"], observed["portB"]) == ("ge12", "enp134s0")
     assert mismatch["portB"] == "enp2s0" and mismatch["observedPaths"] == []
+
+
+def test_reciprocal_mac_path_shows_fresh_stp_evidence_without_confirming_cable(tmp_path):
+    from app.infrastructure_map import RECIPROCAL_MAC_SOURCE, load_infrastructure_map, summarize_topology
+
+    now = datetime.now(timezone.utc)
+    stamp = now.isoformat()
+    path = tmp_path / "infrastructure.json"
+    stp = {"localPort": "Port13", "designatedBridgeMac": "2c:c8:1b:9c:31:ea",
+           "designatedPortId": "80:03", "checkedAt": stamp, "bridgeDeviceId": "root"}
+    switch = {"id": "css", "name": "CSS", "kind": "Коммутатор", "stpRootPath": stp,
+              "ports": [{"name": "Port13", "state": "up", "checkedAt": stamp}]}
+    declared = {"a": "Port13", "b": "Gi1/22", "source": "GitHub", "confirmed": False}
+    observed = {**declared, "source": RECIPROCAL_MAC_SOURCE, "confirmed": True, "at": stamp}
+    edges = [{"a": "css", "b": "tp", "kind": "Сетевое соединение", "portEvidence": [declared]},
+             {"a": "css", "b": "tp", "kind": "Путь по MAC-таблице", "confirmed": True,
+              "portEvidence": [observed]}]
+
+    def read(at=now):
+        path.write_text(json.dumps({"schema": 1, "snapshotAt": stamp, "links": edges, "nodes": [switch,
+                                    {"id": "tp", "name": "TP", "kind": "Коммутатор"},
+                                    {"id": "root", "name": "Root", "kind": "Маршрутизатор"}]}), encoding="utf-8")
+        return load_infrastructure_map(path, at)
+
+    graph = read()
+    direct, learned = graph["links"]
+    assert direct["confirmed"] is False
+    proof, = learned["portEvidence"]
+    assert "pairEvidence" not in proof
+    assert proof["stpPaths"] == [{**stp, "deviceId": "css"}]
+    pending, = summarize_topology(graph)["topologyAudit"]["pending"]
+    assert pending["observedPaths"][0]["stpPaths"] == proof["stpPaths"]
+    assert "stpPaths" not in read(now + timedelta(minutes=6))["links"][1]["portEvidence"][0]
+    observed["a"] = "Port14"
+    assert "stpPaths" not in read()["links"][1]["portEvidence"][0]
 
 
 def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(tmp_path, monkeypatch):
