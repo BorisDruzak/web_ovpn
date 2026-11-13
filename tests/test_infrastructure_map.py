@@ -7858,8 +7858,8 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     monkeypatch.setenv("INFRASTRUCTURE_MAP_SNAPSHOT_PATH", str(path))
     stamp = datetime.now(timezone.utc).isoformat()
     vlan_ports = {
-        "host": {"name": "ens7", "state": "up", "source": "Proxmox · sysfs", "checkedAt": stamp},
-        "switch": {"name": "xe3", "state": "up", "checkedAt": stamp},
+        "host": {"name": "ens7", "state": "up", "source": "Proxmox · sysfs", "checkedAt": stamp, "speedBps": 10**10},
+        "switch": {"name": "xe3", "state": "up", "checkedAt": stamp, "speedBps": 10**10},
     }
     for port in vlan_ports.values():
         port["vlanMemberships"] = {"checkedAt": stamp, "vlans": [
@@ -7916,12 +7916,18 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     assert match["basis"] == "guest_mac" and match["switchPort"] == "xe3"
     assert match["physicalPair"] == {"hostPort": "ens7", "switchPort": "xe3",
                                       "source": "netctl FDB + Proxmox", "checkedAt": stamp}
+    port_links = {
+        "host": {"state": "up", "speedBps": 10**10, "checkedAt": stamp, "source": "Proxmox · sysfs"},
+        "switch": {"state": "up", "speedBps": 10**10, "checkedAt": stamp},
+    }
+    assert match["uplinkPortLinks"] == port_links
     cable_reports = raw["links"][2]["portEvidence"]
     for conflict in ({"b": "eno1"}, {"a": "xe4"}):
         cable_reports.append({**cable_reports[0], **conflict})
         observation, = read()["guests"][0]["interfaces"][0]["switchObservations"]
         assert observation["basis"] == "guest_mac"
         assert "physicalPair" not in observation and "vlanMemberships" not in observation
+        assert "uplinkPortLinks" not in observation
         cable_reports.pop()
     assert read()["guests"] == [guest]
 
@@ -7963,7 +7969,7 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
                             "state": "reachable",
                             "guestId": "vm", "guestPort": "net0", "bridge": "vmbr1", "hypervisorId": "pve",
                             "switchId": "snr", "physicalPair": match["physicalPair"], "addressCheckedAt": stamp,
-                            "destinationVlan": vlan_evidence}
+                            "destinationVlan": vlan_evidence, "uplinkPortLinks": port_links}
     telemetry = {"checkedAt": stamp, "intervalSeconds": 300, "rxBps": 1024, "txBps": 2048, "rxDiscards": 3}
     vlan_ports["switch"]["telemetry"] = telemetry
     measured = read()["servicePaths"][0]
@@ -8322,7 +8328,8 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
                             "state": "reachable",
                             "guestId": "vm", "guestPort": "net0", "bridge": "vmbr1", "hypervisorId": "pve",
                             "switchId": "snr", "physicalPair": interface["switchObservations"][0]["physicalPair"],
-                            "addressCheckedAt": stamp, "localNeighbor": interface["localNeighbor"]}
+                            "addressCheckedAt": stamp, "localNeighbor": interface["localNeighbor"],
+                            "uplinkPortLinks": port_links}
     audit = read_audit()
     assert audit["interfaceCounts"]["local_neighbor_with_physical_pair"] == 1 and audit["gapTotal"] == 0
     raw["nodes"][0]["serviceChecks"][0]["vlanTransit"]["peer"]["state"] = "mismatch"

@@ -1295,6 +1295,12 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         : [`${guest} ${path.guestPort}`, path.bridge, `${host} ${hostPort}`].join(' → ');
       row.append(make('small', connection),
         switchPortButton(path.switchId, target, switchPort));
+      for (const [side, link] of Object.entries(path.uplinkPortLinks ?? {})) {
+        const label = side === 'host' ? `${host} ${hostPort}` : `${target} ${switchPort}`;
+        row.append(make('small', [label, portLabels[link.state], formatPortSpeed(link.speedBps),
+          link.source ?? (side === 'switch' ? 'SNMP' : ''),
+          formatTime(link.speedCheckedAt ?? link.checkedAt)].filter(Boolean).join(' · ')));
+      }
       const uplinkTelemetry = path.switchPortTelemetry;
       if (uplinkTelemetry) {
         const rates = [['RX', uplinkTelemetry.rxBps], ['TX', uplinkTelemetry.txBps]]

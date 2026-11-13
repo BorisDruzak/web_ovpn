@@ -2441,6 +2441,12 @@ def _guest_attachments(nodes: dict, links: list[dict], guest_ids: list[str], now
                         observation["physicalPair"] = {
                             field: pair[field] for field in ("hostPort", "switchPort", "source", "checkedAt")
                         }
+                        if port_links := {
+                            side: {field: port[field] for field in
+                                   ("state", "speedBps", "checkedAt", "speedCheckedAt", "source") if field in port}
+                            for side, port in pair["portStates"].items() if port.get("state") == "up"
+                        }:
+                            observation["uplinkPortLinks"] = port_links
                         if vlans := _attachment_vlan_memberships(interface, match, pair["portStates"], now):
                             observation["vlanMemberships"] = vlans
                         if telemetry := pair["portStates"]["switch"].get("telemetry"):
@@ -2714,6 +2720,8 @@ def _service_attachment_paths(service: dict, guests: dict, client_attachments: d
         observation, = observations
         if telemetry := observation.get("switchPortTelemetry"):
             path["switchPortTelemetry"] = telemetry
+        if port_links := observation.get("uplinkPortLinks"):
+            path["uplinkPortLinks"] = port_links
         path.update({"addressCheckedAt": address_at,
                       "guestId": guest["guest"]["id"], "guestPort": adapter["guestPort"], "bridge": adapter["bridge"],
                       "hypervisorId": guest["hypervisor"]["id"], "switchId": observation["switch"]["id"],
