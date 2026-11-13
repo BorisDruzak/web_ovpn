@@ -946,9 +946,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
                                     ['observedOnly', 'Видны только в наблюдении сети']]) {
           if (comparison[key].length) row.append(make('small', title + ' · ' + comparison[key].join(', ')));
         }
-        for (const {address, guestPort, bridge, hypervisorId, switchId, physicalPair} of comparison.matchedPaths ?? []) {
+        for (const {address, endpointInterface, guestPort, bridge, hypervisorId, switchId, physicalPair} of comparison.matchedPaths ?? []) {
           const host = byId.get(hypervisorId)?.name ?? hypervisorId;
-          const path = make('small', `${address} · ${guestPort} → ${bridge} → ${host} ${physicalPair.hostPort} → `);
+          const chain = [endpointInterface, guestPort, bridge, `${host} ${physicalPair.hostPort}`].filter(Boolean).join(' → ');
+          const path = make('small', `${address} · ${chain} → `);
           path.append(portPairEndpoint(switchId, byId.get(switchId)?.name ?? switchId, physicalPair.switchPort));
           row.append(path);
         }

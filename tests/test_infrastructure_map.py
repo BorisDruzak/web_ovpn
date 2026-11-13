@@ -8685,6 +8685,7 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
     assert context["agentAudit"]["guests"][0].pop("ipv4Comparison") == {
         "matched": ["192.0.2.10"], "endpointOnly": ["192.0.2.12"], "observedOnly": ["192.0.2.11"],
         "matchedPaths": [{"address": "192.0.2.10", "guestPort": "net0", "bridge": "vmbr0", "hypervisorId": "pve",
+                          "endpointInterface": "Ethernet 2",
                           "addressCheckedAt": at, "switchId": "switch", "switchCheckedAt": at,
                           "physicalPair": {"hostPort": "eth0", "switchPort": "ge3", "source": "LLDP UI_VPN", "checkedAt": at}}],
     }
@@ -8792,6 +8793,15 @@ def test_agent_address_comparison_omits_path_for_ambiguous_network_observations(
     interface["switchObservations"].pop()
     interfaces.append({**interface, "guestPort": "net1"})
     assert _agent_ipv4_comparison(network, attachment) == expected
+    interfaces.pop()
+    attachment["guests"][0]["hypervisor"] = {"id": "pve"}
+    interface["ipv4Observations"][0]["checkedAt"] = "2026-11-13T14:39:00+00:00"
+    interface["switchObservations"][0].update(switch={"id": "switch"}, checkedAt="2026-11-13T14:39:00+00:00")
+    network["interfaces"] = [{"name": "ens18", "ipv4": [address]}]
+    assert _agent_ipv4_comparison(network, attachment)["matchedPaths"][0]["endpointInterface"] == "ens18"
+    network["interfaces"].append({"name": "bond0", "ipv4": [address]})
+    path, = _agent_ipv4_comparison(network, attachment)["matchedPaths"]
+    assert "endpointInterface" not in path
 
 
 def test_agent_audit_selects_only_current_registration_among_long_offline_duplicates(tmp_path):

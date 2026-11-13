@@ -3323,8 +3323,11 @@ def _agent_ipv4_comparison(network: dict, attachment: dict) -> dict:
                 observed[row["address"]].append((guest, interface, row))
     if not observed:
         return {}
-    reported = {address for interface in network["interfaces"] for address in interface["ipv4"]}
-    matched = sorted(observed.keys() & reported)
+    reported = defaultdict(list)
+    for interface in network["interfaces"]:
+        for address in interface["ipv4"]:
+            reported[address].append(interface.get("name"))
+    matched = sorted(observed.keys() & reported.keys())
     paths = []
     for address in matched:
         candidates = observed[address]
@@ -3337,12 +3340,14 @@ def _agent_ipv4_comparison(network: dict, attachment: dict) -> dict:
         port, = ports
         if "physicalPair" not in port:
             continue
+        names = reported[address]
         paths.append({"address": address, "guestPort": interface["guestPort"], "bridge": interface["bridge"],
                       "hypervisorId": guest["hypervisor"]["id"], "addressCheckedAt": row["checkedAt"],
                       "switchId": port["switch"]["id"], "switchCheckedAt": port["checkedAt"],
-                      "physicalPair": port["physicalPair"]})
-    return {"matched": matched, "endpointOnly": sorted(reported - observed.keys()),
-            "observedOnly": sorted(observed.keys() - reported), **({"matchedPaths": paths} if paths else {})}
+                      "physicalPair": port["physicalPair"],
+                      **({"endpointInterface": names[0]} if len(names) == 1 and names[0] else {})})
+    return {"matched": matched, "endpointOnly": sorted(reported.keys() - observed.keys()),
+            "observedOnly": sorted(observed.keys() - reported.keys()), **({"matchedPaths": paths} if paths else {})}
 
 
 def load_infrastructure_agent_audit(path: Path, *, node_id: str | None = None) -> dict:
