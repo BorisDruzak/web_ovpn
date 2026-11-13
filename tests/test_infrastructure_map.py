@@ -7771,6 +7771,15 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     assert hypervisor["guests"] == [guest]
     assert hypervisor["confirmedUplinkTotal"] == 1
     assert hypervisor["confirmedUplinks"] == [uplink]
+    hypervisor_node = next(node for node in raw["nodes"] if node["id"] == "pve")
+    hypervisor_node["sources"] = [{"name": "Proxmox", "status": "ok", "label": "В сети", "at": stamp}]
+    hypervisor_node["resourceCapacity"] = {"checkedAt": stamp, "memory": {"free": 40, "total": 1000},
+                                           "endpointMemory": {"availableBytes": 50, "checkedAt": stamp}}
+    read()
+    capacity = read_hypervisor()["resourceCapacity"]
+    assert capacity["memoryHeadroom"]["availablePercent"] == 5
+    assert capacity["memoryHeadroom"]["source"] == "Endpoint Agent"
+    assert read_hypervisor()["confirmedUplinks"] == [uplink]
     raw["nodes"].append({"id": "pve2", "name": "pve2", "kind": "Гипервизор"})
     raw["links"].append({**raw["links"][1], "a": "pve2", "portEvidence": []})
     read()

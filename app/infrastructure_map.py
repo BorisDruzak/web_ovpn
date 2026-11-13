@@ -3028,6 +3028,9 @@ def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
     detail = {}
     if anchor and anchor["kind"] == "Гипервизор":
+        detail.update({key: anchor[key] for key in (
+            "resourceCapacity", "hardwareDisks", "zfsPools", "lvmThinPools",
+        ) if key in anchor})
         candidates = {edge["b"] for edge in links if edge["a"] == node_id
                       and edge["confirmed"] and edge["kind"] == "Размещение ВМ" and nodes[edge["b"]]["guest"]}
         hosted = {key: guest for key, guest in _guest_attachments(nodes, links, sorted(candidates)).items()
