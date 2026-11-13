@@ -2342,6 +2342,8 @@ def _service_attachment_paths(service: dict, guests: dict) -> list[dict]:
         if len(candidates) != 1:
             continue
         guest, adapter, address_at = candidates[0]
+        if adapter.get("ambiguousSwitchPorts"):
+            continue
         if check.get("localListener"):
             local = [reading["checkedAt"] for reading in adapter.get("ipv4Observations", [])
                      if reading["address"] == target and reading["source"] == "UI_VPN"

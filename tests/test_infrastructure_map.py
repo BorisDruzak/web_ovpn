@@ -7270,6 +7270,11 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
                             "state": "reachable",
                             "guestId": "vm", "guestPort": "net0", "bridge": "vmbr1", "hypervisorId": "pve",
                             "switchId": "snr", "physicalPair": match["physicalPair"], "addressCheckedAt": stamp}
+    adapter["virtual"]["switchPorts"].append({"id": "snr", "port": "ge12", "at": stamp, "vlan": 1})
+    ambiguous = read()
+    assert ambiguous["guests"][0]["interfaces"][0]["ambiguousSwitchPorts"]
+    assert ambiguous.get("servicePaths", []) == []
+    adapter["virtual"]["switchPorts"].pop()
     raw["links"][1]["portEvidence"].append({**adapter, "b": "net1"})
     assert read()["servicePaths"] == []
     raw["links"][1]["portEvidence"].pop()
