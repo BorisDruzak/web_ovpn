@@ -3097,7 +3097,9 @@ def test_proxmox_backup_checks_match_storage_and_guest_and_expire():
 
 def test_guest_backup_coverage_is_scoped_and_failures_apply_to_the_right_guest(tmp_path):
     from app.infrastructure_collect import build_graph
-    from app.infrastructure_map import _map_statuses, _public_node, load_infrastructure_map, summarize_services
+    from app.infrastructure_map import (
+        _map_statuses, _public_node, load_infrastructure_map, summarize_guest_attachment, summarize_services,
+    )
 
     now = datetime.now(timezone.utc)
     stamp = now.isoformat()
@@ -3142,6 +3144,15 @@ def test_guest_backup_coverage_is_scoped_and_failures_apply_to_the_right_guest(t
         audit = next(row for row in summarize_services(graph)["serviceAudit"]["services"] if row["id"] == node["id"])
         assert audit["backupScope"] == node["backupScope"]
         assert audit["status"] == node["mapStatus"]
+        service = summarize_guest_attachment(graph, node["id"])["attachment"]
+        assert service["backupScope"] == node["backupScope"]
+        guest = summarize_guest_attachment(graph, "pve-guest:103")["attachment"]
+        assert guest["backupCoverage"]["state"] == next(
+            row["backupCoverage"]["state"] for row in graph["nodes"] if row["id"] == "pve-guest:103"
+        )
+        pbs = summarize_guest_attachment(graph, "pbs")["attachment"]
+        backup = next(row for row in pbs["services"] if row["node"]["id"] == node["id"])
+        assert backup["backupScope"] == node["backupScope"]
         return node["backupScope"], node["mapStatus"]
 
     pve["backup"]["results"][102]["successful"] = True

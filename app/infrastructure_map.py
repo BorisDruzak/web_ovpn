@@ -3470,6 +3470,7 @@ def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
         detail["checks"] = anchor["checks"]
         detail["serviceChecks"] = anchor["serviceChecks"]
         detail["reachability"] = anchor["reachability"]
+        detail.update({key: anchor[key] for key in ("backupCoverage", "backupScope") if key in anchor})
         if "managementRouterPaths" in anchor:
             detail["managementRouterPaths"] = anchor["managementRouterPaths"]
     if anchor and anchor["kind"] == "Сервис":
@@ -3521,6 +3522,7 @@ def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
             detail["services"].append({
                 "node": _attachment_node(service), "checks": service["checks"],
                 "serviceChecks": service["serviceChecks"], "servicePaths": paths,
+                **({"backupScope": service["backupScope"]} if "backupScope" in service else {}),
             })
     return {**metadata, "attachment": {"node": _attachment_node(anchor) if anchor else None,
                                        "guestTotal": len(guest_ids), "guests": list(guests.values()),
