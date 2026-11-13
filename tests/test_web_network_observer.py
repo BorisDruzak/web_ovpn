@@ -2750,7 +2750,8 @@ def test_https_speed_uses_profile_and_records_result_in_api_and_ui(
 
 
 @pytest.mark.parametrize("gateway_status", ["unreachable", "reachable"])
-def test_https_speed_waits_for_configured_wan_gateway(tmp_path, monkeypatch, gateway_status):
+@pytest.mark.parametrize("check", ["https_speed", "iperf3"])
+def test_speed_waits_for_configured_wan_gateway(tmp_path, monkeypatch, gateway_status, check):
     client, headers = make_client(tmp_path, monkeypatch)
     from app import network_checks, network_probe_profiles
 
@@ -2763,6 +2764,11 @@ def test_https_speed_waits_for_configured_wan_gateway(tmp_path, monkeypatch, gat
         "https_speed": {"wan2": {
             "label": "WAN 2", "peer": "162.159.140.220", "download_bytes": 100_000,
             "upload_bytes": 100_000, "router_source": "router", "source_address": "192.0.2.10",
+            "expected_wan_interface": "wan2", "gateway_check": {"profile": "wan", "probe": "gateway"},
+        }},
+        "throughput": {"wan2": {
+            "label": "WAN 2", "peer": "192.0.2.20", "port": 5201, "duration_seconds": 4,
+            "bitrate_mbps": 5, "router_source": "router", "source_address": "192.0.2.10",
             "expected_wan_interface": "wan2", "gateway_check": {"profile": "wan", "probe": "gateway"},
         }},
     })
@@ -2779,8 +2785,12 @@ def test_https_speed_waits_for_configured_wan_gateway(tmp_path, monkeypatch, gat
             }}
         return {"egress": {"status": "confirmed", "nat_interface": "wan1"}}
 
-    def measure(*args):
+    def measure(*args, **kwargs):
         calls.append(args)
+        if check == "iperf3":
+            return {"status": "ok", "result": {"sender_mbps": 5, "receiver_mbps": 4.9},
+                    "connection": {"source_address": "192.0.2.10", "source_port": 42013,
+                                   "peer_address": "192.0.2.20", "peer_port": 5201}}
         return {"status": "measured", "result": {
             "mbps": 8.0, "duration_seconds": 0.1, "transferred_bytes": 100_000,
             "source_address": "192.0.2.10", "source_port": 42013,
@@ -2788,7 +2798,8 @@ def test_https_speed_waits_for_configured_wan_gateway(tmp_path, monkeypatch, gat
 
     monkeypatch.setattr(network_checks, "run_netctl", netctl)
     monkeypatch.setattr(network_checks, "run_https_speed", measure)
-    payload = {"check": "https_speed", "profile": "wan2", "direction": "receive"}
+    monkeypatch.setattr(network_checks, "run_throughput", measure)
+    payload = {"check": check, "profile": "wan2", "direction": "receive"}
     base = "/api/v1/network/diagnostics"
     row = client.post(f"{base}/checks", headers=headers, json=payload).json()["data"]
     assert row["status"] == ("wan_mismatch" if gateway_status == "reachable" else "wan_gateway_unavailable")

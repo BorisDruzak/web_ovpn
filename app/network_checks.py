@@ -19,7 +19,7 @@ from .models import WebAuditLog
 from .network_actions import acquire_network_action
 from .network_capture_store import create_capture
 from .network_https_speed import SPEED_HOST, run_https_speed
-from .network_probe_profiles import ProfileId, load_probe_profiles
+from .network_probe_profiles import ProbeProfiles, ProfileId, WanGatewayCheck, load_probe_profiles
 from .network_route_history import persist_route_run
 from .network_route_matrix import run_route_matrix
 from .network_throughput import run_throughput
@@ -296,13 +296,15 @@ def loop_diagnostics(source: str | None) -> dict:
 
 
 def _iperf_check(check: IperfCheck) -> dict:
-    profile = load_probe_profiles().throughput.get(check.profile)
+    profiles = load_probe_profiles()
+    profile = profiles.throughput.get(check.profile)
     if profile is None:
         return {"status": "not_found", "result": {}}
     if not _throughput_lock.acquire(blocking=False):
         return {"status": "busy", "result": {}}
     try:
-        result = {"point": "vpn_server", **profile.model_dump(exclude_none=True), "direction": check.direction}
+        result = {"point": "vpn_server", **profile.model_dump(exclude_none=True, exclude={"gateway_check"}),
+                  "direction": check.direction}
         binding = {}
         if profile.source_address is not None:
             route = lookup_linux_route(
@@ -315,6 +317,10 @@ def _iperf_check(check: IperfCheck) -> dict:
             if profile.bind_interface and route["result"].get("dev") != profile.bind_interface:
                 return {"status": "route_mismatch", "result": result}
             binding = {"source_address": profile.source_address, "bind_interface": profile.bind_interface}
+        if profile.gateway_check:
+            result["gateway_check"] = _check_wan_gateway(profiles, profile.gateway_check)
+            if result["gateway_check"]["status"] != "reachable":
+                return {"status": "wan_gateway_unavailable", "result": result}
         reading = run_throughput(
             profile.peer, profile.port, check.direction,
             duration_seconds=profile.duration_seconds, bitrate_mbps=profile.bitrate_mbps,
@@ -360,6 +366,25 @@ def _record_wan_observation(result: dict, source: str, expected: str | None, obs
     return "measured"
 
 
+def _check_wan_gateway(profiles: ProbeProfiles, gateway: WanGatewayCheck) -> dict:
+    probe = next(probe for probe in profiles.routes[gateway.profile].probes if probe.id == gateway.probe)
+    try:
+        measurement = run_netctl([
+            "path", "probe", f"--profile={gateway.profile}", f"--probe={gateway.probe}",
+            f"--expected-config={probe.config_digest()}",
+        ], timeout=22).get("probe") or {}
+    except (NetctlError, OSError, UnicodeError):
+        measurement = {}
+    evidence = measurement.get("evidence") or {}
+    return {
+        "profile": gateway.profile, "probe": gateway.probe,
+        "interface": probe.interface, "target": probe.target,
+        "status": measurement.get("status", "unavailable"),
+        "reason": measurement.get("reason"),
+        **{key: evidence[key] for key in ("gateway_link", "gateway_source", "gateway_arp") if key in evidence},
+    }
+
+
 def _https_speed_check(check: HttpsSpeedCheck) -> dict:
     profiles = load_probe_profiles()
     profile = profiles.https_speed.get(check.profile)
@@ -375,23 +400,8 @@ def _https_speed_check(check: HttpsSpeedCheck) -> dict:
         }
         if route["status"] != "route_found":
             return {"status": route["status"], "result": result}
-        if gateway := profile.gateway_check:
-            probe = next(probe for probe in profiles.routes[gateway.profile].probes if probe.id == gateway.probe)
-            try:
-                measurement = run_netctl([
-                    "path", "probe", f"--profile={gateway.profile}", f"--probe={gateway.probe}",
-                    f"--expected-config={probe.config_digest()}",
-                ], timeout=22).get("probe") or {}
-            except (NetctlError, OSError, UnicodeError):
-                measurement = {}
-            evidence = measurement.get("evidence", {})
-            result["gateway_check"] = {
-                "profile": gateway.profile, "probe": gateway.probe,
-                "interface": probe.interface, "target": probe.target,
-                "status": measurement.get("status", "unavailable"),
-                "reason": measurement.get("reason"),
-                **{key: evidence[key] for key in ("gateway_link", "gateway_source", "gateway_arp") if key in evidence},
-            }
+        if profile.gateway_check:
+            result["gateway_check"] = _check_wan_gateway(profiles, profile.gateway_check)
             if result["gateway_check"]["status"] != "reachable":
                 return {"status": "wan_gateway_unavailable", "result": result}
         size = profile.upload_bytes if check.direction == "send" else profile.download_bytes
@@ -452,7 +462,7 @@ def execute_network_check(check: NetworkCheck, *, allowed: bool = True, capture_
     return {"check": check.check, "target": target, "checked_at": datetime.now(UTC).isoformat(), **evidence}
 
 
-_HTTPS_MEASUREMENT_STATUSES = {"measured", "wan_mismatch", "wan_unconfirmed"}
+_SPEED_MEASUREMENT_STATUSES = {"measured", "wan_mismatch", "wan_unconfirmed"}
 
 
 def run_audited_network_check(db: Session, request: Request, actor: str, check: NetworkCheck) -> dict:
@@ -470,18 +480,20 @@ def run_audited_network_check(db: Session, request: Request, actor: str, check: 
         persist_route_run(db, owner=owner, result=result)
     message = result["target"]
     if isinstance(check, HttpsSpeedCheck) and (
-        result["status"] in _HTTPS_MEASUREMENT_STATUSES or "gateway_check" in result["result"]
+        result["status"] in _SPEED_MEASUREMENT_STATUSES or "gateway_check" in result["result"]
     ):
         details = {key: result["result"][key] for key in (
             "mbps", "transferred_bytes", "duration_seconds", "wan_observation", "gateway_check",
         ) if key in result["result"]}
         message = json.dumps({"target": result["target"], "result": details}, ensure_ascii=False)
-    if isinstance(check, IperfCheck) and result["status"] in _HTTPS_MEASUREMENT_STATUSES:
+    if isinstance(check, IperfCheck) and (
+        result["status"] in _SPEED_MEASUREMENT_STATUSES or "gateway_check" in result["result"]
+    ):
         reading = result["result"]
         details = {
             key: reading[key] for key in (
                 "sender_mbps", "receiver_mbps", "retransmits", "bitrate_mbps", "preconnect_retries", "connection",
-                "wan_observation",
+                "wan_observation", "gateway_check",
             ) if key in reading
         }
         route = reading.get("kernel_route", {}).get("result", {})

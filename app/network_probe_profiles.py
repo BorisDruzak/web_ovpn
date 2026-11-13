@@ -38,6 +38,13 @@ class ProbeProfile(BaseModel):
         return value
 
 
+class WanGatewayCheck(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    profile: ProfileId
+    probe: ProfileId
+
+
 class ThroughputProfile(ProbeProfile):
     duration_seconds: int = Field(ge=1, le=10)
     bitrate_mbps: int = Field(ge=1, le=50)
@@ -45,6 +52,7 @@ class ThroughputProfile(ProbeProfile):
     bind_interface: str | None = None
     router_source: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
     expected_wan_interface: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_][A-Za-z0-9_.:@-]{0,31}$")
+    gateway_check: WanGatewayCheck | None = None
 
     @model_validator(mode="after")
     def validate_binding(self):
@@ -56,19 +64,14 @@ class ThroughputProfile(ProbeProfile):
             )
         if self.expected_wan_interface and not self.router_source:
             raise ValueError("expected WAN interface requires RouterOS observation")
+        if self.gateway_check and not self.expected_wan_interface:
+            raise ValueError("gateway check requires an expected WAN interface")
         if self.router_source and (not self.source_address or ipaddress.ip_address(self.source_address).version != 4):
             raise ValueError("RouterOS observation requires a bound IPv4 source")
         return self
 
     def config_digest(self) -> str:
         return hashlib.sha256(self.model_dump_json(exclude_none=True).encode()).hexdigest()
-
-
-class WanGatewayCheck(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    profile: ProfileId
-    probe: ProfileId
 
 
 class HttpsSpeedProfile(ProbeProfile):
@@ -254,7 +257,7 @@ class ProbeProfiles(BaseModel):
 
     @model_validator(mode="after")
     def validate_speed_gateways(self):
-        for speed in self.https_speed.values():
+        for speed in (*self.https_speed.values(), *self.throughput.values()):
             if check := speed.gateway_check:
                 route = self.routes.get(check.profile)
                 probe = next((probe for probe in route.probes if probe.id == check.probe), None) if route else None

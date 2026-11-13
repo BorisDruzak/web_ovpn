@@ -104,6 +104,9 @@
     <dt>Интерфейс по адресу NAT</dt><dd>{{ wan_result(result.result.wan_observation) }}</dd>
     {% endif %}
     <dt>Профиль замера</dt><dd>{{ result.result.duration_seconds }} с · цель {{ result.result.bitrate_mbps }} Мбит/с</dd>
+    {% if result.result.gateway_check is defined %}
+    <dt>Шлюз WAN</dt><dd>{{ wan_gateway_result(result.result.gateway_check, status_labels) }}</dd>
+    {% endif %}
   </dl>
   {% elif result.check == 'https_speed' and result.result %}
   <dl>
