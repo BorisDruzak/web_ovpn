@@ -2226,7 +2226,7 @@ def _physical_attachments(nodes: dict, links: list[dict], host_ids: list[str]) -
                                          "confirmed": edge["confirmed"], "ports": readings})
     for group in connections.values():
         group.sort(key=lambda row: (row["kind"] != "Сетевое соединение", not row["confirmed"], row["peer"]["id"]))
-    observed_ports = _observed_management_ports(links) if controllers else {}
+    observed_ports = _observed_management_ports(links, nodes) if controllers else {}
     return [{"host": _attachment_node(nodes[host_id]), "connectionTotal": len(group), "connections": group[:24],
              "pendingPortPairTotal": len(pending_by_host[host_id]), "pendingPortPairs": pending_by_host[host_id][:24],
              **({"managementControllers": [
@@ -2421,15 +2421,38 @@ def _attach_management_vlan_observations(nodes: dict, links: list[dict], now: da
                     vlan["managementObservation"] = {"address": address, "switchSide": side, "checkedAt": checked_at}
 
 
-def _observed_management_ports(links: list[dict]) -> dict:
+def _observed_management_ports(links: list[dict], nodes: dict) -> dict:
     candidates = defaultdict(dict)
     physical = _current_physical_port_pairs(links)
     for edge in links:
-        if edge["kind"] not in {"Путь по MAC-таблице", "Транзитный сегмент"} or not edge["confirmed"]:
+        if edge["kind"] not in {"Путь по MAC-таблице", "Транзитный сегмент", "Сетевое соединение"} or not edge["confirmed"]:
             continue
         for report in edge["portEvidence"]:
             address = report.get("managementAddress")
             if not report["confirmed"] or not address:
+                continue
+            if lacp := report.get("lacp"):
+                state = lacp.get("aggregateState", {})
+                if state.get("state") != "up" or state["stale"]:
+                    continue
+                switch = edge[lacp["side"]]
+                host = edge["b" if lacp["side"] == "a" else "a"]
+                aggregate = lacp["aggregate"]
+                health = next((row for row in nodes[host].get("lacpHealth", [])
+                               if row["switchId"] == switch and port_label_key(row["aggregate"]) == port_label_key(aggregate)), {})
+                members = [member for member in health.get("members", []) if member["status"] == "forwarding"]
+                if not any(port_label_key(member["name"]) == port_label_key(lacp["member"])
+                           and member["partnerPort"] == lacp["partnerPort"] for member in members):
+                    continue
+                key = switch, port_label_key(aggregate), "lacp"
+                paths = candidates[host, address]
+                previous = paths.get(key, {}).get("lacpAttachment", {})
+                if report["at"] > previous.get("checkedAt", ""):
+                    paths[key] = {"lacpAttachment": {"switchId": switch, "aggregate": aggregate,
+                                                    "checkedAt": report["at"], "source": report["source"],
+                                                    "members": members}}
+                continue
+            if edge["kind"] == "Сетевое соединение":
                 continue
             if report["source"] in {"MikroTik · ARP", "MikroTik · ARP + FDB"}:
                 side, field, id_key = "a", "routerAttachment", "routerId"
@@ -2527,7 +2550,7 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime, *, endpoint_
         if len(targets) <= 12 and (paths := _service_attachment_paths(nodes[service], targets))
     }
     management = _management_port_paths(nodes, links)
-    observed_ports = _observed_management_ports(links)
+    observed_ports = _observed_management_ports(links, nodes)
     for service, hosts in service_hosts.items():
         if len(hosts) == 1:
             host, = hosts
@@ -2583,6 +2606,12 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime, *, endpoint_
                 switch, port = attachment["switchId"], attachment["port"]
                 record(switch, port, service, "switch_mac")
                 path_checks[switch, port_label_key(port), service].add(check_key(path))
+                continue
+            if attachment := path.get("lacpAttachment"):
+                switch = attachment["switchId"]
+                for port in [attachment["aggregate"], *(member["name"] for member in attachment["members"])]:
+                    record(switch, port, service, "host_lacp")
+                    path_checks[switch, port_label_key(port), service].add(check_key(path))
                 continue
             if path.get("management"):
                 basis = "host_management"
@@ -2714,17 +2743,17 @@ def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
         detail["servicePaths"] = _service_attachment_paths(anchor, guests)
         if len(targets) == 1 and len(host_ids) == 1:
             detail["servicePaths"].extend(_management_service_paths(
-                anchor, host_ids[0], _management_port_paths(nodes, links), _observed_management_ports(links),
+                anchor, host_ids[0], _management_port_paths(nodes, links), _observed_management_ports(links, nodes),
             ))
         elif len(targets) == len(host_ids) == 2:
-            detail["servicePaths"].extend(_transit_service_paths(anchor, targets, _observed_management_ports(links)))
+            detail["servicePaths"].extend(_transit_service_paths(anchor, targets, _observed_management_ports(links, nodes)))
     elif anchor and anchor["kind"] in NETWORK_KINDS[:2]:
         attachments = _map_attachments(nodes, links, datetime.now(timezone.utc))
         detail["servicePorts"] = graph.get("servicePorts", attachments["servicePorts"]).get(node_id, [])
         if paths := attachments["servicePaths"].get(node_id):
             detail["servicePaths"] = paths
     elif anchor and not anchor["guest"]:
-        if paths := _management_service_paths(anchor, node_id, {}, _observed_management_ports(links)):
+        if paths := _management_service_paths(anchor, node_id, {}, _observed_management_ports(links, nodes)):
             detail["servicePaths"] = paths
     return {**metadata, "attachment": {"node": _attachment_node(anchor) if anchor else None,
                                        "guestTotal": len(guest_ids), "guests": list(guests.values()),
@@ -3322,6 +3351,9 @@ def load_infrastructure_map(
                         polled = _time(report.get("lacpPolledAt"))
                         if "lacp" in evidence[-1] and observed and polled and observed <= polled <= now:
                             evidence[-1]["lacp"]["polledAt"] = polled.isoformat()
+                            address = _network_address(report.get("managementAddress"))
+                            if address and ":" not in address and "/" not in address:
+                                evidence[-1]["managementAddress"] = address
                 elif edge["kind"] == "Сетевое соединение" or both_ports or source == SHARED_LLDP_SOURCE or observed_attachment:
                     states = {}
                     for side in ("a", "b"):

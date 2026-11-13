@@ -3665,6 +3665,10 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
             "state": "reachable", "source": "netctl", "method": "ICMP", "checkedAt": at}
         next(node for node in graph["nodes"] if node["id"] == "pbs-web")["reachability"] = {
             "state": "reachable", "source": "UI_VPN", "method": "HTTPS", "checkedAt": at}
+        next(node for node in graph["nodes"] if node["id"] == "pbs-web")["serviceChecks"] = [
+            {"state": "reachable", "source": "UI_VPN", "method": "HTTPS", "checkedAt": at,
+             "target": address, "port": 8007} for address in ("192.0.2.14", "192.0.2.15")
+        ]
         path.write_text(json.dumps(graph), encoding="utf-8")
         node = next(node for node in load_infrastructure_map(path, stamp)["nodes"] if node["id"] == "pbs")
         return node["mapStatus"], node["lacpHealth"][0]
@@ -3673,6 +3677,20 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
     assert (color, health["status"]) == ("ok", "ok")
     assert [member["partnerPort"] for member in health["members"]] == [1, 2]
     assert [member["partnerInterfaceState"] for member in health["members"]] == ["unconfirmed"] * 2
+
+    def service_paths(stamp=now):
+        snapshot = load_infrastructure_map(path, stamp, include_guest_attachments=True)
+        paths = summarize_guest_attachment(snapshot, "pbs-web")["attachment"]["servicePaths"]
+        assert snapshot["servicePaths"].get("pbs-web", []) == paths
+        return paths
+
+    probe, = service_paths()
+    assert probe["target"] == "192.0.2.14" and probe["port"] == 8007
+    assert probe["lacpAttachment"] == {
+        "switchId": "snr", "aggregate": "po1", "checkedAt": at, "source": "SNMP LACP + ARP",
+        "members": health["members"],
+    }
+    assert "physicalPair" not in probe
 
     def service_host(stamp=now):
         snapshot = load_infrastructure_map(path, stamp)
@@ -3762,11 +3780,13 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
     color, health = read()
     assert (color, health["status"]) == ("warn", "warn")
     assert health["members"][1] == {"name": "ge7", "status": "down", "checkedAt": at}
+    assert service_paths()[0]["lacpAttachment"]["members"] == [health["members"][0]]
     assert service_host()["lacpHealth"] == [health]
     assert [gap["switchPort"] for gap in lacp_gaps()] == ["ge6"]
     assert service_ports() == [("ge6", ["host_lacp"]), ("po1", ["host_lacp"])]
     ports[2]["oper_status"] = "down"
     read()
+    assert service_paths() == []
     assert service_ports() == [("ge6", ["host_lacp"])]
     ports[2]["oper_status"] = "up"
     assert read(now + timedelta(minutes=6))[0] == "unknown"

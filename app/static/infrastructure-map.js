@@ -1039,7 +1039,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       const attachment = path.routerAttachment ?? path.switchAttachment;
       const key = JSON.stringify([path.method, path.target, path.port, path.gateway, path.guestId, path.guestPort,
         path.hypervisorId, path.physicalPair?.hostPort, path.switchId, path.physicalPair?.switchPort,
-        attachment?.routerId, attachment?.switchId, attachment?.port]);
+        attachment?.routerId, attachment?.switchId, attachment?.port,
+        path.lacpAttachment?.switchId, path.lacpAttachment?.aggregate]);
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(path);
     }
@@ -1074,6 +1075,16 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       }
       for (const reading of readings) {
         if (reading) row.append(make('small', reading));
+      }
+      if (path.lacpAttachment) {
+        const {switchId, aggregate, checkedAt, members} = path.lacpAttachment;
+        const device = byId.get(switchId)?.name ?? switchId;
+        row.append(make('small', `LACP + ARP · ${formatTime(checkedAt)}`), switchPortButton(switchId, device, aggregate));
+        for (const {name, partnerPort} of members) {
+          row.append(switchPortButton(switchId, device, name), make('small', `Порт партнёра LACP ${partnerPort}`));
+        }
+        list.append(row);
+        continue;
       }
       const attachment = path.routerAttachment ?? path.switchAttachment;
       if (attachment) {

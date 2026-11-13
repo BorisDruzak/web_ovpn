@@ -2809,7 +2809,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             edge(switch, asset, "Сетевое соединение", "SNMP LACP + ARP", at=checked_at,
                  details=f"LACP: подтверждено {len(confirmed)} из {report['expected']} портов",
                  ports=(f"{report['aggregate']} / {member['port']}", f"LACP {member['partner_port']}"),
-                 lacp_polled_at=report["at"])
+                 lacp_polled_at=report["at"], management_address=address)
     for key, observation in network.get("asset_mac_checks", {}).items():
         if key in nodes and observation_is_fresh(observation["checkedAt"], now):
             nodes[key].setdefault("reachability", observation)
