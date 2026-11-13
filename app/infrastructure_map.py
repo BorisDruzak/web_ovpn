@@ -76,7 +76,7 @@ CLUSTER_HEALTH_METHODS = ("Кворум", "Участники кластера")
 RECIPROCAL_MAC_SOURCE = "SNMP · взаимные MAC"
 CURRENT_PORT_PAIR_SOURCES = {
     "netctl", "LLDP UI_VPN", "LLDP · двустороннее", "netctl FDB + Proxmox",
-    "SNMP LACP + ARP", "SNMP · двусторонний FDB", "SNMP · порты STP",
+    "SNMP · двусторонний FDB", "SNMP · порты STP",
 }
 SHARED_LLDP_KIND = "Путь через общий порт"
 SHARED_LLDP_SOURCE = "LLDP · общий порт"
@@ -1590,7 +1590,7 @@ def _audit_link_vlans(expected: object, ports: dict, now: datetime) -> list[dict
 def _link_port_alerts(evidence: list[dict]) -> list[dict]:
     alerts = {}
     for report in evidence:
-        if not report.get("pairEvidence"):
+        if not (report.get("pairEvidence") or report.get("lacp")):
             continue
         ports = report.get("portStates", {})
         comparison = report.get("portComparison")
@@ -1723,6 +1723,7 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
                       for alert in link.get("portAlerts", []))
         reports = link["portEvidence"]
         current = [r for r in reports if link["confirmed"] and r.get("pairEvidence") == "current"]
+        lacp_members = [r for r in reports if link["confirmed"] and r.get("lacp")]
         inventory = [r for r in reports if r.get("pairEvidence") == "verified_inventory"]
         for report in current:
             if report["source"] == "SNMP LACP + ARP" or not report["at"]:
@@ -1735,7 +1736,7 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
             ))
             source, at = report["source"], report["at"]
             sources[source] = max(at, sources.get(source, at))
-        for report in current + inventory:
+        for report in current + inventory + lacp_members:
             remember_ports(a, b, report["a"], report["b"])
             if lacp := report.get("lacp"):
                 side, peer = ("a", "b") if lacp["side"] == "a" else ("b", "a")
@@ -1772,7 +1773,7 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
         for declared in reports:
             if (declared["source"] != "GitHub" or declared["confirmed"]
                     or all(port_label_key(declared[side]) in unnamed for side in ("a", "b"))
-                    or any(covers(declared, r) for r in current)):
+                    or any(covers(declared, r) for r in current + lacp_members)):
                 continue
             related = []
             for origin, report in paths.get(frozenset((a, b)), []):
@@ -3481,7 +3482,7 @@ def load_infrastructure_map(
                     elif source in CURRENT_PORT_PAIR_SOURCES:
                         evidence[-1]["pairEvidence"] = "current"
                 if source == "SNMP LACP + ARP":
-                    if evidence[-1].get("pairEvidence") == "current":
+                    if edge["kind"] == "Сетевое соединение" and both_ports and evidence[-1]["confirmed"]:
                         _attach_lacp_port_states(evidence[-1], edge, nodes, port_states)
                         polled = _time(report.get("lacpPolledAt"))
                         if "lacp" in evidence[-1] and observed and polled and observed <= polled <= now:

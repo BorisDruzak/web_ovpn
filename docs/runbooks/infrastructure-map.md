@@ -593,6 +593,8 @@ Server Observer измеряет доступную физическую пам�
 
 В `servicePaths[].lacpAttachment` проверка адреса управления привязывается к однозначно наблюдаемому агрегату по свежим SNMP LACP и ARP. Карточка показывает работающие участники и их номера партнёра. Отдельный запрос может пройти через любой из участников. Имя физического порта на стороне хоста требует отдельного подтверждения.
 
+Наблюдение участника `SNMP LACP + ARP` публикуется в `lacp` с `partnerInterfaceState: unconfirmed`. Поле `pairEvidence` для этой записи отсутствует. Состояние агрегата и список неизвестных имён портов остаются доступны в `lacpHealth` и `lacpPartnerInterfaceGaps`.
+
 В MCP и API тот же результат доступен в `attachment.physicalHosts[].lacpHealth`. Состояние относится к агрегату хоста. `partnerPort` содержит номер LACP, а `partnerInterfaceState` показывает наличие подтверждения имени физического интерфейса партнёра.
 
 В карточке связи состояние и скорость физического порта показываются отдельно от состояния и скорости агрегата. API и MCP возвращают показания физического порта в `portEvidence[].portStates`, агрегата в `portEvidence[].lacp.aggregateState`, номер порта партнёра в `portEvidence[].lacp.partnerPort`. Для показаний нужен свежий опрос SNMP. В `view=attachment` состояние агрегата также доступно в `ports[].lacp.aggregateState` у подключения хоста и в `servicePaths[].lacpAttachment.aggregateState` у проверенного пути службы.

@@ -3782,6 +3782,7 @@ def test_lacp_confirms_only_ports_whose_partner_matches_fresh_arp(tmp_path):
     assert result["confirmed"] and result["source"] == "SNMP LACP + ARP"
     assert [(p["a"], p["b"]) for p in result["portEvidence"] if p["confirmed"]] == [("po1 / ge6", "LACP 1")]
     member = next(p for p in result["portEvidence"] if p["confirmed"])
+    assert "pairEvidence" not in member
     assert member["portStates"]["a"]["name"] == "ge6"
     assert member["portStates"]["a"]["speedBps"] == 10**9
     assert "b" not in member["portStates"] and "portComparison" not in member
@@ -3860,6 +3861,8 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
 
     host = service_host()
     assert host["lacpHealth"] == [health]
+    assert all("pairEvidence" not in row for connection in host["connections"] for row in connection["ports"]
+               if "lacp" in row)
     members = [row["lacp"] for connection in host["connections"] for row in connection["ports"] if "lacp" in row]
     assert len(members) == 2
     assert all(member["aggregateState"] == probe["lacpAttachment"]["aggregateState"] for member in members)
