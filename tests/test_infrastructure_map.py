@@ -6183,7 +6183,7 @@ def test_skipped_host_probe_reports_failed_local_arp_without_promoting_availabil
 def test_skipped_service_shows_arp_from_its_host_and_same_address(tmp_path, monkeypatch):
     from app import infrastructure_service_probes as probes
     from app.infrastructure_collect import _asset_icmp_probes, build_graph
-    from app.infrastructure_map import load_infrastructure_map, summarize_services
+    from app.infrastructure_map import load_infrastructure_map, summarize_guest_attachment, summarize_services
 
     address = "192.0.2.120"
     arp = {"state": "no_reply", "address": address, "sourceIP": "192.0.2.30", "interface": "ens18"}
@@ -6214,6 +6214,11 @@ def test_skipped_service_shows_arp_from_its_host_and_same_address(tmp_path, monk
     assert matching["arpDiagnostic"] == arp and "arpDiagnostic" not in other
     issues = summarize_services(loaded)["serviceAudit"]["services"][0]["issues"]
     assert issues[0]["arpDiagnostic"] == arp
+    attachment = summarize_guest_attachment(loaded, "web")["attachment"]
+    assert attachment["serviceChecks"] == [matching, other]
+    assert attachment["servicePaths"] == []
+    assert attachment["physicalHosts"][0]["host"]["id"] == "server"
+    assert "serviceChecks" not in summarize_guest_attachment(loaded, "server")["attachment"]
 
 
 def test_icmp_via_expected_router_keeps_route_evidence_separate_from_echo(monkeypatch):
