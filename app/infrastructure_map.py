@@ -1306,14 +1306,22 @@ def _attach_backup_scope(nodes: dict) -> None:
     service = nodes.get(BACKUP_SERVICE_ID)
     if not service or service["kind"] != "Сервис":
         return
-    coverage = [node["backupCoverage"] for node in nodes.values() if "backupCoverage" in node]
-    storages = {row["storage"] for row in coverage}
+    guests = [node for node in nodes.values() if "backupCoverage" in node]
+    storages = {node["backupCoverage"]["storage"] for node in guests}
     if len(storages) != 1:
         return
     storage, = storages
-    counts = Counter(row["state"] for row in coverage)
-    service["backupScope"] = {"storage": storage, "total": len(coverage), "scheduled": counts["scheduled"],
-                              "notScheduled": counts["not_scheduled"], "unknown": counts["unknown"]}
+    running = [node for node in guests if _guest_power(node) == "running"]
+
+    def scope(group):
+        counts = Counter(node["backupCoverage"]["state"] for node in group)
+        return {"total": len(group), "scheduled": counts["scheduled"],
+                "notScheduled": counts["not_scheduled"], "unknown": counts["unknown"]}
+
+    gaps = [{**{key: node[key] for key in ("id", "name", "vmid")}, "state": node["backupCoverage"]["state"]}
+            for node in running if node["backupCoverage"]["state"] != "scheduled"]
+    gaps.sort(key=lambda row: (row["state"] != "not_scheduled", row["vmid"], row["id"]))
+    service["backupScope"] = {"storage": storage, **scope(guests), "running": scope(running), "runningGaps": gaps[:64]}
 
 
 def _map_statuses(nodes: dict, links: list[dict]) -> None:

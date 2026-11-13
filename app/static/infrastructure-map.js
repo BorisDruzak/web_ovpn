@@ -1690,7 +1690,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       propertiesSection.append(panel);
     }
     if (node.backupScope) {
-      const {storage, total, scheduled, notScheduled, unknown} = node.backupScope;
+      const {storage, total, scheduled, notScheduled, unknown, running, runningGaps = []} = node.backupScope;
       const list = make('dl');
       list.append(make('dt', 'Хранилище'), make('dd', storage),
         make('dt', 'В расписании'), make('dd', `${scheduled} из ${total}`),
@@ -1699,6 +1699,24 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       const panel = make('section');
       panel.dataset.section = 'backup-scope';
       panel.append(make('h3', 'Расписание копирования ВМ и контейнеров'), list);
+      if (running && runningGaps.length) {
+        const review = make('details');
+        const count = running.notScheduled + running.unknown;
+        const guests = make('ul', null, 'map-detail-list');
+        for (const {id, name, vmid, state} of runningGaps) {
+          const row = make('li');
+          const open = make('button', `ВМ/КТ ${vmid} · ${name}`);
+          open.type = 'button';
+          open.addEventListener('click', () => select(id));
+          row.append(open, make('small', state === 'not_scheduled' ? 'Вне расписания' : 'Расписание не подтверждено'));
+          guests.append(row);
+        }
+        review.append(make('summary', `Проверить расписание запущенных ВМ и контейнеров · ${count}`), guests);
+        if (count > runningGaps.length) {
+          review.append(make('small', `Показано ${runningGaps.length} из ${count}`));
+        }
+        panel.append(review);
+      }
       propertiesSection.append(panel);
     }
     if (node.backupCoverage) {

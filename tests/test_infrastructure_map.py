@@ -2699,11 +2699,21 @@ def test_guest_backup_coverage_is_scoped_and_failures_apply_to_the_right_guest(t
         return node["backupScope"]
 
     pve["backup"].pop("incomplete")
-    assert read_scope() == {"storage": "pbs", "total": 3, "scheduled": 2, "notScheduled": 1, "unknown": 0}
+    scope = read_scope()
+    assert scope["running"] == {"total": 3, "scheduled": 2, "notScheduled": 1, "unknown": 0}
+    assert scope["runningGaps"] == [{"id": "pve-guest:103", "name": "vm-103", "vmid": 103,
+                                     "state": "not_scheduled"}]
+    pve["guests"][1]["status"] = "stopped"
+    scope = read_scope()
+    assert scope["notScheduled"] == 1 and scope["running"]["notScheduled"] == 0
+    assert scope["runningGaps"] == []
+    pve["guests"][1]["status"] = "running"
     pve["backup"]["incomplete"] = True
-    assert read_scope() == {"storage": "pbs", "total": 3, "scheduled": 2, "notScheduled": 0, "unknown": 1}
+    scope = read_scope()
+    assert scope["running"] == {"total": 3, "scheduled": 2, "notScheduled": 0, "unknown": 1}
+    assert scope["runningGaps"][0]["state"] == "unknown"
     pve["backup"]["checkedAt"] = (now - timedelta(minutes=6)).isoformat()
-    assert read_scope() == {"storage": "pbs", "total": 3, "scheduled": 0, "notScheduled": 0, "unknown": 3}
+    assert read_scope()["unknown"] == 3
 
 
 def test_proxmox_port_observer_verifies_target_and_only_updates_inventory_ports(tmp_path, monkeypatch):
@@ -3808,7 +3818,9 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
         backup = next(service for service in port["services"] if service["id"] == "proxmox-pbs-backups")
         assert backup["backupChecks"] == {"passed": 1, "failed": 1, "unconfirmed": 1}
         assert backup["backupScope"] == {"storage": "pbs", "total": 3, "scheduled": 1,
-                                         "notScheduled": 1, "unknown": 1}
+                                         "notScheduled": 1, "unknown": 1,
+                                         "running": {"total": 0, "scheduled": 0, "notScheduled": 0, "unknown": 0},
+                                         "runningGaps": []}
         assert "probeEndpoints" not in backup
     network["arp"][0]["last_seen_at"] = (now - timedelta(minutes=6)).isoformat()
     assert read()[0] == "ok"
