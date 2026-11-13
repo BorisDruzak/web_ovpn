@@ -139,6 +139,7 @@
             {% if device.coverage.fdb.reason is defined %}
             <br>FDB · {{ {
               'partial_fdb_poll': 'часть записей не разобрана',
+              'failed_fdb_poll': 'сбой среди последних опросов',
               'too_few_polls': 'меньше трёх опросов в окне',
               'no_vlan_observations': 'нет наблюдений MAC с VLAN'
             }.get(device.coverage.fdb.reason, 'недостаточно данных') }}

@@ -2923,7 +2923,11 @@ def test_loop_evidence_shared_by_api_and_panel(tmp_path, monkeypatch):
     assert "Признаки петли не выявлены" in response.text
 
 
-def test_loop_panel_shows_port_broadcast_as_context(tmp_path, monkeypatch):
+@pytest.mark.parametrize("reason,label", [
+    ("partial_fdb_poll", "часть записей не разобрана"),
+    ("failed_fdb_poll", "сбой среди последних опросов"),
+])
+def test_loop_panel_shows_port_broadcast_as_context(tmp_path, monkeypatch, reason, label):
     client, headers = make_client(tmp_path, monkeypatch)
     from app import network_checks
 
@@ -2933,7 +2937,7 @@ def test_loop_panel_shows_port_broadcast_as_context(tmp_path, monkeypatch):
     movement = {"mac": "00:11:22:33:44:66", "ports": ["ether3", "ether4"],
                 "first_observed_at": interval["since"], "last_observed_at": interval["until"]}
     device = {"source": "switch-1", "status": "mac_flapping",
-              "coverage": {"fdb": {"status": "insufficient", "reason": "partial_fdb_poll"},
+              "coverage": {"fdb": {"status": "insufficient", "reason": reason},
                            "stp": {"status": "unavailable"},
                            "broadcast": {"status": "recent", "sampled_ports": 2, "valid_intervals": 1}},
               "unclassified_mac_movements": [movement],
@@ -2944,7 +2948,7 @@ def test_loop_panel_shows_port_broadcast_as_context(tmp_path, monkeypatch):
     })
     api = client.get("/api/v1/network/diagnostics/loops?source=switch-1", headers=headers)
     report = api.json()["data"]["result"]["sources"][0]
-    assert report["coverage"]["fdb"]["reason"] == "partial_fdb_poll"
+    assert report["coverage"]["fdb"]["reason"] == reason
     assert report["evidence"][0]["broadcast_intervals"] == [interval]
     assert report["unclassified_mac_movements"] == [movement]
     csrf = login(client)
@@ -2954,7 +2958,7 @@ def test_loop_panel_shows_port_broadcast_as_context(tmp_path, monkeypatch):
     assert panel.status_code == 200
     assert "Широковещание" in panel.text and "12.5 / 4.0 пак/с" in " ".join(panel.text.split())
     assert "Обнаружено повторное перемещение MAC" in panel.text
-    assert "FDB · часть записей не разобрана" in panel.text
+    assert f"FDB · {label}" in panel.text
     assert "Перемещения MAC без VLAN · 1" in panel.text
     assert "ether3 ↔ ether4" in panel.text
 

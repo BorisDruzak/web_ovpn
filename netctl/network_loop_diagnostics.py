@@ -249,10 +249,11 @@ def _read_source(
     stp_events = stp_events[:MAX_STP_EVENTS]
     polls = conn.execute(
         """
-        SELECT started_at, json_extract(outcomes_json, '$.qbridge_fdb_rejected_rows') AS fdb_rejections
+        SELECT started_at, status,
+               json_extract(outcomes_json, '$.qbridge_fdb_rejected_rows') AS fdb_rejections
         FROM switch_collection_runs
         WHERE source_id = ? AND started_at >= ? AND started_at < ?
-          AND status IN ('success', 'partial')
+          AND (status IN ('success', 'partial') OR (status = 'failed' AND error_class <> 'stale_snapshot'))
         ORDER BY started_at DESC, id DESC LIMIT ?
         """,
         (source_id, lower, upper, MIN_FDB_POLLS),
@@ -271,11 +272,14 @@ def _read_source(
     else:
         fdb_status = "unavailable"
         fdb_last_at = None
-    if recent_polls:
-        fdb_last_at = recent_polls[0]["started_at"]
+    latest_observation = next((poll for poll in recent_polls if poll["status"] != "failed"), None)
+    if latest_observation is not None:
+        fdb_last_at = latest_observation["started_at"]
         fdb_status = "insufficient"
     fdb_reason = None
-    if any(poll["fdb_rejections"] == "parse_error" for poll in recent_polls):
+    if any(poll["status"] == "failed" for poll in recent_polls):
+        fdb_reason = "failed_fdb_poll"
+    elif any(poll["fdb_rejections"] == "parse_error" for poll in recent_polls):
         fdb_reason = "partial_fdb_poll"
     elif fdb_status == "insufficient" and len(recent_polls) < MIN_FDB_POLLS:
         fdb_reason = "too_few_polls"

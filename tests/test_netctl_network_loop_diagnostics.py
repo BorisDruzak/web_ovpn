@@ -35,10 +35,11 @@ def add_source(conn, source_id, name, *, driver="snmp_switch", enabled=True):
     )
 
 
-def add_collection(conn, source_id, at, *, status="success", outcomes="{}"):
+def add_collection(conn, source_id, at, *, status="success", outcomes="{}", error_class=""):
     return conn.execute(
-        "INSERT INTO switch_collection_runs (source_id, started_at, status, outcomes_json) VALUES (?, ?, ?, ?)",
-        (source_id, at, status, outcomes),
+        """INSERT INTO switch_collection_runs (source_id, started_at, status, outcomes_json, error_class)
+           VALUES (?, ?, ?, ?, ?)""",
+        (source_id, at, status, outcomes, error_class),
     ).lastrowid
 
 
@@ -345,6 +346,30 @@ def test_missing_stp_or_failed_fdb_poll_is_insufficient_data(database):
     assert switch["coverage"]["fdb"]["status"] == "insufficient"
     assert switch["coverage"]["fdb"]["last_observed_at"] == "2026-11-12T12:05:00Z"
     assert switch["coverage"]["stp"]["status"] == "unavailable"
+
+
+def test_failed_fdb_poll_interrupts_coverage_until_three_successful_polls(database):
+    conn, _ = database
+    add_source(conn, 1, "switch")
+    add_event(conn, 1, "2026-11-12T12:00:00Z", PORT_A, PORT_B)
+    add_collection(conn, 1, "2026-11-12T12:05:00Z")
+    add_collection(conn, 1, "2026-11-12T12:10:00Z")
+    add_stp_sample(conn, 1, "2026-11-12T12:25:00Z", 5)
+    assert read(conn)["status"] == "no_evidence"
+
+    add_collection(conn, 1, "2026-11-12T12:15:00Z", status="failed")
+    add_collection(conn, 1, "2026-11-12T12:20:00Z")
+    add_collection(conn, 1, "2026-11-12T12:24:00Z")
+    [switch] = read(conn)["sources"]
+    assert switch["status"] == "insufficient_data"
+    assert switch["coverage"]["fdb"]["reason"] == "failed_fdb_poll"
+    assert switch["coverage"]["fdb"]["last_observed_at"] == "2026-11-12T12:24:00Z"
+
+    add_collection(conn, 1, "2026-11-12T12:29:00Z")
+    assert read(conn)["status"] == "no_evidence"
+
+    add_collection(conn, 1, "2026-11-12T12:29:00Z", status="failed", error_class="stale_snapshot")
+    assert read(conn)["status"] == "no_evidence"
 
 
 @pytest.mark.parametrize("outcomes, expected", [
