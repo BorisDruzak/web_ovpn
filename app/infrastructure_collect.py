@@ -1256,6 +1256,56 @@ def _corroborate_fdb_ports(links, nodes: dict, now: datetime) -> None:
                             "at": min(stamps).isoformat(), "confirmed": True})
 
 
+def _corroborate_stp_ports(links, nodes: dict, shared_ports: set, now: datetime) -> None:
+    physical = [link for link in links if link["kind"] == "Сетевое соединение"]
+    active = {key: index_port_states(node.get("ports", []), now)
+              for key, node in nodes.items() if node["kind"] == NETWORK_KINDS[0]}
+
+    def endpoint(device, label):
+        port = active.get(device, {}).get(port_label_key(label), {})
+        return device, port_label_key(port.get("name", label))
+
+    neighbors = defaultdict(set)
+    for link in physical:
+        for report in link.get("portEvidence", []):
+            if (report["source"] in {"LLDP UI_VPN", "LLDP · двустороннее"} and report["confirmed"]
+                    and observation_is_fresh(report["at"], now)):
+                a, b = (endpoint(link[side], report[side]) for side in ("a", "b"))
+                neighbors[a].add(b)
+                neighbors[b].add(a)
+    shared = {endpoint(device, port) for device, port in shared_ports}
+
+    for link in physical:
+        if not link["confirmed"] or any(link[side] not in active for side in ("a", "b")):
+            continue
+        reports = link.get("portEvidence", [])
+        declared = [row for row in reports if row["source"] == "GitHub" and row["confirmed"]]
+        if len(declared) != 1:
+            continue
+        pair, = declared
+        a, b = (endpoint(link[side], pair[side]) for side in ("a", "b"))
+        if a in shared or b in shared or neighbors[a] - {b} or neighbors[b] - {a}:
+            continue
+        ports = [active[device].get(label, {}) for device, label in (a, b)]
+        if any(port.get("state") != "up" or port.get("lldpChassisCount", 0) > 1 for port in ports):
+            continue
+        if any(peer.get("inventoryDeviceId") not in (None, remote[0])
+               for port, remote in zip(ports, (b, a)) for peer in port.get("lldpNeighbors", [])):
+            continue
+        for local, remote in ((a, b), (b, a)):
+            path = nodes[local[0]].get("stpRootPath", {})
+            if (path.get("bridgeDeviceId") != remote[0]
+                    or endpoint(local[0], path.get("localPort", "")) != local
+                    or endpoint(remote[0], path.get("designatedPortName", "")) != remote):
+                continue
+            times = [path.get(key) for key in ("checkedAt", "designatedPortCheckedAt")]
+            times.extend(port["checkedAt"] for port in ports)
+            if all(observation_is_fresh(at, now, max_age=STP_ROOT_PATH_MAX_AGE) for at in times):
+                reports.append({"a": ports[0]["name"], "b": ports[1]["name"], "source": "SNMP · порты STP",
+                                "at": min(map(datetime.fromisoformat, times)).isoformat(), "confirmed": True})
+                break
+
+
 def _reciprocal_management_paths(links, nodes: dict, sightings: dict, now: datetime):
     if not sightings:
         return
@@ -2736,6 +2786,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             nodes[key].setdefault("serviceChecks", []).append(observation)
     _reconcile_fdb_ports(edges.values())
     _corroborate_fdb_ports(edges.values(), nodes, now)
+    _corroborate_stp_ports(edges.values(), nodes, shared_ports, now)
     _add_guest_switch_uplinks(edges.values(), nodes, pve, now)
     management_sightings = {}
     for row in network.get("switch_management_fdb", []):

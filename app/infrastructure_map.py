@@ -75,7 +75,7 @@ CLUSTER_HEALTH_METHODS = ("Кворум", "Участники кластера")
 RECIPROCAL_MAC_SOURCE = "SNMP · взаимные MAC"
 CURRENT_PORT_PAIR_SOURCES = {
     "netctl", "LLDP UI_VPN", "LLDP · двустороннее", "netctl FDB + Proxmox",
-    "SNMP LACP + ARP", "SNMP · двусторонний FDB",
+    "SNMP LACP + ARP", "SNMP · двусторонний FDB", "SNMP · порты STP",
 }
 SHARED_LLDP_KIND = "Путь через общий порт"
 SHARED_LLDP_SOURCE = "LLDP · общий порт"
@@ -2820,12 +2820,12 @@ def load_infrastructure_map(
             for report in _rows(row.get("portEvidence"), 24):
                 observed = _time(report.get("at"))
                 source = _text(report.get("source"), 48)
+                max_age = {PPPOE_SOURCE: SERVICE_PROBE_MAX_AGE, "SNMP · порты STP": STP_ROOT_PATH_MAX_AGE}.get(source, MAX_AGE)
                 evidence.append({
                     "a": _text(report.get("a"), 64), "b": _text(report.get("b"), 64), "source": source,
                     "at": observed.isoformat() if observed else None,
                     "confirmed": report.get("confirmed") is True and (
-                        source == "GitHub" or observation_is_fresh(
-                            report.get("at"), now, max_age=SERVICE_PROBE_MAX_AGE if source == PPPOE_SOURCE else MAX_AGE)),
+                        source == "GitHub" or observation_is_fresh(report.get("at"), now, max_age=max_age)),
                 })
                 if source == "GitHub" and (references := inventory_link_sources(report.get("inventorySources"))):
                     evidence[-1]["inventorySources"] = references

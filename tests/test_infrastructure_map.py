@@ -3930,6 +3930,54 @@ def test_downstream_inventory_pair_requires_matching_live_stp_and_fdb(tmp_path):
     assert all("downstream" not in node for node in read()["nodes"])
 
 
+def test_inventory_pair_corroborated_by_exact_stp_ports(tmp_path):
+    from app.infrastructure_collect import _corroborate_stp_ports
+    from app.infrastructure_map import load_infrastructure_map, summarize_topology
+
+    now = datetime.now(timezone.utc)
+    stamp = now.isoformat()
+    link = {"kind": "Сетевое соединение", "confirmed": True, "a": "access", "b": "core"}
+    inventory = {"a": "Port24", "b": "ge22", "source": "GitHub", "confirmed": True, "at": None}
+    path = {"localPort": "Port24", "bridgeDeviceId": "core", "designatedPortName": "ge22",
+            "checkedAt": stamp, "designatedPortCheckedAt": stamp}
+    nodes = {
+        "access": {"kind": "Коммутатор", "stpRootPath": path,
+                   "ports": [{"name": "Port24", "state": "up", "checkedAt": stamp}]},
+        "core": {"kind": "Коммутатор", "ports": [{"name": "ge22", "state": "up", "checkedAt": stamp}]},
+    }
+
+    def reports(*other):
+        link["portEvidence"] = [inventory, *other]
+        _corroborate_stp_ports([link], nodes, set(), now)
+        return [row for row in link["portEvidence"] if row["source"] == "SNMP · порты STP"]
+
+    assert reports() == [{"a": "Port24", "b": "ge22", "source": "SNMP · порты STP", "at": stamp, "confirmed": True}]
+    snapshot = tmp_path / "map.json"
+    snapshot.write_text(json.dumps({"schema": 1, "snapshotAt": stamp, "links": [link], "nodes": [
+        {**node, "id": key, "name": key} for key, node in nodes.items()
+    ]}), encoding="utf-8")
+    def current_pairs(when):
+        return summarize_topology(load_infrastructure_map(snapshot, when))["topologyAudit"]["currentPairs"]
+
+    assert current_pairs(now)[0]["evidence"] == [{"source": "SNMP · порты STP", "checkedAt": stamp}]
+    assert not current_pairs(now + timedelta(minutes=6))
+    path["designatedPortName"] = "ge19"
+    assert not reports()
+    path["designatedPortName"] = "ge22"
+    path["checkedAt"] = (now - timedelta(minutes=6)).isoformat()
+    assert not reports()
+    path["checkedAt"] = stamp
+    nodes["core"]["ports"][0]["state"] = "down"
+    assert not reports()
+    nodes["core"]["ports"][0]["state"] = "up"
+    assert not reports({"a": "Port24", "b": "ge23", "source": "LLDP UI_VPN", "at": stamp, "confirmed": True})
+    link["portEvidence"] = [inventory]
+    _corroborate_stp_ports([link], nodes, {("core", "ge22")}, now)
+    assert link["portEvidence"] == [inventory]
+    inventory["confirmed"] = False
+    assert not reports()
+
+
 def test_downstream_local_probe_requires_unique_observed_address_and_mac(monkeypatch):
     from app import infrastructure_collect as collector
 
