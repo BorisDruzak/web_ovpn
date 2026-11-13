@@ -70,6 +70,8 @@ SWAP_USED_WARNING_PERCENT = 90
 MEMORY_AVAILABLE_WARNING_PERCENT = 10
 BACKUP_PROBE_METHOD = "Копия Proxmox"
 PBS_STORAGE_METHOD = "Хранилище PBS"
+LOCAL_STORAGE_METHOD = "Локальное хранилище Proxmox"
+LOCAL_STORAGE_TYPES = ("lvmthin", "zfspool")
 BACKUP_SERVICE_ID = "proxmox-pbs-backups"
 STATES = ("critical", "warn", "ok", "unknown")
 NETWORK_KINDS = ("Коммутатор", "Маршрутизатор", "Точка доступа", "Сетевое устройство")
@@ -612,10 +614,12 @@ def _public_service_check(check: dict, now: datetime) -> dict:
     port = check.get("port")
     backup = check.get("method") == BACKUP_PROBE_METHOD and check.get("source") == "Proxmox"
     pbs_storage = check.get("method") == PBS_STORAGE_METHOD and check.get("source") == "Proxmox"
+    local_storage = check.get("method") == LOCAL_STORAGE_METHOD and check.get("source") == "Proxmox"
     current_probe = (check.get("source") == "UI_VPN" and check.get("required") is True
                      or check.get("source") == "RouterOS" and check.get("method") == PPPOE_INTERNET_METHOD)
     windows_probe = check.get("source") == WINDOWS_PROBE_SOURCE and check.get("method") in ("DNS", "HTTP")
-    max_age = ROUTE_RECEIPT_MAX_AGE if windows_probe else SERVICE_PROBE_MAX_AGE if backup or pbs_storage or current_probe else MAX_AGE
+    max_age = (ROUTE_RECEIPT_MAX_AGE if windows_probe else SERVICE_PROBE_MAX_AGE
+               if backup or pbs_storage or local_storage or current_probe else MAX_AGE)
     result = {
         **_public_reachability(check, now, max_age=max_age),
         "port": port if type(port) is int and 1 <= port <= 65535 else None,
@@ -651,16 +655,23 @@ def _public_service_check(check: dict, now: datetime) -> dict:
                 result["pppoe"]["parentLink"] = {"state": link["state"], "source": "RouterOS",
                                                  "checkedAt": _time(link["checkedAt"]).isoformat()}
     reason = check.get("reason")
-    if pbs_storage and isinstance(detail := check.get("pbsStorage"), dict):
+    storage_field = "pbsStorage" if pbs_storage else "localStorage" if local_storage else ""
+    if storage_field and isinstance(detail := check.get(storage_field), dict):
         storage, node = _text(detail.get("id"), 64), _text(detail.get("node"), 64)
-        if PVE_STORAGE_ID.fullmatch(storage) and INTERFACE_NAME.fullmatch(node):
-            result["pbsStorage"] = {"id": storage, "node": node}
+        kind = detail.get("type")
+        if PVE_STORAGE_ID.fullmatch(storage) and INTERFACE_NAME.fullmatch(node) and (pbs_storage or kind in LOCAL_STORAGE_TYPES):
+            result[storage_field] = {"id": storage, "node": node}
+            if local_storage:
+                result[storage_field]["type"] = kind
             if not result["stale"]:
                 total, used, available = (detail.get(key) for key in ("totalBytes", "usedBytes", "availableBytes"))
                 if (result["state"] == "reachable" and all(type(value) is int for value in (total, used, available))
                         and 0 < total <= 2**53 - 1 and 0 <= used <= total and 0 <= available <= total):
-                    result["pbsStorage"].update(totalBytes=total, usedBytes=used, availableBytes=available)
+                    result[storage_field].update(totalBytes=total, usedBytes=used, availableBytes=available)
                 if reason in ("pbs_storage_permission", "pbs_storage_disabled", "pbs_storage_inactive", "pbs_storage_unconfirmed"):
+                    result["reason"] = reason
+                if local_storage and reason in ("pve_storage_permission", "pve_storage_excluded",
+                                                "pve_storage_inactive", "pve_storage_unconfirmed"):
                     result["reason"] = reason
     ipsec = check.get("ipsecPolicy")
     if result["method"] == "IPsec фаза 2" and result["source"] == "MikroTik IPsec" and isinstance(ipsec, dict):

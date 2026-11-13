@@ -1239,6 +1239,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     pbs_storage_disabled: 'Хранилище отключено для этого узла',
     pbs_storage_inactive: 'Хранилище недоступно с этого узла',
     pbs_storage_unconfirmed: 'Proxmox не подтвердил состояние хранилища',
+    pve_storage_permission: 'У токена коллектора нет права чтения хранилища',
+    pve_storage_excluded: 'Хранилище отключено для этого узла',
+    pve_storage_inactive: 'Хранилище включено, но недоступно на этом узле',
+    pve_storage_unconfirmed: 'Proxmox не вернул состояние хранилища',
     vlan_probe_error: 'Не удалось проверить транзит',
     vlan_interface_missing: 'Интерфейс VLAN отсутствует',
     vlan_id_mismatch: 'Тип или номер VLAN не совпал',
@@ -2331,7 +2335,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           wireguard.table && 'таблица ' + wireguard.table,
           wireguard.latestHandshake && 'handshake ' + formatTime(wireguard.latestHandshake)]
           .filter(Boolean).map(text => ' · ' + text).join('') : '';
-        const storage = check.pbsStorage;
+        const storage = check.pbsStorage ?? check.localStorage;
         const endpoint = [check.method, storage?.id, storage && 'с ' + storage.node,
           wireguard?.interface, vlan?.id, check.backupVmid && 'ВМ ' + check.backupVmid,
           check.target, check.ipsecPolicy && '↔ ' + check.ipsecPolicy.remoteNetwork, check.httpHost, check.port, check.path, check.dns?.name,
@@ -2343,7 +2347,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const sessionState = pppoe && {
           connected: 'Сессия поднята', disconnected: 'Сессия разорвана', disabled: 'Сессия отключена',
         }[pppoe.state];
-        const result = sessionState ?? (check.skipped ? 'Не запущена' :
+        const result = sessionState ?? (check.reason === 'pve_storage_excluded' ? 'Отключено по конфигурации' : check.skipped ? 'Не запущена' :
           ({reachable:confirmed, unreachable:'Сбой проверки'}[check.state] ?? 'Нет подтверждения'));
         const reason = check.responseCode ? 'SIP ' + check.responseCode : serviceCheckReasons[check.reason];
         const errorSource = check.errorSource ? ' от ' + check.errorSource : '';

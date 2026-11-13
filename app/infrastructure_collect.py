@@ -65,6 +65,7 @@ from .infrastructure_map import (
 )
 from .infrastructure_port_ssh import collect_proxmox_port_states
 from .infrastructure_redfish import collect_redfish_power
+from .infrastructure_storage import read_local_storage_checks
 from .infrastructure_endpoint_ports import collect_endpoint_dns, collect_endpoint_http, confirm_endpoint_ports, read_windows_dns_neighbors
 from .infrastructure_service_probes import _local_arp_diagnostic, _rtsp_options, apply_service_probes, probe_icmp
 from .netctl_client import NetctlError, run_netctl
@@ -2546,6 +2547,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 online_hypervisors.add(key)
                 if key in pbs_storage_checks:
                     item.setdefault("serviceChecks", []).append(pbs_storage_checks[key])
+                if checks := pve.get("localStorageChecks", {}).get(key):
+                    item.setdefault("serviceChecks", []).extend(checks)
                 item["ports"] = pve.get("physicalPorts", {}).get(key, [])
                 item["resources"] = {
                     "checkedAt": pve_at, "cpuRatio": host.get("cpu"), "logicalCpus": host.get("maxcpu"),
@@ -3094,7 +3097,8 @@ class _NoRedirect(HTTPRedirectHandler):
 
 
 def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: set[str],
-                 management_bridges: dict[str, str] | None = None, *, backup_storage: str | None = None) -> dict:
+                 management_bridges: dict[str, str] | None = None, *, backup_storage: str | None = None,
+                 local_stores: object = None) -> dict:
     origin = urlsplit(url)
     if origin.scheme != "https" or not origin.hostname or origin.username or origin.path not in ("", "/") or origin.query or origin.fragment:
         raise ValueError("Proxmox requires an HTTPS origin")
@@ -3251,6 +3255,7 @@ def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: set[s
             data = result["bridges"].get(node, {}).get(bridge, {})
             if data.get("active") == 1 and data.get("bridge_ports") in active_ports.get(node, []):
                 result["management"][node] = {"address": data.get("address"), "port": data["bridge_ports"]}
+    result["localStorageChecks"] = read_local_storage_checks(get, online_nodes, local_stores)
     if backup_storage:
         nodes = [row["node"] for row in result["nodes"]]
         result["pbsStorageChecks"] = read_pbs_storage_checks(get, nodes, backup_storage)
@@ -3803,6 +3808,8 @@ def main() -> int:
                              if type(role.get("vmid")) is int)
             backup = bindings.get("proxmox_backup_monitor")
             backup_options = {"backup_storage": backup["storage"]} if backup_policy(backup) else {}
+            if "proxmox_local_stores" in bindings:
+                backup_options["local_stores"] = bindings["proxmox_local_stores"]
             try:
                 pve = read_proxmox(args.proxmox_url, args.proxmox_token_file, args.proxmox_ca, guest_ids,
                                    bindings.get("hypervisor_management_bridges"),
