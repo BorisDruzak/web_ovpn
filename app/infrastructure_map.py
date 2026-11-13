@@ -1850,6 +1850,7 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
                 **({"lldpPeers": {"a": lldp_peers}} if lldp_peers else {}),
             }
     shared_inventory = defaultdict(dict)
+    shared_port_keys = set()
     for link in links:
         if link["kind"] != SHARED_LLDP_KIND:
             continue
@@ -1857,6 +1858,8 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
         for report in link["portEvidence"]:
             port = report["a"]
             key = a, b, port_key(a, port)
+            if key[2] not in unnamed and (report["source"] == "GitHub" or report["confirmed"]):
+                shared_port_keys.add((a, key[2]))
             if (report["source"] == "GitHub" and not report["confirmed"]
                     and key[2] not in unnamed and (peer_key := port_key(b, report["b"])) not in unnamed):
                 entry = shared_inventory[key].setdefault(peer_key, {"port": report["b"]})
@@ -1888,6 +1891,8 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
                 **({"lldpPeers": report["lldpPeers"]} if "lldpPeers" in report else {}),
             }
     for key, row in discovered.items():
+        if (key[0], key[2]) in shared_port_keys:
+            row["sharedPort"] = True
         if declared := shared_inventory.get(key):
             row["inventoryPeerPorts"] = [declared[peer] for peer in sorted(declared)[:8]]
         pending[row["a"], row["b"], row["portA"], ""] = row
@@ -1958,6 +1963,18 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
         {"a": link["a"], "b": link["b"], "portA": report["a"], "portB": report["b"], "vlans": report["vlanAudit"]}
         for link in graph["links"] for report in link["portEvidence"] if report.get("vlanAudit")
     ]
+    shared_groups = defaultdict(list)
+    for row in pending:
+        if row.get("sharedPort"):
+            shared_groups[row["a"], port_label_key(row["portA"])].append(row)
+    shared_ports = []
+    for (switch_id, _), rows in sorted(shared_groups.items()):
+        peers = sorted({row["b"] for row in rows})
+        lldp_peers = sorted({row["b"] for row in rows if any(
+            reading["source"] == SHARED_LLDP_SOURCE for reading in row["observedPaths"]
+        )})
+        shared_ports.append({"switchId": switch_id, "port": rows[0]["portA"], "peerTotal": len(peers),
+                             "peerIds": peers[:64], "liveLldpPeerIds": lldp_peers[:64]})
     if node_id is not None:
         node = nodes.get(node_id)
         keys = {port_label_key(port_name)} if port_name else set()
@@ -2003,6 +2020,8 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
             "servicePorts": [row for row in graph.get("servicePorts", {}).get(node_id, [])
                              if not port_name or port_label_key(row["port"]) in keys],
             "guestAttachmentTotal": len(attached_guests), "guestAttachments": attached_guests[:128],
+            "sharedPorts": [row for row in shared_ports if row["switchId"] == node_id
+                            and (not port_name or port_label_key(row["port"]) in keys)][:64],
             "lacpPartnerInterfaceGapTotal": len(partner_gaps), "lacpPartnerInterfaceGaps": partner_gaps[:64],
         }}
     stp = [{"id": node["id"], "name": node["name"], **node["stpRootPath"]}
@@ -2031,6 +2050,7 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
                                         "switchCollectionIssueTotal": len(collection_issues),
                                         "switchCollectionIssues": collection_issues[:64],
                                         "downstreamSwitches": downstream[:MAX_DOWNSTREAM_SWITCHES],
+                                        "sharedPorts": shared_ports[:64],
                                         "pending": pending[:64]}}
 
 

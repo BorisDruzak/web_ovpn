@@ -3596,6 +3596,7 @@ def test_shared_lldp_ports_publish_paths_and_require_live_port_and_unique_chassi
     assert "pairEvidence" not in proof
     audit = summarize_topology(snapshot())["topologyAudit"]
     row, = audit["pending"]
+    assert row["sharedPort"] is True
     assert (row["basis"], row["a"], row["portA"], row["b"], row["portB"]) == (
         "shared_lldp", "switch", proof["a"], "one", "",
     )
@@ -3648,6 +3649,9 @@ def test_shared_lldp_ports_publish_paths_and_require_live_port_and_unique_chassi
     assert [reading["source"] for reading in combined_row["observedPaths"]] == ["netctl FDB", "LLDP · общий порт"]
     assert combined_row["lldpPeers"] == rows_by_peer["two"]["lldpPeers"]
     assert combined_row["portB"] == "" and combined_audit["currentPairTotal"] == 0
+    shared_port, = combined_audit["sharedPorts"]
+    assert shared_port == {"switchId": "switch", "port": proof["a"], "peerTotal": 2,
+                           "peerIds": ["one", "two"], "liveLldpPeerIds": ["two"]}
     assert firmware()["two"] == {**provenance, "product": "RouterOS", "version": "7.19.6"}
     neighbors[0]["last_seen_at"] = (now - timedelta(hours=1)).isoformat()
     assert not read()["two"]["confirmed"]
