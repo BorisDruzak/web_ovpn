@@ -99,6 +99,23 @@ def test_https_failure_keeps_tcp_success_and_identifies_tls_stage(monkeypatch):
     assert result["certificate"] is None
 
 
+def test_client_certificate_request_is_detected_even_when_tls_fails(tmp_path, monkeypatch):
+    from subprocess import CompletedProcess
+
+    transcript = (
+        b"<<< TLS 1.2, Handshake [length 0023], CertificateRequest\n"
+        b">>> TLS 1.2, Handshake [length 0007], Certificate\n"
+        b"<<< TLS 1.2, Alert [length 0002], fatal handshake_failure\n"
+    )
+    monkeypatch.setattr(checks.subprocess, "run",
+                        lambda args, **kwargs: CompletedProcess(args, 1, stdout=transcript))
+    config = tmp_path / "openssl.cnf"
+    config.touch()
+    monkeypatch.setattr(checks, "PGS_OPENSSL_CONFIG", config)
+    result = checks.probe_client_certificate("reg-gp.minfin.ru", ipaddress.ip_address("90.154.109.40"))
+    assert result == "requested"
+
+
 def test_pgs_login_does_not_store_oidc_state(monkeypatch):
     calls = []
     monkeypatch.setattr(checks, "resolve_public", lambda _: [ipaddress.ip_address("82.202.191.51")])

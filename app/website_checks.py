@@ -27,6 +27,9 @@ SITES = (
     "https://e.mail.ru/inbox",
     "https://app.workspace.vk.ru/mail",
     "https://nspd.gov.ru/map?thematic=PKK&coordinate_x=7804891.637510094&coordinate_y=8181287.398947453&zoom=5&baseLayerId=235",
+    "http://ssl.budgetplan.minfin.ru/",
+    "https://reg-gp.minfin.ru/application/",
+    "https://sobi.cert.roskazna.ru/",
 )
 HOSTS = {urlsplit(url).hostname for url in SITES}
 LOGIN_HOSTS = {"account.mail.ru", "login.vk.com", "id.vk.com", "auth.pgs.gosuslugi.ru", "esia.gosuslugi.ru"}
@@ -35,6 +38,8 @@ NSPD_CA = Path("/etc/openvpn-web/nspd-website-ca.pem")
 PGS_OPENSSL_CONFIG = Path("/etc/openvpn-web/pgs-gost-openssl.cnf")
 PGS_CA = Path("/etc/openvpn-web/pgs-gost-ca.pem")
 PGS_HOSTS = {"pgs.gosuslugi.ru", "auth.pgs.gosuslugi.ru"}
+GOST_CLIENT_CERT_HOSTS = {"ssl.budgetplan.minfin.ru", "reg-gp.minfin.ru", "sobi.cert.roskazna.ru"}
+CLIENT_CERT_HOSTS = GOST_CLIENT_CERT_HOSTS | {"pos.gosuslugi.ru"}
 INTERVAL_MINUTES = 5
 BODY_LIMIT = 2 * 1024 * 1024
 HISTORY_LIMIT = 288
@@ -130,6 +135,30 @@ def trace(address) -> dict:
     from .network_checks import trace_address
 
     return trace_address(address)
+
+
+def probe_client_certificate(host: str, address) -> str:
+    """Observe the TLS request without sending a client certificate or an HTTP request."""
+    endpoint = f"[{address}]:443" if address.version == 6 else f"{address}:443"
+    args = ["/usr/bin/openssl", "s_client", "-connect", endpoint, "-servername", host,
+            "-verify_hostname", host, "-msg", "-brief"]
+    env = None
+    if host in GOST_CLIENT_CERT_HOSTS:
+        if not PGS_OPENSSL_CONFIG.is_file():
+            return "unconfirmed"
+        args.extend(("-tls1_2", "-cipher", "ALL"))
+        env = {**os.environ, "OPENSSL_CONF": str(PGS_OPENSSL_CONFIG)}
+    try:
+        result = subprocess.run(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, timeout=6, check=False, env=env)
+        transcript = result.stdout
+    except subprocess.TimeoutExpired as exc:
+        transcript = exc.stdout or b""
+    except OSError:
+        return "unconfirmed"
+    if re.search(rb"^<<< .*Handshake .*\bCertificateRequest\s*$", transcript, re.MULTILINE):
+        return "requested"
+    return "not_requested" if b"CONNECTION ESTABLISHED" in transcript else "unconfirmed"
 
 
 def ping(address) -> dict:
@@ -280,7 +309,11 @@ def check_site(url: str, *, manual: bool = False) -> dict:
         row["status"] = "redirect_limit"
         row["failure_stage"] = "http"
     if row.get("address"):
-        row.update(probe_path(ipaddress.ip_address(row["address"]), 443 if https else 80))
+        target = ipaddress.ip_address(row["address"])
+        host = urlsplit(current).hostname
+        if host in CLIENT_CERT_HOSTS:
+            row["client_certificate"] = probe_client_certificate(host, target)
+        row.update(probe_path(target, 443 if https else 80))
         if not row["source_address"]:
             row["source_address"] = row.get("route", {}).get("result", {}).get("prefsrc")
     return row
@@ -301,7 +334,7 @@ def report() -> dict:
         "sites": [rows.get(url, {"url": url, "status": "pending"}) for url in SITES],
         "history": [
             {"checked_at": run["checked_at"],
-             "sites": [{key: site.get(key) for key in ("url", "status", "http_status", "total_ms", "failure_stage")}
+             "sites": [{key: site.get(key) for key in ("url", "status", "http_status", "total_ms", "failure_stage", "client_certificate")}
                        for site in run["sites"]]}
             for run in history[:12]
         ],

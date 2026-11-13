@@ -11,6 +11,9 @@
   'login_redirect': 'Переход к странице входа', 'non_public_address': 'DNS вернул непубличный адрес'
 } %}
 {% set stages = {'dns': 'DNS', 'tcp': 'TCP', 'tls': 'TLS', 'http': 'HTTP/HTML'} %}
+{% set client_cert_labels = {'requested': 'Сервер запросил клиентский сертификат',
+  'not_requested': 'Сервер не запросил клиентский сертификат',
+  'unconfirmed': 'Запрос клиентского сертификата не удалось проверить'} %}
 {% if can_check %}
 <section class="card">
   <h2>Разовая проверка</h2>
@@ -50,6 +53,7 @@
           <td>{% if site.dns %}{{ site.dns | join(', ') }}{% else %}—{% endif %}
             {% if site.address %}<br>Проверен {{ site.address }}{% endif %}
             {% if site.tls == 'verified' %}<br>TLS подтверждён{% elif site.tls == 'failed' %}<br>TLS не прошёл{% endif %}
+            {% if site.client_certificate %}<br>HTTPS: {{ client_cert_labels[site.client_certificate] }}{% endif %}
             {% if site.certificate_verify_code is defined and site.certificate_verify_code %} · код проверки {{ site.certificate_verify_code }}{% endif %}
             {% if site.certificate %}
             <details><summary>Сертификат</summary>
