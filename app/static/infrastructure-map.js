@@ -768,10 +768,14 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         }
       }
     }
-    for (const row of data.guestSwitchAttachments?.[id] ?? []) {
-      if (!keys.includes(portKey(row.switchPort))) continue;
-      if (!guests.has(row.guest.id)) guests.set(row.guest.id, new Set());
+    const hypervisor = byId.get(id)?.kind === 'Гипервизор';
+    const attachments = data.guestSwitchAttachments ?? {};
+    const candidates = hypervisor ? Object.values(attachments).flat() : (attachments[id] ?? []);
+    for (const row of candidates) {
       const {hostPort, switchPort, source, checkedAt} = row.physicalPair;
+      if (hypervisor && row.hypervisor.id !== id) continue;
+      if (!keys.includes(portKey(hypervisor ? hostPort : row.switchPort))) continue;
+      if (!guests.has(row.guest.id)) guests.set(row.guest.id, new Set());
       guests.get(row.guest.id).add(
         `${row.guestPort} · ${row.bridge} · ${row.hypervisor.name} ${hostPort} ↔ ${row.switch.name} ${switchPort} · ${source} · ${formatTime(checkedAt)}`);
     }
