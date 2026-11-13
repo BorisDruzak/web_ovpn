@@ -224,6 +224,10 @@ TOOLS: dict[str, dict[str, Any]] = {
     "openvpn_network_website_checks": tool_schema(
         "Read scheduled website checks including DNS, TLS, HTML, HTTP timing, trace and recent history.",
     ),
+    "openvpn_network_check_website": tool_schema(
+        "Run a one-time HTTP/HTTPS check of a public site from the VPN server. Does not add it to the schedule.",
+        {"url": {"type": "string", "maxLength": 2048}}, ["url"],
+    ),
     "openvpn_network_route_overview": tool_schema(
         "Read the latest scheduled result for every scheduled route profile, including freshness and configuration status.",
     ),
@@ -905,6 +909,8 @@ def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         return api_request("GET", _query_path("/api/v1/network/diagnostics/runs", [("limit", arguments.get("limit", 20))]))
     if name == "openvpn_network_website_checks":
         return api_request("GET", "/api/v1/network/websites")
+    if name == "openvpn_network_check_website":
+        return api_request("POST", "/api/v1/network/websites/check", arguments)
     if name == "openvpn_network_route_overview":
         return api_request("GET", "/api/v1/network/diagnostics/route-overview")
     if name == "openvpn_network_route_runs":

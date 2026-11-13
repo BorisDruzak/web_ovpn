@@ -53,6 +53,7 @@ from .infrastructure_map import (
     summarize_topology,
 )
 from .vpnctl_client import VpnctlError, run_vpnctl
+from .website_checks import WebsiteCheckInput
 
 CLIENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
@@ -1491,6 +1492,15 @@ def api_network_websites(actor: str = Depends(require_api_actor)):
     from .website_checks import report
 
     return api_response(report())
+
+
+@router.post("/network/websites/check")
+def api_check_network_website(
+    payload: WebsiteCheckInput, actor: str = Depends(require_api_actor), db: Session = Depends(get_db),
+):
+    from .website_checks import manual_check
+
+    return api_response(manual_check(db, "service:" + actor, payload.url))
 
 
 @router.get("/network/diagnostics/route-overview")

@@ -7,16 +7,34 @@
   'blocked': 'Доступ ограничен', 'http_error': 'Ошибка HTTP', 'dns_error': 'Ошибка DNS',
   'tls_error': 'Ошибка TLS', 'timeout': 'Тайм-аут', 'connection_error': 'Ошибка соединения',
   'redirect_outside_catalog': 'Переадресация за пределы списка', 'redirect_limit': 'Слишком много переадресаций',
-  'body_limit': 'Превышен размер ответа', 'pending': 'Ожидается проверка'
+  'body_limit': 'Превышен размер ответа', 'pending': 'Ожидается проверка',
+  'login_redirect': 'Переход к странице входа', 'non_public_address': 'DNS вернул непубличный адрес'
 } %}
+{% if can_check %}
 <section class="card">
+  <h2>Разовая проверка</h2>
+  <form method="post" action="/network/websites/check">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <label for="website-url">Публичный HTTP или HTTPS адрес</label>
+    <input id="website-url" name="url" maxlength="2048" required placeholder="https://example.org/">
+    <button type="submit">Проверить</button>
+  </form>
+  {% if check_error %}<p role="alert">{{ check_error }}</p>{% endif %}
+</section>
+{% endif %}
+{% if manual_site %}<h2>Результат разовой проверки</h2>{% endif %}
+{% for sites in ([manual_site], report.sites) if sites[0] is defined and sites[0] %}
+<section class="card">
+  {% if sites == report.sites %}
+  <h2>Плановые проверки</h2>
   <p>Источник — VPN-сервер. Интервал — {{ report.interval_minutes }} мин.</p>
   {% if report.checked_at %}<p>Последний цикл <time>{{ report.checked_at }}</time>{% if report.stale %} · данные устарели{% endif %}</p>{% endif %}
+  {% endif %}
   <div class="table-wrap">
     <table>
       <thead><tr><th>Сайт</th><th>Результат</th><th>DNS и TLS</th><th>Трассировка</th></tr></thead>
       <tbody>
-      {% for site in report.sites %}
+      {% for site in sites %}
         <tr>
           <td><a href="{{ site.url }}">{{ site.url }}</a></td>
           <td>{{ labels.get(site.status, site.status) }}{% if site.http_status %} · HTTP {{ site.http_status }}{% endif %}
@@ -43,6 +61,7 @@
     </table>
   </div>
 </section>
+{% endfor %}
 {% if report.history %}
 <section class="card">
   <h2>Последние циклы</h2>

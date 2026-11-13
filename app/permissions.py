@@ -64,7 +64,7 @@ def required_permission(path: str, method: str) -> str | None:
         if "export" in path:
             return "network:export"
         if write:
-            diagnostic = path == "/network/diagnostics/checks" or path.endswith(
+            diagnostic = path in ("/network/diagnostics/checks", "/network/websites/check") or path.endswith(
                 ("/test", "/collect", "/availability-check", "/refresh-observations", "/fingerprint/ensure"),
             )
             return "network:diagnose" if diagnostic else "network:manage"

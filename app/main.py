@@ -2624,8 +2624,30 @@ def network_checks(request: Request, db: Session = Depends(get_db)):
 def network_websites(request: Request, db: Session = Depends(get_db)):
     from .website_checks import report
 
-    require_user(request, db)
-    return render(request, "network_websites.html", {"report": report()}, db)
+    user = require_user(request, db)
+    return render(request, "network_websites.html", {
+        "report": report(), "can_check": user_has_permission(user, "network:diagnose"),
+    }, db)
+
+
+@app.post("/network/websites/check", response_class=HTMLResponse)
+async def check_network_website(request: Request, db: Session = Depends(get_db)):
+    from .website_checks import manual_check, report
+
+    user = require_user(request, db)
+    if not user_has_permission(user, "network:diagnose"):
+        raise HTTPException(status_code=403)
+    await verify_csrf(request)
+    form = await request.form()
+    try:
+        result = await run_in_threadpool(manual_check, db, "user:" + user.username, str(form.get("url", "")))
+    except HTTPException as exc:
+        return render(request, "network_websites.html", {
+            "report": report(), "can_check": True, "check_error": exc.detail,
+        }, db, status_code=exc.status_code)
+    return render(request, "network_websites.html", {
+        "report": report(), "can_check": True, "manual_site": result,
+    }, db)
 
 
 @app.post("/network/diagnostics/checks", response_class=HTMLResponse)

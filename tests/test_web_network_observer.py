@@ -3175,12 +3175,20 @@ def test_scheduled_websites_are_available_in_panel_and_api(tmp_path, monkeypatch
     endpoint = "/api/v1/network/websites"
     assert client.get(endpoint).status_code == 401
     data = client.get(endpoint, headers=headers).json()["data"]
-    assert len(data["sites"]) == 5 and data["stale"]
-    login(client)
+    assert len(data["sites"]) == 8 and data["stale"]
+    run = endpoint + "/check"
+    monkeypatch.setattr(website_checks, "check_site", lambda url, *, manual: {"url": url, "status": "ok"})
+    assert client.post(run, headers=headers, json={"url": "http://127.0.0.1/"}).status_code == 422
+    assert client.post(run, headers=headers, json={"url": "example.org"}).json()["data"]["url"] == "https://example.org/"
+    assert client.post(run, headers=headers, json={"url": "example.org"}).status_code == 429
+    csrf = login(client)
     page = client.get("/network/websites")
     assert page.status_code == 200
     assert "https://pos.gosuslugi.ru/admin/login" in page.text
     assert "Ожидается проверка" in page.text
+    assert "Разовая проверка" in page.text
+    result = client.post("/network/websites/check", data={"csrf_token": csrf, "url": "example.org"})
+    assert result.status_code == 200 and "Результат разовой проверки" in result.text
 
 
 def test_ipsec_keeps_unreachable_source_in_api_and_panel(tmp_path, monkeypatch):
