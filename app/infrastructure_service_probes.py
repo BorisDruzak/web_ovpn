@@ -293,27 +293,45 @@ def _http_probe(spec: dict) -> dict:
         return {"state": "unknown", "reason": "http_configuration"}
 
 
-def _zabbix_api(ip: str, port: int, spec: dict) -> str:
-    path = _http_path(spec.get("path"))
-    connection = http.client.HTTPConnection(ip, port, timeout=TIMEOUT)
+def _zabbix_api(spec: dict) -> dict:
+    try:
+        path = _http_path(spec.get("path"))
+        address = str(ipaddress.ip_address(spec["ip"]))
+        port = spec["port"]
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise ValueError("invalid Zabbix port")
+    except (KeyError, ValueError):
+        return {"state": "unknown", "reason": "http_configuration"}
+    connection = http.client.HTTPConnection(address, port, timeout=TIMEOUT)
+    observed = {}
     try:
         connection.request("POST", path, b'{"jsonrpc":"2.0","method":"apiinfo.version","params":[],"id":1}',
                            {"Content-Type": "application/json-rpc", "Accept-Encoding": "identity"})
         response = connection.getresponse()
+        observed["httpStatus"] = response.status
         if 500 <= response.status < 600:
-            return "unreachable"
+            return {**observed, "state": "unreachable", "reason": "http_status"}
         content_type = response.getheader("Content-Type", "").split(";", 1)[0].strip().lower()
         if response.status != 200 or content_type != "application/json":
-            return "unknown"
+            return {**observed, "state": "unknown", "reason": "http_status" if response.status != 200 else "http_content_type"}
         body = response.read(HTTP_BODY_LIMIT + 1)
         if len(body) > HTTP_BODY_LIMIT:
-            return "unknown"
+            return {**observed, "state": "unknown", "reason": "http_body_limit"}
         payload = json.loads(body)
         if (isinstance(payload, dict) and payload.keys() == {"jsonrpc", "id", "result"}
                 and payload["jsonrpc"] == "2.0" and type(payload["id"]) is int and payload["id"] == 1
-                and isinstance(payload["result"], str) and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", payload["result"])):
-            return "reachable"
-        return "unknown"
+                and isinstance(payload["result"], str) and re.fullmatch(r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}", payload["result"])):
+            return {**observed, "state": "reachable", "zabbixVersion": payload["result"]}
+        return {**observed, "state": "unknown", "reason": "http_payload_mismatch"}
+    except (ValueError, UnicodeError):
+        return {**observed, "state": "unknown", "reason": "http_invalid_json"}
+    except (ConnectionRefusedError, ConnectionResetError) as exc:
+        reason = "http_connection_refused" if isinstance(exc, ConnectionRefusedError) else "http_connection_reset"
+        return {**observed, "state": "unreachable", "reason": reason}
+    except TimeoutError:
+        return {**observed, "state": "unknown", "reason": "timeout"}
+    except (OSError, http.client.HTTPException):
+        return {**observed, "state": "unknown", "reason": "http_bad_response"}
     finally:
         connection.close()
 
@@ -1653,8 +1671,6 @@ def _probe(spec: dict) -> str:
         if protocol == "openvpn_management":
             return _openvpn_management()["state"]
         ip = str(ipaddress.ip_address(spec["ip"]))
-        if protocol == "zabbix_api":
-            return _zabbix_api(ip, port, spec)
         if protocol == "ldap":
             return _ldap(ip, port, spec)
     except (ssl.SSLError, http.client.HTTPException, KeyError, TypeError, ValueError):
@@ -1743,6 +1759,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 details = _tcp_connect(spec)
             elif protocol == "rdp_negotiation":
                 details = _rdp_negotiation(spec)
+            elif protocol == "zabbix_api":
+                details = _zabbix_api(spec)
             elif protocol == "ntp":
                 details = _ntp(spec)
             elif protocol == "winrm":

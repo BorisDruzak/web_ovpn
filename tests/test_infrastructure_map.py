@@ -1529,6 +1529,12 @@ def test_zabbix_version_checks_matching_json_rpc_response():
             worker.join()
     assert [n["reachability"]["state"] for n in nodes] == ["reachable", "unknown", "unreachable"]
     assert nodes[0]["serviceChecks"][0]["path"] == paths[0]
+    from app.infrastructure_map import _public_service_check
+
+    checks = [_public_service_check(node["serviceChecks"][0], datetime.now(timezone.utc)) for node in nodes]
+    assert [(check.get("zabbixVersion"), check.get("httpStatus")) for check in checks] == [
+        ("7.0.21", 200), (None, 200), (None, 503),
+    ]
 
 
 def test_smb_requires_complete_negotiate_reply_and_reports_dialect(monkeypatch):
@@ -1806,7 +1812,7 @@ def test_guest_service_requires_matching_mac_and_arp_to_enable_probe(monkeypatch
         binding["guests"] = {"108": {"asset": host_id, "mac": mac}}
     configured = {"zabbix-api": [{"ip": address, "port": 80, "type": "zabbix_api"}]}
     calls = []
-    monkeypatch.setattr(probes, "_probe", lambda spec: calls.append(spec["ip"]) or "reachable")
+    monkeypatch.setattr(probes, "_zabbix_api", lambda spec: calls.append(spec["ip"]) or {"state": "reachable"})
 
     def build():
         graph = build_graph(context, network, {}, pve, binding, now)

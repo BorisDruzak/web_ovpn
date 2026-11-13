@@ -794,7 +794,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           probe.rtspStatus ? `RTSP ${probe.rtspStatus}` : '';
         const rdp = probe.rdpSecurity ?? (probe.rdpFailureCode && `Код отказа RDP ${probe.rdpFailureCode}`);
         const tls = probe.tlsExpiresAt && certificateLabel(probe.tlsExpiresAt, probe.tlsVersion);
-        readings.add([probe.path, question, outcome, code, rdp, tls, responseFrom, rtt,
+        const zabbix = probe.zabbixVersion && `Zabbix ${probe.zabbixVersion}`;
+        readings.add([probe.path, question, outcome, code, rdp, tls, zabbix, responseFrom, rtt,
           probe.state && formatTime(probe.checkedAt)].filter(Boolean).join(' · '));
       }
       for (const reading of readings) {
@@ -1701,7 +1702,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           responder?.matchesExpectedAddresses === true && 'записи совпали с ожидаемыми']
           .filter(Boolean).map(value => ' · ' + value).join('');
         const http = (check.httpStatus ? ' · HTTP ' + check.httpStatus : '')
-          + (check.redfishVersion ? ' · Redfish ' + check.redfishVersion : '');
+          + (check.redfishVersion ? ' · Redfish ' + check.redfishVersion : '')
+          + (check.zabbixVersion ? ' · Zabbix ' + check.zabbixVersion : '');
         const rtsp = check.rtspStatus ? ' · RTSP ' + check.rtspStatus : '';
         const ftp = check.ftpReply ? ' · FTP ' + check.ftpReply : '';
         const certificate = check.tlsExpiresAt ? ' · ' + [check.tlsVersion,
@@ -1989,6 +1991,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
               `${address}${probe.port ? ':' + probe.port : ''}${probe.path ?? ''}`, ...states,
               probe.responseCodes?.length && `Ответ ${probe.responseCodes.join(', ')}`,
               probe.rdpSecurityModes?.join(', '),
+              ...(probe.zabbixVersions ?? []).map(version => `Zabbix ${version}`),
               ...(probe.tlsCertificates ?? []).map(cert => certificateLabel(cert.expiresAt, cert.version)),
               probe.dns && `${probe.dns.record} ${probe.dns.name}`,
             ].filter(Boolean).join(' · ')));

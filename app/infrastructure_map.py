@@ -636,7 +636,7 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         if reason in {"backup_no_result", "backup_task_failed", "backup_overdue",
                       "backup_schedule_missing", "backup_untracked_schedule"}:
             result["reason"] = reason
-    if reason == "timeout" and result["method"] in ("HTTP", "HTTPS", "DNS", "SMB2", "PostgreSQL SSLRequest", "TCP"):
+    if reason == "timeout" and result["method"] in ("HTTP", "HTTPS", "DNS", "SMB2", "PostgreSQL SSLRequest", "TCP", "Zabbix API"):
         result["reason"] = reason
     if reason == "tcp_connection_refused" and result["method"] in ("TCP", "RDP Negotiation") and result["state"] == "unreachable":
         result["reason"] = reason
@@ -736,7 +736,7 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         if reason in ("wireguard_route_unconfirmed", "wireguard_route_mismatch", "wireguard_evidence_unavailable",
                       "wireguard_mark_unconfirmed", "wireguard_mark_mismatch", "wireguard_handshake_unconfirmed"):
             result["reason"] = reason
-    if result["method"] in ("HTTP", "HTTPS", "WinRM HTTP"):
+    if result["method"] in ("HTTP", "HTTPS", "WinRM HTTP", "Zabbix API"):
         host = check.get("httpHost")
         if result["method"] == "HTTP" and isinstance(host, str) and re.fullmatch(r"[A-Za-z0-9.-]{1,253}", host):
             result["httpHost"] = host
@@ -748,6 +748,11 @@ def _public_service_check(check: dict, now: datetime) -> dict:
                 and result["state"] == "reachable" and not result["stale"]
                 and isinstance(version, str) and re.fullmatch(r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}", version)):
             result["redfishVersion"] = version
+        version = check.get("zabbixVersion")
+        if (result["method"] == "Zabbix API" and status == 200 and result["state"] == "reachable"
+                and not result["stale"] and isinstance(version, str)
+                and re.fullmatch(r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}", version)):
+            result["zabbixVersion"] = version
         if reason in (
             "http_status", "http_content_type", "http_content_encoding", "http_body_limit", "http_invalid_json",
             "http_reported_unavailable", "http_payload_mismatch", "http_certificate_pin",
@@ -2068,7 +2073,7 @@ def _attachment_probe_location(check: dict) -> dict:
             "checkedAt": check["checkedAt"], "state": check["state"],
             **({"path": check["path"]} if check.get("path") else {}),
             **{key: check[key] for key in ("reason", "roundTripMs", "httpStatus", "responseCode", "rtspStatus", "dns",
-                                           "rdpSecurity", "rdpFailureCode", "tlsExpiresAt", "tlsVersion")
+                                           "rdpSecurity", "rdpFailureCode", "tlsExpiresAt", "tlsVersion", "zabbixVersion")
                if key in check}}
 
 
@@ -2409,6 +2414,10 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime, *, endpoint_
                 modes = probe.setdefault("rdpSecurityModes", [])
                 if security not in modes:
                     modes.append(security)
+            if version := check.get("zabbixVersion"):
+                versions = probe.setdefault("zabbixVersions", [])
+                if version not in versions:
+                    versions.append(version)
             if expires := check.get("tlsExpiresAt"):
                 certificate = {"expiresAt": expires}
                 if version := check.get("tlsVersion"):
