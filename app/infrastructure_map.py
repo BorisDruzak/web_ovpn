@@ -979,7 +979,7 @@ def _public_service_check(check: dict, now: datetime) -> dict:
     attempts = check.get("attempts")
     if type(attempts) is int and (
         (sip and 1 <= attempts <= 3)
-        or (result["method"] in ("HTTP", "HTTPS") and result["source"] == "UI_VPN" and attempts == 2)
+        or (result["method"] in ("HTTP", "HTTPS", "SSH") and result["source"] == "UI_VPN" and attempts == 2)
     ):
         result["attempts"] = attempts
     return result

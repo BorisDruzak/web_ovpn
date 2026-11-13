@@ -7343,10 +7343,11 @@ def test_ssh_identification_confirms_only_a_bounded_protocol_response(monkeypatc
 
     monkeypatch.setattr(probes.socket, "create_connection", connect)
 
-    def check(*response, target=ip):
+    def check(*response, target=ip, confirm_early_close=False):
         chunks[:] = response
         node = {"id": "ssh", "kind": "Сервис", "probeTargetIP": target}
-        probes.apply_service_probes([node], {"ssh": [{"type": "ssh_identification", "ip": ip, "port": 22}]})
+        probes.apply_service_probes([node], {"ssh": [{"type": "ssh_identification", "ip": ip, "port": 22,
+                                                       "confirm_early_close": confirm_early_close}]})
         return _public_service_check(node["serviceChecks"][0], datetime.now(timezone.utc))
 
     success = check(b"NOTICE\r\nSSH-", b"2.0-example private-text\r\n\x00\x01")
@@ -7358,6 +7359,12 @@ def test_ssh_identification_confirms_only_a_bounded_protocol_response(monkeypatc
     closed = check(b"")
     assert (closed["state"], closed["reason"]) == ("unknown", "ssh_closed_before_identification")
     assert closed["sshTcpConnected"] is True
+    repeated = check(b"", b"", confirm_early_close=True)
+    assert (repeated["state"], repeated["reason"], repeated["attempts"]) == (
+        "unreachable", "ssh_closed_before_identification", 2,
+    )
+    assert check(b"", b"SSH-2.0-example\r\n", confirm_early_close=True)["state"] == "reachable"
+    assert check(b"", TimeoutError(), confirm_early_close=True)["state"] == "unknown"
     ipssh = check(b"SSH-2.0-IPSSH-6.6.0\r\n")
     assert ipssh["state"] == "reachable" and "IPSSH" not in json.dumps(ipssh)
     for banner in (b"HTTP/1.1 200 OK\r\n", b"SSH-2.0-" + b"x" * 250 + b"\r\n", b"SSH-2.0-example", b"x" * 1024,

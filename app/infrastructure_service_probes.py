@@ -992,7 +992,7 @@ def _ftp_features(spec: dict) -> dict:
     return {"state": "unknown", "reason": "ftp_invalid_reply"}
 
 
-def _ssh_identification(spec: dict) -> dict:
+def _read_ssh_identification(spec: dict) -> dict:
     port = spec.get("port")
     if type(port) is not int or not 1 <= port <= 65535:
         return {"state": "unknown"}
@@ -1038,6 +1038,19 @@ def _ssh_identification(spec: dict) -> dict:
     except OSError:
         return {"state": "unknown", "reason": "transport_error", **connected}
     return invalid
+
+
+def _ssh_identification(spec: dict) -> dict:
+    first = _read_ssh_identification(spec)
+    early_close = "ssh_closed_before_identification"
+    if spec.get("confirm_early_close") is not True or first.get("reason") != early_close:
+        return first
+    second = _read_ssh_identification(spec)
+    if second.get("reason") == early_close:
+        return {**second, "state": "unreachable", "attempts": 2}
+    if second["state"] == "reachable":
+        return {**second, "attempts": 2}
+    return {**first, "attempts": 2}
 
 
 def _rtsp_options(spec: dict) -> dict:
