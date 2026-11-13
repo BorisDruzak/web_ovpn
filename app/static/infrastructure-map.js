@@ -756,6 +756,48 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     return open;
   }
 
+  function renderLacpHealth(node, placementHost, chosenPort) {
+    const selectedKeys = chosenPort ? portKeys(chosenPort) : [];
+    const reports = chosenPort ? data.nodes.flatMap(host => (host.lacpHealth ?? [])
+      .filter(({switchId, aggregate, members}) => switchId === node.id &&
+        [aggregate, ...members.map(member => member.name)].some(port => selectedKeys.includes(portKey(port))))
+      .map(report => ({host, report}))) : (placementHost.lacpHealth ?? []).map(report => ({host: placementHost, report}));
+    if (!reports.length) return null;
+
+    const panel = make('section');
+    panel.dataset.section = 'lacp-health';
+    const list = make('ul', null, 'map-detail-list');
+    const labels = {forwarding: 'Готов к передаче', down: 'Линк опущен', disabled: 'Порт отключён', unknown: 'Нет подтверждения'};
+    for (const {host, report: {switchId, aggregate, members}} of reports) {
+      const row = make('li');
+      const sw = byId.get(switchId);
+      const confirmed = members.filter(member => member.status === 'forwarding').length;
+      if (chosenPort) {
+        const open = make('button', host.name);
+        open.type = 'button';
+        open.addEventListener('click', () => select(host.id));
+        row.append(open);
+      }
+      row.append(make('strong', `${sw.name} ${aggregate} · ${confirmed} из ${members.length} портов готовы к передаче`));
+      const appendPort = port => {
+        const target = sw.ports?.find(item => portKeys(item).includes(portKey(port)));
+        if (target && !selectedKeys.includes(portKey(port))) row.append(switchPortButton(switchId, sw.name, target.name));
+      };
+      appendPort(aggregate);
+      for (const {name: port, status, checkedAt, partnerPort, partnerInterfaceState} of members) {
+        appendPort(port);
+        const fields = [port, labels[status], partnerPort && `порт партнёра LACP №${partnerPort}`,
+          partnerInterfaceState === 'unconfirmed' && 'Имя интерфейса не сверено',
+          checkedAt && `SNMP · ${formatTime(checkedAt)}`];
+        row.append(make('small', fields.filter(Boolean).join(' · ')));
+      }
+      list.append(row);
+    }
+    const title = chosenPort || placementHost === node ? 'Резервирование LACP' : `Подключение ${placementHost.name} по LACP`;
+    panel.append(make('h3', title), list);
+    return panel;
+  }
+
   function certificateLabel(expiresAt, version) {
     return [version, `Срок действия до ${formatTime(expiresAt)}`].filter(Boolean).join(' · ');
   }
@@ -1329,29 +1371,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       list.append(make('dt', 'Конфигурация прочитана'), make('dd', formatTime(node.guestStorage.checkedAt)));
       propertiesSection.append(make('h3', 'Диски по конфигурации Proxmox'), list);
     }
-    if (placementHost.lacpHealth?.length) {
-      const panel = make('section');
-      panel.dataset.section = 'lacp-health';
-      const list = make('ul', null, 'map-detail-list');
-      const labels = {forwarding: 'Готов к передаче', down: 'Линк опущен', disabled: 'Порт отключён', unknown: 'Нет подтверждения'};
-      for (const {switchId, aggregate, members} of placementHost.lacpHealth) {
-        const row = make('li');
-        const name = byId.get(switchId).name;
-        const confirmed = members.filter(member => member.status === 'forwarding').length;
-        row.append(make('strong', `${name} ${aggregate} · ${confirmed} из ${members.length} портов`));
-        for (const {name: port, status, checkedAt, partnerPort, partnerInterfaceState} of members) {
-          if (status === 'forwarding') row.append(switchPortButton(switchId, name, port));
-          const details = [status !== 'forwarding' && port, labels[status], partnerPort && `порт партнёра LACP №${partnerPort}`,
-            partnerInterfaceState === 'unconfirmed' && 'Имя интерфейса не сверено',
-            checkedAt && formatTime(checkedAt)];
-          row.append(make('small', details.filter(Boolean).join(' · ')));
-        }
-        list.append(row);
-      }
-      const title = placementHost === node ? 'Резервирование LACP' : `Подключение ${placementHost.name} по LACP`;
-      panel.append(make('h3', title), list);
-      propertiesSection.append(panel);
-    }
+    const lacpHealth = renderLacpHealth(node, placementHost, chosenPort);
+    if (lacpHealth) propertiesSection.append(lacpHealth);
     if (node.downstream) {
       const {upstreamId, port, basis, checkedAt, stpCheckedAt, deviceCount, devices} = node.downstream;
       const panel = make('details', null, 'map-port-panel');

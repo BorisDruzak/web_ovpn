@@ -657,6 +657,11 @@ def test_mcp_infrastructure_port_scope_preserves_evidence_and_guest_observations
     graph["inventoryPairs"] = [inventory, {**inventory, "portA": "Gi1/0/2"}]
     lacp_gap = {"id": "host", "switchId": "sw", "switchPort": live["name"], "aggregate": "po1", "partnerPort": 1}
     graph["lacpPartnerInterfaceGaps"] = [lacp_gap, {**lacp_gap, "switchPort": "Gi1/0/2"}]
+    lacp = {"switchId": "sw", "aggregate": "po1", "status": "warn", "members": [
+        {"name": live["name"], "status": "forwarding", "partnerPort": 1, "partnerInterfaceState": "unconfirmed"},
+        {"name": "Gi1/0/2", "status": "down"},
+    ]}
+    graph["nodes"][1]["lacpHealth"] = [lacp, {**lacp, "switchId": "other"}]
     graph["pendingPortPairs"] = [pending, {**pending, "portB": "Gi1/0/2"}]
 
     def api(method, path):
@@ -674,6 +679,9 @@ def test_mcp_infrastructure_port_scope_preserves_evidence_and_guest_observations
     assert result["lacpPartnerInterfaceGaps"] == [lacp_gap]
     aggregate = server.call_tool(tool, {"node_id": "sw", "port_name": "po1"})["infrastructure"]
     assert aggregate["lacpPartnerInterfaceGaps"] == graph["lacpPartnerInterfaceGaps"]
+    for observation in (result, aggregate, server.call_tool(tool, {"node_id": "sw", "port_name": "Gi1/0/2"})["infrastructure"]):
+        assert observation["lacpHealth"] == [{**lacp, "host": {"id": "other", "name": "Peer"}}]
+    assert server.call_tool(tool, {"node_id": "sw", "port_name": "ge6"})["infrastructure"]["lacpHealth"] == []
     assert result["pendingPortPairs"] == [pending]
     assert result["links"] == [{**graph["links"][0], "portEvidence": [port]}]
     assert result["neighbors"] == [{"id": "other", "name": "Peer"}]

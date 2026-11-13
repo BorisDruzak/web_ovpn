@@ -580,7 +580,7 @@ def _port_key(name: str) -> str:
 
 def _infrastructure_port(graph: dict, node: dict | None, port_name: str) -> dict:
     result = {"portName": port_name.strip(), "ports": [], "links": [], "guestObservations": [], "servicePorts": []}
-    result.update(currentPortPairs=[], inventoryPairs=[], pendingPortPairs=[], lacpPartnerInterfaceGaps=[])
+    result.update(currentPortPairs=[], inventoryPairs=[], pendingPortPairs=[], lacpHealth=[], lacpPartnerInterfaceGaps=[])
     if node is None:
         return result
     node_id = node["id"]
@@ -602,6 +602,14 @@ def _infrastructure_port(graph: dict, node: dict | None, port_name: str) -> dict
         gap for gap in graph.get("lacpPartnerInterfaceGaps", [])
         if gap["switchId"] == node_id
         and (_port_key(gap["switchPort"]) in port_keys or _port_key(gap["aggregate"]) in port_keys)
+    ]
+    result["lacpHealth"] = [
+        {**report, "host": {"id": host["id"], "name": host["name"]}}
+        for host in graph["nodes"] for report in host.get("lacpHealth", [])
+        if report["switchId"] == node_id and (
+            _port_key(report["aggregate"]) in port_keys
+            or any(_port_key(member["name"]) in port_keys for member in report["members"])
+        )
     ]
     physical_host_port = next((port for port in result["ports"]
                                if port.get("source") == "Proxmox" and port.get("stale") is False), None)
