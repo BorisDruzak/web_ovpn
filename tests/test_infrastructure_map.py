@@ -9789,17 +9789,20 @@ def test_shared_port_summary_includes_distinct_fdb_peers_without_lldp():
 
     at = "2026-11-13T21:25:00+00:00"
     rows = [
-        {"a": "switch", "b": peer, "nameB": peer, "portA": "Gi1/0/23", "basis": "learned_endpoint",
-         "observedPaths": [{"source": "netctl FDB", "checkedAt": at,
+        {"a": "switch", "b": peer, "nameB": peer, "portA": "Gi1/0/23",
+         "observedPaths": [{"source": "netctl FDB", "checkedAt": at, "portA": "gigabitEthernet 1/0/23",
                             "learnedEndpoint": {"switchId": "switch", "deviceId": peer}}]}
         for peer in ("router", "phone")
     ]
+    rows[0]["basis"] = "learned_endpoint"
     assert _summarize_shared_ports(rows[:1]) == []
     assert _summarize_shared_ports([rows[0], rows[0]]) == []
     port, = _summarize_shared_ports(rows)
     assert port["peerIds"] == port["liveFdbPeerIds"] == ["phone", "router"]
     assert port["liveLldpPeerIds"] == []
     assert all(not row.get("sharedPort") for row in rows)
+    rows[1]["observedPaths"][0]["portA"] = "Gi1/0/24"
+    assert _summarize_shared_ports(rows) == []
 
 
 def test_missing_infrastructure_snapshot_has_explicit_empty_state(tmp_path, monkeypatch):
