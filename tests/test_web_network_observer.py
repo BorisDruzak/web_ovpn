@@ -2502,7 +2502,15 @@ def test_network_active_check_uses_shared_throttle(tmp_path, monkeypatch):
     assert targets == ["192.0.2.20"]
 
 
-def test_route_availability_exposes_linux_neighbor_in_api_and_ui(tmp_path, monkeypatch):
+@pytest.mark.parametrize("reason,route_status,label,route_label", [
+    ("icmp_no_echo_reply", "route_found", "Цель не ответила на ICMP", "Выбор ядра eth0.20"),
+    ("origin_ssh_failed", "not_run", "Не удалось подключиться к пробнику по SSH", "Выбор ядра не проверялся"),
+    ("origin_timeout", "not_run", "Истекло время ожидания ответа пробника", "Выбор ядра не проверялся"),
+    ("connection_unreachable", "no_route", "Сеть или узел недоступны", "Ядро не нашло маршрут"),
+])
+def test_route_availability_exposes_linux_neighbor_in_api_and_ui(
+    tmp_path, monkeypatch, reason, route_status, label, route_label,
+):
     client, headers = make_client(tmp_path, monkeypatch)
     from app import network_checks, network_probe_profiles, network_route_matrix
 
@@ -2515,20 +2523,25 @@ def test_route_availability_exposes_linux_neighbor_in_api_and_ui(tmp_path, monke
     neighbor = {"address": "192.0.2.1", "interface": "eth0.20", "state": "failed"}
     monkeypatch.setattr(network_probe_profiles, "load_probe_profiles", lambda: profiles)
     monkeypatch.setattr(network_checks, "load_probe_profiles", lambda: profiles)
+    evidence = {"reason": reason}
+    if route_status == "route_found":
+        evidence["linux_neighbor"] = neighbor
     monkeypatch.setattr(network_route_matrix, "probe_local_route", lambda **kwargs: {
-        "status": "timeout",
-        "evidence": {"reason": "icmp_no_echo_reply", "linux_neighbor": neighbor},
-        "kernel_route": {"status": "route_found", "result": {"dev": "eth0.20"}},
+        "status": "unavailable" if reason == "origin_ssh_failed" else "timeout",
+        "evidence": evidence,
+        "kernel_route": {"status": route_status, "result": {"dev": "eth0.20"} if route_status == "route_found" else {}},
     })
 
     payload = {"check": "route_availability", "profile": "lan"}
     endpoint = "/api/v1/network/diagnostics/checks"
     data = client.post(endpoint, headers=headers, json=payload).json()["data"]
-    assert data["result"]["probes"][0]["evidence"]["linux_neighbor"] == neighbor
+    assert data["result"]["probes"][0]["evidence"] == evidence
     csrf = login(client)
     page = client.post("/network/diagnostics/checks", data={"csrf_token": csrf, **payload})
     assert page.status_code == 200
-    assert "ARP 192.0.2.1 · разрешение не удалось" in page.text
+    assert label in page.text and route_label in page.text
+    if route_status == "route_found":
+        assert "ARP 192.0.2.1 · разрешение не удалось" in page.text
 
 
 @pytest.mark.parametrize("central_status, passed_probes", [("unreachable", 0), ("reachable", 1)])

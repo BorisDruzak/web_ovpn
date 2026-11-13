@@ -40,7 +40,27 @@
           {% if row.evidence.duration_ms is defined %}<br>{{ row.evidence.duration_ms }} мс{% endif %}
           {% if row.evidence.http_status is defined %}<br>HTTP {{ row.evidence.http_status }}{% endif %}
           {% if row.evidence.dns_rcode is defined %}<br>DNS{% if row.evidence.dns_transport %} {{ row.evidence.dns_transport }}{% endif %} {{ row.evidence.dns_rcode }}{% endif %}
-          {% if row.evidence.reason == 'dns_truncated' %}<br>DNS по UDP вернул усечённый ответ{% endif %}
+          {% set probe_reason = {
+            'origin_not_configured': 'Подключение к пробнику не настроено',
+            'origin_ssh_failed': 'Не удалось подключиться к пробнику по SSH',
+            'origin_timeout': 'Истекло время ожидания ответа пробника',
+            'origin_command_failed': 'Сбой запуска на пробнике',
+            'invalid_origin_response': 'Некорректный ответ пробника',
+            'origin_probe_not_configured': 'Профиль отсутствует на пробнике',
+            'profile_mismatch': 'Параметры панели и пробника различаются',
+            'source_unavailable': 'Исходный адрес недоступен',
+            'probe_runner_unavailable': 'Команда проверки недоступна',
+            'timeout': 'Истекло время ожидания ответа цели',
+            'icmp_no_echo_reply': 'Цель не ответила на ICMP',
+            'icmp_unreachable': 'Получен ответ ICMP о недоступности',
+            'icmp_fragmentation_required': 'Пакет требует фрагментации',
+            'connection_refused': 'Цель отклонила соединение',
+            'connection_unreachable': 'Сеть или узел недоступны',
+            'dns_truncated': 'DNS по UDP вернул усечённый ответ',
+            'dns_no_answer': 'DNS не вернул запрошенную запись',
+            'tls_certificate_invalid': 'Сертификат TLS не прошёл проверку'
+          }.get(row.evidence.reason) %}
+          {% if probe_reason %}<br>{{ probe_reason }}{% endif %}
           {% if row.evidence.dns_answers_match is sameas false %}<br>DNS-записи отличаются от ожидаемых{% endif %}
         </td>
         <td>
@@ -62,6 +82,15 @@
           {% endif %}
           {% if row.kernel_route and row.kernel_route.status == 'route_found' %}
           <br>Выбор ядра {{ [row.kernel_route.result.dev, row.kernel_route.result.gateway] | select | join(' · ') }}
+          {% elif row.kernel_route %}
+          {% set route_reason = {
+            'no_route': 'Ядро не нашло маршрут',
+            'not_run': 'Выбор ядра не проверялся',
+            'timeout': 'Истекло время определения маршрута ядром',
+            'unavailable': 'Запрос маршрута ядра недоступен',
+            'failed': 'Ошибка определения маршрута ядром'
+          }.get(row.kernel_route.status) %}
+          {% if route_reason %}<br>{{ route_reason }}{% endif %}
           {% endif %}
           {% if row.evidence.linux_neighbor is defined %}
           {% set neighbor = row.evidence.linux_neighbor %}
