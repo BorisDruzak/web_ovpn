@@ -230,11 +230,21 @@ def test_endpoint_pair_uses_fresh_switch_mac_and_physical_adapter(tmp_path, monk
         node["name"] = node["id"]
     path = tmp_path / "snapshot.json"
     path.write_text(json.dumps({**graph, "schema": 1, "snapshotAt": at}), encoding="utf-8")
-    audit = summarize_topology(load_infrastructure_map(path, NOW))["topologyAudit"]
+    public = load_infrastructure_map(path, NOW)
+    audit = summarize_topology(public)["topologyAudit"]
     if learned_count == 1:
         assert audit["currentPairs"][0]["evidence"][0]["windowsAdapter"] == link["portEvidence"][-1]["windowsAdapter"]
-    expired = summarize_topology(load_infrastructure_map(path, NOW + timedelta(minutes=4)))["topologyAudit"]
+        pair = audit["currentPairs"][0]
+        side = "a" if pair["a"] == "pc" else "b"
+        assert pair["portStates"][side] == {
+            "state": "up", "checkedAt": at, "speedBps": None, "source": "Windows · физический адаптер",
+        }
+    else:
+        assert next(node for node in public["nodes"] if node["id"] == "pc")["ports"] == []
+    stale = load_infrastructure_map(path, NOW + timedelta(minutes=4))
+    expired = summarize_topology(stale)["topologyAudit"]
     assert expired["currentPairTotal"] == 0 and expired["inventoryOnlyPairTotal"] == 1
+    assert all(port["state"] == "unknown" for node in stale["nodes"] if node["id"] == "pc" for port in node["ports"])
 
 
 def test_push_rejects_unapproved_replay_and_wrong_route(tmp_path, monkeypatch, push_profile):

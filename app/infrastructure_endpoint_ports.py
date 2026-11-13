@@ -2,7 +2,9 @@
 
 from datetime import datetime, timedelta
 
-from .infrastructure_map import ENDPOINT_PAIR_SOURCE, NETWORK_KINDS, WINDOWS_PROBE_SOURCE, observation_is_fresh, port_label_key
+from .infrastructure_map import (
+    ENDPOINT_PAIR_SOURCE, NETWORK_KINDS, WINDOWS_ADAPTER_SOURCE, WINDOWS_PROBE_SOURCE, observation_is_fresh, port_label_key,
+)
 from .network_probe_profiles import load_probe_profiles
 from .network_route_receipt_timing import MAX_AGE as RECEIPT_MAX_AGE
 from .network_route_spool import read_adapter_observation, read_measurements
@@ -177,3 +179,6 @@ def confirm_endpoint_ports(graph: dict, bindings: dict, now: datetime) -> None:
         if len(matches) == 1:
             (edge, reading), = matches
             edge["portEvidence"].append(reading)
+            node.setdefault("ports", []).append({
+                "name": adapter["name"], "state": "up", "source": WINDOWS_ADAPTER_SOURCE, "checkedAt": reading["at"],
+            })
