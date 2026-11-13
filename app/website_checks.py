@@ -12,6 +12,7 @@ from tempfile import NamedTemporaryFile
 from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field
+from .website_receipts import MAX_AGE as WINDOWS_MAX_AGE, WINDOWS_SITES, WINDOWS_STATE, store
 
 SITES = (
     "https://www.gosuslugi.ru/",
@@ -207,7 +208,7 @@ def report() -> dict:
     except (OSError, ValueError, KeyError, IndexError, TypeError):
         history, latest, checked = [], {}, None
     rows = {row["url"]: row for row in latest.get("sites", [])}
-    return {
+    result = {
         "origin": "vpn-server", "interval_minutes": INTERVAL_MINUTES,
         "checked_at": latest.get("checked_at"),
         "stale": checked is None or datetime.now(UTC) - checked > timedelta(minutes=2 * INTERVAL_MINUTES),
@@ -219,6 +220,18 @@ def report() -> dict:
             for run in history[:12]
         ],
     }
+    try:
+        windows = json.loads(WINDOWS_STATE.read_bytes())
+        when = datetime.fromisoformat(windows["checked_at"])
+        result["windows"] = {**windows, "origin": "windows-vlan20",
+                             "stale": not -timedelta(seconds=30) <= datetime.now(UTC) - when <= WINDOWS_MAX_AGE}
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return result
+
+
+def store_windows_receipt(payload: bytes, now: datetime) -> None:
+    store(payload, now, WINDOWS_STATE)
 
 
 def run() -> None:

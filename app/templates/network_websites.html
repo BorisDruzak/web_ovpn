@@ -62,6 +62,17 @@
   </div>
 </section>
 {% endfor %}
+{% if report.windows %}
+<section class="card">
+  <h2>Дополнительная точка — Windows VLAN20</h2>
+  <p><time>{{ report.windows.checked_at }}</time>{% if report.windows.stale %} · данные устарели{% endif %}</p>
+  <ul>
+    {% for site in report.windows.sites %}
+    <li>{{ site.url }} · {{ labels.get(site.status, site.status) }}{% if site.http_status %} · HTTP {{ site.http_status }}{% endif %} · {{ site.total_ms }} мс</li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
 {% if report.history %}
 <section class="card">
   <h2>Последние циклы</h2>

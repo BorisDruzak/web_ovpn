@@ -67,3 +67,29 @@ def test_manual_redirect_reresolves_and_rejects_internal_destination(monkeypatch
     row = checks.check_site("https://example.org/", manual=True)
     assert row["status"] == "non_public_address"
     assert seen == [("https://example.org/", "8.8.8.8")]
+
+
+def test_windows_receipt_is_bounded_and_never_replaces_vpn_server_result(tmp_path, monkeypatch):
+    import json
+    from datetime import UTC, datetime, timedelta
+
+    monkeypatch.setattr(checks, "STATE", tmp_path / "scheduled.json")
+    monkeypatch.setattr(checks, "WINDOWS_STATE", tmp_path / "windows.json")
+    now = datetime.now(UTC)
+    payload = {
+        "checked_at": now.isoformat(),
+        "sites": [{"url": url, "status": "ok", "http_status": 200, "body_bytes": 42,
+                   "content_type": "text/html", "tls": "verified", "total_ms": 10}
+                  for url in checks.WINDOWS_SITES],
+    }
+    checks.store_windows_receipt(json.dumps(payload).encode(), now)
+    report = checks.report()
+    assert report["windows"]["sites"] == payload["sites"]
+    assert report["sites"][0]["status"] == "pending"
+    payload["checked_at"] = (now - timedelta(minutes=12)).isoformat()
+    with pytest.raises(ValueError):
+        checks.store_windows_receipt(json.dumps(payload).encode(), now)
+    payload["checked_at"] = now.isoformat()
+    payload["sites"][0]["raw_body"] = "private"
+    with pytest.raises(ValueError):
+        checks.store_windows_receipt(json.dumps(payload).encode(), now)
