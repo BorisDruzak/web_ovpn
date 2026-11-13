@@ -2825,6 +2825,12 @@ def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
         detail["checks"] = anchor["checks"]
         detail["serviceChecks"] = anchor["serviceChecks"]
         detail["reachability"] = anchor["reachability"]
+        dependency_ids = sorted({edge["b"] for edge in links
+                                 if edge["a"] == node_id and edge["confirmed"]
+                                 and edge["kind"] in SERVICE_LINKS and nodes[edge["b"]]["kind"] == "Сервис"})
+        detail["serviceAvailability"] = anchor["serviceAvailability"]
+        detail["dependencyTotal"] = len(dependency_ids)
+        detail["dependencies"] = [_attachment_node(nodes[key]) for key in dependency_ids[:24]]
         if "probeTransition" in anchor:
             detail["probeTransition"] = anchor["probeTransition"]
     if anchor and anchor["kind"] == "Сервис" and len(guest_ids) <= 12:

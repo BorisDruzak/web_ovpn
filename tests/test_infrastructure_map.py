@@ -7782,6 +7782,22 @@ def test_service_audit_shares_map_status_and_reports_required_check_gaps(tmp_pat
     assert attachment["checks"] == full["nodes"][1]["checks"]
     assert attachment["serviceChecks"] == full["nodes"][1]["serviceChecks"]
     assert attachment["physicalHosts"][0]["host"]["id"] == "vm"
+    snapshot_with_dependency = json.loads(path.read_text(encoding="utf-8"))
+    snapshot_with_dependency["links"].extend([
+        {"a": "svc", "b": "vipnet", "kind": "Зависимость сервиса", "confirmed": True},
+        {"a": "vipnet", "b": "svc", "kind": "Зависимость сервиса", "confirmed": False},
+    ])
+    path.write_text(json.dumps(snapshot_with_dependency), encoding="utf-8")
+    with_dependency = client.get(url + "?view=attachment&node_id=svc", headers=headers).json()["infrastructure"]["attachment"]
+    assert with_dependency["serviceAvailability"] == {"unavailable": [], "degraded": [], "unknown": ["vipnet"]}
+    assert with_dependency["dependencyTotal"] == 1
+    assert with_dependency["dependencies"] == [
+        {"id": "vipnet", "name": "ViPNet", "kind": "Сервис", "mapStatus": "unknown"},
+    ]
+    reverse = client.get(url + "?view=attachment&node_id=vipnet", headers=headers).json()["infrastructure"]["attachment"]
+    assert reverse["dependencies"] == []
+    snapshot_with_dependency["links"] = snapshot_with_dependency["links"][:1]
+    path.write_text(json.dumps(snapshot_with_dependency), encoding="utf-8")
     assert row["requiredChecks"] == {"passed": 1, "failed": 1, "unconfirmed": 2}
     assert {(c["check"], c["status"], c["stale"]) for c in row["issues"]} == {
         ("c_disk_free", "critical", False), ("iis_active", "unknown", False), ("HTTPS", "unknown", True),
