@@ -7294,6 +7294,9 @@ def test_attachment_view_includes_physical_service_hosts_and_distinguishes_port_
     pair_graph = pairs.json()["infrastructure"]
     assert pair_graph["pendingPortPairs"] == [pending]
     assert any(row["portA"] == "ge1" and row["portB"] == "eth0" for row in pair_graph["currentPortPairs"])
+    assert host["currentPortPairTotal"] == 1
+    assert host["currentPortPairs"] == pair_graph["currentPortPairs"]
+    assert host["inventoryPairTotal"] == 0 and host["inventoryPairs"] == []
     assert read("server")["physicalHosts"] == [host]
     switch_attachment = read("sw")
     switch, = switch_attachment["physicalHosts"]

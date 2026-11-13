@@ -2337,12 +2337,16 @@ def _physical_attachments(nodes: dict, links: list[dict], host_ids: list[str]) -
         group.sort(key=lambda row: (row["kind"] != "Сетевое соединение", not row["confirmed"], row["peer"]["id"]))
     observed_ports = _observed_management_ports(links, nodes) if controllers else {}
 
-    def pending_pairs(node_id):
-        pairs = pending_by_node[node_id]
-        return {"pendingPortPairTotal": len(pairs), "pendingPortPairs": pairs[:24]}
+    def port_pairs(node_id):
+        current = current_by_node[node_id]
+        inventory = inventory_by_node[node_id]
+        open_pairs = pending_by_node[node_id]
+        return {"currentPortPairTotal": len(current), "currentPortPairs": current[:24],
+                "inventoryPairTotal": len(inventory), "inventoryPairs": inventory[:24],
+                "pendingPortPairTotal": len(open_pairs), "pendingPortPairs": open_pairs[:24]}
 
     return [{"host": _attachment_node(nodes[host_id]), "connectionTotal": len(group), "connections": group[:24],
-             **pending_pairs(host_id),
+             **port_pairs(host_id),
              **({"managementControllers": [
                  {"node": _attachment_node(nodes[controller]), "confirmed": confirmed,
                   "servicePaths": _management_service_paths(nodes[controller], controller, {}, observed_ports),
@@ -2350,9 +2354,7 @@ def _physical_attachments(nodes: dict, links: list[dict], host_ids: list[str]) -
                   "services": [{"node": _attachment_node(nodes[service]),
                                 "serviceChecks": nodes[service]["serviceChecks"]}
                                for service in sorted(controller_services[controller])[:12]],
-                  "inventoryPairs": inventory_by_node[controller][:24],
-                  "currentPortPairs": current_by_node[controller][:24],
-                  **pending_pairs(controller)}
+                  **port_pairs(controller)}
                  for controller, confirmed in sorted(controllers[host_id].items(), key=lambda item: (not item[1], item[0]))[:12]
              ]} if host_id in controllers else {}),
              **({"lacpHealth": nodes[host_id]["lacpHealth"]} if "lacpHealth" in nodes[host_id] else {})}
