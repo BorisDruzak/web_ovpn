@@ -198,6 +198,8 @@
 
 Карточки `antares-smb` и `antares-ftp` используют привязку `guest_services` к ВМ 106 и проверенному адресу ANTARES. SMB согласует диалект на TCP/445, FTP запрашивает возможности сервера на TCP/21. Доступ к общей папке и передача файлов требуют отдельных проверок.
 
+Роли `active_directory` и `file_server` также сверяют адреса по Proxmox и ARP. В `roles` укажите `asset`, `vmid` и `mac` для AD-MAIN (201) и ANTARES (106). Сверка применяется к LDAP и LDAPS на AD-MAIN, а также к SMB и проверке подключённого ресурса `Soft` на ANTARES.
+
 Отдельные карточки SSH для тестовых ВМ 100, 107 и 123, Registry Engine (111), Endpoint Platform (115) и ACTI-V3-DEV (124) используют `ssh_identification` на TCP/22. Сборщик проверяет строку идентификации протокола до аутентификации. При смене адреса сверьте новый ARP с MAC адаптера Proxmox и обновите `guest_probe_ips` и адрес в `service_probes` вместе.
 
 Тем же способом проверяются Zabbix (108), Verce (114), Storage Console (120), vk-bot (125), nextclaude (211) и ONLYOFFICE (212). В карточке ВМ доступность SSH и проверки приложений показаны отдельно. Проверка `verce-ssh` относится к доступу на ВМ, а `gitnexus-health` показывает результат HTTP-запроса к API GitNexus.
