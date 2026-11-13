@@ -20,6 +20,7 @@ import zlib
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from time import monotonic, sleep, time
 
 import dns.exception
@@ -62,6 +63,22 @@ def _valid_http_hostname(value: object) -> bool:
     return isinstance(value, str) and len(value) <= 253 and all(
         re.fullmatch(r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?", label) for label in value.split(".")
     )
+
+
+class _ScriptReferences(HTMLParser):
+    def __init__(self, prefix: str):
+        super().__init__()
+        self.filename = re.compile(re.escape(prefix) + r"[A-Za-z0-9_-][A-Za-z0-9._-]{0,100}\.js")
+        self.matches = []
+        self.has_base = False
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "base":
+            self.has_base |= any(name == "href" for name, _ in attrs)
+        if tag == "script":
+            sources = [value for name, value in attrs if name == "src"]
+            if len(sources) == 1 and sources[0] and self.filename.fullmatch(sources[0]):
+                self.matches.append(sources[0])
 
 
 def _matches_json_fields(document: dict, fields: dict) -> bool:
@@ -125,7 +142,8 @@ def _is_digest_challenge(value: str) -> bool:
     return all(seen.get(name, "").startswith('"') and len(seen[name]) > 2 for name in ("realm", "nonce"))
 
 
-def _http(ip: str, port: int, spec: dict) -> dict:
+def _http(ip: str, port: int, spec: dict, *, scripts: _ScriptReferences | None = None,
+          javascript: bool = False) -> dict:
     path = _http_path(spec.get("path"))
     body_expected = spec.get("body")
     body_marker = spec.get("body_contains")
@@ -138,6 +156,10 @@ def _http(ip: str, port: int, spec: dict) -> dict:
     digest_challenge = spec.get("digest_auth_challenge", False)
     allow_gzip = spec.get("allow_gzip", False)
     tls = spec["type"] == "https"
+    if scripts is not None:
+        content_type = "text/html"
+    if javascript:
+        content_type = "text/javascript"
     if type(redfish_root) is not bool or (redfish_root and (
         not tls or path != "/redfish/v1/"
         or any(value is not None for value in (body_expected, body_marker, json_fields, json_unavailable))
@@ -250,8 +272,11 @@ def _http(ip: str, port: int, spec: dict) -> dict:
             return {**observed, "state": "unknown", "reason": "http_payload_mismatch"}
         if response.status != 200:
             return {**observed, "state": "unknown", "reason": "http_status"}
-        if content_type and response.getheader("Content-Type", "").split(";", 1)[0].strip().lower() != content_type:
-            return {**observed, "state": "unknown", "reason": "http_content_type"}
+        if content_type:
+            actual_type = response.getheader("Content-Type", "").split(";", 1)[0].strip().lower()
+            allowed_types = ("text/javascript", "application/javascript") if javascript else (content_type,)
+            if actual_type not in allowed_types:
+                return {**observed, "state": "unknown", "reason": "http_content_type"}
         read = response.read
         if allow_gzip:
             encoding = response.getheader("Content-Encoding", "").strip().lower()
@@ -269,6 +294,15 @@ def _http(ip: str, port: int, spec: dict) -> dict:
                 read = io.BytesIO(decoded).read
             elif encoding not in ("", "identity"):
                 return {**observed, "state": "unknown", "reason": "http_content_encoding"}
+        if scripts is not None:
+            payload = read(HTTP_BODY_LIMIT + 1)
+            if len(payload) > HTTP_BODY_LIMIT:
+                return {**observed, "state": "unknown", "reason": "http_body_limit"}
+            scripts.feed(payload.decode("utf-8", errors="replace"))
+            scripts.close()
+            if scripts.has_base or len(scripts.matches) != 1:
+                return {**observed, "state": "unreachable", "reason": "http_payload_mismatch"}
+            return {**observed, "state": "reachable"}
         if json_fields is not None or redfish_root or oidc_jwks:
             payload = read(HTTP_BODY_LIMIT + 1)
             if len(payload) > HTTP_BODY_LIMIT:
@@ -321,6 +355,27 @@ def _http(ip: str, port: int, spec: dict) -> dict:
         connection.close()
 
 
+def _http_script_probe(address: str, port: int, spec: dict) -> dict:
+    prefix = spec["script_src_prefix"]
+    path = _http_path(spec.get("path"))
+    if (not isinstance(prefix, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,31}", prefix)
+            or not path.endswith("/") or any(part in (".", "..") for part in path.split("/"))
+            or any(key in spec for key in ("body", "body_contains", "content_type", "json_fields",
+                                           "json_unavailable", "basic_auth_realm", "digest_auth_challenge",
+                                           "redfish_service_root", "oidc_rs256_jwks", "allow_gzip"))):
+        raise ValueError("invalid HTTP script probe contract")
+    scripts = _ScriptReferences(prefix)
+    result = _http(address, port, spec, scripts=scripts)
+    if result["state"] != "reachable":
+        return result
+    asset_path = _http_path(path + scripts.matches[0])
+    asset = _http(address, port, {**spec, "path": asset_path}, javascript=True)
+    if (asset.get("httpStatus") in (404, 410)
+            or asset.get("reason") in ("http_content_type", "http_payload_mismatch")):
+        asset["state"] = "unreachable"
+    return {**asset, "path": asset_path}
+
+
 def _http_probe(spec: dict) -> dict:
     try:
         port = spec["port"]
@@ -330,6 +385,8 @@ def _http_probe(spec: dict) -> dict:
         if type(retry_refused) is not bool:
             raise ValueError("retry_connection_refused requires a boolean")
         address = str(ipaddress.ip_address(spec["ip"]))
+        if "script_src_prefix" in spec:
+            return _http_script_probe(address, port, spec)
         result = _http(address, port, spec)
         if retry_refused and result.get("reason") == "http_connection_refused":
             sleep(2)
@@ -1932,7 +1989,7 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 "source": "UI_VPN", "method": method,
                 "port": valid_port,
                 "path": "/wsman" if protocol == "winrm" else (
-                    spec.get("path") if protocol in {"http", "https", "zabbix_api", "rtsp_options"} else None
+                    details.get("path", spec.get("path")) if protocol in {"http", "https", "zabbix_api", "rtsp_options"} else None
                 ),
                 "target": spec.get("ip") if not skip_reason and (
                     protocol in {"icmp", "vlan_transit", "sip_options", "ipmi_lan", "rtsp_options", "ssh_identification", "ftp_features",

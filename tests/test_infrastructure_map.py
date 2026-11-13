@@ -1325,6 +1325,66 @@ def test_http_probe_matches_json_health_fields_without_fixing_the_version():
     assert results == ["reachable", "unknown", "unreachable", "unknown", "unknown", "unreachable"]
 
 
+def test_http_script_probe_follows_only_the_unique_relative_build_asset(monkeypatch):
+    from app.infrastructure_service_probes import _http_probe
+
+    page = b'<script src="app_2.0_a1.js"></script>'
+    requests = []
+    asset_status = 200
+
+    class Response:
+        def __init__(self, path):
+            self.page = path == "/Client/"
+            self.status = 200 if self.page else asset_status
+
+        def getheader(self, name, default):
+            if name == "Content-Type":
+                return "text/html" if self.page else "text/javascript"
+            return default
+
+        def read(self, limit):
+            return (page if self.page else b"(() => {})();")[:limit]
+
+    class Connection:
+        def __init__(self, host, port, **kwargs):
+            assert (host, port) == ("192.0.2.1", 80)
+
+        def request(self, method, path, headers):
+            assert method == "GET" and headers["Host"] == "directum.example.test"
+            self.path = path
+            requests.append(path)
+
+        def getresponse(self):
+            return Response(self.path)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("app.infrastructure_service_probes.http.client.HTTPConnection", Connection)
+    spec = {"type": "http", "ip": "192.0.2.1", "port": 80, "path": "/Client/",
+            "http_host": "directum.example.test", "script_src_prefix": "app_"}
+    assert _http_probe(spec)["state"] == "reachable"
+    assert requests == ["/Client/", "/Client/app_2.0_a1.js"]
+    page = b'<script src="app_3_b2.js"></script>'
+    asset_status = 404
+    result = _http_probe(spec)
+    assert result["state"] == "unreachable"
+    assert result["httpStatus"] == 404
+    assert result["path"] == "/Client/app_3_b2.js"
+
+    for unsafe in (
+        b'<script src="//other.test/app_x.js"></script>',
+        b'<script src="../app_x.js"></script>',
+        b'<script src="app_%2e%2e.js"></script>',
+        b'<base href="/other/"><script src="app_x.js"></script>',
+        b'<script src="app_x.js"></script><script src="app_y.js"></script>',
+    ):
+        page = unsafe
+        requests.clear()
+        assert _http_probe(spec)["state"] != "reachable"
+        assert requests == ["/Client/"]
+
+
 def test_redfish_root_probe_reports_only_validated_api_version(monkeypatch):
     from app.infrastructure_service_probes import _http_probe
 
