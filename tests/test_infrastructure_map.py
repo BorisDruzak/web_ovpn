@@ -3511,7 +3511,7 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
     bindings = {"lacp_links": [{"source": "switch", "asset": "pbs", "aggregate": "po1", "members": ["ge6", "ge7"]}]}
     sources = [{"id": 1, "name": "switch", "enabled": True, "driver": "snmp_switch", "host": "192.0.2.254"}]
     ports = [{"source": "switch", "port_key": name, "name": name, "oper_status": "up", "last_seen_at": at}
-             for name in ("ge6", "ge7")]
+             for name in ("ge6", "ge7", "po1")]
     report = {**bindings["lacp_links"][0], "expected": 2, "at": at, "members": [
         {"port": "ge6", "partner_port": 1, "mac": mac}, {"port": "ge7", "partner_port": 2, "mac": mac}]}
     network = {"sources": sources, "ports": ports, "lacp": [report],
@@ -3562,7 +3562,7 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
         graph = load_infrastructure_map(path, now, include_guest_attachments=True)
         return [(row["port"], row["services"][0]["basis"]) for row in graph["servicePorts"].get("snr", [])]
 
-    assert service_ports() == [("ge6", ["host_lacp"]), ("ge7", ["host_lacp"])]
+    assert service_ports() == [("ge6", ["host_lacp"]), ("ge7", ["host_lacp"]), ("po1", ["host_lacp"])]
     snapshot = json.loads(path.read_text(encoding="utf-8"))
     snapshot["nodes"].append({"id": "proxmox-pbs-backups", "name": "Backups", "kind": "Сервис", "serviceChecks": [
         {"method": "Копия Proxmox", "source": "Proxmox", "checkedAt": stamp, "state": state,
@@ -3598,7 +3598,9 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
     monkeypatch.setattr("app.infrastructure_collect._router_layer2_observation", probe)
     _refresh_lacp_peer_arp({"devices": devices}, network, now)
     assert calls == [("router", "bridge-lan", mac, "192.0.2.14")]
-    assert read()[0] == "ok" and service_ports() == [("ge6", ["host_lacp"]), ("ge7", ["host_lacp"])]
+    assert read()[0] == "ok" and service_ports() == [
+        ("ge6", ["host_lacp"]), ("ge7", ["host_lacp"]), ("po1", ["host_lacp"]),
+    ]
     assert network["arp"][0]["last_seen_at"] == (now - timedelta(minutes=9)).isoformat()
     report.pop("partnerArp")
     network["arp"].append({**network["arp"][0], "mac": "02:00:00:00:00:13"})
@@ -3614,7 +3616,11 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
     assert health["members"][1] == {"name": "ge7", "status": "down", "checkedAt": at}
     assert service_host()["lacpHealth"] == [health]
     assert [gap["switchPort"] for gap in lacp_gaps()] == ["ge6"]
+    assert service_ports() == [("ge6", ["host_lacp"]), ("po1", ["host_lacp"])]
+    ports[2]["oper_status"] = "down"
+    read()
     assert service_ports() == [("ge6", ["host_lacp"])]
+    ports[2]["oper_status"] = "up"
     assert read(now + timedelta(minutes=6))[0] == "unknown"
     assert all(member["status"] == "unknown" for member in service_host(now + timedelta(minutes=6))["lacpHealth"][0]["members"])
     network.clear()

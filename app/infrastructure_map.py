@@ -2277,9 +2277,13 @@ def _physical_service_port_evidence(nodes: dict, links: list[dict]) -> dict:
                 evidence[host].add((switch, port, "host_mac"))
     for host, node in nodes.items():
         for aggregate in node.get("lacpHealth", []):
-            for member in aggregate["members"]:
-                if member["status"] == "forwarding":
-                    evidence[host].add((aggregate["switchId"], member["name"], "host_lacp"))
+            switch, name = aggregate["switchId"], aggregate["aggregate"]
+            forwarding = [member["name"] for member in aggregate["members"] if member["status"] == "forwarding"]
+            evidence[host].update((switch, member, "host_lacp") for member in forwarding)
+            if forwarding and any(port_label_key(port["name"]) == port_label_key(name)
+                                  and port["state"] == "up" and not port["stale"]
+                                  for port in nodes[switch]["ports"]):
+                evidence[host].add((switch, name, "host_lacp"))
     return evidence
 
 
