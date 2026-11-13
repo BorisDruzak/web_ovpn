@@ -2363,7 +2363,7 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime) -> dict:
 
     service_ports = {
         switch: [{"port": port_names[switch, port], "total": len(ids),
-                  "services": [service_row(switch, port, key, ids[key]) for key in sorted(ids)[:64]]}
+                  "services": [service_row(switch, port, key, ids[key]) for key in sorted(ids)]}
                  for port, ids in sorted(ports.items())]
         for switch, ports in port_services.items()
     }

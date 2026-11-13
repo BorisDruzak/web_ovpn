@@ -6648,6 +6648,15 @@ def test_attachment_view_includes_physical_service_hosts_and_distinguishes_port_
         "method": "TCP", "target": "192.0.2.10", "port": 8000,
         "passed": 1, "failed": 1, "unconfirmed": 0,
     }]
+    extra_ids = [f"web-{index:02d}" for index in range(69)]
+    extra_nodes = [{**raw["nodes"][0], "id": key} for key in extra_ids]
+    extra_links = [{**raw["links"][0], "b": key} for key in extra_ids]
+    expanded = {**raw, "nodes": raw["nodes"] + extra_nodes, "links": raw["links"] + extra_links}
+    path.write_text(json.dumps(expanded), encoding="utf-8")
+    expanded_port, = read("sw")["servicePorts"]
+    assert expanded_port["total"] == 70
+    assert [service["id"] for service in expanded_port["services"]] == ["web", *extra_ids]
+    path.write_text(json.dumps(raw), encoding="utf-8")
     assert switch["pendingPortPairs"] == [pending]
     inverse = switch["connections"][0]["ports"][0]
     assert (inverse["hostPort"], inverse["peerPort"]) == ("ge1", "eth0")
