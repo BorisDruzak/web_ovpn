@@ -7626,12 +7626,22 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     adapter["virtual"]["ipv4Observations"] = [address]
     assert read()["servicePaths"] == [service_path]
     raw["nodes"][0]["serviceChecks"].extend([{**check, "port": 3268}, {**check, "target": "192.0.2.90"}])
+    raw["nodes"][0].update(
+        sources=[{"name": "Server Observer", "status": "critical", "at": stamp}],
+        requiredObserverChecks=["c_disk_free", "iis_active"],
+        checks=[{"name": "c_disk_free", "status": "critical", "observed": 4.53, "expected": 15},
+                {"name": "iis_active", "status": "ok"}],
+    )
     assert len(read()["servicePaths"]) == 2
     browser = client.get(browser_endpoint).json()["infrastructure"]
     assert browser["servicePaths"] == {"directum": [service_path, {**service_path, "port": 3268}]}
     switch_ports = browser["servicePorts"]["snr"]
     assert len(switch_ports) == 1 and switch_ports[0]["port"] == "xe3" and switch_ports[0]["total"] == 1
     assert [service["id"] for service in switch_ports[0]["services"]] == ["directum"]
+    issue, = switch_ports[0]["services"][0]["observerIssues"]
+    assert (issue["name"], issue["status"], issue["observed"], issue["unit"]) == (
+        "c_disk_free", "critical", 4.53, "percent",
+    )
     assert [(probe["target"], probe["port"]) for probe in switch_ports[0]["services"][0]["probeEndpoints"]] == [
         ("192.0.2.11", 389), ("192.0.2.11", 3268),
     ]

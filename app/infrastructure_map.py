@@ -2876,7 +2876,10 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime, *, endpoint_
                 certificates = probe.setdefault("tlsCertificates", [])
                 if certificate not in certificates:
                     certificates.append(certificate)
+        observer_issues = [check for check in node["checks"] if check.get("required") and check["status"] != "ok"]
         return {**_attachment_node(node), "basis": sorted(bases),
+                **({"observerIssues": observer_issues[:6], "observerIssueTotal": len(observer_issues)}
+                   if observer_issues else {}),
                 **({"backupChecks": backup_checks} if backup_checks else {}),
                 **({"backupScope": node["backupScope"]} if "backupScope" in node else {}),
                 **({"linkChecks": link_checks[key]} if bases & {"lldp_peer", "endpoint_mac"} else {}),
