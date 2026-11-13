@@ -135,6 +135,34 @@ def test_openvpn_probe_requires_the_expected_live_session(monkeypatch, connectio
     assert result["result"]["probes"][0]["evidence"]["openvpn_session"] == session
 
 
+@pytest.mark.parametrize("address, expected", [
+    ("192.0.2.20", "reachable"), ("192.0.2.21", "not_connected"),
+])
+def test_openvpn_client_origin_checks_session_source_before_remote_dns(monkeypatch, address, expected):
+    from app import network_route_matrix, network_route_remote
+
+    profile = network_probe_profiles.RouteProfile.model_validate({"label": "VPN client", "probes": [{
+        "id": "dns", "expected_path": "OpenVPN", "target": "192.0.2.53", "protocol": "dns",
+        "dns_name": "example.test", "dns_transport": "tcp", "agent_origin": "client-host",
+        "source_address": "192.0.2.20", "openvpn_client": "client", "expected_kernel_interface": "tun0",
+    }]})
+    monkeypatch.setattr(network_route_matrix, "_read_openvpn_sessions", lambda: [
+        {"common_name": "client", "virtual_address": address},
+    ])
+    calls = []
+
+    def remote(origin, profile_id, probe_id, args):
+        calls.append((origin, profile_id, probe_id))
+        assert args["source_address"] == "192.0.2.20" and args["expected_kernel_interface"] == "tun0"
+        return {"status": "reachable", "evidence": {"dns_transport": "TCP"}}
+
+    monkeypatch.setattr(network_route_remote, "probe_remote_route", remote)
+    row, = network_route_matrix.run_route_matrix("tunnel", profile)["result"]["probes"]
+    assert row["status"] == expected
+    assert row["origin"] == "client-host" and row["openvpn_client"] == "client"
+    assert calls == ([("client-host", "tunnel", "dns")] if expected == "reachable" else [])
+
+
 def test_cli_reads_router_from_sqlite_and_rejects_changed_profile(tmp_path, monkeypatch):
     from netctl import cli, db, route_availability
 

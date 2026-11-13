@@ -85,7 +85,8 @@ def _read_openvpn_sessions() -> list[dict] | None:
 def _openvpn_session(probe: RouteProbe, sessions: list[dict] | None) -> str:
     if sessions is None:
         return "unavailable"
-    matches = [row for row in sessions if row["virtual_address"] == probe.target]
+    tunnel_address = probe.source_address if probe.agent_origin else probe.target
+    matches = [row for row in sessions if row["virtual_address"] == tunnel_address]
     if len(matches) == 1 and matches[0]["common_name"] == probe.openvpn_client:
         return "connected"
     if matches or any(row["common_name"] == probe.openvpn_client for row in sessions):

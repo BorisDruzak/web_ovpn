@@ -157,8 +157,10 @@ class RouteProbe(BaseModel):
     def validate_parameters(self):
         if sum(origin is not None for origin in (self.router_source, self.agent_origin, self.push_origin)) > 1:
             raise ValueError("select one probe origin")
-        if self.openvpn_client and (self.router_source or self.agent_origin or self.push_origin):
-            raise ValueError("OpenVPN session guard requires a probe from the VPN server")
+        if self.openvpn_client and (self.router_source or self.push_origin):
+            raise ValueError("OpenVPN session guard requires a live host probe")
+        if self.openvpn_client and self.agent_origin and not (self.source_address and self.expected_kernel_interface):
+            raise ValueError("OpenVPN client probe requires its tunnel address and interface")
         if self.push_origin and not self.source_address:
             raise ValueError("pushed probe requires an explicit source address")
         if self.router_source and self.protocol != "icmp":
