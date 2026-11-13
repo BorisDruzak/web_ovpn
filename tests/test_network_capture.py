@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import ipaddress
 import struct
 import subprocess
+from io import BytesIO
 
 import pytest
 
@@ -18,6 +20,33 @@ PROFILE = {
 }
 PCAP_HEADER = struct.pack("<IHHIIII", 0xA1B2C3D4, 2, 4, 0, 0, 96, 1)
 PCAP_PACKET = struct.pack("<IIII", 0, 0, 60, 110) + bytes(60)
+
+
+@pytest.mark.parametrize("version,protocol", [(4, "tcp"), (6, "tcp"), (4, "udp")])
+def test_capture_summary_counts_directions_and_tcp_resets(version, protocol):
+    from app.network_capture import summarize_capture
+
+    local, peer = ("192.0.2.1", "192.0.2.2") if version == 4 else ("2001:db8::1", "2001:db8::2")
+    protocol_number = 6 if protocol == "tcp" else 17
+
+    def frame(source, target, source_port, target_port, rst=False):
+        transport = struct.pack("!HH", source_port, target_port)
+        transport += bytes(8) + bytes([0x50, 4 if rst else 0]) + bytes(6) if protocol == "tcp" else bytes(4)
+        addresses = ipaddress.ip_address(source).packed + ipaddress.ip_address(target).packed
+        if version == 4:
+            ip = struct.pack("!BBHHHBBH", 0x45, 0, 20 + len(transport), 0, 0, 64, protocol_number, 0)
+            ethernet = bytes(12) + b"\x81\x00\x00\x14\x08\x00"
+        else:
+            ip = struct.pack("!IHBB", 0x60000000, len(transport), protocol_number, 64)
+            ethernet = bytes(12) + b"\x86\xdd"
+        packet = ethernet + ip + addresses + transport
+        return struct.pack("<IIII", 0, 0, len(packet), len(packet)) + packet
+
+    pcap = PCAP_HEADER + frame(local, peer, 40001, 443) + frame(peer, local, 443, 40001, True) + PCAP_PACKET
+    expected = {"to_peer": 1, "from_peer": 1, "unclassified": 1}
+    if protocol == "tcp":
+        expected["tcp_resets"] = 1
+    assert summarize_capture(BytesIO(pcap), len(pcap), peer=peer, port=443, protocol=protocol) == expected
 
 
 def test_capture_runs_fixed_dumpcap_and_reports_pcap_metadata(monkeypatch, tmp_path):

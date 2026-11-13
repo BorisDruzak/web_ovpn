@@ -33,6 +33,11 @@
 {% macro capture_filter(filter) -%}
   {{ filter.interface }} · {{ filter.peer }} · {{ filter.protocol | upper }}/{{ filter.port }}
 {%- endmacro %}
+{% macro capture_summary(summary) -%}
+К узлу {{ summary.to_peer }} · от узла {{ summary.from_peer }}
+{%- if summary.tcp_resets is defined %} · TCP RST {{ summary.tcp_resets }}{% endif %}
+{%- if summary.unclassified %} · без классификации {{ summary.unclassified }}{% endif %}
+{%- endmacro %}
 {% block title %}Сетевые проверки{% endblock %}
 {% block page_title %}Сетевые проверки{% endblock %}
 {% block content %}
@@ -132,6 +137,7 @@
   {% elif result.check == 'pcap_capture' and result.result.capture_id is defined %}
   <p>Пакетов {{ result.result.packets }} · {{ result.result.size_bytes }} байт</p>
   {% if result.result.filter is defined %}<p>{{ capture_filter(result.result.filter) }}</p>{% endif %}
+  {% if result.result.summary is defined %}<p>{{ capture_summary(result.result.summary) }}</p>{% endif %}
   <a class="button" href="/network/diagnostics/captures/{{ result.result.capture_id }}">Скачать PCAP</a>
   {% elif result.check == 'loop_check' and result.result %}
   <p>Окно наблюдений {{ result.result.since }} — {{ result.result.until }}</p>
@@ -309,6 +315,7 @@
       <a href="/network/diagnostics/captures/{{ capture.capture_id }}">{{ capture.label }}</a>
       · {{ capture.packets }} пакетов · доступен до {{ capture.expires_at }}
       {% if capture.filter is defined %}<br>{{ capture_filter(capture.filter) }}{% endif %}
+      {% if capture.summary is defined %}<br>{{ capture_summary(capture.summary) }}{% endif %}
     </li>
     {% endfor %}
   </ul>

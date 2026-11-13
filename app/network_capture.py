@@ -8,6 +8,7 @@ import re
 import socket
 import struct
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import BinaryIO, Literal
 
@@ -55,13 +56,15 @@ def _open_output(output: Path) -> BinaryIO:
     return os.fdopen(descriptor, "rb+", buffering=0)
 
 
-def _pcap_packet_count(stream: BinaryIO, size: int, max_packets: int) -> int | None:
+def _pcap_packet_count(
+    stream: BinaryIO, size: int, max_packets: int, inspect: Callable[[int, bytes], None] | None = None,
+) -> int | None:
     stream.seek(0)
     header = stream.read(_PCAP_HEADER_SIZE)
     endian = _PCAP_MAGIC_ENDIAN.get(header[:4])
     if endian is None or len(header) != _PCAP_HEADER_SIZE:
         return None
-    major, minor, _, _, snaplen, _ = struct.unpack(f"{endian}HHIIII", header[4:])
+    major, minor, _, _, snaplen, linktype = struct.unpack(f"{endian}HHIIII", header[4:])
     if (major, minor) != (2, 4) or not 1 <= snaplen <= CAPTURE_SNAPLEN:
         return None
 
@@ -71,13 +74,71 @@ def _pcap_packet_count(stream: BinaryIO, size: int, max_packets: int) -> int | N
         if remaining < _PCAP_RECORD_HEADER_SIZE or packets == max_packets:
             return None
         record = stream.read(_PCAP_RECORD_HEADER_SIZE)
+        if len(record) != _PCAP_RECORD_HEADER_SIZE:
+            return None
         _, _, captured, original = struct.unpack(f"{endian}IIII", record)
         remaining -= _PCAP_RECORD_HEADER_SIZE + captured
         if remaining < 0 or captured > min(original, snaplen):
             return None
-        stream.seek(captured, os.SEEK_CUR)
+        if inspect is None:
+            stream.seek(captured, os.SEEK_CUR)
+        else:
+            frame = stream.read(captured)
+            if len(frame) != captured:
+                return None
+            inspect(linktype & 0xFFFF, frame)
         packets += 1
     return packets
+
+
+def _ethernet_transport(frame: bytes) -> tuple[bytes, bytes, int, bytes] | None:
+    if len(frame) < 14:
+        return None
+    ether_type = frame[12:14]
+    offset = 14
+    for _ in range(2):
+        if ether_type not in (b"\x81\x00", b"\x88\xa8") or len(frame) < offset + 4:
+            break
+        ether_type = frame[offset + 2:offset + 4]
+        offset += 4
+    packet = frame[offset:]
+    if ether_type == b"\x08\x00" and len(packet) >= 20 and packet[0] >> 4 == 4:
+        header_size = (packet[0] & 15) * 4
+        total_size = int.from_bytes(packet[2:4], "big")
+        if header_size < 20 or total_size < header_size or int.from_bytes(packet[6:8], "big") & 0x3FFF:
+            return None
+        return packet[12:16], packet[16:20], packet[9], packet[header_size:total_size]
+    if ether_type == b"\x86\xdd" and len(packet) >= 40 and packet[0] >> 4 == 6:
+        total_size = 40 + int.from_bytes(packet[4:6], "big")
+        return packet[8:24], packet[24:40], packet[6], packet[40:total_size]
+    return None
+
+
+def summarize_capture(stream: BinaryIO, size: int, *, peer: str, port: int, protocol: str) -> dict | None:
+    address = ipaddress.ip_address(peer).packed
+    transport_number = {"tcp": 6, "udp": 17}[protocol]
+    summary = {"from_peer": 0, "to_peer": 0, "unclassified": 0}
+    if protocol == "tcp":
+        summary["tcp_resets"] = 0
+
+    def inspect(linktype: int, frame: bytes) -> None:
+        parsed = _ethernet_transport(frame) if linktype == 1 else None
+        if parsed is not None:
+            source, target, transport, payload = parsed
+            if transport == transport_number and len(payload) >= (20 if protocol == "tcp" else 8):
+                source_port, target_port = struct.unpack_from("!HH", payload)
+                from_peer = source == address and source_port == port
+                to_peer = target == address and target_port == port
+                if from_peer != to_peer:
+                    summary["from_peer" if from_peer else "to_peer"] += 1
+                    if protocol == "tcp" and payload[13] & 4:
+                        summary["tcp_resets"] += 1
+                    return
+        summary["unclassified"] += 1
+
+    if _pcap_packet_count(stream, size, CAPTURE_MAX_PACKETS, inspect) is None:
+        return None
+    return summary
 
 
 def capture_filter_expression(address: ipaddress.IPv4Address | ipaddress.IPv6Address, port: int, protocol: Literal["tcp", "udp"]) -> str:

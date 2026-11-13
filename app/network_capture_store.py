@@ -11,7 +11,7 @@ from uuid import UUID, uuid4
 from fastapi import HTTPException, Response
 
 from .export_artifacts import ExportLimit, storage_lock
-from .network_capture import CAPTURE_MAX_KIB, capture_packets
+from .network_capture import CAPTURE_MAX_KIB, capture_packets, summarize_capture
 from .network_probe_profiles import CaptureProfile
 
 CAPTURE_DIRECTORY = Path("/run/ui-vpn-network-captures")
@@ -107,6 +107,13 @@ def _capture_to_store(owner: str, profile: CaptureProfile, started: datetime) ->
             "packets": reading["packets"],
             "expires_at": (started + CAPTURE_TTL).isoformat(),
         }
+        if receipt["packets"]:
+            with output.open("rb") as stream:
+                summary = summarize_capture(
+                    stream, receipt["size_bytes"], peer=profile.peer, port=profile.port, protocol=profile.protocol,
+                )
+            if summary is not None:
+                receipt["summary"] = summary
         with os.fdopen(os.open(metadata, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), "w", encoding="utf-8") as file:
             json.dump({**receipt, "owner": _owner_key(owner)}, file)
         return {"status": "captured" if receipt["packets"] else "empty_capture", "result": receipt}
