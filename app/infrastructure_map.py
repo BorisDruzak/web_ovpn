@@ -1614,11 +1614,27 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
         return port_aliases.get((node_id, key), key)
 
     paths = {}
+    bridge_mac_ports = defaultdict(dict)
     for link in links:
         if link["confirmed"] and link["kind"] in ("Путь по MAC-таблице", SHARED_LLDP_KIND):
-            paths.setdefault(frozenset((link["a"], link["b"])), []).extend(
-                (link["a"], report) for report in link["portEvidence"] if report["confirmed"]
-            )
+            for report in link["portEvidence"]:
+                if not report["confirmed"]:
+                    continue
+                paths.setdefault(frozenset((link["a"], link["b"])), []).append((link["a"], report))
+                learned = report.get("learnedEndpoint")
+                if report["source"] != "netctl FDB" or not learned:
+                    continue
+                switch, bridge = learned["switchId"], learned["deviceId"]
+                side = "a" if link["a"] == switch else "b"
+                state = report.get("portStates", {}).get(side, {})
+                if state.get("state") != "up" or state.get("stale"):
+                    continue
+                port = state["name"]
+                ports = bridge_mac_ports[bridge, learned["mac"]]
+                key = switch, port_key(switch, port)
+                if key not in ports or ports[key]["checkedAt"] < report["at"]:
+                    ports[key] = {"bridgeDeviceId": bridge, "switchId": switch, "port": port,
+                                  "checkedAt": report["at"]}
 
     counts = {"current": 0, "verifiedInventory": 0, "unconfirmed": 0}
     pending = {}
@@ -1793,9 +1809,12 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
             by_port[pair[side], port_key(pair[side], pair[field])].append(pair)
     for row in pending.values():
         connections = []
+        mac_observations = {}
         for reading in row["observedPaths"]:
             for stp in reading.get("stpPaths", ()):
                 bridge, port = stp.get("bridgeDeviceId"), stp.get("designatedPortName")
+                for key, seen in bridge_mac_ports.get((bridge, stp["designatedBridgeMac"]), {}).items():
+                    mac_observations[bridge, *key] = seen
                 if not bridge or not port:
                     continue
                 matches = by_port.get((bridge, port_key(bridge, port)), [])
@@ -1807,6 +1826,8 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
                     connections.append(pair)
         if connections:
             row["stpBridgeConnections"] = connections
+        if mac_observations:
+            row["stpBridgeMacObservations"] = [mac_observations[key] for key in sorted(mac_observations)[:12]]
     return counts, inventory_pairs, alerts, [pending[key] for key in sorted(pending)], verified_pairs
 
 
@@ -3289,7 +3310,7 @@ def load_infrastructure_map(
                      for side, port in row.get("portObservations", {}).items()
                  },
                  **{key: row[key] for key in ("archivedPortSides", "inventoryPortSides", "lldpPeers",
-                                             "stpBridgeConnections") if key in row}}
+                                             "stpBridgeConnections", "stpBridgeMacObservations") if key in row}}
                 for row in pending[:64]
             ],
             lacpPartnerInterfaceGapTotal=len(lacp_gaps),

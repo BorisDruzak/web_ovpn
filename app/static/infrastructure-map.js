@@ -207,7 +207,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   }
   function pendingPortPairRow({a, b, nameA, nameB, portA, portB, observedSources = [], lldpPortIds = [],
       observedSourceTimes = {}, identifiedPeerSides = [], archivedPortSides = [], inventoryPortSides = [],
-      portObservations = {}, stpPaths = [], stpBridgeConnections = [], lldpPeers = {}}) {
+      portObservations = {}, stpPaths = [], stpBridgeConnections = [], stpBridgeMacObservations = [], lldpPeers = {}}) {
     const item = make('li');
     const provenance = key => archivedPortSides.includes(key) ? ' (по архиву)' :
       inventoryPortSides.includes(key) ? ' (по инвентарю)' : '';
@@ -237,6 +237,12 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       const list = make('ul', null, 'map-detail-list');
       list.append(...stpBridgeConnections.map(confirmedPortPairRow));
       item.append(make('small', 'Подтверждённые пары на порту моста STP'), list);
+    }
+    for (const {bridgeDeviceId, switchId, port, checkedAt} of stpBridgeMacObservations) {
+      const bridge = byId.get(bridgeDeviceId)?.name ?? bridgeDeviceId;
+      const row = make('small', `MAC моста STP ${bridge} виден на `);
+      row.append(portPairEndpoint(switchId, byId.get(switchId)?.name ?? switchId, port), ` · ${formatTime(checkedAt)}`);
+      item.append(row);
     }
     for (const [side, port] of Object.entries(portObservations)) {
       const label = `${side === 'a' ? nameA : nameB} ${port.name}`;

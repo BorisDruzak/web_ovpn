@@ -7486,6 +7486,49 @@ def test_reciprocal_mac_path_shows_fresh_stp_evidence_without_confirming_cable(t
     assert "stpBridgeConnections" not in read()["pendingPortPairs"][0]
 
 
+def test_pending_switch_pair_links_stp_bridge_to_observed_fdb_port(tmp_path):
+    from app.infrastructure_map import RECIPROCAL_MAC_SOURCE, load_infrastructure_map, summarize_topology
+
+    now = datetime.now(timezone.utc)
+    stamp = now.isoformat()
+    mac = "02:00:00:00:00:03"
+    stp = {"localPort": "Port13", "designatedBridgeMac": mac, "designatedPortId": "80:03",
+           "checkedAt": stamp, "bridgeDeviceId": "router"}
+    observed = {"a": "ge48", "b": "", "source": "netctl FDB", "confirmed": True, "at": stamp,
+                "learnedEndpoint": {"switchId": "school", "deviceId": "router", "mac": mac}}
+    path = tmp_path / "infrastructure.json"
+
+    def read():
+        path.write_text(json.dumps({"schema": 1, "snapshotAt": stamp, "nodes": [
+            {"id": "css", "name": "CSS", "kind": "Коммутатор", "stpRootPath": stp,
+             "ports": [{"name": "Port13", "state": "up", "checkedAt": stamp}]},
+            {"id": "ito", "name": "ITO", "kind": "Коммутатор"},
+            {"id": "school", "name": "School", "kind": "Коммутатор",
+             "ports": [{"name": "ge48", "state": "up", "checkedAt": stamp}]},
+            {"id": "router", "name": "Router", "kind": "Маршрутизатор"},
+        ], "links": [
+            {"a": "css", "b": "ito", "kind": "Сетевое соединение", "portEvidence": [
+                {"a": "Port13", "b": "ge22", "source": "GitHub", "confirmed": False}]},
+            {"a": "css", "b": "ito", "kind": "Путь по MAC-таблице", "confirmed": True, "portEvidence": [
+                {"a": "Port13", "b": "ge22", "source": RECIPROCAL_MAC_SOURCE, "confirmed": True, "at": stamp}]},
+            {"a": "school", "b": "router", "kind": "Путь по MAC-таблице", "confirmed": True,
+             "portEvidence": [observed]},
+        ]}), encoding="utf-8")
+        graph = load_infrastructure_map(path, now, include_guest_attachments=True)
+        topology = summarize_topology(graph)["topologyAudit"]
+        assert topology["currentPairTotal"] == 0
+        return [next(row for row in rows if row["a"] == "css")
+                for rows in (graph["pendingPortPairs"], topology["pending"])]
+
+    expected = [{"bridgeDeviceId": "router", "switchId": "school", "port": "ge48", "checkedAt": stamp}]
+    assert all(row["stpBridgeMacObservations"] == expected for row in read())
+    observed["learnedEndpoint"]["mac"] = "02:00:00:00:00:04"
+    assert all("stpBridgeMacObservations" not in row for row in read())
+    observed["learnedEndpoint"]["mac"] = mac
+    observed["at"] = (now - timedelta(minutes=26)).isoformat()
+    assert all("stpBridgeMacObservations" not in row for row in read())
+
+
 def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(tmp_path, monkeypatch):
     from app import infrastructure_map
     from app.endpoint_platform_client import EndpointPlatformServiceError
