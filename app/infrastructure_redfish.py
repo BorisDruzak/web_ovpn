@@ -106,6 +106,8 @@ def _confirm_management_pair(graph, nodes, controller_id, spec, credential, now)
             or abs(datetime.fromisoformat(observed) - datetime.fromisoformat(learned["checkedAt"])).total_seconds() > 30
             or port.get("speedBps") != speed * 1_000_000):
         return
+    confirmed_at = min(datetime.fromisoformat(observed), datetime.fromisoformat(learned["checkedAt"])).isoformat()
+    confirmed = False
     for edge in graph["links"]:
         if edge["kind"] != "Сетевое соединение" or not edge["confirmed"] or {edge["a"], edge["b"]} != {switch, controller_id}:
             continue
@@ -115,7 +117,12 @@ def _confirm_management_pair(graph, nodes, controller_id, spec, credential, now)
                and port_label_key(row["a"]) == port_label_key(a) and port_label_key(row["b"]) == port_label_key(b)
                for row in evidence):
             evidence.append({"a": a, "b": b, "source": REDFISH_PAIR_SOURCE, "confirmed": True,
-                             "at": min(datetime.fromisoformat(observed), datetime.fromisoformat(learned["checkedAt"])).isoformat()})
+                             "at": confirmed_at})
+            confirmed = True
+    if confirmed:
+        nodes[controller_id].setdefault("ports", []).append({
+            "name": name, "state": "up", "speedBps": speed * 1_000_000, "checkedAt": confirmed_at, "source": "Redfish",
+        })
 
 
 def collect_redfish_power(graph: dict, specs: dict, credentials: Path | None, now: datetime) -> None:

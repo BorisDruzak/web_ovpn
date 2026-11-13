@@ -164,11 +164,19 @@ def test_redfish_management_pair_requires_matching_current_switch_evidence(tmp_p
     snapshot = tmp_path / "map.json"
     snapshot.write_text(json.dumps(graph), encoding="utf-8")
     for when, current in ((now, int(failure is None)), (now + timedelta(minutes=11), 0)):
-        audit = summarize_topology(load_infrastructure_map(snapshot, when))["topologyAudit"]
+        view = load_infrastructure_map(snapshot, when)
+        controller = next(node for node in view["nodes"] if node["id"] == "bmc")
+        audit = summarize_topology(view)["topologyAudit"]
         assert audit["currentPairTotal"] == current
         assert audit["inventoryOnlyPairTotal"] == 1 - current
         if current:
             assert audit["currentPairs"][0]["evidence"][0]["expiresAt"] == (now + timedelta(minutes=10)).isoformat()
+            assert audit["currentPairs"][0]["portStates"]["b"] == {
+                "state": "up", "speedBps": 10**9, "checkedAt": stamp, "source": "Redfish",
+            }
+            assert controller["ports"][0]["name"] == "eth0"
+        else:
+            assert all(port["state"] == "unknown" for port in controller["ports"])
 
 
 @pytest.mark.parametrize(("status", "headers", "state", "reason"), [

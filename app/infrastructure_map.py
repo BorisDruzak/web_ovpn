@@ -301,8 +301,9 @@ def public_probe_transition(value: object, reachability: dict, now: datetime) ->
 
 def _public_port(row: dict, now: datetime) -> dict:
     stamp = _time(row.get("checkedAt"))
-    fresh = observation_is_fresh(row.get("checkedAt"), now)
     source = row.get("source")
+    max_age = REDFISH_PAIR_MAX_AGE if source == "Redfish" else MAX_AGE
+    fresh = observation_is_fresh(row.get("checkedAt"), now, max_age=max_age)
     state = "unknown" if source == "Proxmox" else row.get("state")
     speed = row.get("speedBps")
     result = {
@@ -390,7 +391,7 @@ def _public_port(row: dict, now: datetime) -> dict:
         count, partial = learned.get("learnedMacCount"), learned.get("partial")
         if type(count) is int and 0 <= count < 2**53 and type(partial) is bool:
             result["fdbLearned"] = {"checkedAt": result["checkedAt"], "learnedMacCount": count, "partial": partial}
-    if source in ("RouterOS", "Proxmox", "Proxmox · sysfs"):
+    if source in ("RouterOS", "Proxmox", "Proxmox · sysfs", "Redfish"):
         result["source"] = source
     router_neighbors = row.get("routerNeighbors")
     if (source == "RouterOS" and result["state"] == "up" and isinstance(router_neighbors, dict)
@@ -3790,7 +3791,7 @@ def load_infrastructure_map(
             nodes[node["id"]] = node
             if expected := _rows(row.get("lacpExpectations"), 8):
                 lacp_expectations[node["id"]] = expected
-            if node["kind"] in (*NETWORK_KINDS[:2], "Гипервизор"):
+            if node["kind"] in (*NETWORK_KINDS[:2], "Гипервизор", "Контроллер управления"):
                 port_states[node["id"]] = index_port_states(_rows(row.get("ports"), 500), now)
             key = _text(row.get("endpointKey"))
             if node["kind"] == "Рабочая станция" and re.fullmatch(r"mac:(?:[0-9A-F]{2}:){5}[0-9A-F]{2}", key):
