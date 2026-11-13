@@ -297,6 +297,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       multiple_learned_macs: 'на порту изучено несколько MAC',
       no_live_peer_identity: 'сосед не опознан по свежим данным',
       physical_pair_unconfirmed: 'нет свежего подтверждения прямой пары',
+      conflicting_port_pairs: 'свежие наблюдения указывают на разных соседей одного порта',
     };
     const gaps = confirmationGaps.map(gap => gapLabels[gap]).filter(Boolean);
     for (const [side, evidence] of Object.entries(stoppedEndpoints)) {
@@ -2340,6 +2341,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
                          verified_inventory: ' · пара по подтверждённой записи инвентаря'}[evidence.pairEvidence] ?? '';
           const unverified = evidence.confirmed ? '' : ' · ' + pending.toLocaleLowerCase('ru-RU');
           li.append(make('small', ports + vlan + ' · ' + source + time + proof + unverified));
+          if (evidence.conflictingPortSides?.length) {
+            const disputed = evidence.conflictingPortSides.map(side => `${byId.get(edge[side]).name} ${evidence[side]}`);
+            li.append(make('small', `Конфликт наблюдений · ${disputed.join(' · ')}`));
+          }
           if (evidence.windowsAdapter) li.append(make('small', formatWindowsPortEvidence(evidence.windowsAdapter)));
           if (evidence.learnedEndpoint) {
             const {switchId, mac} = evidence.learnedEndpoint;

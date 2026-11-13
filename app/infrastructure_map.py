@@ -1792,6 +1792,40 @@ def _compare_port_traffic(ports: dict) -> dict:
             "aToB": direction(a["txBps"], b["rxBps"]), "bToA": direction(b["txBps"], a["rxBps"])}
 
 
+def _mark_conflicting_port_pairs(nodes: dict, links: list[dict]) -> None:
+    aliases = {(node["id"], port_label_key(alias)): port_label_key(port["name"])
+               for node in nodes.values() for port in node["ports"] for alias in port.get("aliases", [])}
+    peers = defaultdict(set)
+    candidates = []
+    for edge in links:
+        if edge["kind"] != "Сетевое соединение" or not edge["confirmed"]:
+            continue
+        for report in edge["portEvidence"]:
+            if report.get("pairEvidence") != "current":
+                continue
+            a, b = ((edge[side], port_label_key(report[side])) for side in ("a", "b"))
+            a, b = (a[0], aliases.get(a, a[1])), (b[0], aliases.get(b, b[1]))
+            peers[a].add(b)
+            peers[b].add(a)
+            candidates.append((edge, report, (a, b)))
+    affected = {}
+    for edge, report, ends in candidates:
+        sides = [side for side, endpoint in zip(("a", "b"), ends) if len(peers[endpoint]) > 1]
+        if not sides:
+            continue
+        report["conflictingPortSides"] = sides
+        report["confirmed"] = False
+        report.pop("pairEvidence")
+        report.pop("portComparison", None)
+        affected[id(edge)] = edge
+    for edge in affected.values():
+        edge["confirmed"] = any(report.get("pairEvidence") == "current" or report.get("lacp")
+                                for report in edge["portEvidence"])
+        edge.pop("portAlerts", None)
+        if edge["confirmed"] and (alerts := _link_port_alerts(edge["portEvidence"])):
+            edge["portAlerts"] = alerts
+
+
 def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
     port_aliases = {
         (node["id"], port_label_key(alias)): port_label_key(port["name"])
@@ -1954,6 +1988,27 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
                 **({"lldpObservations": lldp} if lldp else {}),
                 **({"lldpPeers": declared["lldpPeers"]} if "lldpPeers" in declared else {}),
             }
+    pending_keys = {(row["a"], row["b"], port_key(row["a"], row["portA"]), port_key(row["b"], row["portB"])): row
+                    for row in pending.values()}
+    for link in links:
+        a, b = link["a"], link["b"]
+        for report in link["portEvidence"]:
+            if not (sides := report.get("conflictingPortSides")):
+                continue
+            key = a, b, port_key(a, report["a"]), port_key(b, report["b"])
+            if key not in pending_keys:
+                port_a = canonical_ports.get((a, key[2]), report["a"])
+                port_b = canonical_ports.get((b, key[3]), report["b"])
+                row = {"a": a, "b": b, "nameA": nodes[a]["name"], "nameB": nodes[b]["name"],
+                       "portA": port_a, "portB": port_b, "observedPaths": [], "missingPortSides": [],
+                       "identifiedPeerSides": [], "portObservations": observations(report)}
+                pending[a, b, port_a, port_b] = pending_keys[key] = row
+            row = pending_keys[key]
+            row["conflictingPortSides"] = sides
+            reading = {"portA": report["a"], "portB": report["b"], "source": report["source"], "checkedAt": report["at"]}
+            if reading not in row["observedPaths"] and len(row["observedPaths"]) < 8:
+                row["observedPaths"].append(reading)
+            remember_ports(a, b, report["a"], report["b"])
     for link in links:
         if link["kind"] not in ("Транзитный сегмент", "Путь по MAC-таблице"):
             continue
@@ -2132,6 +2187,8 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
             gaps.append("no_live_peer_identity")
         if stopped_endpoints:
             gaps.append("endpoint_powered_off")
+        if row.get("conflictingPortSides"):
+            gaps.append("conflicting_port_pairs")
         row["confirmationGaps"] = gaps or ["physical_pair_unconfirmed"]
     return counts, inventory_pairs, alerts, [pending[key] for key in sorted(pending)], verified_pairs
 
@@ -2534,6 +2591,8 @@ def _physical_attachments(nodes: dict, links: list[dict], host_ids: list[str]) -
                 reading.update({key: report[key] for key in ("pairEvidence", "learnedEndpoint", "inventorySources", "windowsAdapter")
                                 if key in report})
                 sides = {host_side: "host", peer_side: "peer"}
+                if conflict := report.get("conflictingPortSides"):
+                    reading["conflictingPortSides"] = [sides[side] for side in conflict]
                 if port_states := report.get("portStates"):
                     reading["portStates"] = {
                         sides[side]: {key: state[key] for key in ("name", "state", "speedBps", "checkedAt",
@@ -2758,7 +2817,7 @@ def _management_port_paths(nodes: dict, links: list[dict]) -> dict:
             if report.get("pairEvidence") == "current":
                 physical_key = (host, key)
                 physical[physical_key] = max(physical.get(physical_key, report["at"]), report["at"])
-            if not (address := report.get("managementAddress")):
+            if not report["confirmed"] or not (address := report.get("managementAddress")):
                 continue
             pair = paths[host, address]
             if key not in pair or pair[key]["checkedAt"] < report["at"]:
@@ -4076,6 +4135,7 @@ def load_infrastructure_map(
                 alerts = _link_port_alerts(evidence)
             links.append({**edge, "confirmed": confirmed, "portEvidence": evidence,
                           **({"portAlerts": alerts} if alerts else {})})
+    _mark_conflicting_port_pairs(nodes, links)
     _attach_management_vlan_observations(nodes, links, now)
     if db is not None and endpoint_keys and now - stamp <= MAX_AGE:
         _attach_endpoint_presence(db, endpoint_keys, nodes, now)
@@ -4150,7 +4210,7 @@ def load_infrastructure_map(
                  **{key: row[key] for key in ("archivedPortSides", "archivedPortAt", "inventoryPortSides", "inventorySources",
                                              "inventoryPeerPorts", "lldpPeers", "multiMacPortSides",
                                              "stpBridgeConnections", "stpBridgeMacObservations", "arpDiagnostics",
-                                             "trafficComparison", "stoppedEndpoints") if key in row}}
+                                             "trafficComparison", "stoppedEndpoints", "conflictingPortSides") if key in row}}
                 for row in pending[:64]
             ],
             lacpPartnerInterfaceGapTotal=len(lacp_gaps),

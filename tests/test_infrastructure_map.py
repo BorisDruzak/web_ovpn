@@ -8517,6 +8517,34 @@ def test_inventory_port_sources_are_dated_and_kept_separate_from_live_checks(tmp
     assert browser["currentPortPairs"] == []
 
 
+def test_topology_withholds_conflicting_live_pairs_even_without_inventory(tmp_path):
+    from app.infrastructure_map import load_infrastructure_map, summarize_topology
+
+    now = datetime.now(timezone.utc)
+    stamp = now.isoformat()
+    raw = {"schema": 1, "snapshotAt": stamp, "nodes": [
+        {"id": name, "name": name, "kind": "Коммутатор"} for name in ("core", "one", "two", "three")
+    ], "links": [
+        {"a": "core", "b": peer, "kind": "Сетевое соединение", "confirmed": True,
+         "portEvidence": [{"a": port, "b": "Port1", "source": source, "confirmed": True, "at": stamp}]}
+        for peer, port, source in (
+            ("one", "Gi1/0/1", "LLDP UI_VPN"), ("two", "gigabitEthernet 1/0/1", "LLDP · двустороннее"),
+            ("three", "Gi1/0/2", "LLDP UI_VPN"),
+        )
+    ]}
+    path = tmp_path / "map.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    graph = load_infrastructure_map(path, now, include_guest_attachments=True)
+    audit = summarize_topology(graph, node_id="core", port_name="Gi1/0/1")["topologyAudit"]
+    assert audit["currentPairTotal"] == 0 and audit["pendingTotal"] == 2
+    assert audit["confirmationGapCounts"] == {"conflicting_port_pairs": 2}
+    assert {row["b"] for row in audit["pending"]} == {"one", "two"}
+    assert all(row["observedPaths"][0]["source"].startswith("LLDP") for row in audit["pending"])
+    assert graph["currentPortPairTotal"] == 1 and graph["pendingPortPairTotal"] == 2
+    assert graph["currentPortPairs"][0]["b"] == "three"
+    assert all(not edge["confirmed"] for edge in graph["links"] if edge["b"] in ("one", "two"))
+
+
 def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_paths(tmp_path, monkeypatch):
     path = tmp_path / "infrastructure.json"
     monkeypatch.setenv("INFRASTRUCTURE_MAP_SNAPSHOT_PATH", str(path))
