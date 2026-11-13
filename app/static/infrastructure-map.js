@@ -1222,7 +1222,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       }
       const attachment = path.routerAttachment ?? path.switchAttachment;
       if (attachment) {
-        const {routerId, switchId, port, source, checkedAt, physicalPair, archivedPeer, telemetry, lldpPeers = []} = attachment;
+        const {routerId, switchId, port, source, checkedAt, physicalPair, archivedPeer, telemetry, rxErrorCounters, lldpPeers = []} = attachment;
         const deviceId = routerId ?? switchId;
         const device = byId.get(deviceId)?.name ?? deviceId;
         const evidence = switchId ? 'ARP + FDB коммутатора' : source;
@@ -1230,8 +1230,13 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           switchPortButton(deviceId, device, port));
         if (telemetry && telemetry.rxBps !== undefined && telemetry.txBps !== undefined) {
           const rate = value => observerNumber.format(value / 1000) + ' кбит/с';
-          row.append(make('small', `RouterOS · RX ${rate(telemetry.rxBps)} · TX ${rate(telemetry.txBps)} · ${formatTime(telemetry.checkedAt)}`));
+          row.append(make('small', `${switchId ? 'SNMP' : 'RouterOS'} · RX ${rate(telemetry.rxBps)} · TX ${rate(telemetry.txBps)} · ${formatTime(telemetry.checkedAt)}`));
         }
+        if (switchId && telemetry) {
+          const changes = formatPortCounterChanges(telemetry);
+          if (changes) row.append(make('small', changes));
+        }
+        if (rxErrorCounters) appendRxErrorCounters(row, rxErrorCounters);
         for (const peer of lldpPeers) {
           const label = formatLldpPortId(peer.portId, peer.portIdSubtype);
           row.append(make('small', `Объявление LLDP · ${label} · ${formatTime(peer.checkedAt)}`));

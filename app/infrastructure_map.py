@@ -2786,7 +2786,8 @@ def _observed_management_ports(links: list[dict], nodes: dict) -> dict:
                 field, id_key = "switchAttachment", "switchId"
             else:
                 continue
-            if report.get("portStates", {}).get(side, {}).get("state") != "up":
+            port_state = report.get("portStates", {}).get(side, {})
+            if port_state.get("state") != "up":
                 continue
             device, port = edge[side], report[side]
             host = edge["b" if side == "a" else "a"]
@@ -2794,12 +2795,14 @@ def _observed_management_ports(links: list[dict], nodes: dict) -> dict:
             key = (device, port_label_key(port))
             if key not in ports or ports[key][field]["checkedAt"] < report["at"]:
                 attachment = {id_key: device, "port": port, "source": report["source"], "checkedAt": report["at"]}
+                if telemetry := port_state.get("telemetry"):
+                    attachment["telemetry"] = telemetry
                 if field == "routerAttachment":
                     if not report["b"] and (archived := _archived_router_peer(edge)):
                         attachment["archivedPeer"] = archived
-                    if telemetry := report["portStates"][side].get("telemetry"):
-                        attachment["telemetry"] = telemetry
                 if field == "switchAttachment":
+                    if counters := port_state.get("rxErrorCounters"):
+                        attachment["rxErrorCounters"] = counters
                     peers = [peer for peer in report.get("lldpPeers", {}).get(side, [])
                              if peer.get("chassisId") == endpoint["mac"] and peer.get("portId")]
                     if peers:

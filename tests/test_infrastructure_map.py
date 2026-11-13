@@ -6090,7 +6090,15 @@ def test_management_path_includes_both_ports_only_for_unique_current_cable(tmp_p
         return service["switchAttachment"]
 
     direct = cable("host", "LLDP · двустороннее")
+    telemetry = {"checkedAt": at, "intervalSeconds": 300, "rxBps": 0, "txBps": 1250, "rxErrors": 12}
+    switch_port = nodes[0]["ports"][0]
+    counters = {"checkedAt": at, "ifInErrors": 120, "fcsErrors": 5}
+    switch_port.update(telemetry=telemetry, rxErrorCounters=counters)
     path = read()
+    assert path["telemetry"] == telemetry
+    assert path["rxErrorCounters"] == counters
+    switch_port["telemetry"] = {**telemetry, "checkedAt": (now - timedelta(minutes=20)).isoformat()}
+    assert not {"telemetry", "rxErrorCounters"} & read().keys()
     assert path["lldpPeers"] == [{"localPort": "gigabitEthernet 1/0/31", "checkedAt": at,
                                   "chassisId": "02:00:00:00:00:14", "portId": "bond0",
                                   "portIdSubtype": "interface_name"}]
