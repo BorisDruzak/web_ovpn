@@ -148,7 +148,7 @@ def test_icmp_uses_configured_source_and_ipv4_df_payload(
         if "neigh" in argv:
             return subprocess.CompletedProcess(argv, 0, b"[]", b"")
         if argv[0] == "/usr/sbin/ip":
-            assert argv[1:] == ["-j", "-4", "route", "get", TARGET, "from", SOURCE]
+            assert argv[1:] == ["-j", "-4", "route", "get", TARGET, "from", SOURCE, "ipproto", "icmp"]
             return _route_result(argv)
         assert argv == [
             "/usr/bin/ping",
@@ -698,6 +698,34 @@ def test_dns_uses_only_the_configured_transport(monkeypatch, routed, transport, 
     assert result["evidence"]["dns_transport"] == transport.upper()
     if transport == "udp":
         assert result["evidence"]["reason"] == "dns_truncated"
+
+
+def test_dns_fallback_checks_tcp_policy_before_sending(monkeypatch):
+    calls = []
+
+    def run(argv, timeout):
+        calls.append(argv[-4:])
+        dev = "tun0" if argv[-3] == "udp" else "eth0"
+        payload = json.dumps([{"dst": TARGET, "dev": dev}]).encode()
+        return subprocess.CompletedProcess(argv, 0, payload, b"")
+
+    def udp(*args, **kwargs):
+        raise dns.message.Truncated
+
+    def tcp(*args, **kwargs):
+        pytest.fail("TCP fallback would leave the expected tunnel")
+
+    monkeypatch.setattr(network_route_local, "_run_local", run)
+    monkeypatch.setattr(dns.query, "udp", udp)
+    monkeypatch.setattr(dns.query, "tcp", tcp)
+    result = probe_local_route(
+        target=TARGET, protocol="dns", source_address=SOURCE, dns_name="service.test",
+        expected_kernel_interface="tun0",
+    )
+    assert calls == [["ipproto", "udp", "dport", "53"], ["ipproto", "tcp", "dport", "53"]]
+    assert result["status"] == "unavailable"
+    assert result["evidence"]["reason"] == "kernel_interface_mismatch"
+    assert result["kernel_route"]["result"]["dev"] == "eth0"
 
 
 def test_kernel_empty_evidence_and_https_no_reply_are_typed(monkeypatch):

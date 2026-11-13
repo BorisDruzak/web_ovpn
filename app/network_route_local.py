@@ -10,6 +10,7 @@ import re
 import socket
 import ssl
 import subprocess
+from collections.abc import Callable
 from datetime import datetime, timezone
 from time import monotonic
 
@@ -113,12 +114,18 @@ def _windows_route(target: str, source_address: str | None) -> dict:
     return {"status": "route_found", "result": result}
 
 
-def _kernel_route(target: str, source_address: str | None) -> dict:
+def _kernel_route(
+    target: str, source_address: str | None, ip_protocol: str | None = None, port: int | None = None,
+) -> dict:
     if _WINDOWS:
         return _windows_route(target, source_address)
     argv = ["/usr/sbin/ip", "-j", "-4", "route", "get", target]
     if source_address is not None:
         argv.extend(("from", source_address))
+    if ip_protocol is not None:
+        argv.extend(("ipproto", ip_protocol))
+    if port is not None:
+        argv.extend(("dport", str(port)))
     try:
         completed = _run_local(argv, ROUTE_TIMEOUT)
     except subprocess.TimeoutExpired:
@@ -390,6 +397,7 @@ def _dns(
     expected: set,
     evidence: dict,
     transport: str | None,
+    check_tcp_fallback: Callable[[], str | None],
 ) -> str:
     deadline = monotonic() + PROBE_TIMEOUT
     response = None
@@ -408,6 +416,9 @@ def _dns(
             if transport == "udp":
                 evidence["reason"] = "dns_truncated"
                 return "unreachable"
+            if reason := check_tcp_fallback():
+                evidence["reason"] = reason
+                return "unavailable"
     if response is None:
         evidence["dns_transport"] = "TCP"
         response = dns.query.tcp(
@@ -537,30 +548,42 @@ def probe_local_route(
             "kernel_route": {"status": "not_run", "result": {}},
         }
 
-    route = _kernel_route(target, source_address)
-    if expected_kernel_interface is not None or expected_kernel_gateway is not None:
-        reason = None
+    def route_mismatch(route: dict) -> str | None:
+        if expected_kernel_interface is None and expected_kernel_gateway is None:
+            return None
         if route["status"] != "route_found":
-            reason = "kernel_route_unconfirmed"
-        elif expected_kernel_interface is not None and route["result"].get("dev") != expected_kernel_interface:
-            reason = "kernel_interface_mismatch"
-        elif expected_kernel_gateway is not None and route["result"].get("gateway") != expected_kernel_gateway:
-            reason = "kernel_gateway_mismatch"
-        if reason:
-            return {"status": "unavailable", "evidence": {
-                "reason": reason, "duration_ms": round((monotonic() - started) * 1000, 2),
-            }, "kernel_route": route}
+            return "kernel_route_unconfirmed"
+        if expected_kernel_interface is not None and route["result"].get("dev") != expected_kernel_interface:
+            return "kernel_interface_mismatch"
+        if expected_kernel_gateway is not None and route["result"].get("gateway") != expected_kernel_gateway:
+            return "kernel_gateway_mismatch"
+        return None
+
+    port = port or {"http": 80, "dns": 53, "https": 443, "tls": 443}.get(protocol)
+    ip_protocol = (dns_transport or "udp") if protocol == "dns" else "icmp" if protocol == "icmp" else "tcp"
+    route = _kernel_route(target, source_address, ip_protocol, port)
+    if reason := route_mismatch(route):
+        return {"status": "unavailable", "evidence": {
+            "reason": reason, "duration_ms": round((monotonic() - started) * 1000, 2),
+        }, "kernel_route": route}
+
+    def check_tcp_fallback() -> str | None:
+        nonlocal route
+        if not _WINDOWS:
+            route = _kernel_route(target, source_address, "tcp", port)
+        return route_mismatch(route)
+
     started = monotonic()
     evidence: dict = {}
     try:
         if protocol == "icmp":
             status = _icmp(target, source_address, mtu, evidence)
         elif protocol == "dns":
-            status = _dns(target, port or 53, source_address, query, expected, evidence, dns_transport)
+            status = _dns(target, port, source_address, query, expected, evidence, dns_transport, check_tcp_fallback)
         else:
             status = _tcp(
                 target,
-                port or (80 if protocol == "http" else 443),
+                port,
                 source_address,
                 protocol,
                 server_name,
