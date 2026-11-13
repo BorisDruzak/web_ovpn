@@ -2841,8 +2841,17 @@ def test_declared_switch_port_checks_cover_unverified_sides_and_exclude_retired_
     monkeypatch.setattr(collector.SnmpTransport, "from_source", lambda _: Transport())
     monkeypatch.setattr(collector, "read_interface_link", read)
     context = {
-        "devices": [{"id": f"s{i}", "kind": "switch", "management_ip": f"192.0.2.{i}"} for i in (1, 2, 3)],
+        "devices": [
+            *({"id": f"s{i}", "kind": "switch", "management_ip": f"192.0.2.{i}"} for i in (1, 2, 3)),
+            {"id": "bmc", "kind": "management_controller"},
+        ],
         "links": [
+            {"relation": "connected_to", "state": {"verified": True},
+             "endpoint_a": {"device": "s1", "interface": "Slot0/16"},
+             "endpoint_b": {"device": "bmc", "interface": "eth0"}},
+            {"relation": "connected_to", "state": {"verified": True},
+             "endpoint_a": {"device": "s1", "interface": "Slot0/17"},
+             "endpoint_b": {"device": "bmc"}},
             {"relation": "connected_to", "state": {"verified": True},
              "endpoint_a": {"device": "s1", "interface": "Port52"},
              "endpoint_b": {"device": "s2", "interface": "ge21"}},
@@ -2867,11 +2876,12 @@ def test_declared_switch_port_checks_cover_unverified_sides_and_exclude_retired_
                    "collector_run_id": 1, "last_seen_at": now.isoformat()}
                   for source, name, index in (("s1", "Slot0/52", 52), ("s2", "ge21", 5021),
                                               ("s1", "Slot0/51", 51), ("s1", "Slot0/15", 15), ("s2", "ge22", 5022),
-                                              ("s1", "Slot0/13", 13), ("s1", "Slot0/14", 14))],
+                                              ("s1", "Slot0/13", 13), ("s1", "Slot0/14", 14),
+                                              ("s1", "Slot0/16", 16), ("s1", "Slot0/17", 17))],
     }
     asyncio.run(collector._check_declared_switch_ports(context, network, {}, now))
-    assert set(calls) == {(52, "Slot0/52"), (5021, "ge21"), (15, "Slot0/15"), (5022, "ge22")}
-    assert sum("linkCheck" in row for row in network["ports"]) == 4
+    assert set(calls) == {(52, "Slot0/52"), (5021, "ge21"), (15, "Slot0/15"), (5022, "ge22"), (16, "Slot0/16")}
+    assert sum("linkCheck" in row for row in network["ports"]) == 5
 
 
 @pytest.mark.parametrize("learned_port", [7, 8])

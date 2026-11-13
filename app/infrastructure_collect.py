@@ -404,6 +404,7 @@ async def _check_declared_switch_ports(context: dict, network: dict, pve: dict, 
                   for port in ports if port.get("source") == "Proxmox · sysfs"}
     devices = {row["id"]: row for row in context.get("devices", [])}
     switches = {key: row.get("management_ip") for key, row in devices.items() if row["kind"] == "switch"}
+    controllers = {key for key, row in devices.items() if row["kind"] == "management_controller"}
     macs = {key: {mac.lower() for mac in row.get("mac_addresses", []) if MAC.fullmatch(mac)}
             for key, row in devices.items()}
     mac_owners = Counter(mac for values in macs.values() for mac in values)
@@ -459,8 +460,11 @@ async def _check_declared_switch_ports(context: dict, network: dict, pve: dict, 
                     if mac_owners[mac] == 1:
                         access_macs.setdefault((address, row["if_index"]), set()).add((device, mac))
                         access = True
-            if not access and not all(row is not None or (end["device"], end.get("interface")) in host_ports
-                                      for row, (_, _, end) in zip(available, ends)):
+            if not access and not all(
+                row is not None or (end["device"], end.get("interface")) in host_ports
+                or (end["device"] in controllers and label)
+                for row, (_, label, end) in zip(available, ends)
+            ):
                 continue
             target = checks
         else:
