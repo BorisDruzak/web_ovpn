@@ -1855,6 +1855,7 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
     nodes = {node["id"]: node for node in graph["nodes"]}
     counts, inventory_pairs, alerts, pending, current_pairs = _topology_port_pairs(nodes, graph["links"])
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
+    lacp_gaps = _lacp_partner_interface_gaps(nodes)
     if node_id is not None:
         node = nodes.get(node_id)
         keys = {port_label_key(port_name)} if port_name else set()
@@ -1873,11 +1874,19 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
 
         current = [row for row in current_pairs if matches(row)]
         gaps = [row for row in pending if matches(row)]
+        port_alerts = [row for row in alerts if matches(row)]
+        partner_gaps = [row for row in lacp_gaps if (
+            row["switchId"] == node_id and (not port_name or any(
+                port_label_key(row[field]) in keys for field in ("switchPort", "aggregate")
+            )) or row["id"] == node_id and not port_name
+        )]
         return {**metadata, "topologyAudit": {
             "node": _attachment_node(node) if node else None, "portName": port_name, "ports": ports,
             "currentPairTotal": len(current), "currentPairs": current[:64],
             "inventoryPairs": [row for row in inventory_pairs if matches(row)][:64],
             "pendingTotal": len(gaps), "pending": gaps[:64],
+            "portAlertTotal": len(port_alerts), "portAlerts": port_alerts[:64],
+            "lacpPartnerInterfaceGapTotal": len(partner_gaps), "lacpPartnerInterfaceGaps": partner_gaps[:64],
         }}
     stp = [{"id": node["id"], "name": node["name"], **node["stpRootPath"]}
            for node in nodes.values() if "stpRootPath" in node]
@@ -1889,7 +1898,6 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
     ]
     lacp = [{"id": node["id"], "name": node["name"], **report}
             for node in nodes.values() for report in node.get("lacpHealth", [])]
-    lacp_gaps = _lacp_partner_interface_gaps(nodes)
     downstream = [{"id": node["id"], "name": node["name"], **node["downstream"]}
                   for node in nodes.values() if "downstream" in node]
     collection_issues = [

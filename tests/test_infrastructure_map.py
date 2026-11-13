@@ -3070,6 +3070,10 @@ def test_topology_port_alerts_require_confirmed_pairs_and_fresh_states(tmp_path)
         assert audit["portAlerts"] == [
             {"a": "a", "b": "b", "nameA": "Switch A", "nameB": "Switch B", **alert} for alert in alerts
         ]
+        scoped = summarize_topology(graph, node_id="a", port_name="GE1")["topologyAudit"]
+        assert scoped["portAlertTotal"] == len(alerts)
+        assert scoped["portAlerts"] == audit["portAlerts"]
+        assert summarize_topology(graph, node_id="a", port_name="ge99")["topologyAudit"]["portAlerts"] == []
         return alerts
 
     assert read() == [{"portA": "ge1", "portB": "ge2", "state": "speed_mismatch", "checkedAt": stamp}]
@@ -3556,6 +3560,13 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
         assert browser["lacpPartnerInterfaceGaps"] == audit["lacpPartnerInterfaceGaps"]
         port_graph = load_infrastructure_map(path, stamp, include_port_pairs=True)
         assert port_graph["lacpPartnerInterfaceGaps"] == audit["lacpPartnerInterfaceGaps"]
+        selected = summarize_topology(port_graph, node_id="snr", port_name="GE6")["topologyAudit"]
+        assert selected["lacpPartnerInterfaceGaps"] == [
+            row for row in audit["lacpPartnerInterfaceGaps"] if row["switchPort"] == "ge6"
+        ]
+        assert selected["lacpPartnerInterfaceGapTotal"] == len(selected["lacpPartnerInterfaceGaps"])
+        aggregate = summarize_topology(port_graph, node_id="snr", port_name="po1")["topologyAudit"]
+        assert aggregate["lacpPartnerInterfaceGaps"] == audit["lacpPartnerInterfaceGaps"]
         return audit["lacpPartnerInterfaceGaps"]
 
     assert lacp_gaps() == [{"id": "pbs", "name": "PBS", "switchId": "snr", "aggregate": "po1",
