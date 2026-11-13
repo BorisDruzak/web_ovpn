@@ -7877,7 +7877,7 @@ def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_pa
                                   {"chassisId": "02:00:00:00:00:16", "inventoryDeviceId": "other",
                                    "portId": "eth1", "portIdSubtype": "interface_name"},
                               ],
-                              "fdbLearned": {"checkedAt": now, "learnedMacCount": 0, "partial": False},
+                              "fdbLearned": {"checkedAt": now, "learnedMacCount": 3, "partial": False},
                               "telemetry": {"checkedAt": now, "intervalSeconds": 60, "rxBps": 0,
                                             "txBps": 400_000, "rxErrors": 5, "private": "excluded"},
                               "rxErrorCounters": {"checkedAt": now, "ifInErrors": 44, "fcsErrors": 0},
@@ -7958,12 +7958,16 @@ def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_pa
     assert "portObservations" not in mismatch
     assert recorder["portB"] == "" and recorder["portObservations"] == {
         "a": {"name": "ge15", "state": "up", "checkedAt": now, "speedBps": 10**9,
-              "fdbLearned": {"checkedAt": now, "learnedMacCount": 0, "partial": False},
+              "fdbLearned": {"checkedAt": now, "learnedMacCount": 3, "partial": False},
               "telemetry": {"checkedAt": now, "intervalSeconds": 60, "rxBps": 0, "txBps": 400_000, "rxErrors": 5},
               "rxErrorCounters": {"checkedAt": now, "ifInErrors": 44, "fcsErrors": 0},
               "transceiver": {"checkedAt": now, "formFactor": "SFP+", "nominalBps": 10**10}},
     }
     assert recorder["missingPortSides"] == ["b"] and recorder["identifiedPeerSides"] == ["a"]
+    assert recorder["multiMacPortSides"] == ["a"]
+    projected_recorder = next(row for row in browser_graph["pendingPortPairs"] if row["portA"] == "ge15")
+    assert projected_recorder["multiMacPortSides"] == ["a"]
+    assert "multiMacPortSides" not in pending
     assert recorder["arpDiagnostics"] == {"b": [{"state": "no_reply", "address": "192.0.2.15",
                                                  "sourceIP": "192.0.2.30", "interface": "ens18", "checkedAt": now}]}
     expected_peer = {"localPort": "ge15", "chassisId": "02:00:00:00:00:15", "portId": "bond0",

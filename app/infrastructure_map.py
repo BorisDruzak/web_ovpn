@@ -1899,6 +1899,10 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
         for side, field in (("a", "portA"), ("b", "portB")):
             by_port[pair[side], port_key(pair[side], pair[field])].append(pair)
     for row in pending.values():
+        multi_mac_sides = [side for side, port in row.get("portObservations", {}).items()
+                           if port.get("fdbLearned", {}).get("learnedMacCount", 0) > 1]
+        if multi_mac_sides:
+            row["multiMacPortSides"] = sorted(multi_mac_sides)
         connections = []
         mac_observations = {}
         for reading in row["observedPaths"]:
@@ -3637,7 +3641,7 @@ def load_infrastructure_map(
                      for side, port in row.get("portObservations", {}).items()
                  },
                  **{key: row[key] for key in ("archivedPortSides", "archivedPortAt", "inventoryPortSides", "inventorySources",
-                                             "inventoryPeerPorts", "lldpPeers",
+                                             "inventoryPeerPorts", "lldpPeers", "multiMacPortSides",
                                              "stpBridgeConnections", "stpBridgeMacObservations", "arpDiagnostics") if key in row}}
                 for row in pending[:64]
             ],

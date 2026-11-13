@@ -257,7 +257,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   function pendingPortPairRow({a, b, nameA, nameB, portA, portB, observedSources = [], lldpPortIds = [],
       observedSourceTimes = {}, identifiedPeerSides = [], archivedPortSides = [], inventoryPortSides = [],
       portObservations = {}, stpPaths = [], stpBridgeConnections = [], stpBridgeMacObservations = [], lldpPeers = {},
-      archivedPortAt = {}, inventorySources = [], inventoryPeerPorts = [], arpDiagnostics = {}, observedPaths = []}) {
+      archivedPortAt = {}, inventorySources = [], inventoryPeerPorts = [], arpDiagnostics = {}, observedPaths = [],
+      multiMacPortSides = []}) {
     const item = make('li');
     const provenance = key => archivedPortSides.includes(key) ? ' (по архиву)' :
       inventoryPortSides.includes(key) ? ' (по инвентарю)' : '';
@@ -328,6 +329,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const {learnedMacCount, partial, checkedAt} = port.fdbLearned;
         item.append(make('small', [label, `Изучено MAC ${learnedMacCount}`, partial ? 'неполный опрос' : '',
           formatTime(checkedAt)].filter(Boolean).join(' · ')));
+        if (multiMacPortSides.includes(side)) {
+          item.append(make('small', `${label} · несколько MAC на порту. Дальний разъём требует сверки.`));
+        }
       }
       if (port.lldpPort?.delta) {
         item.append(make('small', `${label} · ${formatLldpDelta(port.lldpPort.delta)} · ${formatTime(port.lldpPort.checkedAt)}`));
