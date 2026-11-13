@@ -1625,6 +1625,15 @@ def _ntp(spec: dict, *, source: str | None = None) -> dict:
     if type(spec.get("port")) is not int or spec["port"] != 123:
         return {"state": "unknown", "reason": "probe_configuration"}
 
+    evidence = {}
+    if "route_via" in spec:
+        route = _local_ipv4_route(str(address), spec["route_via"])
+        evidence["localRoute"] = route
+        if route["state"] != "reachable":
+            reason = "ntp_route_mismatch" if route["state"] == "unreachable" else "ntp_route_unconfirmed"
+            return {**evidence, "state": "unknown", "reason": reason}
+        source = route["sourceIP"]
+
     request = bytearray(48)
     request[0] = 0x23  # NTPv4 client mode
     seconds, fraction = divmod(time() + 2_208_988_800, 1)
@@ -1639,18 +1648,18 @@ def _ntp(spec: dict, *, source: str | None = None) -> dict:
             connection.send(request)
             response = connection.recv(512)
     except TimeoutError:
-        return {"state": "unknown", "reason": "timeout"}
+        return {**evidence, "state": "unknown", "reason": "timeout"}
     except OSError:
-        return {"state": "unknown", "reason": "transport_error"}
+        return {**evidence, "state": "unknown", "reason": "transport_error"}
 
     if (len(response) < 48 or response[0] & 7 != 4 or (response[0] >> 3) & 7 not in (3, 4)
             or response[24:32] != request[40:48]):
-        return {"state": "unknown", "reason": "unexpected_response"}
+        return {**evidence, "state": "unknown", "reason": "unexpected_response"}
     if response[0] >> 6 == 3 or not 1 <= response[1] <= 15:
-        return {"state": "unreachable", "reason": "ntp_unsynchronized"}
+        return {**evidence, "state": "unreachable", "reason": "ntp_unsynchronized"}
     if not any(response[32:40]) or not any(response[40:48]):
-        return {"state": "unknown", "reason": "unexpected_response"}
-    return {"state": "reachable"}
+        return {**evidence, "state": "unknown", "reason": "unexpected_response"}
+    return {**evidence, "state": "reachable"}
 
 
 def _rdp_negotiation(spec: dict) -> dict:

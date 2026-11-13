@@ -162,6 +162,18 @@ def test_ntp_probe_requires_a_synchronized_reply_to_its_request(monkeypatch, rep
         monkeypatch.setattr(probes.socket, "socket", lambda *args: nullcontext(datagram))
         assert probes._ntp(spec, source="192.0.2.2")["state"] == "reachable"
         assert datagram.bound
+        route = {"state": "reachable", "sourceIP": "192.0.2.2", "gateway": "192.0.2.1",
+                 "expectedGateway": "192.0.2.1", "interface": "eth0"}
+        monkeypatch.setattr(probes, "_local_ipv4_route", lambda *_: route)
+        spec["route_via"] = "192.0.2.1"
+        node["serviceChecks"] = []
+        probes.apply_service_probes([node], {node["id"]: [spec]})
+        routed, = node["serviceChecks"]
+        assert _public_service_check(routed, datetime.now(timezone.utc))["localRoute"] == route
+        route["state"] = "unreachable"
+        monkeypatch.setattr(probes.socket, "socket", lambda *_: pytest.fail("NTP sent over wrong route"))
+        blocked = probes._ntp(spec)
+        assert blocked == {"state": "unknown", "reason": "ntp_route_mismatch", "localRoute": route}
 
 
 def test_service_probe_transition_tracks_confirmed_recovery(tmp_path):

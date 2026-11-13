@@ -653,7 +653,8 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         if result["state"] == "unreachable" and reason == "rdp_negotiation_rejected" and type(failure) is int and 1 <= failure <= 7:
             result.update(reason=reason, rdpFailureCode=failure)
     if result["method"] == "NTP (UDP)" and reason in (
-        "ntp_unsynchronized", "timeout", "unexpected_response", "transport_error", "probe_configuration",
+        "ntp_unsynchronized", "ntp_route_mismatch", "ntp_route_unconfirmed",
+        "timeout", "unexpected_response", "transport_error", "probe_configuration",
     ):
         result["reason"] = reason
     if check.get("supplemental") is True:
@@ -689,7 +690,7 @@ def _public_service_check(check: dict, now: datetime) -> dict:
     sip = result["method"] == "SIP OPTIONS (UDP)"
     if sip and reason in ("sip_route_mismatch", "sip_route_unconfirmed"):
         result["reason"] = reason
-    if icmp or sip or result["method"] == "DNS":
+    if icmp or sip or result["method"] in ("DNS", "NTP (UDP)"):
         route = check.get("localRoute")
         if isinstance(route, dict) and not result["stale"] and route.get("state") in ("reachable", "unreachable", "unknown"):
             details = {"state": route["state"]}

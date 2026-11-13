@@ -1010,6 +1010,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     tcp_connection_refused: 'Отклонено TCP-соединение',
     rdp_negotiation_rejected: 'Сервер отклонил согласование RDP',
     ntp_unsynchronized: 'Сервер NTP не предоставил синхронизированное время',
+    ntp_route_mismatch: 'Выбран другой маршрут UI_VPN, NTP-запрос не отправлен',
+    ntp_route_unconfirmed: 'Маршрут UI_VPN не подтверждён, NTP-запрос не отправлен',
     rtsp_connection_refused: 'Отклонено TCP-соединение', rtsp_auth_required: 'Требуется авторизация',
     http_configuration: 'Ошибка настройки проверки',
     probe_configuration: 'Некорректный список проверок',
