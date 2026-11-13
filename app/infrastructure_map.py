@@ -2355,7 +2355,7 @@ def _lacp_partner_interface_gaps(nodes: dict) -> list[dict]:
 def _summarize_shared_ports(pending: list[dict]) -> list[dict]:
     groups = defaultdict(list)
     for row in pending:
-        if row.get("sharedPort"):
+        if row.get("sharedPort") or row.get("basis") == "learned_endpoint":
             groups[row["a"], port_label_key(row["portA"])].append(row)
     result = []
     for (switch_id, _), rows in sorted(groups.items()):
@@ -2377,6 +2377,8 @@ def _summarize_shared_ports(pending: list[dict]) -> list[dict]:
         peers = sorted(observations)
         lldp_peers = [peer for peer in peers if "lldpCheckedAt" in observations[peer]]
         fdb_peers = [peer for peer in peers if "fdbCheckedAt" in observations[peer]]
+        if len(fdb_peers) < 2 and not any(row.get("sharedPort") for row in rows):
+            continue
         result.append({"switchId": switch_id, "port": rows[0]["portA"], "peerTotal": len(peers),
                        "peerIds": peers[:64], "liveLldpPeerIds": lldp_peers[:64], "liveFdbPeerIds": fdb_peers[:64],
                        "peerObservations": [observations[peer] for peer in peers[:64]]})

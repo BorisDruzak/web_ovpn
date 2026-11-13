@@ -9727,6 +9727,24 @@ def test_agent_audit_matches_hypervisor_using_verified_management_mac(tmp_path, 
     assert different["state"] == "not_eligible" and "presence" not in different
 
 
+def test_shared_port_summary_includes_distinct_fdb_peers_without_lldp():
+    from app.infrastructure_map import _summarize_shared_ports
+
+    at = "2026-11-13T21:25:00+00:00"
+    rows = [
+        {"a": "switch", "b": peer, "nameB": peer, "portA": "Gi1/0/23", "basis": "learned_endpoint",
+         "observedPaths": [{"source": "netctl FDB", "checkedAt": at,
+                            "learnedEndpoint": {"switchId": "switch", "deviceId": peer}}]}
+        for peer in ("router", "phone")
+    ]
+    assert _summarize_shared_ports(rows[:1]) == []
+    assert _summarize_shared_ports([rows[0], rows[0]]) == []
+    port, = _summarize_shared_ports(rows)
+    assert port["peerIds"] == port["liveFdbPeerIds"] == ["phone", "router"]
+    assert port["liveLldpPeerIds"] == []
+    assert all(not row.get("sharedPort") for row in rows)
+
+
 def test_missing_infrastructure_snapshot_has_explicit_empty_state(tmp_path, monkeypatch):
     monkeypatch.setenv("INFRASTRUCTURE_MAP_SNAPSHOT_PATH", str(tmp_path / "missing.json"))
     client, headers, _ = make_client(tmp_path, monkeypatch)
