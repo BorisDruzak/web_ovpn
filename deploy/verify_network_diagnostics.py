@@ -45,6 +45,7 @@ def route_report(
     api_runs: list[dict], expected_hops: dict[str, str | None],
     expected_dns: dict[str, tuple[str, bool]] | None = None,
     expected_interfaces: dict[str, str] | None = None,
+    expected_gateways: dict[str, str] | None = None,
     expected_ipsec: set[str] | None = None,
     expected_digests: dict[str, str] | None = None,
 ) -> dict:
@@ -92,17 +93,19 @@ def route_report(
         session = evidence.get("openvpn_session")
         if session is not None:
             summary["openvpn_session"] = session
-        if interface := probe.get("expected_kernel_interface"):
+        for field, route_key in (("interface", "dev"), ("gateway", "gateway")):
+            expected_key = f"expected_kernel_{field}"
+            expected = probe.get(expected_key)
+            if not expected:
+                continue
             route = probe.get("kernel_route") or {}
-            observed = route.get("result", {}).get("dev")
-            summary.update(
-                expected_kernel_interface=interface,
-                observed_kernel_interface=observed,
-                kernel_route_status=route.get("status", "not_run"),
-                kernel_interface_matches=(
-                    route.get("status") == "route_found" and observed == interface
-                    and (not probe.get("openvpn_client") or session == "connected")
-                ),
+            observed = route.get("result", {}).get(route_key)
+            summary[expected_key] = expected
+            summary[f"observed_kernel_{field}"] = observed
+            summary["kernel_route_status"] = route.get("status", "not_run")
+            summary[f"kernel_{field}_matches"] = (
+                route.get("status") == "route_found" and observed == expected
+                and (not probe.get("openvpn_client") or session == "connected")
             )
         probes.append(summary)
     reported_hops = {probe["id"]: probe.get("expected_first_hop") for probe in probes}
@@ -110,6 +113,9 @@ def route_report(
     expected_transports = {probe_id: transport for probe_id, (transport, _) in expected_dns.items()}
     reported_interfaces = {
         probe["id"]: probe["expected_kernel_interface"] for probe in probes if "expected_kernel_interface" in probe
+    }
+    reported_gateways = {
+        probe["id"]: probe["expected_kernel_gateway"] for probe in probes if "expected_kernel_gateway" in probe
     }
     return {
         "status": row["status"],
@@ -121,6 +127,7 @@ def route_report(
             reported_hops == expected_hops and len(probes) == len(expected_hops)
             and reported_transports == expected_transports
             and reported_interfaces == (expected_interfaces or {})
+            and reported_gateways == (expected_gateways or {})
             and {probe["id"] for probe in probes if "ipsec" in probe} == (expected_ipsec or set())
             and (expected_digests is None or all(probe["configuration_matches"] for probe in probes))
         ),
@@ -356,6 +363,9 @@ def verify(script: Path, max_age: timedelta) -> dict:
             expected_interfaces={
                 probe["id"]: probe["expected_kernel_interface"] for probe in probes if probe.get("expected_kernel_interface")
             },
+            expected_gateways={
+                probe["id"]: probe["expected_kernel_gateway"] for probe in probes if probe.get("expected_kernel_gateway")
+            },
             expected_ipsec={probe["id"] for probe in probes if probe.get("ipsec")},
             expected_digests={probe["id"]: probe["config_digest"] for probe in probes},
         )
@@ -383,6 +393,10 @@ def main() -> int:
     parser.add_argument(
         "--require-expected-kernel-interface", action="store_true",
         help="require the kernel to confirm the expected interface for every configured probe",
+    )
+    parser.add_argument(
+        "--require-expected-kernel-gateway", action="store_true",
+        help="require the kernel to confirm the expected IPv4 gateway for every configured probe",
     )
     parser.add_argument(
         "--require-dns-transport", action="store_true",
@@ -425,6 +439,11 @@ def main() -> int:
     ]
     confirmed_interfaces = sum(probe["kernel_interface_matches"] for probe in interface_probes)
     report["expected_kernel_interfaces"] = {"configured": len(interface_probes), "confirmed": confirmed_interfaces}
+    gateway_probes = [
+        probe for route in routes for probe in route["probes"] if probe.get("expected_kernel_gateway")
+    ]
+    confirmed_gateways = sum(probe["kernel_gateway_matches"] for probe in gateway_probes)
+    report["expected_kernel_gateways"] = {"configured": len(gateway_probes), "confirmed": confirmed_gateways}
     ipsec_probes = [probe for route in routes for probe in route["probes"] if "ipsec_policy_confirmed" in probe]
     ipsec_confirmed = sum(probe["ipsec_policy_confirmed"] and probe["status"] == "reachable" for probe in ipsec_probes)
     report["ipsec_probes"] = {
@@ -480,6 +499,8 @@ def main() -> int:
         return 1
     if args.require_expected_kernel_interface and not interface_probes:
         return 1
+    if args.require_expected_kernel_gateway and not gateway_probes:
+        return 1
     if args.require_ipsec and not ipsec_probes:
         return 1
     if args.require_loop_coverage:
@@ -491,6 +512,8 @@ def main() -> int:
     if args.require_expected_first_hop and confirmed_hops != len(configured_hops):
         return 2
     if args.require_expected_kernel_interface and confirmed_interfaces != len(interface_probes):
+        return 2
+    if args.require_expected_kernel_gateway and confirmed_gateways != len(gateway_probes):
         return 2
     if args.require_dns_transport and confirmed_dns != len(dns_probes):
         return 2

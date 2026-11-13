@@ -2566,6 +2566,7 @@ def test_network_active_check_uses_shared_throttle(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("reason,route_status,label,route_label", [
+    ("kernel_gateway_mismatch", "route_found", "Ожидаемый шлюз не выбран", "Выбор ядра eth0.20 · 192.0.2.2"),
     ("icmp_no_echo_reply", "route_found", "Цель не ответила на ICMP", "Выбор ядра eth0.20"),
     ("origin_ssh_failed", "not_run", "Не удалось подключиться к пробнику по SSH", "Выбор ядра не проверялся"),
     ("origin_timeout", "not_run", "Истекло время ожидания ответа пробника", "Выбор ядра не проверялся"),
@@ -2581,6 +2582,7 @@ def test_route_availability_exposes_linux_neighbor_in_api_and_ui(
         "routes": {"lan": {"label": "LAN", "probes": [{
             "id": "gateway", "expected_path": "VLAN20", "target": "192.0.2.1",
             "protocol": "icmp",
+            **({"expected_kernel_gateway": "192.0.2.1"} if reason == "kernel_gateway_mismatch" else {}),
         }]}},
     })
     neighbor = {"address": "192.0.2.1", "interface": "eth0.20", "state": "failed"}
@@ -2590,9 +2592,11 @@ def test_route_availability_exposes_linux_neighbor_in_api_and_ui(
     if route_status == "route_found":
         evidence["linux_neighbor"] = neighbor
     monkeypatch.setattr(network_route_matrix, "probe_local_route", lambda **kwargs: {
-        "status": "unavailable" if reason == "origin_ssh_failed" else "timeout",
+        "status": "unavailable" if reason in {"origin_ssh_failed", "kernel_gateway_mismatch"} else "timeout",
         "evidence": evidence,
-        "kernel_route": {"status": route_status, "result": {"dev": "eth0.20"} if route_status == "route_found" else {}},
+        "kernel_route": {"status": route_status, "result": {
+            "dev": "eth0.20", "gateway": "192.0.2.2",
+        } if route_status == "route_found" else {}},
     })
 
     payload = {"check": "route_availability", "profile": "lan"}
@@ -2603,6 +2607,9 @@ def test_route_availability_exposes_linux_neighbor_in_api_and_ui(
     page = client.post("/network/diagnostics/checks", data={"csrf_token": csrf, **payload})
     assert page.status_code == 200
     assert label in page.text and route_label in page.text
+    if reason == "kernel_gateway_mismatch":
+        assert data["result"]["probes"][0]["expected_kernel_gateway"] == "192.0.2.1"
+        assert "Ожидаемый шлюз 192.0.2.1" in page.text
     if route_status == "route_found":
         assert "ARP 192.0.2.1 · разрешение не удалось" in page.text
 

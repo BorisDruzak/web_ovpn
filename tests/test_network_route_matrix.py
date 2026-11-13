@@ -53,7 +53,9 @@ def test_dns_transport_is_explicit_without_changing_existing_probe_digests():
         "protocol": "dns", "dns_name": "service.test",
     }
     original = network_probe_profiles.RouteProbe.model_validate(common)
-    expected = original.model_dump_json(exclude={"openvpn_client", "dns_transport", "expected_kernel_interface"})
+    expected = original.model_dump_json(exclude={
+        "openvpn_client", "dns_transport", "expected_kernel_interface", "expected_kernel_gateway",
+    })
     assert original.config_digest() == hashlib.sha256(expected.encode()).hexdigest()
     assert "dns_transport" not in original.local_arguments()
     tcp = network_probe_profiles.RouteProbe.model_validate({**common, "dns_transport": "tcp"})
@@ -66,7 +68,9 @@ def test_dns_transport_is_explicit_without_changing_existing_probe_digests():
 def test_route_matrix_keeps_requested_and_observed_paths_distinct(monkeypatch):
     from app import network_route_matrix
 
-    profiles = network_probe_profiles.ProbeProfiles.model_validate(matrix_config())
+    config = matrix_config()
+    config["routes"]["comparison"]["probes"][2]["expected_kernel_gateway"] = "192.0.2.1"
+    profiles = network_probe_profiles.ProbeProfiles.model_validate(config)
     calls = []
 
     def run_netctl(args, **kwargs):
@@ -78,6 +82,7 @@ def test_route_matrix_keeps_requested_and_observed_paths_distinct(monkeypatch):
     def run_local(**kwargs):
         assert kwargs["port"] == 443
         assert kwargs["expected_http_status"] == 200
+        assert kwargs["expected_kernel_gateway"] == "192.0.2.1"
         return {"status": "reachable", "evidence": {"http_status": 200},
                 "kernel_route": {"status": "route_found", "result": {"dev": "tun0"}}}
 
@@ -89,6 +94,7 @@ def test_route_matrix_keeps_requested_and_observed_paths_distinct(monkeypatch):
     assert main["expected_path"] == "WAN 1" and main["path_status"] == "unconfirmed"
     assert main["observed_path"] is None and backup["status"] == "timeout"
     assert web["kernel_route"]["result"]["dev"] == "tun0" and web["observed_path"] is None
+    assert web["expected_kernel_gateway"] == "192.0.2.1"
     assert sorted(call[:-1] for call in calls) == [
         ["path", "probe", "--profile=comparison", "--probe=backup"],
         ["path", "probe", "--profile=comparison", "--probe=main"],

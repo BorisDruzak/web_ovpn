@@ -227,6 +227,27 @@ def test_require_expected_kernel_interface(monkeypatch, probes, code):
     assert verifier.main() == code
 
 
+@pytest.mark.parametrize("observed, confirmed", [("192.0.2.1", True), ("192.0.2.2", False), (None, False)])
+def test_route_report_checks_configured_gateway(observed, confirmed):
+    now = datetime(2026, 11, 13, 2, 15, tzinfo=UTC)
+    run = {
+        "id": 7, "trigger": "scheduled", "checked_at": now.isoformat(), "status": "partial",
+        "result": {"probes": [{
+            "id": "lan", "status": "reachable" if confirmed else "unavailable",
+            "expected_kernel_gateway": "192.0.2.1",
+            "kernel_route": {"status": "route_found", "result": {"gateway": observed}},
+        }]},
+    }
+    inputs = {"api_runs": [run], "expected_hops": {"lan": None}}
+    report = route_report(
+        [run], now, timedelta(minutes=10), **inputs, expected_gateways={"lan": "192.0.2.1"},
+    )
+    assert report["profile_matches"]
+    assert report["probes"][0]["observed_kernel_gateway"] == observed
+    assert report["probes"][0]["kernel_gateway_matches"] is confirmed
+    assert not route_report([run], now, timedelta(minutes=10), **inputs)["profile_matches"]
+
+
 def test_loop_report_preserves_per_source_coverage_without_copying_findings():
     coverage = {
         "fdb": {"status": "recent", "truncated": False},

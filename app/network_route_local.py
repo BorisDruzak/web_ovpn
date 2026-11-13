@@ -470,6 +470,7 @@ def probe_local_route(
     expected_dns_answers: tuple[str, ...] = (),
     mtu: int | None = None,
     expected_kernel_interface: str | None = None,
+    expected_kernel_gateway: str | None = None,
 ) -> dict:
     """Probe the endpoint and report the kernel's route estimate separately."""
     started = monotonic()
@@ -477,6 +478,8 @@ def probe_local_route(
         _ipv4(target)
         if source_address is not None:
             _ipv4(source_address)
+        if expected_kernel_gateway is not None:
+            _ipv4(expected_kernel_gateway)
         if expected_kernel_interface is not None and (
             not isinstance(expected_kernel_interface, str)
             or re.fullmatch(KERNEL_INTERFACE_PATTERN, expected_kernel_interface) is None
@@ -535,13 +538,18 @@ def probe_local_route(
         }
 
     route = _kernel_route(target, source_address)
-    if expected_kernel_interface is not None and (
-        route["status"] != "route_found" or route["result"].get("dev") != expected_kernel_interface
-    ):
-        reason = "kernel_interface_mismatch" if route["status"] == "route_found" else "kernel_route_unconfirmed"
-        return {"status": "unavailable", "evidence": {
-            "reason": reason, "duration_ms": round((monotonic() - started) * 1000, 2),
-        }, "kernel_route": route}
+    if expected_kernel_interface is not None or expected_kernel_gateway is not None:
+        reason = None
+        if route["status"] != "route_found":
+            reason = "kernel_route_unconfirmed"
+        elif expected_kernel_interface is not None and route["result"].get("dev") != expected_kernel_interface:
+            reason = "kernel_interface_mismatch"
+        elif expected_kernel_gateway is not None and route["result"].get("gateway") != expected_kernel_gateway:
+            reason = "kernel_gateway_mismatch"
+        if reason:
+            return {"status": "unavailable", "evidence": {
+                "reason": reason, "duration_ms": round((monotonic() - started) * 1000, 2),
+            }, "kernel_route": route}
     started = monotonic()
     evidence: dict = {}
     try:

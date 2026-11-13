@@ -79,6 +79,32 @@ def test_expected_kernel_interface_allows_probe_on_match(monkeypatch, routed):
     assert result["kernel_route"]["result"]["dev"] == "eth0"
 
 
+@pytest.mark.parametrize("kernel_route, expected_status, reason", [
+    ({"status": "route_found", "result": {"dev": "eth0", "gateway": "192.0.2.1"}}, "reachable", None),
+    ({"status": "route_found", "result": {"dev": "eth0", "gateway": "192.0.2.2"}}, "unavailable",
+     "kernel_gateway_mismatch"),
+    ({"status": "route_found", "result": {"dev": "eth0"}}, "unavailable", "kernel_gateway_mismatch"),
+    ({"status": "failed", "result": {}}, "unavailable", "kernel_route_unconfirmed"),
+])
+def test_expected_kernel_gateway_gates_traffic(monkeypatch, kernel_route, expected_status, reason):
+    monkeypatch.setattr(network_route_local, "_kernel_route", lambda *args: kernel_route)
+    calls = []
+
+    def tcp(*args):
+        calls.append(args)
+        return "reachable"
+
+    monkeypatch.setattr(network_route_local, "_tcp", tcp)
+    result = probe_local_route(
+        target=TARGET, protocol="tcp", port=443, expected_kernel_interface="eth0",
+        expected_kernel_gateway="192.0.2.1",
+    )
+    assert result["status"] == expected_status
+    assert result["evidence"].get("reason") == reason
+    assert result["kernel_route"] == kernel_route
+    assert len(calls) == (1 if expected_status == "reachable" else 0)
+
+
 @pytest.mark.parametrize(
     "stdout, stderr, exit_code, status, reason",
     [

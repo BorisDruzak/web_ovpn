@@ -43,6 +43,7 @@ PROBE_REASONS = {
     "probe_unavailable",
     "source_unavailable",
     "kernel_interface_mismatch",
+    "kernel_gateway_mismatch",
     "kernel_route_unconfirmed",
     "icmp_unreachable",
     "icmp_no_echo_reply",
