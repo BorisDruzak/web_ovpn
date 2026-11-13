@@ -2073,7 +2073,8 @@ def _attachment_probe_location(check: dict) -> dict:
             "checkedAt": check["checkedAt"], "state": check["state"],
             **({"path": check["path"]} if check.get("path") else {}),
             **{key: check[key] for key in ("reason", "roundTripMs", "httpStatus", "responseCode", "rtspStatus", "dns",
-                                           "rdpSecurity", "rdpFailureCode", "tlsExpiresAt", "tlsVersion", "zabbixVersion")
+                                           "rdpSecurity", "rdpFailureCode", "tlsExpiresAt", "tlsVersion", "zabbixVersion",
+                                           "smbDialect", "smbSigningRequired")
                if key in check}}
 
 
@@ -2418,6 +2419,11 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime, *, endpoint_
                 versions = probe.setdefault("zabbixVersions", [])
                 if version not in versions:
                     versions.append(version)
+            if dialect := check.get("smbDialect"):
+                negotiation = {"dialect": dialect, "signingRequired": check["smbSigningRequired"]}
+                negotiations = probe.setdefault("smbNegotiations", [])
+                if negotiation not in negotiations:
+                    negotiations.append(negotiation)
             if expires := check.get("tlsExpiresAt"):
                 certificate = {"expiresAt": expires}
                 if version := check.get("tlsVersion"):

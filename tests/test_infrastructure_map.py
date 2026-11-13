@@ -7002,6 +7002,16 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     browser = client.get(browser_endpoint).json()["infrastructure"]
     certificate, = browser["servicePorts"]["snr"][0]["services"][0]["probeEndpoints"]
     assert certificate["tlsCertificates"] == [{"expiresAt": expires, "version": "TLSv1.3"}]
+    smb = {**check, "method": "SMB2", "port": 445, "smbDialect": "2.1", "smbSigningRequired": False}
+    raw["nodes"][0]["serviceChecks"] = [smb, {**smb, "smbSigningRequired": True},
+                                       {**smb, "smbSigningRequired": "invalid"}]
+    smb_paths = read()["servicePaths"]
+    assert [path.get("smbSigningRequired") for path in smb_paths] == [False, True, None]
+    assert [path.get("smbDialect") for path in smb_paths] == ["2.1", "2.1", None]
+    browser = client.get(browser_endpoint).json()["infrastructure"]
+    smb_endpoint, = browser["servicePorts"]["snr"][0]["services"][0]["probeEndpoints"]
+    assert smb_endpoint["smbNegotiations"] == [{"dialect": "2.1", "signingRequired": False},
+                                               {"dialect": "2.1", "signingRequired": True}]
     raw["nodes"][0]["serviceChecks"] = [
         {**check, "method": "SIP OPTIONS (UDP)", "port": 5060, "reason": "sip_response", "responseCode": 200},
         {**check, "method": "RTSP OPTIONS", "port": 554, "reason": "rtsp_auth_required", "rtspStatus": 401},

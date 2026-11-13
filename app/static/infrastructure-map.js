@@ -760,6 +760,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     return [version, `Срок действия до ${formatTime(expiresAt)}`].filter(Boolean).join(' · ');
   }
 
+  function smbNegotiationLabel(dialect, signingRequired) {
+    return `SMB ${dialect} · ${signingRequired ? 'сервер требует подпись' : 'сервер не требует подпись'}`;
+  }
+
   function renderServicePaths(paths) {
     if (!paths?.length) return null;
     const panel = make('section');
@@ -795,7 +799,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const rdp = probe.rdpSecurity ?? (probe.rdpFailureCode && `Код отказа RDP ${probe.rdpFailureCode}`);
         const tls = probe.tlsExpiresAt && certificateLabel(probe.tlsExpiresAt, probe.tlsVersion);
         const zabbix = probe.zabbixVersion && `Zabbix ${probe.zabbixVersion}`;
-        readings.add([probe.path, question, outcome, code, rdp, tls, zabbix, responseFrom, rtt,
+        const smb = probe.smbDialect && smbNegotiationLabel(probe.smbDialect, probe.smbSigningRequired);
+        readings.add([probe.path, question, outcome, code, rdp, tls, zabbix, smb, responseFrom, rtt,
           probe.state && formatTime(probe.checkedAt)].filter(Boolean).join(' · '));
       }
       for (const reading of readings) {
@@ -1724,8 +1729,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           check.roundTripMs.toLocaleString('ru-RU', {maximumFractionDigits: 3}) + ' мс';
         const postgresql = check.postgresqlTls === 'negotiated' ? ' · Согласован ' + (check.tlsVersion ?? 'TLS') :
           check.postgresqlTls === 'declined' ? ' · Сервер отклонил TLS' : '';
-        const smb = check.smbDialect ? ' · SMB ' + check.smbDialect +
-          (check.smbSigningRequired ? ' · сервер требует подпись' : ' · сервер не требует подпись') : '';
+        const smb = check.smbDialect ? ' · ' + smbNegotiationLabel(check.smbDialect, check.smbSigningRequired) : '';
         const scope = check.supplemental ? ' · дополнительная проверка' :
           check.component ? ' · компонент сервиса' : check.required ? ' · проверка доступности' : '';
         const guests = node.guest || !check.backupVmid ? [] :
@@ -1992,6 +1996,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
               probe.responseCodes?.length && `Ответ ${probe.responseCodes.join(', ')}`,
               probe.rdpSecurityModes?.join(', '),
               ...(probe.zabbixVersions ?? []).map(version => `Zabbix ${version}`),
+              ...(probe.smbNegotiations ?? []).map(item => smbNegotiationLabel(item.dialect, item.signingRequired)),
               ...(probe.tlsCertificates ?? []).map(cert => certificateLabel(cert.expiresAt, cert.version)),
               probe.dns && `${probe.dns.record} ${probe.dns.name}`,
             ].filter(Boolean).join(' · ')));
