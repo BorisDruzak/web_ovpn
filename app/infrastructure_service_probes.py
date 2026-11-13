@@ -359,7 +359,7 @@ def _http_script_probe(address: str, port: int, spec: dict) -> dict:
     prefix = spec["script_src_prefix"]
     path = _http_path(spec.get("path"))
     directory = _http_path(spec["script_src_directory"]) if "script_src_directory" in spec else ""
-    if (not isinstance(prefix, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,31}", prefix)
+    if (not isinstance(prefix, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,31}\.?", prefix)
             or not (directory or path).endswith("/")
             or any(part in (".", "..") for candidate in (path, directory) for part in candidate.split("/"))
             or any(key in spec for key in ("body", "body_contains", "content_type", "json_fields",

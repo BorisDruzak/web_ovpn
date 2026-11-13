@@ -1334,7 +1334,7 @@ def test_http_script_probe_follows_only_the_unique_relative_build_asset(monkeypa
 
     class Response:
         def __init__(self, path):
-            self.page = path == "/Client/"
+            self.page = path in ("/", "/Client/")
             self.status = 200 if self.page else asset_status
 
         def getheader(self, name, default):
@@ -1397,6 +1397,16 @@ def test_http_script_probe_follows_only_the_unique_relative_build_asset(monkeypa
         assert _http_probe(absolute_spec)["state"] == "unreachable"
         assert requests == ["/Client/"]
     assert _http_probe({**absolute_spec, "script_src_directory": "/assets/../"})["reason"] == "http_configuration"
+
+    firmware_spec = {**spec, "path": "/", "script_src_prefix": "main.", "script_src_directory": "/"}
+    page = b'<script src="/main.82fba5ef.js"></script><!-- <script src="/main.js"></script> -->'
+    requests.clear()
+    assert _http_probe(firmware_spec)["path"] == "/main.82fba5ef.js"
+    assert requests == ["/", "/main.82fba5ef.js"]
+    page = b'<script src="/mainX82fba5ef.js"></script><script src="/main.js"></script>'
+    requests.clear()
+    assert _http_probe(firmware_spec)["state"] == "unreachable"
+    assert requests == ["/"]
 
 
 def test_redfish_root_probe_reports_only_validated_api_version(monkeypatch):
