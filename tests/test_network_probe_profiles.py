@@ -60,6 +60,19 @@ def test_profile_catalog_exposes_ids_and_limits(tmp_path, monkeypatch):
     assert catalog["capture"] == []
 
 
+def test_route_catalog_exposes_probe_digest_without_private_ca_path(monkeypatch):
+    profiles = network_probe_profiles.ProbeProfiles.model_validate({
+        "routes": {"services": {"label": "Services", "probes": [{
+            "id": "api", "expected_path": "LAN", "target": "192.0.2.20",
+            "protocol": "https", "server_name": "api.test", "tls_ca_file": "/etc/test/ca.pem",
+        }]}},
+    })
+    monkeypatch.setattr(network_probe_profiles, "load_probe_profiles", lambda: profiles)
+    row = network_probe_profiles.probe_catalog()["routes"][0]["probes"][0]
+    assert row["config_digest"] == profiles.routes["services"].probes[0].config_digest()
+    assert "tls_ca_file" not in row
+
+
 def test_capture_receipt_owner_expiry_and_purge(tmp_path, monkeypatch):
     directory = tmp_path / "captures"
     directory.mkdir(mode=0o700)

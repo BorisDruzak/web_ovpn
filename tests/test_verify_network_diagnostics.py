@@ -48,6 +48,21 @@ def test_route_report_uses_fresh_scheduled_run_and_preserves_failed_probe():
     assert changed["fresh"] and changed["api_matches"] and not changed["profile_matches"]
 
 
+def test_route_report_rejects_previous_configuration_for_same_probe_id():
+    now = datetime(2026, 11, 13, 2, 15, tzinfo=UTC)
+    run = {
+        "id": 7, "trigger": "scheduled", "checked_at": now.isoformat(), "status": "reachable",
+        "result": {"probes": [{"id": "wan", "status": "reachable", "config_digest": "a" * 64}]},
+    }
+    inputs = {"api_runs": [run], "expected_hops": {"wan": None}}
+    current = route_report([run], now, timedelta(minutes=10), **inputs, expected_digests={"wan": "a" * 64})
+    assert current["profile_matches"]
+    assert current["probes"][0]["configuration_matches"]
+    changed = route_report([run], now, timedelta(minutes=10), **inputs, expected_digests={"wan": "b" * 64})
+    assert changed["api_matches"] and changed["fresh"] and not changed["profile_matches"]
+    assert changed["probes"][0]["configuration_matches"] is False
+
+
 def test_route_report_rejects_a_different_result_for_the_same_id():
     now = datetime(2026, 11, 13, 2, 15, tzinfo=UTC)
     run = {

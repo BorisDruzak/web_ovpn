@@ -262,7 +262,16 @@ def probe_catalog() -> dict:
         "https_speed": [{"id": key, **profile.model_dump(exclude_none=True)} for key, profile in profiles.https_speed.items()],
         "capture": [{"id": key, **profile.model_dump()} for key, profile in profiles.capture.items()],
         "routes": [
-            {"id": key, **profile.model_dump(exclude_none=True, exclude={"probes": {"__all__": {"tls_ca_file"}}})}
+            {
+                "id": key, **profile.model_dump(exclude={"probes"}),
+                "probes": [
+                    {
+                        **probe.model_dump(exclude_none=True, exclude={"tls_ca_file"}),
+                        "config_digest": probe.config_digest(),
+                    }
+                    for probe in profile.probes
+                ],
+            }
             for key, profile in profiles.routes.items()
         ],
     }

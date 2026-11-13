@@ -46,6 +46,7 @@ def route_report(
     expected_dns: dict[str, tuple[str, bool]] | None = None,
     expected_interfaces: dict[str, str] | None = None,
     expected_ipsec: set[str] | None = None,
+    expected_digests: dict[str, str] | None = None,
 ) -> dict:
     row = next((run for run in runs if run["trigger"] == "scheduled"), None)
     if row is None:
@@ -56,6 +57,9 @@ def route_report(
     probes = []
     for probe in row["result"]["probes"]:
         summary = {"id": probe["id"], "status": probe["status"]}
+        if expected_digests is not None:
+            expected_digest = expected_digests.get(probe["id"])
+            summary["configuration_matches"] = bool(expected_digest and probe.get("config_digest") == expected_digest)
         evidence = probe.get("evidence", {})
         reason = evidence.get("reason") or probe.get("reason")
         if isinstance(reason, str) and reason:
@@ -118,6 +122,7 @@ def route_report(
             and reported_transports == expected_transports
             and reported_interfaces == (expected_interfaces or {})
             and {probe["id"] for probe in probes if "ipsec" in probe} == (expected_ipsec or set())
+            and (expected_digests is None or all(probe["configuration_matches"] for probe in probes))
         ),
         "probes": probes,
     }
@@ -352,6 +357,7 @@ def verify(script: Path, max_age: timedelta) -> dict:
                 probe["id"]: probe["expected_kernel_interface"] for probe in probes if probe.get("expected_kernel_interface")
             },
             expected_ipsec={probe["id"] for probe in probes if probe.get("ipsec")},
+            expected_digests={probe["id"]: probe["config_digest"] for probe in probes},
         )
     return {
         "contracts": "ok",
