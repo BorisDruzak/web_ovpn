@@ -18,7 +18,7 @@
     <li><i data-state="ok"></i>Узел и сервисы доступны</li>
     <li><i data-state="warn"></i>Узел доступен, есть сбои проверок или сервисов</li>
     <li><i data-state="critical"></i>Узел недоступен</li>
-    <li><i data-state="unknown"></i>Нет подтверждения</li>
+    <li><i data-state="unknown"></i>Доступность или проверка без подтверждения</li>
     <li id="map-port-alert-legend" hidden><i class="map-port-alert" aria-hidden="true"></i>Сбой или расхождение портов</li>
   </ul>
   <details id="map-port-counters" class="map-port-summary" hidden>
@@ -52,5 +52,5 @@
 <script id="infrastructure-data" type="application/json">{{ graph | tojson }}</script>
 {% endblock %}
 {% block page_scripts %}
-<script type="module" src="{{ url_for('static', path='infrastructure-map.js') }}?v=live-177"></script>
+<script type="module" src="{{ url_for('static', path='infrastructure-map.js') }}?v=live-178"></script>
 {% endblock %}

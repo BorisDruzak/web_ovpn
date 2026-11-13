@@ -22,6 +22,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     if (node.reachability?.state === 'stopped') {
       label = node.kind === 'Сервис' ? 'Недоступен, ВМ выключена' : 'Выключен';
     }
+    if (color === 'unknown' && node.reachability?.state === 'reachable') {
+      label = 'Доступен, есть проверки без подтверждения';
+    }
     if (color === 'warn' && node.serviceAvailability?.unavailable?.length) label = 'Доступен, есть недоступные сервисы';
     if (node.id === data.clusterId && color === 'warn') label = 'Кластер доступен, есть сбои';
     return {label, color};
@@ -560,7 +563,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       dot.dataset.state = availability.color;
       const title = make('span', peer.guest ? 'ВМ ' + peer.vmid : peer.name);
       title.append(make('small', peer.guest ? peer.name : peer.kind));
-      const state = make('span', availability.color === 'unknown' ? 'Нет подтверждения' : availability.label, 'map-related-state');
+      const state = make('span', availability.label, 'map-related-state');
       state.dataset.state = availability.color;
       open.append(dot, title, state);
       open.addEventListener('click', () => select(peerId));
