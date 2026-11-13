@@ -15,7 +15,9 @@ import sys
 from urllib.parse import urlencode
 from uuid import UUID
 
-from app.network_capture import CAPTURE_MAX_KIB, CAPTURE_MAX_PACKETS, _pcap_packet_count, capture_filter_expression
+from app.network_capture import (
+    CAPTURE_MAX_KIB, CAPTURE_MAX_PACKETS, _pcap_packet_count, capture_filter_expression, summarize_capture,
+)
 from app.network_route_receipt_timing import CLOCK_TOLERANCE, MAX_AGE as PUSH_RECEIPT_MAX_AGE
 from mcp import openvpn_mcp_server as bridge
 
@@ -368,10 +370,21 @@ def capture_report(receipt: dict, download: dict, payload: bytes, directory: Pat
     packets = _pcap_packet_count(BytesIO(payload), len(payload), CAPTURE_MAX_PACKETS)
     if not packets or packets != receipt["packets"]:
         raise ValueError("PCAP is empty, invalid or has a different packet count")
-    return {"capture_id": capture_id, "packets": packets, "size_bytes": len(payload), "sha256": sha256(payload).hexdigest()}
+    report = {"capture_id": capture_id, "packets": packets, "size_bytes": len(payload), "sha256": sha256(payload).hexdigest()}
+    if "summary" in receipt:
+        address, port, protocol = _capture_filter_parts(receipt.get("filter") or {})
+        summary = summarize_capture(BytesIO(payload), len(payload), peer=str(address), port=port, protocol=protocol)
+        recorded = receipt["summary"]
+        if (summary is None or not isinstance(recorded, dict) or recorded != summary
+                or any(type(value) is not int for value in recorded.values())):
+            raise ValueError("PCAP traffic summary differs from the receipt")
+        report["summary"] = summary
+    return report
 
 
-def verify_capture_filter(profile: dict, payload: bytes, packets: int) -> dict:
+def _capture_filter_parts(profile: dict) -> tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, int, str]:
+    if not isinstance(profile, dict):
+        raise ValueError("Invalid capture filter")
     protocol = profile.get("protocol")
     port = profile.get("port")
     if protocol not in ("tcp", "udp") or type(port) is not int or not 1 <= port <= 65535:
@@ -379,6 +392,11 @@ def verify_capture_filter(profile: dict, payload: bytes, packets: int) -> dict:
     address = ipaddress.ip_address(profile.get("peer"))
     if "%" in str(address):
         raise ValueError("Invalid scoped capture peer")
+    return address, port, protocol
+
+
+def verify_capture_filter(profile: dict, payload: bytes, packets: int) -> dict:
+    address, port, protocol = _capture_filter_parts(profile)
     expression = capture_filter_expression(address, port, protocol)
     result = subprocess.run(
         ["tcpdump", "-n", "-r", "-", "-w", "-", expression],

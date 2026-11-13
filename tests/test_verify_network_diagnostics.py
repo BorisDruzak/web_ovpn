@@ -641,6 +641,7 @@ def test_require_loopback_vlan_checks_fresh_detector_coverage(
 @pytest.mark.parametrize("change,passed", [
     ("none", True), ("bytes", False), ("count", False), ("empty", False),
     ("path", False), ("size", False),
+    ("summary", True), ("wrong_summary", False), ("summary_without_filter", False),
 ])
 def test_capture_verification_compares_download_and_receipt(tmp_path, change, passed):
     header = struct.pack("<IHHIIII", 0xA1B2C3D4, 2, 4, 0, 0, 96, 1)
@@ -651,6 +652,12 @@ def test_capture_verification_compares_download_and_receipt(tmp_path, change, pa
     path.write_bytes(payload if change != "bytes" else payload[:-1] + b"y")
     receipt = {"capture_id": path.stem.removeprefix("network-"), "size_bytes": len(payload),
                "packets": {"empty": 0, "count": 2}.get(change, 1)}
+    if change in {"summary", "wrong_summary", "summary_without_filter"}:
+        receipt["summary"] = {"to_peer": 0, "from_peer": 0, "unclassified": 1, "tcp_resets": 0}
+        if change != "summary_without_filter":
+            receipt["filter"] = {"peer": "192.0.2.20", "protocol": "tcp", "port": 5201}
+        if change == "wrong_summary":
+            receipt["summary"].update(to_peer=1, unclassified=0)
     download = {"capture_id": receipt["capture_id"], "size_bytes": len(payload), "path": str(path)}
     if change == "path":
         download["path"] = str(path.with_name("unexpected.pcap"))
@@ -663,6 +670,10 @@ def test_capture_verification_compares_download_and_receipt(tmp_path, change, pa
     report = verifier.capture_report(receipt, download, payload, tmp_path)
     assert report["packets"] == 1 and report["size_bytes"] == len(payload)
     assert len(report["sha256"]) == 64
+    if change == "summary":
+        assert report["summary"] == receipt["summary"]
+    else:
+        assert "summary" not in report
 
 
 @pytest.mark.parametrize("outside", [0, 1])
