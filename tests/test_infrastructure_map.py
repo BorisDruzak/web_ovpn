@@ -5902,6 +5902,35 @@ def test_configured_asset_fdb_path_is_scoped_and_requires_a_unique_live_port(mon
     assert "probeTargetIP" not in next(node for node in graph["nodes"] if node["id"] == "gateway")
 
 
+def test_switch_management_interface_requires_matching_arp_and_snmp(tmp_path, monkeypatch):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+    from app.infrastructure_service_probes import apply_service_probes
+
+    now = datetime.now(timezone.utc)
+    stamp = now.isoformat()
+    ip, mac = "192.0.2.22", "02:00:00:00:00:22"
+    context = {"devices": [{"id": "core", "name": "Core", "kind": "switch", "management_ip": ip}]}
+    source = {"id": 1, "name": "core-snmp", "host": ip, "driver": "snmp_switch", "enabled": True}
+    port = {"source": "core-snmp", "port_key": "ifindex:15", "name": "vlan1", "oper_status": "up",
+            "mac": mac, "last_seen_at": stamp}
+    network = {"sources": [source], "ports": [port], "arp": [{"ip": ip, "mac": mac, "last_seen_at": stamp}]}
+    bindings = {"switch_management_interfaces": {"core": "vlan1"},
+                "asset_services": {"ssh": {"asset": "core", "label": "SSH", "require_network_identity": True}}}
+    monkeypatch.setattr("app.infrastructure_service_probes._ssh_identification", lambda _: {"state": "reachable"})
+    path = tmp_path / "map.json"
+
+    def check():
+        graph = build_graph(context, network, {}, {}, bindings, now)
+        apply_service_probes(graph["nodes"], {"ssh": [{"type": "ssh_identification", "ip": ip, "port": 22}]})
+        path.write_text(json.dumps(graph), encoding="utf-8")
+        return next(n for n in load_infrastructure_map(path)["nodes"] if n["id"] == "ssh")["serviceChecks"][0]
+
+    assert check()["managementInterface"] == {"name": "vlan1", "source": "SNMP · ARP"}
+    port["mac"] = "02:00:00:00:00:23"
+    assert check()["reason"] == "probe_target_unconfirmed"
+
+
 @pytest.mark.parametrize("canonical", (False, True))
 def test_asset_service_can_require_current_fdb_and_arp_identity(monkeypatch, tmp_path, canonical):
     from app.infrastructure_collect import build_graph

@@ -2800,6 +2800,29 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 nodes[device]["probeTargetIP"] = target
     switch_sources = {row["name"]: row["id"] for row in network.get("sources", [])
                       if row.get("enabled") and row.get("driver") == "snmp_switch" and row.get("id") is not None}
+    for row in network.get("sources", []):
+        source_name, address = row["name"], row.get("host")
+        asset = source_nodes[source_name]
+        interface = bindings.get("switch_management_interfaces", {}).get(asset)
+        if (source_name not in switch_sources or not isinstance(interface, str)
+                or not re.fullmatch(r"vlan[1-9][0-9]{0,3}", interface, re.IGNORECASE)
+                or address_by_asset.get(asset) != address or addresses.get(address) != [asset]
+                or not (arp := arp_mappings.get(address))):
+            continue
+        matches = [port for port in port_groups.get(source_name, [])
+                   if str(port.get("name") or "").casefold() == interface.casefold()
+                   and observation_is_fresh(port.get("last_seen_at"), now)]
+        if len(matches) != 1:
+            continue
+        port, = matches
+        if (port.get("oper_status") != "up" or port.get("admin_status") == "down"
+                or str(port.get("mac") or "").lower() != arp[0]
+                or declared_macs[asset] and arp[0] not in declared_macs[asset]):
+            continue
+        checked = min(arp[1], datetime.fromisoformat(port["last_seen_at"])).isoformat()
+        for item in identity_services.get(asset, []):
+            item.update(probeTargetIP=address, probeTargetIdentityAt=checked,
+                        probeTargetManagementInterface=port["name"])
     for asset, switch_source in bindings.get("asset_fdb_paths", {}).items():
         address = address_by_asset.get(asset)
         switch = source_nodes.get(switch_source)

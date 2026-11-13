@@ -1928,6 +1928,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
             }
             if identity_at and not skip_reason and (service or protocol == "icmp"):
                 observation["identityCheckedAt"] = identity_at
+                if service and (interface := node.get("probeTargetManagementInterface")):
+                    observation["managementInterface"] = {"name": interface, "source": "SNMP · ARP"}
                 if not service and details["state"] == "reachable":
                     management_observation = {"state": "reachable", "source": "UI_VPN", "method": method,
                                               "checkedAt": identity_at}

@@ -606,6 +606,12 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         "target": _network_address(check.get("target")), "via": _network_address(check.get("via")),
         "path": path if re.fullmatch(r"/[A-Za-z0-9._/-]{0,159}", path) and not path.startswith("//") else "",
     }
+    interface = check.get("managementInterface")
+    if (result["source"] == "UI_VPN" and not result["stale"] and isinstance(interface, dict)
+            and interface.get("source") == "SNMP · ARP"
+            and re.fullmatch(r"vlan[1-9][0-9]{0,3}", _text(interface.get("name")), re.IGNORECASE)
+            and observation_is_fresh(check.get("identityCheckedAt"), now)):
+        result["managementInterface"] = {"name": interface["name"], "source": interface["source"]}
     if (result["method"] == SNMP_COLLECTION_METHOD and result["source"] == "Network Observer"
             and not result["stale"] and check.get("reason") in (
                 "snmp_fdb_unavailable", "snmp_collection_failed", "snmp_collection_partial", "snmp_collection_unconfirmed",
