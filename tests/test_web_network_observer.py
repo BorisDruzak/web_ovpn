@@ -2852,10 +2852,13 @@ def test_loop_panel_shows_port_broadcast_as_context(tmp_path, monkeypatch):
     interval = {"port_key": "ether2", "if_index": 2, "since": "2026-11-12T19:00:00Z",
                 "until": "2026-11-12T19:05:00Z", "interval_seconds": 300,
                 "in_pps": 12.5, "out_pps": 4.0}
+    movement = {"mac": "00:11:22:33:44:66", "ports": ["ether3", "ether4"],
+                "first_observed_at": interval["since"], "last_observed_at": interval["until"]}
     device = {"source": "switch-1", "status": "mac_flapping",
               "coverage": {"fdb": {"status": "insufficient", "reason": "partial_fdb_poll"},
                            "stp": {"status": "unavailable"},
                            "broadcast": {"status": "recent", "sampled_ports": 2, "valid_intervals": 1}},
+              "unclassified_mac_movements": [movement],
               "evidence": [{"ports": ["ether1", "ether2"], "vlan_id": 20, "mac": "00:11:22:33:44:55",
                             "broadcast_intervals": [interval]}]}
     monkeypatch.setattr(network_checks, "run_netctl", lambda *args, **kwargs: {
@@ -2865,6 +2868,7 @@ def test_loop_panel_shows_port_broadcast_as_context(tmp_path, monkeypatch):
     report = api.json()["data"]["result"]["sources"][0]
     assert report["coverage"]["fdb"]["reason"] == "partial_fdb_poll"
     assert report["evidence"][0]["broadcast_intervals"] == [interval]
+    assert report["unclassified_mac_movements"] == [movement]
     csrf = login(client)
     panel = client.post("/network/diagnostics/checks", data={
         "csrf_token": csrf, "check": "loop_check", "source": "switch-1",
@@ -2873,6 +2877,8 @@ def test_loop_panel_shows_port_broadcast_as_context(tmp_path, monkeypatch):
     assert "Широковещание" in panel.text and "12.5 / 4.0 пак/с" in " ".join(panel.text.split())
     assert "Обнаружено повторное перемещение MAC" in panel.text
     assert "FDB · часть записей не разобрана" in panel.text
+    assert "Перемещения MAC без VLAN · 1" in panel.text
+    assert "ether3 ↔ ether4" in panel.text
 
 
 def test_sources_page_renders_unknown_without_collect_control(tmp_path, monkeypatch):

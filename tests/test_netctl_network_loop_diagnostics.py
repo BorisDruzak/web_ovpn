@@ -325,6 +325,10 @@ def test_old_future_slow_and_vlan_unmapped_moves_do_not_form_a_reversal(database
     [switch] = result["sources"]
     assert switch["evidence"] == []
     assert switch["coverage"]["fdb"]["unmapped_moves"] == 2
+    assert switch["unclassified_mac_movements"] == [{
+        "mac": MAC, "ports": [PORT_A, PORT_B],
+        "first_observed_at": "2026-11-12T12:10:00Z", "last_observed_at": "2026-11-12T12:15:00Z",
+    }]
     assert switch["coverage"]["fdb"]["last_observed_at"] == "2026-11-12T12:15:00Z"
 
 

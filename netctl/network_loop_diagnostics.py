@@ -57,7 +57,7 @@ def _stp_changes(
 
 def _find_reversals(
     rows: list[sqlite3.Row], changes: list[tuple[datetime, datetime, sqlite3.Row]],
-    since: datetime, until: datetime,
+    since: datetime, until: datetime, *, vlan_known: bool = True,
 ) -> list[dict]:
     previous_by_mac_vlan: dict[tuple[str, str], tuple[datetime, sqlite3.Row]] = {}
     findings: dict[tuple[str, str, str, str], tuple[tuple[bool, datetime], dict]] = {}
@@ -67,7 +67,7 @@ def _find_reversals(
         if at is not None and since <= at <= until:
             timed_rows.append((at, row))
     for at, row in sorted(timed_rows, key=lambda item: (item[0], item[1]["id"])):
-        if row["vlan_id"] is None:
+        if (row["vlan_id"] is not None) != vlan_known:
             continue
         key = (row["mac"], row["vlan_key"])
         old, new = row["old_port_key"], row["new_port_key"]
@@ -317,6 +317,9 @@ def _read_source(
         },
     }
     findings = _find_reversals(events, _stp_changes(stp_events, since, until), since, until)
+    unclassified = _find_reversals(events, [], since, until, vlan_known=False)
+    if unclassified:
+        coverage["fdb"]["unclassified_truncated"] = fdb_truncated or len(unclassified) > MAX_FINDINGS
     truncated = (
         fdb_truncated or stp_truncated or len(findings) > MAX_FINDINGS
         or any(finding["stp_truncated"] for finding in findings)
@@ -340,6 +343,10 @@ def _read_source(
         "status": status,
         "coverage": coverage,
         "evidence": findings,
+        "unclassified_mac_movements": [
+            {field: movement[field] for field in ("mac", "ports", "first_observed_at", "last_observed_at")}
+            for movement in unclassified[:MAX_FINDINGS]
+        ],
         "truncated": truncated,
     }
 

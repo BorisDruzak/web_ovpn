@@ -148,7 +148,17 @@
               {{ '%.1f' | format(sample.out_pps) if sample.out_pps is not none else '—' }} пак/с
               · {{ sample.interval_seconds }} с · до <time datetime="{{ sample.until }}">{{ sample.until }}</time></div>
             {% endfor %}
-            {% else %}—{% endfor %}
+            {% endfor %}
+            {% if device.unclassified_mac_movements %}
+            <details>
+              <summary>Перемещения MAC без VLAN · {{ device.unclassified_mac_movements | length }}{% if device.coverage.fdb.unclassified_truncated %}+{% endif %}</summary>
+              {% for movement in device.unclassified_mac_movements %}
+              <div>{{ movement.ports | join(' ↔ ') }} · {{ movement.mac }} ·
+                <time datetime="{{ movement.first_observed_at }}">{{ movement.first_observed_at }}</time> —
+                <time datetime="{{ movement.last_observed_at }}">{{ movement.last_observed_at }}</time></div>
+              {% endfor %}
+            </details>
+            {% elif not device.evidence %}—{% endif %}
           </td>
         </tr>
         {% endfor %}
