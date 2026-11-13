@@ -908,6 +908,9 @@ def _public_service_check(check: dict, now: datetime) -> dict:
                       "openvpn_tunnel_down", "openvpn_tunnel_address"):
             result["reason"] = reason
     if check.get("method") == "Маршрут":
+        route_source = _text(check.get("routeSource"), 64)
+        if result["source"] == "Network Observer" and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", route_source):
+            result["routeSource"] = route_source
         if result["checkedAt"] is None and check.get("state") == "unknown":
             result.update(method="Маршрут", source=_text(check.get("source"), 48))
         if result["state"] == "unreachable" and reason in (
@@ -2898,10 +2901,20 @@ def _observed_management_ports(links: list[dict], nodes: dict) -> dict:
     return {key: next(iter(ports.values())) for key, ports in candidates.items() if len(ports) == 1}
 
 
-def _management_service_paths(service: dict, host: str, management: dict, observed_ports: dict) -> list[dict]:
+def _management_service_paths(service: dict, host: str, management: dict, observed_ports: dict,
+                              nodes: dict | None = None) -> list[dict]:
     paths = []
     for check in service["serviceChecks"]:
-        if check["source"] != "UI_VPN" or not check["checkedAt"] or check["stale"] or check.get("skipped"):
+        if not check["checkedAt"] or check["stale"] or check.get("skipped"):
+            continue
+        if (nodes is not None and check["method"] == "Маршрут" and check["source"] == "Network Observer"
+                and check["state"] == "reachable" and check.get("routeSource")):
+            router = observed_ports.get((host, check["via"]), {}).get("routerAttachment")
+            if router and nodes[router["routerId"]]["properties"].get("Источник сбора") == check["routeSource"]:
+                paths.append({**_attachment_probe_location(check), "via": check["via"], "source": check["source"],
+                              "addressCheckedAt": router["checkedAt"], "routerAttachment": router})
+            continue
+        if check["source"] != "UI_VPN":
             continue
         if matched := management.get((host, check["target"])):
             switch, pair = matched
@@ -2975,7 +2988,7 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime, *, endpoint_
     for service, hosts in service_hosts.items():
         if len(hosts) == 1:
             host, = hosts
-            if paths := _management_service_paths(nodes[service], host, management, observed_ports):
+            if paths := _management_service_paths(nodes[service], host, management, observed_ports, nodes):
                 service_paths[service] = paths
         elif paths := _transit_service_paths(nodes[service], hosts, observed_ports):
             service_paths[service] = paths
@@ -3074,9 +3087,11 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime, *, endpoint_
             target, number, method, path, checked_at, transport, dns_name, dns_record = identity
             local = check.get("localListener") is True
             selected_path = identity in selected
+            route = method == "Маршрут" and check["source"] == "Network Observer"
             if (not target or (number is None and not selected_path)
                     or not method or not checked_at or check["stale"] or check.get("skipped")
-                    or check["source"] != "UI_VPN" or not ((physical and not local) or selected_path)):
+                    or (check["source"] != "UI_VPN" and not route)
+                    or not (selected_path or (physical and not local and not route))):
                 continue
             transport = "UDP" if local else transport
             probe = probes.setdefault((target, number or 0, method, transport, path, dns_name, dns_record), {
@@ -3200,7 +3215,7 @@ def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
         detail["servicePaths"] = _service_attachment_paths(anchor, guests, _windows_client_attachments(nodes, links).get(node_id))
         if len(targets) == 1 and len(host_ids) == 1:
             detail["servicePaths"].extend(_management_service_paths(
-                anchor, host_ids[0], _management_port_paths(nodes, links), _observed_management_ports(links, nodes),
+                anchor, host_ids[0], _management_port_paths(nodes, links), _observed_management_ports(links, nodes), nodes,
             ))
         elif len(targets) == len(host_ids) == 2:
             detail["servicePaths"].extend(_transit_service_paths(anchor, targets, _observed_management_ports(links, nodes)))
@@ -3232,7 +3247,7 @@ def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
                 if anchor["guest"]:
                     paths = _service_attachment_paths(service, guests)
                 else:
-                    paths = _management_service_paths(service, node_id, management_paths, management_ports)
+                    paths = _management_service_paths(service, node_id, management_paths, management_ports, nodes)
             detail["services"].append({
                 "node": _attachment_node(service), "checks": service["checks"],
                 "serviceChecks": service["serviceChecks"], "servicePaths": paths,

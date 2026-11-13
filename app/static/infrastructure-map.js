@@ -1180,7 +1180,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       const label = [path.method, endpoint].join(' · ');
       const row = make('li');
       row.append(make('strong', label));
-      const result = {reachable: 'Отвечает', unreachable: 'Недоступен', unknown: 'Нет подтверждения'};
+      const result = {reachable: path.method === 'Маршрут' ? 'Маршрут активен' : 'Отвечает',
+        unreachable: 'Недоступен', unknown: 'Нет подтверждения'};
       const readings = new Set();
       for (const probe of probes) {
         const rtt = probe.roundTripMs === undefined ? '' :

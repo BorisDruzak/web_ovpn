@@ -914,6 +914,7 @@ def _route_checks(intent: dict, source: str, routes: list[dict], now: datetime, 
         check = {
             "state": "unknown", "source": "Network Observer",
             "method": "Маршрут", "target": destination, "via": gateway,
+            "routeSource": source,
             "checkedAt": checked_at, "required": True, "component": True,
         }
         checks.append(check)

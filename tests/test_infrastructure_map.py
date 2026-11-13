@@ -6423,6 +6423,24 @@ def test_transit_peer_management_port_requires_fresh_arp_fdb_and_active_ethernet
     reverse, = summarize_guest_attachment(public, "rb")["attachment"]["servicePorts"]
     endpoint, = reverse["services"][0]["probeEndpoints"]
     assert reverse["port"] == "ether7" and endpoint["target"] == address
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    route = {"method": "Маршрут", "source": "Network Observer", "state": "reachable",
+             "checkedAt": at, "target": "203.0.113.0/24", "via": address, "routeSource": "main",
+             "required": True, "component": True}
+    raw["nodes"].append({"id": "routing", "name": "Routing", "kind": "Сервис", "serviceChecks": [
+        route, {**route, "target": "203.0.114.0/24", "routeSource": "other"},
+        {**route, "target": "203.0.115.0/24", "state": "unreachable", "reason": "route_inactive"},
+    ]})
+    raw["links"].append({"a": "coordinator", "b": "routing", "kind": "Размещение", "confirmed": True})
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    routed = load_infrastructure_map(path, now, include_guest_attachments=True)
+    route_path, = summarize_guest_attachment(routed, "routing")["attachment"]["servicePaths"]
+    assert route_path["target"] == route["target"] and route_path["via"] == address
+    assert route_path["routerAttachment"] == service_path["routerAttachment"]
+    ports = summarize_guest_attachment(routed, "rb")["attachment"]["servicePorts"]
+    routing = next(item for item in ports[0]["services"] if item["id"] == "routing")
+    assert [probe["target"] for probe in routing["probeEndpoints"]] == [route["target"]]
+    path.write_text(json.dumps({**raw, "nodes": raw["nodes"][:-1], "links": raw["links"][:-1]}), encoding="utf-8")
     expired_audit = summarize_topology(load_infrastructure_map(path, now + timedelta(hours=1)))["topologyAudit"]
     assert expired_audit["pendingTotal"] == 0
     ports = next(node["ports"] for node in load_infrastructure_map(path, now)["nodes"] if node["id"] == "rb")
@@ -6591,6 +6609,7 @@ def test_route_evidence_is_scoped_and_does_not_mark_service_available():
     assert [(check["target"], check["state"]) for check in node["serviceChecks"]] == [
         ("198.51.100.0/24", "reachable"), ("203.0.113.0/24", "unknown"),
     ]
+    assert node["serviceChecks"][0]["routeSource"] == "router"
     from app.infrastructure_map import _map_statuses, _public_node
 
     node["reachability"] = {"state": "reachable", "source": "ICMP", "checkedAt": at}
