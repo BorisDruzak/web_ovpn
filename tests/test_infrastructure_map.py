@@ -3356,6 +3356,16 @@ def test_shared_lldp_ports_publish_paths_and_require_live_port_and_unique_chassi
     assert set(rows_by_peer) == {"one", "two"}
     assert rows_by_peer["two"]["lldpPeers"]["a"][0]["chassisId"] == unexpected
     assert rows_by_peer["two"]["portB"] == ""
+    combined = snapshot()
+    combined["links"].append({"a": "switch", "b": "two", "kind": "Путь по MAC-таблице", "confirmed": True,
+                              "portEvidence": [{"a": proof["a"], "b": "", "source": "netctl FDB", "at": at,
+                                                "confirmed": True, "learnedEndpoint": {
+                                                    "switchId": "switch", "deviceId": "two", "mac": unexpected}}]})
+    combined_audit = summarize_topology(combined, node_id="switch", port_name="Gi1/0/48")["topologyAudit"]
+    combined_row = next(row for row in combined_audit["pending"] if row["b"] == "two")
+    assert [reading["source"] for reading in combined_row["observedPaths"]] == ["netctl FDB", "LLDP · общий порт"]
+    assert combined_row["lldpPeers"] == rows_by_peer["two"]["lldpPeers"]
+    assert combined_row["portB"] == "" and combined_audit["currentPairTotal"] == 0
     assert firmware()["two"] == {**provenance, "product": "RouterOS", "version": "7.19.6"}
     neighbors[0]["last_seen_at"] = (now - timedelta(hours=1)).isoformat()
     assert not read()["two"]["confirmed"]

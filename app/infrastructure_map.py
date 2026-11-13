@@ -1792,14 +1792,24 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
             port = report["a"]
             key = a, b, port_key(a, port)
             if (report["source"] != SHARED_LLDP_SOURCE or not report["confirmed"] or not port or report["b"]
-                    or key in known_ports or key in discovered):
+                    or key in known_ports):
+                continue
+            observed_path = {"portA": port, "portB": "", "source": SHARED_LLDP_SOURCE, "checkedAt": report["at"]}
+            if row := discovered.get(key):
+                if row["basis"] == "learned_endpoint" and observed_path not in row["observedPaths"]:
+                    if len(row["observedPaths"]) < 8:
+                        row["observedPaths"].append(observed_path)
+                    if peers := report.get("lldpPeers", {}).get("a"):
+                        combined = row.setdefault("lldpPeers", {}).get("a", []) + peers
+                        row["lldpPeers"]["a"] = [peer for index, peer in enumerate(combined)
+                                                  if peer not in combined[:index]][:16]
                 continue
             reading = observations(report)
             discovered[key] = {
                 "a": a, "b": b, "nameA": nodes[a]["name"], "nameB": nodes[b]["name"],
                 "portA": port, "portB": "", "basis": "shared_lldp",
                 "missingPortSides": ["b"], "identifiedPeerSides": ["a"],
-                "observedPaths": [{"portA": port, "portB": "", "source": SHARED_LLDP_SOURCE, "checkedAt": report["at"]}],
+                "observedPaths": [observed_path],
                 **({"portObservations": reading} if reading else {}),
                 **({"lldpPeers": report["lldpPeers"]} if "lldpPeers" in report else {}),
             }
