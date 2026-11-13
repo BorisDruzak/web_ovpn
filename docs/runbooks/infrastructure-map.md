@@ -54,6 +54,8 @@
 
 Для периодической проверки пары порта BMC задайте в той же привязке `interface_path`, например `/redfish/v1/Managers/bmc/EthernetInterfaces/eth0`. Текущее подтверждение требует проверенной пары из инвентаря, включённого интерфейса Redfish с тем же IP, совпадения MAC со свежим наблюдением FDB и одинаковой скорости поднятого линка. Коммутатор должен видеть ровно один MAC в полном опросе порта. В карте источник отображается как `netctl FDB + Redfish`, результат действует до десяти минут от наблюдения FDB.
 
+Если контроллер передаёт `PowerRestorePolicy` и `LastResetTime`, карточка и `hardwarePower` в API/MCP показывают действие после возврата электропитания (`restorePolicy`) и время последнего сброса системы (`lastResetAt`). Эти поля читаются вместе с состоянием питания из ресурса ComputerSystem и исчезают по истечении срока этого наблюдения. [Схема Redfish ComputerSystem](https://redfish.dmtf.org/schemas/v1/ComputerSystem.v1_22_0.json)
+
 В `view=attachment` для сервера поле `physicalHosts[].managementControllers[].services` содержит до 12 служб BMC с их статусом и проверками, а `serviceTotal` — полное число служб. Поле `confirmed` у контроллера показывает, подтверждена ли его принадлежность серверу. Проверки IPMI и Redfish относятся к контроллеру.
 
 В `vlanAudits[].vlans[].managementObservation` доступен IPv4 управления Proxmox, чей MAC виден в этом VLAN на указанном порту коммутатора. Требуются свежие ARP, FDB и наблюдение аплинка Proxmox. Режим тегирования проверяется отдельно с обеих сторон.

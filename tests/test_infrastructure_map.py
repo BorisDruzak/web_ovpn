@@ -58,15 +58,24 @@ def test_redfish_power_does_not_equate_power_on_with_os_availability(monkeypatch
     graph = {"nodes": [host, bmc], "links": [
         {"a": "bmc", "b": "server", "kind": "Управление оборудованием", "confirmed": True}]}
     spec = {"bmc": {"ip": "192.0.2.31", "tls_sha256": "a" * 64, "path": "/redfish/v1/Systems/system"}}
-    monkeypatch.setattr(redfish, "_read_power", lambda *_: power)
+    reset = (now - timedelta(days=7)).isoformat()
+    monkeypatch.setattr(redfish, "_read_resource", lambda *_: {
+        "PowerState": power, "PowerRestorePolicy": "AlwaysOff", "LastResetTime": reset,
+    })
     redfish.collect_redfish_power(graph, spec, None, now)
     node = _public_node(host, datetime.now(timezone.utc))
     assert node["reachability"]["state"] == expected
     assert node.get("hardwarePower", {}).get("state") == power
+    if power:
+        assert node["hardwarePower"]["restorePolicy"] == "AlwaysOff"
+        assert node["hardwarePower"]["lastResetAt"] == reset
+        host["hardwarePower"].update(restorePolicy="invalid", lastResetAt=(now + timedelta(days=1)).isoformat())
+        public = _public_node(host, datetime.now(timezone.utc))["hardwarePower"]
+        assert "restorePolicy" not in public and "lastResetAt" not in public
     expired = _public_node(host, now + timedelta(minutes=6))
     assert "hardwarePower" not in expired and expired["reachability"]["state"] != "stopped"
     graph["links"][0]["confirmed"] = False
-    monkeypatch.setattr(redfish, "_read_power", lambda *_: pytest.fail("unverified controller queried"))
+    monkeypatch.setattr(redfish, "_read_resource", lambda *_: pytest.fail("unverified controller queried"))
     redfish.collect_redfish_power(graph, spec, None, now)
 
 
@@ -82,8 +91,7 @@ def test_redfish_management_pair_requires_matching_current_switch_evidence(tmp_p
     path = "/redfish/v1/Managers/bmc/EthernetInterfaces/eth0"
     interface = {"Id": "eth0", "InterfaceEnabled": True, "LinkStatus": "LinkUp", "MACAddress": mac,
                  "SpeedMbps": 100 if failure == "speed" else 1000, "IPv4Addresses": [{"Address": ip}]}
-    monkeypatch.setattr(redfish, "_read_power", lambda *_: "Off")
-    monkeypatch.setattr(redfish, "_read_resource", lambda *_: interface)
+    monkeypatch.setattr(redfish, "_read_resource", lambda _, __, resource: interface if resource == path else {"PowerState": "Off"})
     graph = {"schema": 1, "snapshotAt": stamp, "nodes": [
         {"id": "bmc", "name": "BMC", "kind": "Контроллер управления", "probeTargetIP": ip, "probeTargetIdentityAt": stamp},
         {"id": "host", "name": "Host", "kind": "Сервер"},

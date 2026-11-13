@@ -1266,6 +1266,11 @@ def _public_node(row: dict, now: datetime) -> dict:
             and re.fullmatch(r"[a-z0-9-]{1,64}", _text(power.get("controllerId"), 65))):
         hardware_power = {"state": power["state"], "controllerId": power["controllerId"],
                           "source": "Redfish", "checkedAt": _time(power["checkedAt"]).isoformat()}
+        if power.get("restorePolicy") in ("AlwaysOff", "AlwaysOn", "LastState"):
+            hardware_power["restorePolicy"] = power["restorePolicy"]
+        last_reset = _time(power.get("lastResetAt"))
+        if last_reset and last_reset <= _time(power["checkedAt"]):
+            hardware_power["lastResetAt"] = last_reset.isoformat()
         if power["state"] == "Off" and reachability["state"] != "reachable":
             reachability = {"state": "stopped", "source": "Redfish", "method": "Состояние питания",
                             "checkedAt": hardware_power["checkedAt"], "stale": False}

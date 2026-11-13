@@ -1491,10 +1491,13 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       propertiesSection.append(panel);
     }
     if (node.hardwarePower) {
-      const {state, checkedAt} = node.hardwarePower;
+      const {state, checkedAt, restorePolicy, lastResetAt} = node.hardwarePower;
       const labels = {On: 'Включён', Off: 'Выключен', PoweringOn: 'Включается', PoweringOff: 'Выключается'};
       propertiesSection.append(make('h3', 'Питание сервера'),
         make('p', labels[state] + ' · Redfish · ' + formatTime(checkedAt)));
+      const restoreLabels = {AlwaysOff: 'Остаться выключенным', AlwaysOn: 'Включиться', LastState: 'Вернуть прежнее состояние'};
+      if (restorePolicy) propertiesSection.append(make('p', 'После восстановления электропитания · ' + restoreLabels[restorePolicy]));
+      if (lastResetAt) propertiesSection.append(make('p', 'Последний сброс по Redfish · ' + formatTime(lastResetAt)));
     }
     const measurements = Object.entries(node.properties ?? {})
       .filter(([name, value]) => value && !items[name]

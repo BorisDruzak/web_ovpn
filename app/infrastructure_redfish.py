@@ -48,12 +48,15 @@ def _read_resource(spec: dict, credential: Path | None, path: str) -> dict | Non
     return None
 
 
-def _read_power(spec: dict, credential: Path | None) -> str | None:
+def _read_power(spec: dict, credential: Path | None) -> dict:
     path = spec.get("path", "")
-    if not re.fullmatch(r"/redfish/v1/Systems/[A-Za-z0-9_-]{1,64}", path):
-        return None
-    power = (_read_resource(spec, credential, path) or {}).get("PowerState")
-    return power if power in ("On", "Off", "PoweringOn", "PoweringOff") else None
+    if not isinstance(path, str) or not re.fullmatch(r"/redfish/v1/Systems/[A-Za-z0-9_-]{1,64}", path):
+        return {}
+    system = _read_resource(spec, credential, path) or {}
+    power = system.get("PowerState")
+    if power not in ("On", "Off", "PoweringOn", "PoweringOff"):
+        return {}
+    return {"state": power, "restorePolicy": system.get("PowerRestorePolicy"), "lastResetAt": system.get("LastResetTime")}
 
 
 def _confirm_management_pair(graph, nodes, controller_id, spec, credential, now):
@@ -129,6 +132,6 @@ def collect_redfish_power(graph: dict, specs: dict, credentials: Path | None, no
             continue
         credential = credentials / f"redfish-{controller_id}" if credentials else None
         if power := _read_power(spec, credential):
-            host["hardwarePower"] = {"state": power, "controllerId": controller_id,
+            host["hardwarePower"] = {**power, "controllerId": controller_id,
                                      "checkedAt": datetime.now(timezone.utc).isoformat()}
         _confirm_management_pair(graph, nodes, controller_id, spec, credential, now)
