@@ -1843,6 +1843,14 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
                  "portB": canonical_ports.get(ends[1], report["b"])}, {},
             ))
             source, at = report["source"], report["at"]
+            for side, device in (("a", a), ("b", b)):
+                state = report.get("portStates", {}).get(side)
+                if not state or state["stale"] or state["state"] == "unknown":
+                    continue
+                pair_side = "a" if pair["a"] == device else "b"
+                states = pair.setdefault("portStates", {})
+                if state["checkedAt"] > states.get(pair_side, {}).get("checkedAt", ""):
+                    states[pair_side] = {key: state[key] for key in ("state", "speedBps", "checkedAt", "source") if key in state}
             if source not in sources or at > sources[source]["checkedAt"]:
                 expires = _time(at) + PORT_EVIDENCE_MAX_AGE.get(source, MAX_AGE)
                 sources[source] = {"source": source, "checkedAt": at, "expiresAt": expires.isoformat()}

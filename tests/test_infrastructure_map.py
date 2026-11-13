@@ -3492,6 +3492,13 @@ def test_topology_port_alerts_require_confirmed_pairs_and_fresh_states(tmp_path)
         scoped = summarize_topology(graph, node_id="a", port_name="GE1")["topologyAudit"]
         assert scoped["portAlertTotal"] == len(alerts)
         assert scoped["portAlerts"] == audit["portAlerts"]
+        if edge["kind"] == "Сетевое соединение" and observed["confirmed"] and b["ports"][0]["checkedAt"] == stamp:
+            pair, = scoped["currentPairs"]
+            assert pair["portStates"]["b"]["state"] == b["ports"][0]["state"]
+            assert pair["portStates"]["b"]["speedBps"] == (10**8 if b["ports"][0]["state"] == "up" else None)
+            assert ("a" in pair["portStates"]) == (a["ports"][0]["checkedAt"] == stamp)
+        elif scoped["currentPairs"]:
+            assert "portStates" not in scoped["currentPairs"][0]
         assert summarize_topology(graph, node_id="a", port_name="ge99")["topologyAudit"]["portAlerts"] == []
         return alerts
 

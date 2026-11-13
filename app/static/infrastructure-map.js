@@ -202,9 +202,15 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     link.href = '?' + new URLSearchParams({node: id});
     return link;
   }
-  function confirmedPortPairRow({a, b, nameA, nameB, portA, portB, evidence}) {
+  function confirmedPortPairRow({a, b, nameA, nameB, portA, portB, evidence, portStates = {}}) {
     const row = make('li');
     row.append(portPairEndpoint(a, nameA, portA), ' ↔ ', portPairEndpoint(b, nameB, portB));
+    for (const [side, port] of Object.entries(portStates)) {
+      const name = side === 'a' ? nameA : nameB;
+      const label = side === 'a' ? portA : portB;
+      row.append(make('small', [`${name} ${label}`, portLabels[port.state], formatPortSpeed(port.speedBps),
+        port.source, formatTime(port.checkedAt)].filter(Boolean).join(' · ')));
+    }
     for (const {source, checkedAt, expiresAt, windowsAdapter} of evidence) {
       const expiry = expiresAt ? ` · актуально до ${formatTime(expiresAt)}` : '';
       row.append(make('small', source + ' · ' + formatTime(checkedAt) + expiry));
