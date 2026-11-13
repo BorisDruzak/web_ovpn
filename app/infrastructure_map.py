@@ -3281,6 +3281,11 @@ def _summarize_agent_audit(nodes: dict, keys: dict, conflicts: set[str], identit
                             for name in GUEST_AGENT_PROFILES if len(reports[name]) == 1]
                 if profiles:
                     entry["contextProfiles"] = profiles
+                health_times = reports.get("health_v1", set())
+                entry["healthProfileState"] = "unconfirmed"
+                if len(health_times) == 1:
+                    health_at, = health_times
+                    entry["healthProfileState"] = "fresh" if now - health_at <= GUEST_AGENT_HEALTH_MAX_AGE else "stale"
                 if node_id == selected_node and entry["presence"] == "online" and load_agent_profiles is not None:
                     wanted = ["health_v1", *(profile for profile in ("inventory_v1", "network_v1") if reports.get(profile))]
                     missing = tuple(profile for profile in wanted if profile not in snapshots)
@@ -3298,9 +3303,14 @@ def _summarize_agent_audit(nodes: dict, keys: dict, conflicts: set[str], identit
                         entry["network"] = network
         entries.append(entry)
     counts = Counter(row["state"] for row in guests)
+    health_coverage = {}
+    for name, entries in (("guests", guests), ("hypervisors", hypervisors)):
+        states = Counter(row["healthProfileState"] for row in entries if row["state"] == "matched")
+        health_coverage[name] = {state: states[state] for state in ("fresh", "stale", "unconfirmed")}
     return {"sourceState": "ready", "total": len(guests), "eligible": len(guests) - counts["not_eligible"],
             "matched": counts["matched"], "ambiguous": counts["ambiguous"], "unmatched": counts["unmatched"],
             "notEligible": counts["not_eligible"],
+            "healthProfileCoverage": health_coverage,
             "guests": sorted((row for row in guests if selected_node is None or row["id"] == selected_node),
                              key=lambda row: (row["vmid"], row["id"])),
             "hypervisors": sorted((row for row in hypervisors if selected_node is None or row["id"] == selected_node),

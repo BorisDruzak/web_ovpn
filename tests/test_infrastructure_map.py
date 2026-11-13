@@ -8184,9 +8184,13 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
     result = response.json()["infrastructure"]["agentAudit"]
     assert (result["eligible"], result["matched"], result["ambiguous"]) == (3, 1, 1)
     assert (result["total"], result["unmatched"], result["notEligible"]) == (6, 1, 3)
+    assert result["healthProfileCoverage"] == {
+        "guests": {"fresh": 1, "stale": 0, "unconfirmed": 0},
+        "hypervisors": {"fresh": 0, "stale": 0, "unconfirmed": 0},
+    }
     matched, ambiguous, unmatched, stopped, disabled, unknown_network = result["guests"]
     assert matched == {"id": "vm:1", "name": "VM 1", "vmid": 1, "state": "matched",
-                       "registrations": 1, "presence": "online", "lastSeenAt": at,
+                       "registrations": 1, "presence": "online", "lastSeenAt": at, "healthProfileState": "fresh",
                        "contextProfiles": [{"profile": "health_v1", "collectedAt": at},
                                            {"profile": "network_v1", "collectedAt": at},
                                            {"profile": "inventory_v1", "collectedAt": at}]}
@@ -8349,7 +8353,12 @@ def test_agent_audit_selects_only_current_registration_among_long_offline_duplic
     assert audit() == {
         "id": "vm:1", "name": "VM 1", "vmid": 1, "state": "matched", "registrations": 2,
         "identitySource": "active_mac_registration", "presence": "online", "lastSeenAt": stamp,
+        "healthProfileState": "unconfirmed",
     }
+    older_health = {"profile": "health_v1", "collected_at": (now - timedelta(minutes=7)).isoformat()}
+    assert audit(active_changes={"profiles": [older_health]})["healthProfileState"] == "stale"
+    assert audit(active_changes={"profiles": [older_health, {**older_health, "collected_at": stamp}]})[
+        "healthProfileState"] == "unconfirmed"
     for changes in ({"online": True}, {"online": None}, {"last_seen_at": stamp}, {"last_seen_at": None}):
         assert audit(offline_changes=changes)["reason"] == "multiple_registrations"
     stale = (now - timedelta(days=2)).isoformat()
@@ -8521,7 +8530,8 @@ def test_agent_audit_matches_hypervisor_using_verified_management_mac(tmp_path):
     assert (audit["total"], audit["eligible"], audit["matched"], audit["guests"]) == (0, 0, 0, [])
     entry, = audit["hypervisors"]
     assert entry == {"id": "pve1", "name": "pve1", "state": "matched", "registrations": 1, "presence": "online",
-                     "lastSeenAt": at, "identityCheckedAt": arp_at, "identitySource": "proxmox_management_mac"}
+                     "lastSeenAt": at, "identityCheckedAt": arp_at, "identitySource": "proxmox_management_mac",
+                     "healthProfileState": "unconfirmed"}
     assert identity["id"] not in json.dumps(audit) and mac not in json.dumps(audit)
 
     stale, = read(now + timedelta(minutes=24))["hypervisors"]
