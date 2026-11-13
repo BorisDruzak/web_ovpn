@@ -537,6 +537,8 @@ Server Observer измеряет доступную физическую пам�
 
 Эта сверка включена для веб-панелей D-Link Server_switch, пяти коммутаторов MikroTik CSS и двух TP-Link (ИТО и школа №7), а также для SSH на обоих TP-Link. Наблюдаемый порт для адреса управления и подтверждение физической пары доступны через MCP `view=attachment`. [Сверка D-Link и MikroTik CSS](https://github.com/BorisDruzak/network_configuration/blob/main/evidence/manual/2026-11-13-dlink-css-management-ports.md) · [Сверка TP-Link](https://github.com/BorisDruzak/network_configuration/blob/main/evidence/manual/2026-11-13-tplink-management-ports.md)
 
+Та же сверка используется для SSH центрального MikroTik `sosn` и HTTPS/TLS контроллеров управления PBS, PVE2, PVE3 и YADRO. MCP показывает наблюдаемые порты SNR. Физические интерфейсы BMC требуют отдельных данных со стороны контроллеров. [Наблюдения портов контроллеров управления](https://github.com/BorisDruzak/network_configuration/blob/main/evidence/manual/2026-11-12-snr-management-controllers.md)
+
 Если запрос пропущен из-за неподтверждённого адреса, карточка и MCP показывают `arpDiagnostic`, когда за тот же цикл проверен тот же IP на хосте службы. Например, у FindFace это объясняет, почему проверка HTTP не состоялась. Результат службы остаётся без подтверждения.
 
 Для службы, уже объявленной в сетевом контексте, укажите её ID в `asset_services` и тот же узел в `asset`. Название и размещение берутся из контекста. Если привязка расходится с контекстом, проверка пропускает запрос.
