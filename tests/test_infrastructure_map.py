@@ -70,6 +70,47 @@ def test_redfish_power_does_not_equate_power_on_with_os_availability(monkeypatch
     redfish.collect_redfish_power(graph, spec, None, now)
 
 
+@pytest.mark.parametrize("failure", [None, "mac", "stale", "shared", "speed"])
+def test_redfish_management_pair_requires_matching_current_switch_evidence(tmp_path, monkeypatch, failure):
+    from app import infrastructure_redfish as redfish
+    from app.infrastructure_map import load_infrastructure_map, summarize_topology
+
+    now = datetime.now(timezone.utc)
+    stamp = now.isoformat()
+    observed = (now - timedelta(minutes=11)).isoformat() if failure == "stale" else stamp
+    ip, mac = "192.0.2.31", "02:00:00:00:00:31"
+    path = "/redfish/v1/Managers/bmc/EthernetInterfaces/eth0"
+    interface = {"Id": "eth0", "InterfaceEnabled": True, "LinkStatus": "LinkUp", "MACAddress": mac,
+                 "SpeedMbps": 100 if failure == "speed" else 1000, "IPv4Addresses": [{"Address": ip}]}
+    monkeypatch.setattr(redfish, "_read_power", lambda *_: "Off")
+    monkeypatch.setattr(redfish, "_read_resource", lambda *_: interface)
+    graph = {"schema": 1, "snapshotAt": stamp, "nodes": [
+        {"id": "bmc", "name": "BMC", "kind": "Контроллер управления", "probeTargetIP": ip, "probeTargetIdentityAt": stamp},
+        {"id": "host", "name": "Host", "kind": "Сервер"},
+        {"id": "sw", "name": "Switch", "kind": "Коммутатор", "ports": [
+            {"name": "ge13", "state": "up", "checkedAt": observed, "speedBps": 10**9,
+             "fdbLearned": {"checkedAt": observed, "partial": False, "learnedMacCount": 2 if failure == "shared" else 1}},
+        ]},
+    ], "links": [
+        {"a": "bmc", "b": "host", "kind": "Управление оборудованием", "confirmed": True},
+        {"a": "sw", "b": "bmc", "kind": "Путь по MAC-таблице", "source": "netctl FDB", "confirmed": True,
+         "observedAt": observed, "portEvidence": [
+             {"a": "ge13", "b": "", "source": "netctl FDB", "confirmed": True, "at": observed,
+              "managementAddress": ip, "learnedEndpoint": {"switchId": "sw", "deviceId": "bmc",
+                  "mac": "02:00:00:00:00:32" if failure == "mac" else mac}},
+         ]},
+        {"a": "sw", "b": "bmc", "kind": "Сетевое соединение", "source": "GitHub", "confirmed": True,
+         "portEvidence": [{"a": "ge13", "b": "eth0", "source": "GitHub", "confirmed": True}]},
+    ]}
+    redfish.collect_redfish_power(graph, {"bmc": {"ip": ip, "interface_path": path}}, None, now)
+    snapshot = tmp_path / "map.json"
+    snapshot.write_text(json.dumps(graph), encoding="utf-8")
+    for when, current in ((now, int(failure is None)), (now + timedelta(minutes=11), 0)):
+        audit = summarize_topology(load_infrastructure_map(snapshot, when))["topologyAudit"]
+        assert audit["currentPairTotal"] == current
+        assert audit["inventoryOnlyPairTotal"] == 1 - current
+
+
 @pytest.mark.parametrize(("status", "headers", "state", "reason"), [
     (401, [("Server", "Microsoft-HTTPAPI/2.0"), ("WWW-Authenticate", "Kerberos")], "reachable", "winrm_auth_required"),
     (401, [("Server", "Microsoft-HTTPAPI/2.0"), ("WWW-Authenticate", "Basic")], "unknown", "unexpected_response"),
