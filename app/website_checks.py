@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .website_receipts import MAX_AGE as WINDOWS_MAX_AGE, WINDOWS_SITES, WINDOWS_STATE, store
 
 PGS_LOGIN = "https://auth.pgs.gosuslugi.ru/auth/realms/DigitalgovTorkndProd1Auth/protocol/openid-connect/auth"
+MON_PMO = "https://mon-pmo.gov74.ru/"
 SITES = (
     "https://www.gosuslugi.ru/",
     "https://frgu3.gosuslugi.ru/",
@@ -25,7 +26,7 @@ SITES = (
     PGS_LOGIN,
     "https://digital.gov74.ru/",
     "https://gisogd.gov74.ru/",
-    "https://mon-pmo.gov74.ru/",
+    MON_PMO,
     "https://e.mail.ru/inbox",
     "https://app.workspace.vk.ru/mail",
     "https://nspd.gov.ru/map?thematic=PKK&coordinate_x=7804891.637510094&coordinate_y=8181287.398947453&zoom=5&baseLayerId=235",
@@ -113,6 +114,7 @@ def fetch(url: str, address) -> tuple[dict, bytes, int]:
     host = parts.hostname
     port = 443 if parts.scheme == "https" else 80
     ip = f"[{address}]" if address.version == 6 else str(address)
+    user_agent = ["--user-agent", "UI-VPN-Monitor/1.0"] if host == urlsplit(MON_PMO).hostname else []
     tls_args = []
     env = None
     if parts.scheme == "https":
@@ -127,7 +129,7 @@ def fetch(url: str, address) -> tuple[dict, bytes, int]:
             "/usr/bin/curl", "--disable", "--globoff", "--noproxy", "*", "--proto", f"={parts.scheme}",
             "--connect-timeout", "4", "--max-time", "10", "--max-filesize", str(BODY_LIMIT),
             "--silent", "--output", body.name, "--write-out", "%{json}",
-            *tls_args,
+            *tls_args, *user_agent,
             *(["--resolve", f"{host}:{port}:{ip}"] if host != str(address) else []), "--url", url,
         ], capture_output=True, timeout=12, check=False, env=env)
         return json.loads(result.stdout or b"{}"), body.read(BODY_LIMIT), result.returncode
@@ -237,7 +239,7 @@ def manual_check(db, actor: str, url: str) -> dict:
 def check_site(url: str, *, manual: bool = False) -> dict:
     url = public_url(url)
     row = {"url": url, "origin": "vpn-server", "checked_at": datetime.now(UTC).isoformat(), "redirects": []}
-    current = url
+    current = MON_PMO + "pmo/" if url == MON_PMO else url
     if current == PGS_LOGIN:
         current += "?" + urlencode({
             "response_type": "code", "scope": "openid", "client_id": "DigitalgovTorkndProd1Auth-Proxy",

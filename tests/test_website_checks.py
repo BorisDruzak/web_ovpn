@@ -32,6 +32,24 @@ def test_redirect_to_unapproved_host_is_not_fetched(monkeypatch):
     assert calls == ["https://www.gosuslugi.ru/"]
 
 
+def test_mon_pmo_checks_https_login_without_following_http_redirect(monkeypatch):
+    calls = []
+
+    def fetch(url, address):
+        calls.append(url)
+        if url.endswith("/pmo/"):
+            return {"http_code": 302, "redirect_url": "https://mon-pmo.gov74.ru/pmo/Login"}, b"", 0
+        return {"http_code": 200, "content_type": "text/html"}, b"<html>Login</html>", 0
+
+    monkeypatch.setattr(checks, "resolve_public", lambda _: [ipaddress.ip_address("91.224.155.70")])
+    monkeypatch.setattr(checks, "fetch", fetch)
+    monkeypatch.setattr(checks, "probe_path", lambda ip, port: {})
+    result = checks.check_site("https://mon-pmo.gov74.ru/")
+    assert result["status"] == "ok"
+    assert result["url"] == "https://mon-pmo.gov74.ru/"
+    assert calls == ["https://mon-pmo.gov74.ru/pmo/", "https://mon-pmo.gov74.ru/pmo/Login"]
+
+
 def test_fetch_uses_nspd_ca_only_for_https_nspd(tmp_path, monkeypatch):
     from subprocess import CompletedProcess
 
