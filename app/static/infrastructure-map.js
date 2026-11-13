@@ -1177,6 +1177,26 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     return panel;
   }
 
+  function renderInventoryPortPairs(host, port) {
+    const keys = port ? portKeys(port) : null;
+    const pairs = (data.inventoryPairs ?? []).filter(pair =>
+      (pair.a === host.id && (!keys || keys.includes(portKey(pair.portA)))) ||
+      (pair.b === host.id && (!keys || keys.includes(portKey(pair.portB)))));
+    if (!pairs.length) return null;
+    const panel = make('details', null, 'map-port-panel');
+    panel.dataset.section = 'inventory-port-pairs';
+    const list = make('ul', null, 'map-detail-list');
+    for (const {a, b, portA, portB, inventorySources} of pairs) {
+      const row = make('li');
+      row.append(portPairEndpoint(a, byId.get(a)?.name ?? a, portA), ' ↔ ',
+        portPairEndpoint(b, byId.get(b)?.name ?? b, portB));
+      appendInventorySources(row, inventorySources);
+      list.append(row);
+    }
+    panel.append(make('summary', `Пары из обследований (${pairs.length})`), list);
+    return panel;
+  }
+
   function renderObservedHostPorts(host, paths) {
     const list = make('ul', null, 'map-detail-list');
     const rendered = new Set();
@@ -1456,6 +1476,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       }
       const pendingPairs = renderHostPortPairs(placementHost, true);
       if (pendingPairs) propertiesSection.append(pendingPairs);
+      const inventoryPairs = renderInventoryPortPairs(placementHost);
+      if (inventoryPairs) propertiesSection.append(inventoryPairs);
       const observedPorts = renderObservedHostPorts(placementHost, paths);
       if (observedPorts) propertiesSection.append(observedPorts);
     }
@@ -1464,6 +1486,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const pairs = renderHostPortPairs(node, pending, chosenPort);
         if (pairs) propertiesSection.append(pairs);
       }
+      const inventoryPairs = renderInventoryPortPairs(node, chosenPort);
+      if (inventoryPairs) propertiesSection.append(inventoryPairs);
     }
     const guestAttachment = renderGuestAttachment(data.guestAttachments?.[resourceHost.id]);
     if (guestAttachment) {

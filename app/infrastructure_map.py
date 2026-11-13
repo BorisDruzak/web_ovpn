@@ -3252,7 +3252,7 @@ def load_infrastructure_map(
         **({"guestSwitchAttachments": {}} if include_service_ports and include_port_pairs else {}),
         **({"currentPortPairs": [], "inventoryPairs": [], "pendingPortPairs": [],
             "lacpPartnerInterfaceGaps": []} if include_port_pairs else {}),
-        **({"guestAttachments": {}, "servicePaths": {}, "servicePorts": {},
+        **({"guestAttachments": {}, "servicePaths": {}, "servicePorts": {}, "inventoryPairs": [],
             "currentPortPairTotal": 0, "currentPortPairs": [],
             "pendingPortPairTotal": 0, "pendingPortPairs": [],
             "lacpPartnerInterfaceGapTotal": 0, "lacpPartnerInterfaceGaps": []} if include_guest_attachments else {}),
@@ -3535,10 +3535,11 @@ def load_infrastructure_map(
     attachments = {}
     if include_guest_attachments:
         attachments = _map_attachments(nodes, links, now, endpoint_keys=endpoint_keys)
-        _, _, _, pending, current_pairs = _topology_port_pairs(nodes, links)
+        _, inventory_pairs, _, pending, current_pairs = _topology_port_pairs(nodes, links)
         lacp_gaps = _lacp_partner_interface_gaps(nodes)
         attachments.update(
             guestSwitchAttachments=_guest_switch_attachments(attachments["guestAttachments"]),
+            inventoryPairs=inventory_pairs,
             currentPortPairTotal=len(current_pairs),
             currentPortPairs=current_pairs[:64],
             pendingPortPairTotal=len(pending),

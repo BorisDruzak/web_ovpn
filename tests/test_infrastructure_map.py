@@ -7626,6 +7626,9 @@ def test_inventory_port_sources_are_dated_and_kept_separate_from_live_checks(tmp
     port_graph = load_infrastructure_map(path, now, include_port_pairs=True)
     assert port_graph["inventoryPairs"] == audit["inventoryPairs"]
     assert port_graph["currentPortPairs"] == []
+    browser = load_infrastructure_map(path, now, include_guest_attachments=True)
+    assert browser["inventoryPairs"] == audit["inventoryPairs"]
+    assert browser["currentPortPairs"] == []
 
 
 def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_paths(tmp_path, monkeypatch):
