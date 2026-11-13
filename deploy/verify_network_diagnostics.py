@@ -22,6 +22,7 @@ from mcp import openvpn_mcp_server as bridge
 
 API = "/api/v1/network/diagnostics"
 MCP_SCRIPT = Path(__file__).resolve().parents[1] / "mcp" / "openvpn_mcp_server.py"
+SPEED_CLOCK_TOLERANCE = timedelta(seconds=2)
 CHECKS = {
     "route_availability", "linux_route", "asset_route", "trace_route",
     "source_test", "iperf3", "https_speed", "pcap_capture", "loop_check",
@@ -452,7 +453,7 @@ def speed_report(
             if isinstance(result.get(field), dict)
         }
         checked_at = datetime.fromisoformat(row["checked_at"])
-        fresh = timedelta(0) <= now - checked_at <= max_age
+        fresh = -SPEED_CLOCK_TOLERANCE <= now - checked_at <= max_age
         api_matches = row in api_runs
         directions[direction] = {
             "status": row["status"], "checked_at": row["checked_at"], "fresh": fresh,

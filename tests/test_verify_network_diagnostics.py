@@ -764,6 +764,21 @@ def test_speed_report_preserves_observed_endpoints_and_kernel_gateway():
     assert receive["confirmed"]
 
 
+@pytest.mark.parametrize("age_seconds,fresh", [
+    (-2.001, False), (-2, True), (-0.5, True), (0, True), (600, True), (600.001, False),
+])
+def test_speed_report_allows_small_clock_skew_without_extending_max_age(age_seconds, fresh):
+    now = datetime(2026, 11, 13, 2, 15, tzinfo=UTC)
+    row = {
+        "check": "https_speed", "status": "measured", "target": "wan · receive",
+        "checked_at": (now - timedelta(seconds=age_seconds)).isoformat(),
+        "result": {"mbps": 10, "wan_observation": {"status": "confirmed", "nat_interface": "wan1"}},
+    }
+    report = verifier.speed_report([row], [row], "https_speed", "wan", "wan1", now, timedelta(minutes=10))
+    assert report["directions"]["receive"]["fresh"] is fresh
+    assert report["directions"]["receive"]["confirmed"] is fresh
+
+
 def test_interface_report_uses_common_tail_when_mcp_limits_history(monkeypatch):
     now = datetime(2026, 11, 13, 2, 15, tzinfo=UTC)
     monkeypatch.setattr(verifier, "MCP_INTERFACE_LIMIT", 1)
