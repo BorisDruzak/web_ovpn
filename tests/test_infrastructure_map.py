@@ -7780,6 +7780,12 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
                             "guestId": "vm", "guestPort": "net0", "bridge": "vmbr1", "hypervisorId": "pve",
                             "switchId": "snr", "physicalPair": match["physicalPair"], "addressCheckedAt": stamp,
                             "destinationVlan": vlan_evidence}
+    telemetry = {"checkedAt": stamp, "intervalSeconds": 300, "rxBps": 1024, "txBps": 2048, "rxDiscards": 3}
+    vlan_ports["switch"]["telemetry"] = telemetry
+    measured = read()["servicePaths"][0]
+    assert measured["switchPortTelemetry"] == telemetry
+    vlan_ports["switch"]["telemetry"] = {**telemetry, "checkedAt": old}
+    assert "switchPortTelemetry" not in read()["servicePaths"][0]
     from app.infrastructure_map import WINDOWS_PROBE_SOURCE
 
     raw["nodes"][0]["serviceChecks"].append({**check, "source": WINDOWS_PROBE_SOURCE, "method": "HTTP",

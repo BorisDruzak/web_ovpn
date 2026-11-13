@@ -1274,6 +1274,15 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         : [`${guest} ${path.guestPort}`, path.bridge, `${host} ${hostPort}`].join(' → ');
       row.append(make('small', connection),
         switchPortButton(path.switchId, target, switchPort));
+      const uplinkTelemetry = path.switchPortTelemetry;
+      if (uplinkTelemetry) {
+        const rates = [['RX', uplinkTelemetry.rxBps], ['TX', uplinkTelemetry.txBps]]
+          .filter(([, value]) => value !== undefined)
+          .map(([direction, value]) => `${direction} ${observerNumber.format(value / 1000)} кбит/с`);
+        if (rates.length) row.append(make('small', ['Аплинк · SNMP', ...rates, formatTime(uplinkTelemetry.checkedAt)].join(' · ')));
+        const changes = formatPortCounterChanges(uplinkTelemetry);
+        if (changes) row.append(make('small', `Аплинк · ${changes}`));
+      }
       const destinationVlan = probes.find(probe => probe.destinationVlan)?.destinationVlan;
       if (destinationVlan) {
         const labels = {tagged: 'с тегом', untagged: 'без тега'};

@@ -2375,6 +2375,8 @@ def _guest_attachments(nodes: dict, links: list[dict], guest_ids: list[str], now
                         }
                         if vlans := _attachment_vlan_memberships(interface, match, pair["portStates"], now):
                             observation["vlanMemberships"] = vlans
+                        if telemetry := pair["portStates"]["switch"].get("telemetry"):
+                            observation["switchPortTelemetry"] = telemetry
                 interface["switchObservations"].append(observation)
             mac_ports = {(row["switch"]["id"], port_label_key(row["switchPort"])): row["switchPort"]
                          for row in interface["switchObservations"] if row["basis"] == "guest_mac"}
@@ -2641,6 +2643,8 @@ def _service_attachment_paths(service: dict, guests: dict, client_attachments: d
         if len(observations) != 1:
             continue
         observation, = observations
+        if telemetry := observation.get("switchPortTelemetry"):
+            path["switchPortTelemetry"] = telemetry
         path.update({"addressCheckedAt": address_at,
                       "guestId": guest["guest"]["id"], "guestPort": adapter["guestPort"], "bridge": adapter["bridge"],
                       "hypervisorId": guest["hypervisor"]["id"], "switchId": observation["switch"]["id"],
