@@ -148,7 +148,11 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     if (port && byId.get(id)?.ports?.some(item => portKeys(item).includes(portKey(port)))) {
       return switchPortButton(id, name, port);
     }
-    return make('span', name + ' · ' + (port || 'порт неизвестен'));
+    const label = name + ' · ' + (port || 'порт неизвестен');
+    if (!byId.has(id)) return make('span', label);
+    const link = make('a', label);
+    link.href = '?' + new URLSearchParams({node: id});
+    return link;
   }
   function confirmedPortPairRow({a, b, nameA, nameB, portA, portB, evidence}) {
     const row = make('li');
@@ -212,8 +216,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     }
     for (const [side, peers] of Object.entries(lldpPeers)) {
       const [observer, neighbor] = side === 'a' ? [nameA, nameB] : [nameB, nameA];
-      for (const {localPort, portId, chassisId, checkedAt} of peers) {
-        const identity = portId ? `Port ID ${portId}` : chassisId;
+      for (const {localPort, portId, portIdSubtype, chassisId, checkedAt} of peers) {
+        const identity = portId ? formatLldpPortId(portId, portIdSubtype) : chassisId;
         item.append(make('small', `LLDP · ${observer} ${localPort} → ${neighbor} · ${identity} · ${formatTime(checkedAt)}`));
       }
     }
@@ -224,7 +228,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       const observers = identifiedPeerSides.map(side => side === 'a' ? nameA : nameB);
       item.append(make('small', 'Сосед опознан со стороны ' + observers.join(', ')));
     }
-    for (const path of stpPaths) item.append(make('small', stpPathLabel(path)));
+    for (const path of stpPaths) appendStpPath(item, path);
     for (const [side, port] of Object.entries(portObservations)) {
       const label = `${side === 'a' ? nameA : nameB} ${port.name}`;
       const reading = [label, portLabels[port.state], formatPortSpeed(port.speedBps), formatTime(port.checkedAt)];
@@ -245,11 +249,20 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     return [`LLDP за ${Math.round(intervalSeconds)} с`, `получено кадров ${rxFrames.toLocaleString('ru-RU')}`,
       `отправлено кадров ${txFrames.toLocaleString('ru-RU')}`].join(' · ');
   }
-  function stpPathLabel({deviceId, localPort, bridgeDeviceId, designatedBridgeMac, designatedPortId,
+  function appendStpPath(parent, {deviceId, localPort, bridgeDeviceId, designatedBridgeMac, designatedPortId,
     designatedPortName, checkedAt}) {
     const bridge = byId.get(bridgeDeviceId)?.name ?? designatedBridgeMac;
     const remote = designatedPortName ? `${bridge} ${designatedPortName}` : bridge;
-    return `STP · ${byId.get(deviceId)?.name ?? deviceId} ${localPort} → ${remote} · ${designatedPortId} · ${formatTime(checkedAt)}`;
+    const row = make('small', `STP · ${byId.get(deviceId)?.name ?? deviceId} ${localPort} → `);
+    if (designatedPortName && byId.get(bridgeDeviceId)?.ports?.some(port => portKeys(port).includes(portKey(designatedPortName)))) {
+      const link = make('a', remote);
+      link.href = '?' + new URLSearchParams({node: bridgeDeviceId, port: designatedPortName});
+      row.append(link);
+    } else {
+      row.append(remote);
+    }
+    row.append(` · ${designatedPortId} · ${formatTime(checkedAt)}`);
+    parent.append(row);
   }
   function renderSnapshotHeader() {
     source.replaceChildren();
@@ -1923,7 +1936,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
             li.append(make('small', 'MAC ' + mac + ' изучен на ' + byId.get(switchId).name + ' ' + switchPort));
           }
           appendInventorySources(li, evidence.inventorySources);
-          for (const path of evidence.stpPaths ?? []) li.append(make('small', stpPathLabel(path)));
+          for (const path of evidence.stpPaths ?? []) appendStpPath(li, path);
           for (const side of ['a', 'b']) {
             const port = evidence.portStates?.[side];
             const key = side + ':' + port?.name;
