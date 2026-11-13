@@ -310,7 +310,15 @@
 
 У `vipnet-coordinator-web` проверка срока сертификата на TCP/8080 использует тот же отпечаток, что и HTTPS-проверка WebUI. Результат TLS учитывается как обязательный компонент карточки. Доступность страницы проверяется отдельным HTTPS-запросом.
 
-В `service_probes.pbs-web` основной запрос к `/` проверяет страницу PBS. Две обязательные проверки с `component: true` используют те же `ip`, `port` и проверенный `tls_sha256`. Для `type: https` укажите `path: /api2/json/access/domains`, `content_type: application/json` и `body_contains: '"realm":'`. Этот запрос проверяет ответ API со списком областей входа без аутентификации. Для `type: tls_certificate` сборщик проверяет срок действия сертификата. Состояние заданий копирования показывает отдельный сервис `proxmox-pbs-backups`. [Документация PBS](https://pbs.proxmox.com/docs/services.html)
+В `service_probes.pbs-web` основной запрос к `/` проверяет страницу PBS. Обязательные компоненты используют те же `ip`, `port` и проверенный `tls_sha256`. Запрос HTTPS к `/api2/json/access/domains` требует `content_type: application/json` и `body_contains: '"realm":'`. Он проверяет ответ API со списком областей входа без аутентификации. Для `type: tls_certificate` сборщик проверяет срок действия сертификата. Состояние заданий копирования показывает отдельный сервис `proxmox-pbs-backups`. [Документация PBS](https://pbs.proxmox.com/docs/services.html)
+
+Для каждой панели добавьте HTTPS-запрос к скрипту с `component: true`, тем же адресом, портом и отпечатком TLS, что у основной страницы.
+
+| Карточка | Путь | `content_type` | `body_contains` |
+| --- | --- | --- | --- |
+| `pbs-web` | `/js/proxmox-backup-gui.js` | `application/javascript` | `pbs_documentation_index` |
+| `vipnet-coordinator-web` | `/localizer.js` | `application/x-javascript` | `function getCookieParam` |
+| `pbs-ipmi-web`, `pve3-ipmi-web` | `/js/utils.js` | `text/javascript` | `ReadCookie("language")` |
 
 У `pve1-management`, `pve2-management` и `pve3-management` запрос списка областей входа проверяется отдельно на каждом узле по HTTPS/8006 с теми же `tls_server_name` и `tls_ca_file`, что у веб-панели. Для `pve2-redfish`, `yadro-vegman-redfish`, `pbs-ipmi-web`, `pve3-ipmi-web` и `ucm6302-web` добавьте `type: tls_certificate` с `component: true` и уже проверенным отпечатком веб-службы. Истёкший сертификат даёт сбой обязательной проверки, и отвечающая веб-служба отображается жёлтой. [Документация Proxmox по областям входа](https://github.com/proxmox/pve-docs/blob/master/pveum.adoc)
 
