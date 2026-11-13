@@ -27,7 +27,8 @@ def test_reconciliation_runs_on_boot_and_after_collection_failure():
     assert "AccuracySec=30s" in timer
     assert "Unit=netctl-reconcile.service" in timer
     assert "OnFailure=netctl-reconcile.service" in collect
-    assert "After=netctl-collect.service" in reconcile
+    assert "After=netctl-reconcile.service" in collect
+    assert "After=netctl-collect.service" not in reconcile
 
 
 def test_availability_fallback_runs_on_boot_or_under_the_reconciliation_lock():
