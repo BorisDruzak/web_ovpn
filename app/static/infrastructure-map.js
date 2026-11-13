@@ -162,32 +162,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     if (panel.hidden) return;
     summary.textContent = 'Пары портов без подтверждения · ' + pendingPortPairTotal;
     if (lacpPartnerInterfaceGapTotal) summary.append(' · Интерфейсы LACP · ' + lacpPartnerInterfaceGapTotal);
-    const pending = pendingPortPairs.map(({a, b, nameA, nameB, portA, portB, observedSources = [], lldpPortIds = [],
-      observedSourceTimes = {}, identifiedPeerSides = [], archivedPortSides = [], inventoryPortSides = [],
-      portObservations = {}, stpPaths = []}) => {
-      const item = make('li');
-      const provenance = key => archivedPortSides.includes(key) ? ' (по архиву)' :
-        inventoryPortSides.includes(key) ? ' (по инвентарю)' : '';
-      item.append(portPairEndpoint(a, nameA, portA), provenance('a'), ' ↔ ',
-        portPairEndpoint(b, nameB, portB), provenance('b'));
-      for (const source of observedSources) {
-        const label = source === 'netctl FDB' ? 'MAC на порту' : source;
-        const checkedAt = observedSourceTimes[source];
-        item.append(make('small', checkedAt ? `${label} · ${formatTime(checkedAt)}` : label));
-      }
-      if (lldpPortIds.length) item.append(make('small', 'LLDP Port ID ' + lldpPortIds.join(', ')));
-      if (identifiedPeerSides.length) {
-        const observers = identifiedPeerSides.map(side => side === 'a' ? nameA : nameB);
-        item.append(make('small', 'Сосед опознан со стороны ' + observers.join(', ')));
-      }
-      for (const path of stpPaths) item.append(make('small', stpPathLabel(path)));
-      for (const port of Object.values(portObservations)) {
-        const reading = [port.name, portLabels[port.state], formatPortSpeed(port.speedBps), formatTime(port.checkedAt)];
-        if (port.rxSilence) reading.push(formatRxSilence(port.rxSilence));
-        item.append(make('small', reading.filter(Boolean).join(' · ')));
-      }
-      return item;
-    });
+    const pending = pendingPortPairs.map(pendingPortPairRow);
     const lacp = lacpPartnerInterfaceGaps.map(({name, switchId, aggregate, switchPort, partnerPort}) => {
       const item = make('li');
       item.append(portPairEndpoint(switchId, byId.get(switchId)?.name || switchId, switchPort),
@@ -199,6 +174,32 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const shown = pending.length + lacp.length;
     more.hidden = shown >= total;
     more.textContent = `Показано ${shown} из ${total}`;
+  }
+  function pendingPortPairRow({a, b, nameA, nameB, portA, portB, observedSources = [], lldpPortIds = [],
+      observedSourceTimes = {}, identifiedPeerSides = [], archivedPortSides = [], inventoryPortSides = [],
+      portObservations = {}, stpPaths = []}) {
+    const item = make('li');
+    const provenance = key => archivedPortSides.includes(key) ? ' (по архиву)' :
+      inventoryPortSides.includes(key) ? ' (по инвентарю)' : '';
+    item.append(portPairEndpoint(a, nameA, portA), provenance('a'), ' ↔ ',
+      portPairEndpoint(b, nameB, portB), provenance('b'));
+    for (const source of observedSources) {
+      const label = source === 'netctl FDB' ? 'MAC на порту' : source;
+      const checkedAt = observedSourceTimes[source];
+      item.append(make('small', checkedAt ? `${label} · ${formatTime(checkedAt)}` : label));
+    }
+    if (lldpPortIds.length) item.append(make('small', 'LLDP Port ID ' + lldpPortIds.join(', ')));
+    if (identifiedPeerSides.length) {
+      const observers = identifiedPeerSides.map(side => side === 'a' ? nameA : nameB);
+      item.append(make('small', 'Сосед опознан со стороны ' + observers.join(', ')));
+    }
+    for (const path of stpPaths) item.append(make('small', stpPathLabel(path)));
+    for (const port of Object.values(portObservations)) {
+      const reading = [port.name, portLabels[port.state], formatPortSpeed(port.speedBps), formatTime(port.checkedAt)];
+      if (port.rxSilence) reading.push(formatRxSilence(port.rxSilence));
+      item.append(make('small', reading.filter(Boolean).join(' · ')));
+    }
+    return item;
   }
   function stpPathLabel({deviceId, localPort, bridgeDeviceId, designatedBridgeMac, designatedPortId,
     designatedPortName, checkedAt}) {
@@ -792,14 +793,15 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     return panel;
   }
 
-  function renderServiceHostPortPairs(host) {
-    const pairs = (data.currentPortPairs ?? []).filter(pair => pair.a === host.id || pair.b === host.id);
+  function renderServiceHostPortPairs(host, pending = false) {
+    const records = pending ? data.pendingPortPairs : data.currentPortPairs;
+    const pairs = (records ?? []).filter(pair => pair.a === host.id || pair.b === host.id);
     if (!pairs.length) return null;
     const panel = make('details', null, 'map-port-panel');
-    panel.dataset.section = 'service-host-port-pairs';
+    panel.dataset.section = pending ? 'service-host-pending-port-pairs' : 'service-host-port-pairs';
     const list = make('ul', null, 'map-detail-list');
-    list.append(...pairs.map(confirmedPortPairRow));
-    panel.append(make('summary', 'Подтверждённые порты устройства'), list);
+    list.append(...pairs.map(pending ? pendingPortPairRow : confirmedPortPairRow));
+    panel.append(make('summary', pending ? 'Пары портов устройства без подтверждения' : 'Подтверждённые порты устройства'), list);
     return panel;
   }
 
@@ -1063,6 +1065,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const portPairs = renderServiceHostPortPairs(placementHost);
         if (portPairs) propertiesSection.append(portPairs);
       }
+      const pendingPairs = renderServiceHostPortPairs(placementHost, true);
+      if (pendingPairs) propertiesSection.append(pendingPairs);
       const observedPorts = renderObservedHostPorts(placementHost, paths);
       if (observedPorts) propertiesSection.append(observedPorts);
     }
