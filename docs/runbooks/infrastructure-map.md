@@ -258,6 +258,8 @@
 
 У Nextcloud отдельная обязательная проверка получает HTML страницы `/login` и проверяет маркер `id="body-login"`. У ONLYOFFICE компонент `/web-apps/apps/api/documents/api.js` проверяет тип ответа JavaScript и наличие `DocsAPI.DocEditor`. Эти запросы используют тот же адрес, TLS и проверку имени, что и основные проверки готовности. [Документация ONLYOFFICE Docs API](https://api.onlyoffice.com/docs/docs-api/usage-api/doceditor)
 
+Карточки `nextcloud-internal-dns` и `onlyoffice-internal-dns` проверяют A-записи имён из соответствующих HTTPS-проверок по UDP и TCP на порту 53. Обе используют адрес OPNsense после сверки с ВМ 110. Связи `used_by` отображают результат DNS в состоянии соответствующего приложения. Редактирование документа через коннектор требует отдельной проверки.
+
 Для клиентского API Directum задайте `json_fields` как `{"ProductName":"Directum RX","PlatformName":"Sungero","MaintenanceModeState.IsEnabled":false,"MaintenanceModeState.IsSafeModeEnabled":false}` и `json_unavailable` как `{"ProductName":"Directum RX","PlatformName":"Sungero","MaintenanceModeState.IsEnabled":true}`.
 
 Для службы, привязанной к серверу из сетевого контекста, задайте в `asset_services` запись по ID службы с полями `asset` и `label`. Адрес проверки должен совпадать с `management_ip` этого сервера. HTTPS по умолчанию проверяет системную цепочку доверия. Для сервера с самоподписанным сертификатом можно указать сверенный отпечаток `tls_sha256` из 64 шестнадцатеричных символов. При смене сертификата проверьте новый отпечаток перед обновлением привязки. Доступность веб-панели PBS и состояние резервных копий проверяются независимо.
