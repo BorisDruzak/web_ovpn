@@ -11,13 +11,14 @@ from deploy import verify_network_diagnostics as verifier
 from deploy.verify_network_diagnostics import route_report
 
 
-@pytest.mark.parametrize("selected,expected,status", [
-    ([], ["archive", "vlan50"], 2),
-    (["vlan50", "vlan50"], ["vlan50"], 0),
-    (["archive", "vlan50"], ["archive", "vlan50"], 2),
-    (["manual-only"], [], 1),
+@pytest.mark.parametrize("selected,expected,status,overview_changes", [
+    ([], ["archive", "vlan50"], 2, 0),
+    (["vlan50", "vlan50"], ["vlan50"], 0, 1),
+    (["archive", "vlan50"], ["archive", "vlan50"], 2, 0),
+    (["manual-only"], [], 1, 0),
+    ([], [], 1, 2),
 ])
-def test_verify_route_profile_selection(monkeypatch, capsys, selected, expected, status):
+def test_verify_route_profile_selection(monkeypatch, capsys, selected, expected, status, overview_changes):
     argv = ["verifier", "--require-reachable"]
     for profile in selected:
         argv.extend(("--route-profile", profile))
@@ -31,6 +32,11 @@ def test_verify_route_profile_selection(monkeypatch, capsys, selected, expected,
         "throughput": [], "https_speed": [], "capture": [],
     }
     catalog = {"profiles": profiles, "checks": [{"check": name} for name in verifier.CHECKS]}
+    overview = {"profiles": [
+        {"id": name, "fresh": True, "run": {"id": 1, "checked_at": now, "status": reachability,
+                                          "configuration_status": "current"}}
+        for name, reachability in (("archive", "unreachable"), ("vlan50", "reachable"))
+    ]}
     histories = {}
     for name, reachability in (("archive", "unreachable"), ("vlan50", "reachable")):
         histories[name] = {"runs": [{
@@ -39,11 +45,13 @@ def test_verify_route_profile_selection(monkeypatch, capsys, selected, expected,
         }]}
     loops = {"result": {"status": "insufficient_data", "since": now, "until": now, "sources": [], "truncated": False}}
     api_reads, mcp_reads = [], []
+    overview_reads = 0
 
     def api_request(method, path):
+        nonlocal overview_reads
         if path == "/openapi.json":
             paths = {f"{verifier.API}/{suffix}": {"get": {}} for suffix in (
-                "checks", "route-runs", "interfaces", "runs", "loops", "captures", "captures/{capture_id}",
+                "checks", "route-runs", "route-overview", "interfaces", "runs", "loops", "captures", "captures/{capture_id}",
             )}
             paths[f"{verifier.API}/checks"]["post"] = {"requestBody": {"content": {"application/json": {
                 "schema": {"discriminator": {"mapping": dict.fromkeys(verifier.CHECKS)}},
@@ -51,6 +59,11 @@ def test_verify_route_profile_selection(monkeypatch, capsys, selected, expected,
             return {"paths": paths}
         if path == f"{verifier.API}/checks":
             return {"data": catalog}
+        if path == f"{verifier.API}/route-overview":
+            overview_reads += 1
+            if overview_reads <= overview_changes:
+                return {"data": {"profiles": []}}
+            return {"data": overview}
         if path == f"{verifier.API}/loops":
             return {"data": loops}
         profile = path.split("profile=", 1)[1].split("&", 1)[0]
@@ -66,6 +79,8 @@ def test_verify_route_profile_selection(monkeypatch, capsys, selected, expected,
                 }}} for name in verifier.MCP_TOOLS]})
             elif params["name"] == "openvpn_network_diagnostic_checks":
                 replies.append(catalog)
+            elif params["name"] == "openvpn_network_route_overview":
+                replies.append(overview)
             elif params["name"] == "openvpn_network_loop_diagnostics":
                 replies.append(loops)
             else:
@@ -80,11 +95,16 @@ def test_verify_route_profile_selection(monkeypatch, capsys, selected, expected,
     assert verifier.main() == status
     report = json.loads(capsys.readouterr().out)
     assert api_reads == mcp_reads == expected
-    if status == 1:
+    if overview_changes == 2:
+        assert report["contracts"] == "failed"
+        assert overview_reads == 2
+    elif status == 1:
         assert report["error"] == "unknown_scheduled_route_profiles"
         assert report["profiles"] == ["manual-only"]
     else:
         assert list(report["routes"]) == expected
+        assert report["route_overview"] == overview
+        assert overview_reads == overview_changes + 1
         assert report["loop_diagnostics"]["api_matches"]
 
 

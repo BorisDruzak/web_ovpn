@@ -27,7 +27,7 @@ CHECKS = {
     "source_test", "iperf3", "https_speed", "pcap_capture", "loop_check",
 }
 MCP_TOOLS = {
-    "openvpn_network_diagnostic_checks", "openvpn_network_route_runs",
+    "openvpn_network_diagnostic_checks", "openvpn_network_route_runs", "openvpn_network_route_overview",
     "openvpn_network_interface_history", "openvpn_network_loop_diagnostics",
     "openvpn_network_check_runs", "openvpn_network_capture_list",
     "openvpn_network_run_check", "openvpn_network_download_pcap",
@@ -444,7 +444,7 @@ def verify_speed(script: Path, selections: list[list[str]], max_age: timedelta) 
 def verify(script: Path, max_age: timedelta, route_profiles: list[str] | None = None) -> dict:
     spec = bridge.api_request("GET", "/openapi.json")
     paths = spec["paths"]
-    for suffix in ("checks", "route-runs", "interfaces", "runs", "loops", "captures", "captures/{capture_id}"):
+    for suffix in ("checks", "route-runs", "route-overview", "interfaces", "runs", "loops", "captures", "captures/{capture_id}"):
         if "get" not in paths[f"{API}/{suffix}"]:
             raise ValueError("OpenAPI read path missing")
     schema = paths[f"{API}/checks"]["post"]["requestBody"]["content"]["application/json"]["schema"]
@@ -452,9 +452,11 @@ def verify(script: Path, max_age: timedelta, route_profiles: list[str] | None = 
         raise ValueError("OpenAPI check types missing")
 
     direct = bridge.api_request("GET", API + "/checks")["data"]
-    listed, catalog_reply = mcp_requests(script, [
+    overview_call = mcp_call("openvpn_network_route_overview")
+    listed, catalog_reply, overview_reply = mcp_requests(script, [
         ("tools/list", {}),
         mcp_call("openvpn_network_diagnostic_checks"),
+        overview_call,
     ])
     tools = {entry["name"]: entry for entry in listed["tools"]}
     check_values = tools["openvpn_network_run_check"]["inputSchema"]["properties"]["check"]["enum"]
@@ -465,6 +467,17 @@ def verify(script: Path, max_age: timedelta, route_profiles: list[str] | None = 
         raise ValueError("Diagnostic checks missing")
     profiles = catalog["profiles"]
     scheduled = {profile["id"]: profile["probes"] for profile in profiles["routes"] if profile["scheduled"]}
+    overview = mcp_data(overview_reply)
+    api_overview = bridge.api_request("GET", API + "/route-overview")["data"]
+    if overview != api_overview:
+        # A scheduled run or its freshness may have changed between the reads.
+        overview = mcp_data(mcp_requests(script, [overview_call])[0])
+        api_overview = bridge.api_request("GET", API + "/route-overview")["data"]
+        if overview != api_overview:
+            raise ValueError("MCP and API scheduled route overview mismatch")
+    overview_ids = [profile["id"] for profile in overview["profiles"]]
+    if len(overview_ids) != len(scheduled) or set(overview_ids) != scheduled.keys():
+        raise ValueError("Scheduled route overview does not match the catalog")
     if route_profiles:
         unknown = sorted(set(route_profiles) - scheduled.keys())
         if unknown:
@@ -512,6 +525,7 @@ def verify(script: Path, max_age: timedelta, route_profiles: list[str] | None = 
         )
     return {
         "contracts": "ok",
+        "route_overview": overview,
         "routes": routes,
         "loop_diagnostics": {
             **loop_report(loop_result), "api_matches": loop_observations_match(api_loops, loop_result),
