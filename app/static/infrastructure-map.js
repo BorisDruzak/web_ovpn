@@ -642,6 +642,13 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         }
       }
     }
+    for (const row of data.guestSwitchAttachments?.[id] ?? []) {
+      if (!keys.includes(portKey(row.switchPort))) continue;
+      if (!guests.has(row.guest.id)) guests.set(row.guest.id, new Set());
+      const {hostPort, switchPort, source, checkedAt} = row.physicalPair;
+      guests.get(row.guest.id).add(
+        `${row.guestPort} · ${row.bridge} · ${row.hypervisor.name} ${hostPort} ↔ ${row.switch.name} ${switchPort} · ${source} · ${formatTime(checkedAt)}`);
+    }
     return guests;
   }
 

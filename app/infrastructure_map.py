@@ -1929,6 +1929,11 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
                                                or any(port_label_key(member["name"]) in keys for member in report["members"]))
             or report["id"] == node_id and not port_name
         )]
+        attached_guests = []
+        if node and node["kind"] == NETWORK_KINDS[0]:
+            guests = _guest_attachments(nodes, graph["links"], [key for key, item in nodes.items() if item["guest"]])
+            attached_guests = [row for row in _guest_switch_attachments(guests).get(node_id, [])
+                               if not port_name or port_label_key(row["switchPort"]) in keys]
         return {**metadata, "topologyAudit": {
             "node": _attachment_node(node) if node else None, "portName": port_name, "ports": ports,
             "currentPairTotal": len(current), "currentPairs": current[:64],
@@ -1939,6 +1944,7 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
             "lacpHealth": aggregates[:64],
             "servicePorts": [row for row in graph.get("servicePorts", {}).get(node_id, [])
                              if not port_name or port_label_key(row["port"]) in keys],
+            "guestAttachmentTotal": len(attached_guests), "guestAttachments": attached_guests[:128],
             "lacpPartnerInterfaceGapTotal": len(partner_gaps), "lacpPartnerInterfaceGaps": partner_gaps[:64],
         }}
     stp = [{"id": node["id"], "name": node["name"], **node["stpRootPath"]}
@@ -2150,6 +2156,21 @@ def _guest_attachments(nodes: dict, links: list[dict], guest_ids: list[str], now
                 interface["ambiguousSwitchPorts"] = [{"switchId": switch, "port": label}
                                                      for (switch, _), label in sorted(mac_ports.items())]
     return guests
+
+
+def _guest_switch_attachments(guests: dict) -> dict:
+    attached = defaultdict(list)
+    for guest in guests.values():
+        for interface in guest["interfaces"]:
+            if interface.get("ambiguousSwitchPorts"):
+                continue
+            for match in interface["switchObservations"]:
+                if "physicalPair" in match:
+                    attached[match["switch"]["id"]].append({
+                        "guest": guest["guest"], "hypervisor": guest["hypervisor"],
+                        "guestPort": interface["guestPort"], "bridge": interface["bridge"], **match,
+                    })
+    return dict(attached)
 
 
 def _node_link_checks(node: dict) -> list[dict]:
@@ -3500,6 +3521,7 @@ def load_infrastructure_map(
         _, _, _, pending, current_pairs = _topology_port_pairs(nodes, links)
         lacp_gaps = _lacp_partner_interface_gaps(nodes)
         attachments.update(
+            guestSwitchAttachments=_guest_switch_attachments(attachments["guestAttachments"]),
             currentPortPairTotal=len(current_pairs),
             currentPortPairs=current_pairs[:64],
             pendingPortPairTotal=len(pending),

@@ -7210,6 +7210,19 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     assert match["basis"] == "guest_mac" and match["switchPort"] == "xe3"
     assert match["physicalPair"] == {"hostPort": "ens7", "switchPort": "xe3",
                                       "source": "netctl FDB + Proxmox", "checkedAt": stamp}
+    def guests_on_port(port):
+        response = client.get("/api/v1/network/infrastructure", params={
+            "view": "topology", "node_id": "snr", "port_name": port,
+        }, headers=headers)
+        assert response.status_code == 200
+        audit = response.json()["infrastructure"]["topologyAudit"]
+        assert audit["guestAttachmentTotal"] == len(audit["guestAttachments"])
+        return audit["guestAttachments"]
+
+    row, = guests_on_port("XE3")
+    assert row == {"guest": guest["guest"], "hypervisor": guest["hypervisor"],
+                   "guestPort": "net0", "bridge": "vmbr1", **match}
+    assert guests_on_port("ge12") == []
     vlan_evidence = match["vlanMemberships"]
     assert vlan_evidence == {"id": 1, "basis": "guest_mac", "ports": {
         "host": {"egress": "untagged", "pvid": True, "source": "Proxmox · sysfs", "checkedAt": stamp},
@@ -7498,6 +7511,7 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     assert match["basis"] == "guest_mac" and "physicalPair" not in match
     raw["links"][1]["portEvidence"][0]["virtual"]["linkDisabled"] = True
     assert read()["guests"][0]["interfaces"][0]["switchObservations"] == []
+    assert guests_on_port("xe3") == []
     assert read_audit()["interfaceCounts"]["inactive"] == 1 and read_audit()["gapTotal"] == 0
     raw["links"][1]["confirmed"] = False
     guest, = read()["guests"]
