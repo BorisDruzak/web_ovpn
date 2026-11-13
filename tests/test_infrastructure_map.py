@@ -1923,7 +1923,8 @@ def test_collector_vm_uses_its_local_interface_address_only_for_matching_adapter
 
     now = datetime.now(timezone.utc)
     address, mac = "192.0.2.30", "02:00:00:00:00:03"
-    bindings = {"guest_probe_ips": {"109": address}, "guest_local_interfaces": {"109": "ens18"}}
+    bindings = {"guest_probe_ips": {"109": address}, "guest_local_interfaces": {"109": "ens18"},
+                "guest_services": {"local-ssh": {"vmid": 109, "mac": mac, "label": "SSH"}}}
     rows = [{"ifname": "ens18", "link_type": "ether", "address": mac, "flags": ["UP", "LOWER_UP"],
              "addr_info": [{"family": "inet", "local": address, "scope": "global"}]}]
     monkeypatch.setattr(collector.subprocess, "check_output", lambda *args, **kwargs: json.dumps(rows))
@@ -1935,21 +1936,25 @@ def test_collector_vm_uses_its_local_interface_address_only_for_matching_adapter
     def build():
         network = {"guest_local_ipv4": collector._collect_local_guest_ipv4(bindings)}
         raw = collector.build_graph({}, network, {}, pve, bindings, datetime.now(timezone.utc))
+        service = next(row for row in raw["nodes"] if row["id"] == "local-ssh")
         path.write_text(json.dumps(raw), encoding="utf-8")
         graph = load_infrastructure_map(path)
         guest, = summarize_guest_attachment(graph, "pve-guest:109")["attachment"]["guests"]
         node = next(row for row in graph["nodes"] if row["id"] == "pve-guest:109")
-        return guest["interfaces"][0], node["reachability"]
+        return guest["interfaces"][0], node["reachability"], service["probeTargetIP"]
 
-    interface, reachability = build()
+    interface, reachability, target = build()
     observed, = interface["ipv4Observations"]
     assert (observed["address"], observed["method"]) == (address, "Локальный интерфейс ens18")
     assert reachability["state"] == "unknown"
+    assert target == address
     rows[0]["address"] = "02:00:00:00:00:04"
-    assert "ipv4Observations" not in build()[0]
+    interface, _, target = build()
+    assert "ipv4Observations" not in interface and target is None
     rows[0]["address"] = mac
     rows[0]["flags"].remove("LOWER_UP")
-    assert "ipv4Observations" not in build()[0]
+    interface, _, target = build()
+    assert "ipv4Observations" not in interface and target is None
 
 
 def test_dns_service_requires_verified_vlan_peer_and_uses_local_address(monkeypatch):

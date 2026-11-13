@@ -2552,7 +2552,12 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                     address = bindings.get("guest_probe_ips", {}).get(str(vmid))
                     arp = arp_mappings.get(address)
                     identity_at = arp[1] if arp and arp[0] == mac else None
-                    if not arp and str(bindings.get("guest_local_arp_macs", {}).get(str(vmid), "")).lower() == mac:
+                    local = network.get("guest_local_ipv4", {}).get(str(vmid), {})
+                    if (not arp and local.get("address") == address and local.get("mac") == mac
+                            and observation_is_fresh(local.get("checkedAt"), now)):
+                        identity_at = datetime.fromisoformat(local["checkedAt"])
+                    if (not arp and identity_at is None
+                            and str(bindings.get("guest_local_arp_macs", {}).get(str(vmid), "")).lower() == mac):
                         identity_at = max(
                             (datetime.fromisoformat(check["checkedAt"])
                              for ip, check in arp_checks.get(mac, [])
