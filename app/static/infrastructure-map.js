@@ -1303,7 +1303,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         row.append(make('small', [`VLAN ${destinationVlan.id} на стороне ВМ`, ...modes].join(' · ')));
       }
       if (path.gateway) {
-        row.append(make('small', 'Вход через шлюз ' + path.gateway));
+        const route = path.localRoute;
+        const origin = route?.sourceIP && route?.interface ? `Выход UI_VPN: ${route.sourceIP} · ${route.interface}` : '';
+        row.append(make('small', [origin, 'Вход через шлюз ' + path.gateway].filter(Boolean).join(' · ')));
       }
       if (path.localNeighbor) {
         row.append(make('small', `VLAN ${path.localNeighbor.vlan} · соседство на ${path.localNeighbor.interface} · физическая пара аплинка`));

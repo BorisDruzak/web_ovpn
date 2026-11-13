@@ -2574,7 +2574,7 @@ def _attachment_probe_location(check: dict) -> dict:
             **{key: check[key] for key in ("reason", "errorSource", "roundTripMs", "httpStatus", "responseCode", "rtspStatus", "dns", "ntp",
                                            "rdpSecurity", "rdpFailureCode", "tlsExpiresAt", "tlsVersion", "zabbixVersion",
                                            "smbDialect", "smbSigningRequired", "postgresqlTls", "redfishVersion", "ftpReply",
-                                           "sshTcpConnected")
+                                           "sshTcpConnected", "localRoute")
                if key in check}}
 
 

@@ -8064,7 +8064,7 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     routed = {**check, "method": "DNS", "port": 53, "target": "198.51.100.1", "localRoute": route}
     raw["nodes"][0]["serviceChecks"] = [routed]
     routed_path = {**service_path, "target": routed["target"], "port": 53, "method": "DNS",
-                   "gateway": route["gateway"]}
+                   "gateway": route["gateway"], "localRoute": route}
     del routed_path["destinationVlan"]
     assert read()["servicePaths"] == [routed_path]
     browser = client.get(browser_endpoint).json()["infrastructure"]
