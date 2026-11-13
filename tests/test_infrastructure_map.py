@@ -7672,7 +7672,8 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     assert service_path == {"target": "192.0.2.11", "port": 389, "method": "LDAP", "checkedAt": stamp,
                             "state": "reachable",
                             "guestId": "vm", "guestPort": "net0", "bridge": "vmbr1", "hypervisorId": "pve",
-                            "switchId": "snr", "physicalPair": match["physicalPair"], "addressCheckedAt": stamp}
+                            "switchId": "snr", "physicalPair": match["physicalPair"], "addressCheckedAt": stamp,
+                            "destinationVlan": vlan_evidence}
     from app.infrastructure_map import WINDOWS_PROBE_SOURCE
 
     raw["nodes"][0]["serviceChecks"].append({**check, "source": WINDOWS_PROBE_SOURCE, "method": "HTTP",
@@ -7906,6 +7907,7 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     raw["nodes"][0]["serviceChecks"] = [routed]
     routed_path = {**service_path, "target": routed["target"], "port": 53, "method": "DNS",
                    "gateway": route["gateway"]}
+    del routed_path["destinationVlan"]
     assert read()["servicePaths"] == [routed_path]
     browser = client.get(browser_endpoint).json()["infrastructure"]
     assert browser["servicePaths"] == {"directum": [routed_path]}

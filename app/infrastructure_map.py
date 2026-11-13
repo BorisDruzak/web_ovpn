@@ -2574,7 +2574,8 @@ def _service_attachment_paths(service: dict, guests: dict, client_attachments: d
                       "physicalPair": observation["physicalPair"],
                       **({"source": WINDOWS_PROBE_SOURCE, **({"via": check["via"]} if check.get("via") else {})} if windows else {}),
                       **({"clientAttachment": client} if client else {}),
-                      **({"destinationVlan": observation["vlanMemberships"]} if windows and "vlanMemberships" in observation else {}),
+                      **({"destinationVlan": observation["vlanMemberships"]}
+                         if gateway is None and vlan is None and "vlanMemberships" in observation else {}),
                       **({"localListener": True} if check.get("localListener") else {}),
                       **({"localNeighbor": adapter["localNeighbor"]} if vlan else {}),
                       **({"gateway": gateway} if gateway else {})})
