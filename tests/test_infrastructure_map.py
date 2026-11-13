@@ -5542,6 +5542,7 @@ def test_port_counter_audit_includes_peer_evidence_in_map_and_mcp(tmp_path):
     ]}]
     nodes.extend({"id": name, "name": name.title(), "kind": "Коммутатор"}
                  for name in ("live", "recorded", "pending"))
+    nodes[1]["ports"] = [{"name": "eth1", "key": "physical:1", "state": "up", "checkedAt": at}]
     links = []
     for index, peer, confirmed, source in ((1, "live", True, "LLDP UI_VPN"),
                                            (2, "recorded", True, "GitHub"),
@@ -5553,7 +5554,7 @@ def test_port_counter_audit_includes_peer_evidence_in_map_and_mcp(tmp_path):
                                             "inventorySources": [{"path": "evidence/manual/verified.md",
                                                                   "observedOn": now.date().isoformat()}]}
                                            if index == 2 else {})}]})
-    links[0]["portEvidence"].append({**links[1]["portEvidence"][0], "a": "ge1"})
+    links[0]["portEvidence"].append({**links[1]["portEvidence"][0], "a": "ge1", "b": "Port1"})
     path = tmp_path / "map.json"
     path.write_text(json.dumps({"schema": 1, "snapshotAt": at, "nodes": nodes, "links": links}), encoding="utf-8")
     graph = load_infrastructure_map(path, now)

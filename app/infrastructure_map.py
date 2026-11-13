@@ -1848,6 +1848,11 @@ def _summarize_port_counters(nodes: dict, topology_pairs: tuple | None, *,
     ports = affected[:64]
     if ports and topology_pairs:
         _, inventory, _, pending, current = topology_pairs
+        canonical_ports = {
+            (device_id, port_label_key(label)): port["name"]
+            for device_id, node in nodes.items() for port in node["ports"]
+            for label in (port["name"], *port.get("aliases", []))
+        }
         peers_by_port = defaultdict(dict)
         for evidence, pairs in (("current", current), ("verified_inventory", inventory), ("unconfirmed", pending)):
             for pair in pairs:
@@ -1855,8 +1860,10 @@ def _summarize_port_counters(nodes: dict, topology_pairs: tuple | None, *,
                     local_id, peer_id = pair[side.lower()], pair[remote.lower()]
                     if not pair[f"port{side}"]:
                         continue
-                    peer_port = pair[f"port{remote}"]
-                    peers = peers_by_port[local_id, port_label_key(pair[f"port{side}"])]
+                    local_port, peer_port = pair[f"port{side}"], pair[f"port{remote}"]
+                    local_port = canonical_ports.get((local_id, port_label_key(local_port)), local_port)
+                    peer_port = canonical_ports.get((peer_id, port_label_key(peer_port)), peer_port)
+                    peers = peers_by_port[local_id, port_label_key(local_port)]
                     peers.setdefault((peer_id, port_label_key(peer_port)), {
                         "id": peer_id, "port": peer_port, "evidence": evidence,
                         "name": nodes[peer_id]["name"],
