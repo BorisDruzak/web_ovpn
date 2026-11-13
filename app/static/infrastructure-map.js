@@ -1671,6 +1671,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         postgresql_tls_handshake: 'Не удалось согласовать TLS',
         ssh_connection_refused: 'SSH-порт отклонил подключение',
         ssh_identification_invalid: 'Нет корректного ответа SSH',
+        ssh_closed_before_identification: 'TCP принят, соединение закрыто без ответа SSH',
         ftp_connection_refused: 'Порт FTP отклонил подключение',
         ftp_unexpected_reply: 'Неожиданный код ответа FTP',
         ftp_invalid_reply: 'Неполный или некорректный ответ FTP',

@@ -6350,6 +6350,8 @@ def test_ssh_identification_confirms_only_a_bounded_protocol_response(monkeypatc
     assert "private-text" not in json.dumps(success)
     assert check(b"SSH-1.99-example\n")["state"] == "reachable"
     assert check(b"SSH-2.0-example\n")["state"] == "reachable"
+    closed = check(b"")
+    assert (closed["state"], closed["reason"]) == ("unknown", "ssh_closed_before_identification")
     ipssh = check(b"SSH-2.0-IPSSH-6.6.0\r\n")
     assert ipssh["state"] == "reachable" and "IPSSH" not in json.dumps(ipssh)
     for banner in (b"HTTP/1.1 200 OK\r\n", b"SSH-2.0-" + b"x" * 250 + b"\r\n", b"SSH-2.0-example", b"x" * 1024,

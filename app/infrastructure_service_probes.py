@@ -957,7 +957,7 @@ def _ssh_identification(spec: dict) -> dict:
 
     invalid = {"state": "unknown", "reason": "ssh_identification_invalid"}
     buffer = b""
-    budget = 1024
+    limit = budget = 1024
     deadline = monotonic() + TIMEOUT
     try:
         with socket.create_connection((address, port), timeout=TIMEOUT) as connection:
@@ -968,6 +968,8 @@ def _ssh_identification(spec: dict) -> dict:
                 connection.settimeout(remaining)
                 chunk = connection.recv(budget)
                 if not chunk:
+                    if budget == limit:
+                        return {"state": "unknown", "reason": "ssh_closed_before_identification"}
                     break
                 budget -= len(chunk)
                 buffer += chunk

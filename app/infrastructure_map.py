@@ -892,6 +892,7 @@ def _public_service_check(check: dict, now: datetime) -> dict:
             result["reason"] = reason
     if result["method"] == "SSH" and result["source"] == "UI_VPN" and reason in {
         "timeout", "transport_error", "ssh_connection_refused", "ssh_identification_invalid",
+        "ssh_closed_before_identification",
     }:
         result["reason"] = reason
     attempts = check.get("attempts")
