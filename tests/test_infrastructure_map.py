@@ -5213,7 +5213,7 @@ def test_configured_asset_fdb_path_is_scoped_and_requires_a_unique_live_port(mon
     assert path["portEvidence"] == [{"a": "Gi1/0/23", "b": "", "source": "netctl FDB",
                                      "at": at, "confirmed": True, "vlan": 1, "learnedEndpoint": learned,
                                      "managementAddress": address}]
-    monkeypatch.setattr("app.infrastructure_service_probes._icmp_check", lambda ip: {"state": "reachable"})
+    monkeypatch.setattr("app.infrastructure_service_probes._icmp_check", lambda ip: {"state": "reachable", "roundTripMs": 0.5})
     graph = build_graph(context, network, {}, {}, bindings, now)
     gateway = next(node for node in graph["nodes"] if node["id"] == "gateway")
     apply_service_probes([gateway], {"gateway": [{"type": "icmp", "ip": address}]})
@@ -5230,6 +5230,13 @@ def test_configured_asset_fdb_path_is_scoped_and_requires_a_unique_live_port(mon
     host = summarize_guest_attachment(public, "gateway")["attachment"]
     observation, = host["servicePaths"]
     assert observation["switchAttachment"]["port"] == "Gi1/0/23"
+    assert observation["state"] == "reachable" and observation["roundTripMs"] == 0.5
+    gateway["serviceChecks"][0].update(state="unknown", reason="icmp_no_echo_reply")
+    gateway["serviceChecks"][0].pop("roundTripMs")
+    snapshot.write_text(json.dumps(graph), encoding="utf-8")
+    timeout, = summarize_guest_attachment(load_infrastructure_map(snapshot), "gateway")["attachment"]["servicePaths"]
+    assert timeout["state"] == "unknown" and timeout["reason"] == "icmp_no_echo_reply"
+    assert "roundTripMs" not in timeout
     switch = summarize_guest_attachment(public, "observer:access")["attachment"]
     port, = switch["servicePorts"]
     check, = port["services"]

@@ -2230,7 +2230,10 @@ def _management_service_paths(service: dict, host: str, management: dict, observ
                 check["port"] is not None or (check["method"] == "ICMP" and observation["source"] == "MikroTik · ARP")
             )
             if asset_icmp or service_probe:
-                paths.append({**_attachment_probe_location(check), "addressCheckedAt": observation["checkedAt"], **attachment})
+                paths.append({**_attachment_probe_location(check), "addressCheckedAt": observation["checkedAt"],
+                              **attachment,
+                              **({key: check[key] for key in ("state", "reason", "roundTripMs") if key in check}
+                                 if asset_icmp else {})})
     return paths
 
 

@@ -775,6 +775,13 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       const label = [path.method, endpoint].join(' · ');
       const row = make('li');
       row.append(make('strong', label));
+      if (path.state) {
+        const result = {reachable: 'Отвечает', unreachable: 'Недоступен', unknown: 'Нет подтверждения'};
+        const rtt = path.roundTripMs === undefined ? '' :
+          `RTT ${path.roundTripMs.toLocaleString('ru-RU', {maximumFractionDigits: 3})} мс`;
+        row.append(make('small', [path.reason === 'icmp_no_echo_reply' ? 'Нет ответа ICMP Echo Reply' : result[path.state],
+          rtt, formatTime(path.checkedAt)].filter(Boolean).join(' · ')));
+      }
       if (resources.size) row.append(make('small', [...resources].join(' · ')));
       const attachment = path.routerAttachment ?? path.switchAttachment;
       if (attachment) {
