@@ -6929,6 +6929,25 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     browser = client.get(browser_endpoint).json()["infrastructure"]
     assert browser["servicePaths"] == {"directum": [routed_path]}
     assert browser["servicePorts"]["snr"][0]["services"][0]["basis"] == ["guest_gateway"]
+    dns_checks = [
+        {**routed, "state": state, "dns": {"name": name, "record": record, "transport": transport}}
+        for name, record, transport, state in (
+            ("example.test.", "A", "TCP", "reachable"),
+            ("example.test.", "A", "UDP", "unreachable"),
+            ("_ldap._tcp.example.test.", "SRV", "TCP", "unknown"),
+        )
+    ]
+    raw["nodes"][0]["serviceChecks"] = dns_checks
+    assert [path["dns"] for path in read()["servicePaths"]] == [check["dns"] for check in dns_checks]
+    browser = client.get(browser_endpoint).json()["infrastructure"]
+    probes = browser["servicePorts"]["snr"][0]["services"][0]["probeEndpoints"]
+    assert [(probe["transport"], probe["dns"]["name"], probe["dns"]["record"],
+             probe["passed"], probe["failed"], probe["unconfirmed"]) for probe in probes] == [
+        ("TCP", "_ldap._tcp.example.test.", "SRV", 0, 0, 1),
+        ("TCP", "example.test.", "A", 1, 0, 0),
+        ("UDP", "example.test.", "A", 0, 1, 0),
+    ]
+    raw["nodes"][0]["serviceChecks"] = [routed]
     route["state"] = "unreachable"
     assert read()["servicePaths"] == []
     route["state"] = "reachable"

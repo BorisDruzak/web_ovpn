@@ -2059,7 +2059,7 @@ def _attachment_probe_location(check: dict) -> dict:
     return {"target": check["target"], "port": check["port"], "method": check["method"],
             "checkedAt": check["checkedAt"], "state": check["state"],
             **({"path": check["path"]} if check.get("path") else {}),
-            **{key: check[key] for key in ("reason", "roundTripMs", "httpStatus") if key in check}}
+            **{key: check[key] for key in ("reason", "roundTripMs", "httpStatus", "dns") if key in check}}
 
 
 def _service_attachment_paths(service: dict, guests: dict) -> list[dict]:
@@ -2298,7 +2298,9 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime) -> dict:
     path_checks = defaultdict(set)
 
     def check_key(check):
-        return check.get("target"), check.get("port"), check["method"], check.get("path") or "", check["checkedAt"]
+        dns = check.get("dns", {})
+        return (check.get("target"), check.get("port"), check["method"], check.get("path") or "", check["checkedAt"],
+                dns.get("transport", ""), dns.get("name", ""), dns.get("record", ""))
 
     def record(switch, port, service, basis):
         key = port_label_key(port)
@@ -2341,25 +2343,27 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime) -> dict:
         physical = "switch_mac" not in bases and bool(bases & {"host_mac", "host_lacp"})
         probes = {}
         for check in _attachment_service_checks(node):
-            target, number, method, path, checked_at = check_key(check)
+            identity = check_key(check)
+            target, number, method, path, checked_at, transport, dns_name, dns_record = identity
             local = check.get("localListener") is True
-            selected_path = check_key(check) in selected
+            selected_path = identity in selected
             if (not target or (number is None and not selected_path)
                     or not method or not checked_at or check["stale"] or check.get("skipped")
                     or check["source"] != "UI_VPN" or not ((physical and not local) or selected_path)):
                 continue
-            transport = "UDP" if local else check.get("dns", {}).get("transport", "")
-            probe = probes.setdefault((target, number or 0, method, transport, path), {
+            transport = "UDP" if local else transport
+            probe = probes.setdefault((target, number or 0, method, transport, path, dns_name, dns_record), {
                 "target": target, "port": number, "method": method,
                 **({"path": path} if path else {}),
                 **({"transport": transport} if transport else {}),
+                **({"dns": {"name": dns_name, "record": dns_record}} if dns_name else {}),
                 **({"localListener": True} if local else {}),
                 "passed": 0, "failed": 0, "unconfirmed": 0,
             })
             count = {"reachable": "passed", "unreachable": "failed"}.get(check["state"], "unconfirmed")
             probe[count] += 1
         return {**_attachment_node(node), "basis": sorted(bases),
-                **({"probeEndpoints": [probes[entry] for entry in sorted(probes)[:8]]} if probes else {})}
+                **({"probeEndpoints": [probes[entry] for entry in sorted(probes)]} if probes else {})}
 
     service_ports = {
         switch: [{"port": port_names[switch, port], "total": len(ids),

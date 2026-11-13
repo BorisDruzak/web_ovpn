@@ -782,7 +782,11 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const rtt = probe.roundTripMs === undefined ? '' :
           `RTT ${probe.roundTripMs.toLocaleString('ru-RU', {maximumFractionDigits: 3})} мс`;
         const outcome = probe.reason === 'icmp_no_echo_reply' ? 'Нет ответа ICMP Echo Reply' : result[probe.state];
-        readings.add([probe.path, outcome, probe.httpStatus && `HTTP ${probe.httpStatus}`, rtt,
+        const dns = probe.dns;
+        const question = dns && [dns.transport, dns.record, dns.name].filter(Boolean).join(' ');
+        const responder = dns?.unexpectedResponder;
+        const responseFrom = responder && `Ответ от ${responder.address}:${responder.port}`;
+        readings.add([probe.path, question, outcome, probe.httpStatus && `HTTP ${probe.httpStatus}`, responseFrom, rtt,
           probe.state && formatTime(probe.checkedAt)].filter(Boolean).join(' · '));
       }
       for (const reading of readings) {
@@ -1968,6 +1972,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
             row.append(make('small', [
               [probe.method, probe.localListener ? '' : probe.transport].filter(Boolean).join(' '),
               `${address}${probe.port ? ':' + probe.port : ''}${probe.path ?? ''}`, ...states,
+              probe.dns && `${probe.dns.record} ${probe.dns.name}`,
             ].filter(Boolean).join(' · ')));
           }
           services.append(row);
