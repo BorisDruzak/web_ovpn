@@ -219,6 +219,25 @@ class EndpointContextAdapter:
             profiles[profile] = _project_snapshot(snapshot) if snapshot is not None else None
         return profiles
 
+    def read_observed_profiles(self, device_id: UUID, names: Iterable[SafeProfile]) -> dict[str, dict[str, Any] | None]:
+        """Read safe snapshots with the server observation times from the same response."""
+        profiles = dict.fromkeys(names)
+        if any(profile not in SAFE_PROFILES for profile in profiles):
+            raise ValueError("unsupported context profile")
+        if not profiles:
+            return profiles
+        context = self._client.get_device_context(device_id)
+        observed = {row.profile: row.last_collected_at for row in context.profiles}
+        for profile in profiles:
+            latest = max((row for row in context.snapshots if row.profile == profile),
+                         key=lambda row: row.collected_at, default=None)
+            if latest is not None:
+                projected = _project_snapshot(latest)
+                if observed_at := observed.get(profile):
+                    projected["observed_at"] = observed_at.isoformat()
+                profiles[profile] = projected
+        return profiles
+
     def get_device(self, device_id: UUID) -> dict[str, Any]:
         device = _project_device(self._client.get_device(device_id))
         profiles: list[dict[str, Any]] = []

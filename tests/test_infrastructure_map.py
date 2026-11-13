@@ -7482,6 +7482,7 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
         reads = []
         health_at = at
         network_at = at
+        network_observed_at = None
         platform = "linux"
         health_warnings = []
 
@@ -7496,28 +7497,30 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
                      "last_seen_at": at, "baseline_collected_at": at, "profiles": profiles}
                     for index, key in enumerate([keys[0], keys[1], keys[1]])]
 
-        def read_profiles(self, device_id, profiles):
+        def read_observed_profiles(self, device_id, profiles):
             self.reads.append((str(device_id), tuple(profiles)))
-            if tuple(profiles) == ("network_v1",):
-                return {"network_v1": {"profile": "network_v1", "collected_at": self.network_at,
-                                       "sections": {"interfaces": [
-                                           {"name": "Ethernet 2", "addresses": ["192.0.2.10/24", "192.0.2.10", "192.0.2.12",
-                                                                               "127.0.0.1", "169.254.1.2", "invalid"]},
-                                           {"name": "lo", "addresses": ["127.0.0.1/8", "::1"]},
-                                       ]}}}
-            if tuple(profiles) == ("inventory_v1",):
-                return {"inventory_v1": {"profile": "inventory_v1", "collected_at": at,
-                         "sections": {"system": {"platform": self.platform, "os_name": "Ubuntu", "os_version": "24.04",
-                                                  "architecture": "x86_64", "hostname": "private-hostname"},
-                                      "hardware": {"serial_number": "private-serial"}}}}
-            return {"health_v1": {"profile": "health_v1", "collected_at": self.health_at, "warnings": self.health_warnings,
-                                  "sections": {"resources": {"uptime_seconds": 7200, "free_bytes": 2**31,
-                                                             "load_1m": 0.0, "private": "excluded"},
-                                               "services": [
-                                                   {"name": "sshd", "status": "active", "private": "excluded"},
-                                                   {"name": "NetworkManager", "status": "inactive"},
-                                                   {"name": "private-service", "status": "failed"},
-                                               ]}}}
+            snapshots = {
+                "network_v1": {"profile": "network_v1", "collected_at": self.network_at,
+                               "observed_at": self.network_observed_at, "sections": {"interfaces": [
+                                   {"name": "Ethernet 2", "addresses": ["192.0.2.10/24", "192.0.2.10", "192.0.2.12",
+                                                                       "127.0.0.1", "169.254.1.2", "invalid"]},
+                                   {"name": "lo", "addresses": ["127.0.0.1/8", "::1"]},
+                               ]}},
+                "inventory_v1": {"profile": "inventory_v1", "collected_at": at,
+                                 "sections": {"system": {"platform": self.platform, "os_name": "Ubuntu",
+                                                         "os_version": "24.04", "architecture": "x86_64",
+                                                         "hostname": "private-hostname"},
+                                              "hardware": {"serial_number": "private-serial"}}},
+                "health_v1": {"profile": "health_v1", "collected_at": self.health_at, "warnings": self.health_warnings,
+                              "sections": {"resources": {"uptime_seconds": 7200, "free_bytes": 2**31,
+                                                         "load_1m": 0.0, "private": "excluded"},
+                                           "services": [
+                                               {"name": "sshd", "status": "active", "private": "excluded"},
+                                               {"name": "NetworkManager", "status": "inactive"},
+                                               {"name": "private-service", "status": "failed"},
+                                           ]}},
+            }
+            return {profile: snapshots[profile] for profile in profiles}
 
         def close(self):
             pass
@@ -7576,17 +7579,22 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
                                              ]}}
     assert "private-service" not in selected.text
     assert "private-hostname" not in selected.text and "private-serial" not in selected.text
-    assert Adapter.reads == [("00000000-0000-4000-8000-000000000000", (profile,))
-                             for profile in ("health_v1", "inventory_v1", "network_v1")]
+    assert Adapter.reads == [("00000000-0000-4000-8000-000000000000", ("health_v1", "inventory_v1", "network_v1"))]
     selected = client.get("/api/v1/network/infrastructure?view=agents&node_id=vm:2", headers=headers)
     assert selected.json()["infrastructure"]["agentAudit"]["guests"] == [ambiguous]
-    assert len(Adapter.reads) == 3
+    assert len(Adapter.reads) == 1
     Adapter.health_at = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
     Adapter.network_at = (datetime.now(timezone.utc) - timedelta(minutes=21)).isoformat()
     stale = client.get("/api/v1/network/infrastructure?view=agents&node_id=vm:1", headers=headers)
     assert stale.json()["infrastructure"]["agentAudit"]["guests"] == [{
         **matched, "operatingSystem": system, "network": {**network, "checkedAt": Adapter.network_at, "stale": True},
     }]
+    Adapter.network_observed_at = at
+    reobserved = client.get("/api/v1/network/infrastructure?view=agents&node_id=vm:1", headers=headers)
+    reobserved_guest, = reobserved.json()["infrastructure"]["agentAudit"]["guests"]
+    assert reobserved_guest["network"] == {**network, "snapshotAt": Adapter.network_at}
+    assert reobserved_guest["ipv4Comparison"]["matched"] == ["192.0.2.10"]
+    Adapter.network_observed_at = None
     Adapter.health_at = at
     Adapter.network_at = at
     Adapter.platform = "windows"
@@ -7686,7 +7694,7 @@ def test_guest_enrollment_fallback_requires_fresh_matching_proxmox_mac(tmp_path,
             calls.append(True)
             return [{"id": endpoint_id, "online": True, "retired_at": None, "last_seen_at": stamp}]
 
-        def read_profiles(self, device_id, profiles):
+        def read_observed_profiles(self, device_id, profiles):
             assert str(device_id) == endpoint_id
             assert set(profiles) == {"health_v1", "network_v1", "inventory_v1"}
             calls.append("profiles")

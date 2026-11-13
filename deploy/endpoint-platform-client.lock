@@ -1,6 +1,6 @@
 {
   "distribution": "endpoint-platform-client",
-  "version": "0.2.0",
-  "wheel": "endpoint_platform_client-0.2.0-py3-none-any.whl",
-  "sha256": "0576d6bd5e3a4ac0627905af4644f31273c32827103cca8f8217aed798217032"
+  "version": "0.2.1",
+  "wheel": "endpoint_platform_client-0.2.1-py3-none-any.whl",
+  "sha256": "48e5e3619314587c14ae43a5765250edd9271f5fb3358b670cf113ba97f10f5b"
 }

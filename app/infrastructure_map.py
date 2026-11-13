@@ -2639,7 +2639,7 @@ def load_infrastructure_agent_audit(path: Path, *, node_id: str | None = None) -
         graph = load_infrastructure_map(
             path, agent_identities=identities,
             load_agent_presence=(lambda: adapter.list_device_presences()) if adapter is not None else None,
-            load_agent_profiles=(lambda device_id, profiles: adapter.read_profiles(device_id, profiles))
+            load_agent_profiles=(lambda device_id, profiles: adapter.read_observed_profiles(device_id, profiles))
             if adapter is not None else None,
             agent_node_id=node_id,
         )
@@ -2720,6 +2720,10 @@ def _guest_agent_network(snapshot: object, now: datetime) -> dict:
     sections = snapshot.get("sections")
     if checked_at is None or checked_at > now or not isinstance(sections, dict):
         return {}
+    snapshot_at = checked_at
+    observed_at = _time(snapshot.get("observed_at"))
+    if observed_at is not None and snapshot_at <= observed_at <= now:
+        checked_at = observed_at
     interfaces = defaultdict(set)
     for row in _rows(sections.get("interfaces"), 64):
         name = _text(row.get("name"), 64).strip()
@@ -2738,6 +2742,7 @@ def _guest_agent_network(snapshot: object, now: datetime) -> dict:
     if not interfaces:
         return {}
     return {"checkedAt": checked_at.isoformat(), "stale": now - checked_at > GUEST_AGENT_NETWORK_MAX_AGE,
+            **({"snapshotAt": snapshot_at.isoformat()} if checked_at != snapshot_at else {}),
             "interfaces": [{"name": name, "ipv4": [str(ip) for ip in sorted(addresses)]}
                            for name, addresses in sorted(interfaces.items())]}
 
@@ -2889,13 +2894,12 @@ def _summarize_agent_audit(nodes: dict, keys: dict, conflicts: set[str], identit
                     entry["contextProfiles"] = profiles
                 if node_id == selected_node and entry["presence"] == "online" and load_agent_profiles is not None:
                     wanted = ["health_v1", *(profile for profile in ("inventory_v1", "network_v1") if reports.get(profile))]
-                    for profile in wanted:
-                        if profile in snapshots:
-                            continue
+                    missing = tuple(profile for profile in wanted if profile not in snapshots)
+                    if missing:
                         try:
-                            snapshots.update(load_agent_profiles(UUID(identity_id), (profile,)))
+                            snapshots.update(load_agent_profiles(UUID(identity_id), missing))
                         except (EndpointPlatformServiceError, ValueError):
-                            continue
+                            pass
                     operating_system = _guest_agent_os(snapshots.get("inventory_v1"), now)
                     if operating_system:
                         entry["operatingSystem"] = operating_system

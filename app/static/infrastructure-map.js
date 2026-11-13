@@ -762,6 +762,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     if (network) {
       const row = make('div');
       row.append(make('small', 'IPv4 по Endpoint · ' + formatTime(network.checkedAt) + (network.stale ? ' · устарело' : '')));
+      if (network.snapshotAt) row.append(make('small', 'Снимок Endpoint · ' + formatTime(network.snapshotAt)));
       for (const {name, ipv4} of network.interfaces) {
         row.append(make('small', name + ' · ' + ipv4.join(', ')));
       }
@@ -775,7 +776,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       label.append(row);
     }
     const profileLabels = {health_v1: 'Состояние', network_v1: 'Сеть', inventory_v1: 'Инвентарь'};
-    const displayedProfiles = {inventory_v1: system?.collectedAt, network_v1: network?.checkedAt};
+    const displayedProfiles = {inventory_v1: system?.collectedAt, network_v1: network?.snapshotAt ?? network?.checkedAt};
     for (const {profile, collectedAt} of entry?.contextProfiles ?? []) {
       if (Object.hasOwn(profileLabels, profile) && displayedProfiles[profile] !== collectedAt) {
         const row = make('div');

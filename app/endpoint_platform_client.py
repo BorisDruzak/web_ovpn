@@ -74,6 +74,9 @@ class EndpointPlatformServiceClient:
     def get_latest_context(self, device_id: object, profile: str) -> Any:
         return self._call(self._client.get_latest_context, device_id, profile)
 
+    def get_device_context(self, device_id: object) -> Any:
+        return self._call(self._client.get_device_context, device_id)
+
     def request_collection(self, device_id: object, profile: str, idempotency_key: str) -> Any:
         return self._call(self._client.request_collection, device_id, profile, idempotency_key)
 
