@@ -219,13 +219,16 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     port_down: 'Обнаружен недоступный порт',
     unconfirmed: 'Нет сопоставимых данных по двум портам',
   };
+  function appendLinkComparison(row, health) {
+    const label = linkComparisonLabels[health?.state];
+    if (!label) return;
+    const time = health.checkedAt ? ' · ' + formatTime(health.checkedAt) : '';
+    row.append(make('small', label + time));
+  }
   function confirmedPortPairRow({a, b, nameA, nameB, portA, portB, evidence, portStates = {}, linkHealth}) {
     const row = make('li');
     row.append(portPairEndpoint(a, nameA, portA), ' ↔ ', portPairEndpoint(b, nameB, portB));
-    if (linkHealth) {
-      const time = linkHealth.checkedAt ? ' · ' + formatTime(linkHealth.checkedAt) : '';
-      row.append(make('small', linkComparisonLabels[linkHealth.state] + time));
-    }
+    appendLinkComparison(row, linkHealth);
     for (const [side, port] of Object.entries(portStates)) {
       const name = side === 'a' ? nameA : nameB;
       const label = side === 'a' ? portA : portB;
@@ -1319,6 +1322,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         : [`${guest} ${path.guestPort}`, path.bridge, `${host} ${hostPort}`].join(' → ');
       row.append(make('small', connection),
         switchPortButton(path.switchId, target, switchPort));
+      appendLinkComparison(row, path.uplinkLinkHealth);
       appendUplinkPortLinks(row, path.uplinkPortLinks, `${host} ${hostPort}`, `${target} ${switchPort}`);
       const uplinkTelemetry = path.switchPortTelemetry;
       if (uplinkTelemetry) {
@@ -1497,6 +1501,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         if (physicalPair) {
           row.append(make('small',
             ['Физическая пара подтверждена', physicalPair.source, formatTime(physicalPair.checkedAt)].join(' · ')));
+          appendLinkComparison(row, observation.uplinkLinkHealth);
           appendUplinkPortLinks(row, observation.uplinkPortLinks,
             `${attachment.hypervisor.name} ${physicalPair.hostPort}`, `${target.name} ${targetPort}`);
         }
@@ -1789,11 +1794,13 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const panel = make('details', null, 'map-port-panel');
         panel.append(make('summary', `Аплинки запущенных ВМ · ${uplinks.length}`));
         const list = make('ul', null, 'map-detail-list');
-        for (const {hypervisor, hostPort, switchPort, guestTotal, interfaceTotal, checkedAt, uplinkPortLinks} of uplinks) {
+        for (const uplink of uplinks) {
+          const {hypervisor, hostPort, switchPort, guestTotal, interfaceTotal, checkedAt} = uplink;
           const row = make('li');
           row.append(switchPortButton(node.id, node.name, switchPort),
             make('small', `${hypervisor.name} ${hostPort} · ВМ: ${guestTotal} · адаптеров: ${interfaceTotal} · ${formatTime(checkedAt)}`));
-          appendUplinkPortLinks(row, uplinkPortLinks, `${hypervisor.name} ${hostPort}`, `${node.name} ${switchPort}`);
+          appendLinkComparison(row, uplink.uplinkLinkHealth);
+          appendUplinkPortLinks(row, uplink.uplinkPortLinks, `${hypervisor.name} ${hostPort}`, `${node.name} ${switchPort}`);
           list.append(row);
         }
         panel.append(list);
