@@ -142,7 +142,36 @@ def test_loop_report_preserves_per_source_coverage_without_copying_findings():
     assert report == {
         "status": result["status"], "since": result["since"], "until": result["until"],
         "truncated": False, "sources": 1, "source_coverage": [source],
+        "coverage": {"assessed": 0, "total": 1, "complete": False},
     }
+
+
+@pytest.mark.parametrize("fdb,stp,truncated,assessed", [
+    ("recent", "recent", False, 1),
+    ("recent", "unavailable", False, 0),
+    ("insufficient", "recent", False, 0),
+    ("recent", "recent", True, 0),
+])
+def test_loop_coverage_requires_both_sources_and_an_untruncated_window(fdb, stp, truncated, assessed):
+    result = verifier.loop_report({
+        "status": "suspected_loop", "since": "start", "until": "end", "truncated": truncated,
+        "sources": [{
+            "source": "switch", "status": "suspected_loop", "truncated": truncated,
+            "coverage": {"fdb": {"status": fdb}, "stp": {"status": stp}},
+        }],
+    })
+    assert result["coverage"] == {"assessed": assessed, "total": 1, "complete": bool(assessed)}
+    assert result["status"] == "suspected_loop"
+
+
+@pytest.mark.parametrize("total,complete,expected", [(0, False, 1), (3, False, 2), (3, True, 0)])
+def test_require_loop_coverage_distinguishes_missing_partial_and_complete(monkeypatch, total, complete, expected):
+    monkeypatch.setattr(sys, "argv", ["verifier", "--require-loop-coverage"])
+    monkeypatch.setattr(verifier, "verify", lambda *_: {
+        "routes": {"lan": {"fresh": True, "profile_matches": True, "api_matches": True, "probes": []}},
+        "loop_diagnostics": {"coverage": {"total": total, "complete": complete}},
+    })
+    assert verifier.main() == expected
 
 
 @pytest.mark.parametrize("fresh,matches,api_matches,strict,expected", [

@@ -89,12 +89,23 @@ def route_report(
 
 def loop_report(result: dict) -> dict:
     sources = result["sources"]
+    assessed = sum(
+        not source["truncated"]
+        and source["coverage"]["fdb"]["status"] == "recent"
+        and source["coverage"]["stp"]["status"] == "recent"
+        for source in sources
+    )
     return {
         "status": result["status"],
         "since": result["since"],
         "until": result["until"],
         "truncated": result["truncated"],
         "sources": len(sources),
+        "coverage": {
+            "assessed": assessed,
+            "total": len(sources),
+            "complete": bool(sources) and assessed == len(sources) and not result["truncated"],
+        },
         "source_coverage": [
             {field: source[field] for field in ("source", "status", "coverage", "truncated")}
             for source in sources
@@ -200,6 +211,10 @@ def main() -> int:
         "--require-dns-transport", action="store_true",
         help="require successful DNS responses on each explicitly configured transport",
     )
+    parser.add_argument(
+        "--require-loop-coverage", action="store_true",
+        help="require recent VLAN-aware FDB and STP observations on every switch",
+    )
     args = parser.parse_args()
     if args.max_age_minutes < 1:
         parser.error("--max-age-minutes must be positive")
@@ -231,6 +246,12 @@ def main() -> int:
         return 1
     if (args.require_expected_first_hop and not configured_hops) or (args.require_dns_transport and not dns_probes):
         return 1
+    if args.require_loop_coverage:
+        coverage = report["loop_diagnostics"]["coverage"]
+        if not coverage["total"]:
+            return 1
+        if not coverage["complete"]:
+            return 2
     if args.require_expected_first_hop and confirmed_hops != len(configured_hops):
         return 2
     if args.require_dns_transport and confirmed_dns != len(dns_probes):
