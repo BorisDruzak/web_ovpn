@@ -1021,6 +1021,12 @@ def _public_resource_capacity(row: dict, now: datetime) -> dict:
             result["root"]["status"] = "warn" if 100 * amount <= ROOT_FREE_WARNING_PERCENT * total else "ok"
         elif group == "swap":
             result["swap"]["status"] = "warn" if 100 * amount >= SWAP_USED_WARNING_PERCENT * total else "ok"
+    endpoint = row.get("endpointMemory")
+    if isinstance(endpoint, dict) and observation_is_fresh(endpoint.get("checkedAt"), now, max_age=GUEST_AGENT_HEALTH_MAX_AGE):
+        available = endpoint.get("availableBytes")
+        if headroom := _memory_headroom(available, result):
+            result["memoryHeadroom"] = {**headroom, "availableBytes": available, "source": "Endpoint Agent",
+                                        "checkedAt": _time(endpoint["checkedAt"]).isoformat()}
     return result
 
 
@@ -1411,6 +1417,8 @@ def _map_statuses(nodes: dict, links: list[dict]) -> None:
             checks.append("warn")
         if capacity := node.get("resourceCapacity"):
             checks.extend(capacity[key]["status"] for key in ("root", "swap"))
+            if memory := capacity.get("memoryHeadroom"):
+                checks.append(memory["status"])
         checks.extend(report["status"] for report in node.get("lacpHealth", []))
         if node["kind"] == CLUSTER_KIND:
             cluster = {check["method"]: check["state"] for check in node["serviceChecks"]}
@@ -3342,6 +3350,16 @@ def _guest_agent_exclusion(node: dict, snapshot_fresh: bool) -> str:
     return "no_enabled_network_adapter" if network["enabled"] == 0 else "no_unique_network_identity"
 
 
+def _memory_headroom(available: object, capacity: dict) -> dict:
+    total = capacity.get("memory", {}).get("totalBytes")
+    if type(total) is not int or type(available) is not int or not 0 <= available <= total < 2**53 or total == 0:
+        return {}
+    return {"availablePercent": round(100 * available / total, 2),
+            "warningThreshold": MEMORY_AVAILABLE_WARNING_PERCENT,
+            "status": "warn" if 100 * available < MEMORY_AVAILABLE_WARNING_PERCENT * total else "ok",
+            "totalBytes": total, "capacityCheckedAt": capacity["checkedAt"]}
+
+
 def _guest_agent_health(snapshot: object, now: datetime, *, platform: str | None = None,
                         capacity: dict | None = None) -> dict:
     if not isinstance(snapshot, dict) or snapshot.get("profile") != "health_v1":
@@ -3355,21 +3373,16 @@ def _guest_agent_health(snapshot: object, now: datetime, *, platform: str | None
     resources = sections.get("resources")
     if not isinstance(resources, dict):
         resources = {}
+    warnings = snapshot.get("warnings", [])
     metrics = {label: value for key, label in (("free_bytes", "memoryAvailableBytes"), ("uptime_seconds", "uptimeSeconds"))
                if type(value := resources.get(key)) is int and 0 < value < 2**53}
     if capacity and observation_is_fresh(capacity.get("checkedAt"), now, max_age=RESOURCE_CAPACITY_MAX_AGE):
-        total = capacity.get("memory", {}).get("totalBytes")
         available = resources.get("free_bytes")
-        if type(total) is int and type(available) is int and 0 <= available <= total < 2**53 and total > 0:
+        if (available != 0 or isinstance(warnings, (list, tuple)) and "source_unavailable" not in warnings) and (
+                headroom := _memory_headroom(available, capacity)):
             metrics["memoryAvailableBytes"] = available
-            metrics["memoryHeadroom"] = {
-                "availablePercent": round(100 * available / total, 2),
-                "warningThreshold": MEMORY_AVAILABLE_WARNING_PERCENT,
-                "status": "warn" if 100 * available < MEMORY_AVAILABLE_WARNING_PERCENT * total else "ok",
-                "totalBytes": total, "capacityCheckedAt": capacity["checkedAt"],
-            }
+            metrics["memoryHeadroom"] = headroom
     load = resources.get("load_1m")
-    warnings = snapshot.get("warnings", [])
     if (platform == "linux" and type(load) in (int, float) and 0 <= load < 2**53
             and isinstance(warnings, (list, tuple)) and "source_unavailable" not in warnings):
         metrics["loadAverage1m"] = load
@@ -3454,7 +3467,7 @@ def _summarize_agent_audit(nodes: dict, keys: dict, conflicts: set[str], identit
                            *, snapshot_fresh: bool, enrollments: dict[str, str], device_presences: list[dict],
                            hypervisor_evidence: dict[str, str],
                            load_agent_profiles: Callable[[UUID, tuple[str, ...]], dict] | None = None,
-                           selected_node: str | None = None) -> dict:
+                           selected_node: str | None = None, collect_hypervisor_health: bool = False) -> dict:
     from .inventory.endpoint import CANDIDATE_MAX_AGE
 
     by_id = {row["id"]: row for row in identities if isinstance(row, dict)
@@ -3567,8 +3580,11 @@ def _summarize_agent_audit(nodes: dict, keys: dict, conflicts: set[str], identit
                 if len(health_times) == 1:
                     health_at, = health_times
                     entry["healthProfileState"] = "fresh" if now - health_at <= GUEST_AGENT_HEALTH_MAX_AGE else "stale"
-                if node_id == selected_node and entry["presence"] == "online" and load_agent_profiles is not None:
-                    wanted = ["health_v1", *(profile for profile in ("inventory_v1", "network_v1") if reports.get(profile))]
+                if ((node_id == selected_node or collect_hypervisor_health and hypervisor)
+                        and entry["presence"] == "online" and load_agent_profiles is not None):
+                    wanted = ["health_v1"]
+                    if node_id == selected_node:
+                        wanted.extend(profile for profile in ("inventory_v1", "network_v1") if reports.get(profile))
                     missing = tuple(profile for profile in wanted if profile not in snapshots)
                     if missing:
                         try:

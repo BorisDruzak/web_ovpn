@@ -48,6 +48,8 @@ from netctl.switch_queries import (
 from netctl.switch_store import OPTIONAL_SWITCH_CAPABILITIES
 
 from .infrastructure_backup import backup_policy, backup_service_checks, read_proxmox_backup
+from .endpoint_context_adapter import get_endpoint_context_adapter
+from .endpoint_platform_client import EndpointPlatformServiceError
 from .infrastructure_map import (
     BACKUP_PROBE_METHOD, BACKUP_SERVICE_ID, GUEST_ENROLLMENT_ID, GUEST_IO_MAX_AGE,
     CLUSTER_HEALTH_METHODS, CLUSTER_KIND, INTERFACE_NAME, MAX_DOWNSTREAM_SWITCHES, MAX_ROUTER_NEIGHBORS,
@@ -57,6 +59,7 @@ from .infrastructure_map import (
     SNMP_COLLECTION_METHOD, STP_ROOT_PATH_MAX_AGE,
     TRANSCEIVER_MAX_AGE, WINDOWS_PROBE_SOURCE,
     _public_service_check, _service_reachability, index_port_states, inventory_link_sources,
+    _public_resource_capacity, _summarize_agent_audit,
     observation_is_fresh, port_label_key, public_probe_transition,
     project_hypervisor_disks, project_hypervisor_lvm_thin, project_hypervisor_zfs,
 )
@@ -3623,6 +3626,40 @@ def _retain_proxmox_inventory(graph: dict, previous: dict) -> None:
             existing.add((a, b, kind))
 
 
+def collect_hypervisor_memory(graph: dict, now: datetime) -> None:
+    raw = {node["id"]: node for node in graph["nodes"] if node["kind"] == "Гипервизор"}
+    keys = {node_id: set(node["agentMatchKeys"]) for node_id, node in raw.items()
+            if node.get("agentMatchKeys") and observation_is_fresh(node.get("agentMatchCheckedAt"), now)}
+    if not keys:
+        return
+    matching_keys = {**keys, **{node["id"]: set(node["agentMatchKeys"]) for node in graph["nodes"]
+                              if node.get("guest") and node.get("agentMatchKeys")}}
+    nodes = {node_id: {"id": node_id, "name": raw[node_id]["name"], "kind": "Гипервизор",
+                       "resourceCapacity": _public_resource_capacity(raw[node_id].get("resourceCapacity", {}), now)}
+             for node_id in keys}
+    try:
+        adapter = get_endpoint_context_adapter()
+    except EndpointPlatformServiceError:
+        return
+    try:
+        audit = _summarize_agent_audit(
+            nodes, matching_keys, set(), adapter.list_agent_network_identities(), now,
+            snapshot_fresh=True, enrollments={}, device_presences=[],
+            hypervisor_evidence={node_id: raw[node_id]["agentMatchCheckedAt"] for node_id in keys},
+            load_agent_profiles=adapter.read_observed_profiles, collect_hypervisor_health=True,
+        )
+    except EndpointPlatformServiceError:
+        return
+    finally:
+        adapter.close()
+    for entry in audit.get("hypervisors", []):
+        health = entry.get("health", {})
+        if "memoryHeadroom" in health:
+            raw[entry["id"]]["resourceCapacity"]["endpointMemory"] = {
+                "availableBytes": health["memoryAvailableBytes"], "checkedAt": health["checkedAt"],
+            }
+
+
 def publish_snapshot(path: Path, graph: dict) -> None:
     body = json.dumps(graph, ensure_ascii=False, allow_nan=False).encode("utf-8")
     if len(body) > MAX_SNAPSHOT_BYTES:
@@ -3787,6 +3824,7 @@ def main() -> int:
             collect_endpoint_dns(graph, endpoint_dns, datetime.now(timezone.utc))
         if isinstance(endpoint_http := bindings.get("endpoint_http"), dict) and endpoint_http:
             collect_endpoint_http(graph, endpoint_http, datetime.now(timezone.utc))
+        collect_hypervisor_memory(graph, datetime.now(timezone.utc))
         start_stage("publish snapshot")
         graph["snapshotAt"] = datetime.now(timezone.utc).isoformat()
         graph["git"] = args.git_revision

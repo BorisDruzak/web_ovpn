@@ -911,6 +911,13 @@ def test_proxmox_capacity_uses_available_root_space_and_reports_missing_data(tmp
     assert node["mapStatus"] == "warn" and node["reachability"]["state"] == "reachable"
     status["rootfs"]["avail"] = 101
     assert read()["mapStatus"] == "ok"
+    status["endpointMemory"] = {"availableBytes": 60, "checkedAt": stamp}
+    node = read()
+    assert node["mapStatus"] == "warn"
+    assert node["resourceCapacity"]["memoryHeadroom"]["availablePercent"] == 6
+    assert node["resourceCapacity"]["memoryHeadroom"]["source"] == "Endpoint Agent"
+    status["endpointMemory"]["checkedAt"] = (now - timedelta(minutes=7)).isoformat()
+    assert read()["mapStatus"] == "ok"
     status["swap"] = {"used": 90, "total": 100}
     assert read()["mapStatus"] == "warn"
     status["swap"]["used"] = True
@@ -8854,6 +8861,10 @@ def test_hypervisor_agent_memory_uses_available_bytes_and_fresh_capacity():
     report = _guest_agent_health(snapshot, now, capacity=capacity)
     assert report["memoryHeadroom"] == {"availablePercent": 4.69, "warningThreshold": 10, "status": "warn",
                                         "totalBytes": 64 * 2**30, "capacityCheckedAt": now.isoformat()}
+    snapshot["sections"]["resources"]["free_bytes"] = 0
+    snapshot["warnings"] = ["source_unavailable"]
+    assert "memoryHeadroom" not in _guest_agent_health(snapshot, now, capacity=capacity)
+    snapshot["sections"]["resources"]["free_bytes"] = 3 * 2**30
     capacity["checkedAt"] = (now - timedelta(minutes=6)).isoformat()
     assert "memoryHeadroom" not in _guest_agent_health(snapshot, now, capacity=capacity)
 

@@ -1679,7 +1679,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       propertiesSection.append(section);
     }
     if (node.resourceCapacity) {
-      const {root, swap, memory, thresholds, checkedAt, stale} = node.resourceCapacity;
+      const {root, swap, memory, memoryHeadroom, thresholds, checkedAt, stale} = node.resourceCapacity;
       const number = new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 1});
       const measure = (bytes, total) => `${number.format(bytes / 2**30)} ГиБ (${number.format(100 * bytes / total)}%)`;
       const list = make('dl');
@@ -1694,6 +1694,12 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const available = memory.availableBytes !== undefined;
         list.append(make('dt', available ? 'Доступная память' : 'Свободная память по Proxmox'),
           make('dd', measure(available ? memory.availableBytes : memory.freeBytes, memory.totalBytes)));
+      }
+      if (memoryHeadroom) {
+        const {availableBytes, totalBytes, status, warningThreshold, checkedAt: measuredAt} = memoryHeadroom;
+        const warning = status === 'warn' ? ` · мало доступной памяти, порог ${warningThreshold}%` : '';
+        list.append(make('dt', 'Доступная память · Endpoint Agent'),
+          make('dd', measure(availableBytes, totalBytes) + warning + ' · ' + formatTime(measuredAt)));
       }
       if (checkedAt) list.append(make('dt', 'Опрос ёмкости'), make('dd', formatTime(checkedAt) + (stale ? ' · устарел' : '')));
       propertiesSection.append(make('h3', 'Ёмкость узла'), list);
