@@ -6988,6 +6988,8 @@ def test_attachment_includes_controller_path_without_attributing_it_to_the_serve
     path = tmp_path / "map.json"
     links = [
         {"a": "bmc", "b": "server", "kind": "Управление оборудованием", "confirmed": True},
+        {"a": "sw", "b": "bmc", "kind": "Сетевое соединение", "confirmed": False, "portEvidence": [
+            {"a": "ge13", "b": "eth0", "source": "GitHub", "confirmed": False}]},
         {"a": "sw", "b": "bmc", "kind": "Путь по MAC-таблице", "confirmed": True, "portEvidence": [
             {"a": "ge13", "b": "", "source": "netctl FDB", "confirmed": True, "at": stamp,
              "learnedEndpoint": {"switchId": "sw", "deviceId": "bmc", "mac": "02:00:00:00:00:13"},
@@ -7014,6 +7016,11 @@ def test_attachment_includes_controller_path_without_attributing_it_to_the_serve
     assert probe["switchAttachment"]["port"] == "ge13"
     assert "physicalPair" not in probe["switchAttachment"]
     assert host["connections"] == [] and "servicePaths" not in attachment
+    assert host["pendingPortPairTotal"] == 0
+    assert controller["pendingPortPairTotal"] == 1
+    pending, = controller["pendingPortPairs"]
+    assert (pending["a"], pending["portA"], pending["b"], pending["portB"]) == ("sw", "ge13", "bmc", "eth0")
+    assert pending["identifiedPeerSides"] == ["a"]
     links[0]["confirmed"] = False
     candidate, = read()["physicalHosts"][0]["managementControllers"]
     assert candidate == {**controller, "confirmed": False}
