@@ -128,6 +128,14 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     }
     return make('span', name + ' · ' + (port || 'порт неизвестен'));
   }
+  function confirmedPortPairRow({a, b, nameA, nameB, portA, portB, evidence}) {
+    const row = make('li');
+    row.append(portPairEndpoint(a, nameA, portA), ' ↔ ', portPairEndpoint(b, nameB, portB));
+    for (const {source, checkedAt} of evidence) {
+      row.append(make('small', source + ' · ' + formatTime(checkedAt)));
+    }
+    return row;
+  }
   function renderConfirmedPortPairs() {
     const panel = root.querySelector('#map-confirmed-port-pairs');
     const {currentPortPairTotal = 0, currentPortPairs = []} = data;
@@ -137,14 +145,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const list = panel.querySelector('ul');
     const more = panel.querySelector('small');
     summary.textContent = 'Подтверждённые пары портов · ' + currentPortPairTotal;
-    list.replaceChildren(...currentPortPairs.map(({a, b, nameA, nameB, portA, portB, evidence}) => {
-      const row = make('li');
-      row.append(portPairEndpoint(a, nameA, portA), ' ↔ ', portPairEndpoint(b, nameB, portB));
-      for (const {source, checkedAt} of evidence) {
-        row.append(make('small', source + ' · ' + formatTime(checkedAt)));
-      }
-      return row;
-    }));
+    list.replaceChildren(...currentPortPairs.map(confirmedPortPairRow));
     more.hidden = currentPortPairs.length >= currentPortPairTotal;
     more.textContent = `Показано ${currentPortPairs.length} из ${currentPortPairTotal}`;
   }
@@ -784,6 +785,17 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     return panel;
   }
 
+  function renderServiceHostPortPairs(host) {
+    const pairs = (data.currentPortPairs ?? []).filter(pair => pair.a === host.id || pair.b === host.id);
+    if (!pairs.length) return null;
+    const panel = make('details', null, 'map-port-panel');
+    panel.dataset.section = 'service-host-port-pairs';
+    const list = make('ul', null, 'map-detail-list');
+    list.append(...pairs.map(confirmedPortPairRow));
+    panel.append(make('summary', 'Подтверждённые порты устройства'), list);
+    return panel;
+  }
+
   function renderObservedHostPorts(host, paths) {
     const list = make('ul', null, 'map-detail-list');
     const rendered = new Set();
@@ -1040,6 +1052,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const servicePaths = renderServicePaths(paths);
     if (servicePaths) propertiesSection.append(servicePaths);
     if (node.kind === 'Сервис' && placementHost !== node && !placementHost.guest) {
+      if (!servicePaths) {
+        const portPairs = renderServiceHostPortPairs(placementHost);
+        if (portPairs) propertiesSection.append(portPairs);
+      }
       const observedPorts = renderObservedHostPorts(placementHost, paths);
       if (observedPorts) propertiesSection.append(observedPorts);
     }
