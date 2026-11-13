@@ -8143,6 +8143,19 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
                          "reachability": {"state": "unreachable", "source": "UI_VPN", "checkedAt": stamp}})
     raw["links"].append({"a": "directum", "b": "backup", "kind": "Зависимость сервиса", "confirmed": True})
     assert len(read()["servicePaths"]) == 2
+    vm_url = url + "&node_id=vm"
+    vm = client.get(vm_url, headers=headers).json()["infrastructure"]["attachment"]
+    disk, = vm["checks"]
+    assert (disk["name"], disk["observed"], disk["sourceNodeId"], disk["required"]) == (
+        "c_disk_free", 4.53, "directum", False,
+    )
+    raw["nodes"].append({"id": "other-vm", "name": "Other", "kind": "Виртуальная машина", "guest": True})
+    raw["links"].append({"a": "other-vm", "b": "directum", "kind": "Цель проверки", "confirmed": True})
+    read()
+    assert client.get(vm_url, headers=headers).json()["infrastructure"]["attachment"]["checks"] == []
+    raw["links"].pop()
+    raw["nodes"].pop()
+    read()
     browser = client.get(browser_endpoint).json()["infrastructure"]
     assert browser["servicePaths"] == {"directum": [service_path, {**service_path, "port": 3268}]}
     switch_ports = browser["servicePorts"]["snr"]

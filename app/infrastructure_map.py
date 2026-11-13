@@ -1387,6 +1387,33 @@ def _public_node(row: dict, now: datetime) -> dict:
     }
 
 
+def _attach_guest_observer_measurements(nodes: dict, links: list[dict]) -> None:
+    metrics = {"c_disk_free", "root_disk_free", "data_disk_free",
+               "windows_memory_available_bytes", "windows_memory_available_percent",
+               "linux_memory_available_bytes", "linux_memory_available_percent"}
+    hosts = defaultdict(set)
+    for edge in links:
+        if (_is_service_attachment(edge) and nodes[edge["b"]]["kind"] == "Сервис"
+                and nodes[edge["a"]]["kind"] != "Сервис"):
+            hosts[edge["b"]].add(edge["a"])
+    for service_id, candidates in hosts.items():
+        if len(candidates) != 1:
+            continue
+        host_id, = candidates
+        guest = nodes[host_id]
+        if not guest["guest"] or not any(source["name"] == "Proxmox" and source["label"] == "Запущена"
+                                         and not source["stale"] for source in guest["sources"]):
+            continue
+        checks = nodes[service_id]["checks"]
+        counts = Counter(check["name"] for check in checks)
+        guest["checks"].extend(
+            {**check, "required": False, "sourceNodeId": service_id}
+            for check in checks
+            if check["name"] in metrics and counts[check["name"]] == 1
+            and not check["stale"] and check.get("observed") is not None
+        )
+
+
 def _attach_acti_backup_job(nodes: dict, links: list[dict]) -> None:
     app_id, backup_id = "role:acti", "role:acti_backup"
     if not any(link["a"] == app_id and link["b"] == backup_id and link["confirmed"]
@@ -4142,6 +4169,7 @@ def load_infrastructure_map(
     _attach_address_aliases(nodes, links)
     if lacp_expectations:
         _attach_lacp_health(nodes, lacp_expectations, links, port_states, now)
+    _attach_guest_observer_measurements(nodes, links)
     _attach_acti_backup_job(nodes, links)
     _attach_backup_scope(nodes)
     _map_statuses(nodes, links)
