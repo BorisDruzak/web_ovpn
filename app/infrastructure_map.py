@@ -2552,6 +2552,10 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
                 row["id"] == node_id and not port_name or row["upstreamId"] == node_id
                 and (not port_name or port_label_key(row["port"]) in keys)
             )][:MAX_DOWNSTREAM_SWITCHES],
+            "downstreamDevicesOnPort": [
+                device for device in (node or {}).get("downstream", {}).get("devices", [])
+                if port_name and port_label_key(device.get("switchPort", {}).get("name", "")) in keys
+            ],
             "lacpHealth": aggregates[:64],
             "servicePorts": [row for row in graph.get("servicePorts", {}).get(node_id, [])
                              if not port_name or port_label_key(row["port"]) in keys],

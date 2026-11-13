@@ -4855,8 +4855,12 @@ def test_downstream_devices_require_the_expected_live_lldp_pair(tmp_path):
     sample["remote"] = {"source": "remote", "readings": [
         {"mac": endpoint_mac, "name": "Ge2", "at": at.replace("+00:00", "Z")},
     ]}
-    endpoint, = read()[1]["downstream"]["devices"]
+    port_graph, port_node = read()
+    endpoint, = port_node["downstream"]["devices"]
     assert endpoint["switchPort"] == {"name": "Ge2", "checkedAt": at}
+    port_audit = summarize_topology(port_graph, node_id="poe", port_name="ge2")["topologyAudit"]
+    assert port_audit["downstreamDevicesOnPort"] == [endpoint]
+    assert summarize_topology(port_graph, node_id="poe", port_name="Ge1")["topologyAudit"]["downstreamDevicesOnPort"] == []
     sample["remote"]["readings"].append({"mac": endpoint_mac, "name": "Ge1", "at": at})
     endpoint, = read()[1]["downstream"]["devices"]
     assert "switchPort" not in endpoint
