@@ -280,6 +280,27 @@ def test_require_fresh_push_receipts(monkeypatch, receipts, code):
     assert verifier.main() == code
 
 
+@pytest.mark.parametrize("changes,match", [
+    ({"since": "later-start", "until": "later-end"}, True),
+    ({"sources": [{"source": "switch-a", "coverage": {"fdb": {"status": "stale"}}}]}, False),
+    ({"truncated": True}, False),
+])
+def test_loop_observations_match_ignores_only_window_boundaries(changes, match):
+    result = {
+        "status": "no_evidence", "since": "start", "until": "end", "truncated": False,
+        "sources": [{"source": "switch-a", "coverage": {"fdb": {"status": "recent"}}}],
+    }
+    assert verifier.loop_observations_match(result, {**result, **changes}) is match
+
+
+def test_loop_api_mismatch_fails_verification(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["verifier"])
+    monkeypatch.setattr(verifier, "verify", lambda *_: {
+        "routes": {}, "loop_diagnostics": {"api_matches": False},
+    })
+    assert verifier.main() == 1
+
+
 def test_loop_report_preserves_per_source_coverage_without_copying_findings():
     coverage = {
         "fdb": {"status": "recent", "truncated": False},

@@ -165,6 +165,14 @@ def route_report(
     }
 
 
+def loop_observations_match(api: dict, mcp: dict) -> bool:
+    # Each request computes its own rolling window. Compare the actual observations.
+    bounds = {"since", "until"}
+    return {key: value for key, value in api.items() if key not in bounds} == {
+        key: value for key, value in mcp.items() if key not in bounds
+    }
+
+
 def loop_report(result: dict) -> dict:
     sources = result["sources"]
     broadcast = [source["coverage"].get("broadcast", {}) for source in sources]
@@ -390,6 +398,13 @@ def verify(script: Path, max_age: timedelta) -> dict:
         *(mcp_call("openvpn_network_route_runs", {"profile": profile, "limit": 20}) for profile in scheduled),
         mcp_call("openvpn_network_loop_diagnostics"),
     ])
+    loop_call = mcp_call("openvpn_network_loop_diagnostics")
+    loop_result = mcp_data(loops)["result"]
+    api_loops = bridge.api_request("GET", API + "/loops")["data"]["result"]
+    if not loop_observations_match(api_loops, loop_result):
+        # The collector may have published new observations between the requests.
+        loop_result = mcp_data(mcp_requests(script, [loop_call])[0])["result"]
+        api_loops = bridge.api_request("GET", API + "/loops")["data"]["result"]
     now = datetime.now(UTC)
     routes = {}
     for (profile, probes), reply in zip(scheduled.items(), history, strict=True):
@@ -415,7 +430,9 @@ def verify(script: Path, max_age: timedelta) -> dict:
     return {
         "contracts": "ok",
         "routes": routes,
-        "loop_diagnostics": loop_report(mcp_data(loops)["result"]),
+        "loop_diagnostics": {
+            **loop_report(loop_result), "api_matches": loop_observations_match(api_loops, loop_result),
+        },
         "profiles": {key: len(profiles[key]) for key in ("throughput", "https_speed", "capture")},
     }
 
@@ -545,6 +562,8 @@ def main() -> int:
     ):
         return 1
     if any(not (route["fresh"] and route["profile_matches"] and route["api_matches"]) for route in routes):
+        return 1
+    if report.get("loop_diagnostics", {}).get("api_matches") is False:
         return 1
     if args.require_fresh_push_receipts:
         receipts = [receipt for route in routes for receipt in route.get("push_origins", {}).values()]
