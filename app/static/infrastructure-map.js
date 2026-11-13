@@ -1950,11 +1950,11 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
             row.append(open);
             const readings = [
               ['MAC-таблица', peer.fdbCheckedAt],
-              ['LLDP', peer.lldpCheckedAt],
-              ['Кандидат LLDP', peer.lldpCandidateCheckedAt],
+              ['LLDP', peer.lldpCheckedAt, peer.lldpPortIds],
+              ['Кандидат LLDP', peer.lldpCandidateCheckedAt, peer.lldpCandidatePortIds],
             ];
-            for (const [label, checkedAt] of readings) {
-              if (checkedAt) row.append(make('small', `${label} · ${formatTime(checkedAt)}`));
+            for (const [label, checkedAt, portIds] of readings) {
+              if (checkedAt) row.append(make('small', [label, ...(portIds ?? []), formatTime(checkedAt)].join(' · ')));
             }
             list.append(row);
           }

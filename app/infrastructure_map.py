@@ -2439,6 +2439,14 @@ def _summarize_shared_ports(pending: list[dict]) -> list[dict]:
             for key, stamps in readings.items():
                 if latest := max((stamp for stamp in stamps if stamp), default=""):
                     observation[key] = max(latest, observation.get(key, ""))
+            for key, advertisements in (
+                ("lldpPortIds", row.get("lldpPeers", {}).get("a", [])),
+                ("lldpCandidatePortIds", row.get("unconfirmedLldpCandidates", [])),
+            ):
+                names = {item["portId"] for item in advertisements
+                         if item.get("portIdSubtype") == "interface_name" and item.get("portId")}
+                if names:
+                    observation[key] = sorted(names.union(observation.get(key, [])))[:8]
         peers = sorted(observations)
         lldp_peers = [peer for peer in peers if "lldpCheckedAt" in observations[peer]]
         fdb_peers = [peer for peer in peers if "fdbCheckedAt" in observations[peer]]
