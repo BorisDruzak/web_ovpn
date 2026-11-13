@@ -1458,6 +1458,12 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       panel.append(make('summary', 'Проверки Server Observer'), list);
       propertiesSection.append(panel);
     }
+    if (node.hardwarePower) {
+      const {state, checkedAt} = node.hardwarePower;
+      const labels = {On: 'Включён', Off: 'Выключен', PoweringOn: 'Включается', PoweringOff: 'Выключается'};
+      propertiesSection.append(make('h3', 'Питание сервера'),
+        make('p', labels[state] + ' · Redfish · ' + formatTime(checkedAt)));
+    }
     const measurements = Object.entries(node.properties ?? {})
       .filter(([name, value]) => value && !items[name]
         && !(node.resources?.cpuRatio !== undefined && name === 'CPU по Proxmox')

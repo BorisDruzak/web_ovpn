@@ -1248,6 +1248,17 @@ def _public_node(row: dict, now: datetime) -> dict:
                   if row.get("kind") == NETWORK_KINDS[0] else {})
     firmware = _public_firmware(row.get("firmware"), now) if row.get("kind") in NETWORK_KINDS else {}
     reachability = _service_reachability(row.get("reachability"), service_checks, now)
+    power = row.get("hardwarePower")
+    hardware_power = {}
+    if (row.get("kind") == "Сервер" and isinstance(power, dict)
+            and power.get("state") in ("On", "Off", "PoweringOn", "PoweringOff")
+            and observation_is_fresh(power.get("checkedAt"), now, max_age=SERVICE_PROBE_MAX_AGE)
+            and re.fullmatch(r"[a-z0-9-]{1,64}", _text(power.get("controllerId"), 65))):
+        hardware_power = {"state": power["state"], "controllerId": power["controllerId"],
+                          "source": "Redfish", "checkedAt": _time(power["checkedAt"]).isoformat()}
+        if power["state"] == "Off" and reachability["state"] != "reachable":
+            reachability = {"state": "stopped", "source": "Redfish", "method": "Состояние питания",
+                            "checkedAt": hardware_power["checkedAt"], "stale": False}
     transition = public_probe_transition(row.get("probeTransition"), reachability, now) if row.get("kind") == "Сервис" else {}
     return {
         **{key: _text(row.get(key)) for key in ("id", "name", "kind", "site", "origin", "pveHost")},
@@ -1256,6 +1267,7 @@ def _public_node(row: dict, now: datetime) -> dict:
         "aliases": [_text(value) for value in aliases[:12] if isinstance(value, str)] if isinstance(aliases, list) else [],
         "sourceStatus": next((state for state in STATES if any(source["status"] == state for source in fresh)), "unknown"),
         "reachability": reachability,
+        **({"hardwarePower": hardware_power} if hardware_power else {}),
         **({"probeTransition": transition} if transition else {}),
         "sources": sources,
         "properties": properties,
@@ -2007,7 +2019,8 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
 
 
 def _attachment_node(node: dict) -> dict:
-    return {key: node[key] for key in ("id", "name", "kind", "vmid", "mapStatus", "firmware") if node.get(key) is not None}
+    return {key: node[key] for key in ("id", "name", "kind", "vmid", "mapStatus", "firmware", "hardwarePower")
+            if node.get(key) is not None}
 
 
 def _guest_ipv4_observations(value: object, now: datetime) -> list[dict]:

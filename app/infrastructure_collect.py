@@ -59,6 +59,7 @@ from .infrastructure_map import (
     project_hypervisor_disks, project_hypervisor_lvm_thin, project_hypervisor_zfs,
 )
 from .infrastructure_port_ssh import collect_proxmox_port_states
+from .infrastructure_redfish import collect_redfish_power
 from .infrastructure_service_probes import _local_arp_diagnostic, apply_service_probes, probe_icmp
 from .netctl_client import NetctlError, run_netctl
 from .server_health_view import build_server_health_view
@@ -3709,6 +3710,8 @@ def main() -> int:
             downstream = pool.submit(_check_downstream_addresses, nodes, network, now)
             apply_service_probes(nodes, probes)
             downstream.result()
+        if credentials and isinstance(redfish := bindings.get("redfish_power"), dict):
+            collect_redfish_power(graph, redfish, Path(credentials), datetime.now(timezone.utc))
         start_stage("publish snapshot")
         graph["snapshotAt"] = datetime.now(timezone.utc).isoformat()
         graph["git"] = args.git_revision
