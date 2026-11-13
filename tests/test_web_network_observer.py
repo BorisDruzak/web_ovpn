@@ -2501,15 +2501,17 @@ def test_route_history_filters_by_profile_and_time_in_api_and_ui(tmp_path, monke
 
 
 def test_route_history_marks_changed_configuration(tmp_path, monkeypatch):
-    client, _ = make_client(tmp_path, monkeypatch)
-    from app import main
+    client, headers = make_client(tmp_path, monkeypatch)
+    from app import api, main
     from app.db import get_sessionmaker
     from app.network_route_history import persist_route_run
 
-    monkeypatch.setattr(main, "probe_catalog", lambda: {
+    catalog = {
         "routes": [{"id": "wan", "label": "WAN", "probes": [{"id": "gateway", "config_digest": "a" * 64}]}],
         "throughput": [], "https_speed": [], "capture": [],
-    })
+    }
+    monkeypatch.setattr(main, "probe_catalog", lambda: catalog)
+    monkeypatch.setattr(api, "probe_catalog", lambda: catalog)
     with get_sessionmaker()() as db:
         for i, digest in enumerate(("a" * 64, "b" * 64, None)):
             probe = {
@@ -2524,6 +2526,11 @@ def test_route_history_marks_changed_configuration(tmp_path, monkeypatch):
                 "result": {"label": f"Запуск {i}", "probes": [probe]},
             })
         db.commit()
+    response = client.get("/api/v1/network/diagnostics/route-runs", headers=headers, params={"profile": "wan"})
+    assert response.status_code == 200
+    assert [run["configuration_status"] for run in response.json()["data"]["runs"]] == [
+        "current", "changed", "unconfirmed",
+    ]
     login(client)
     page = client.get("/network/diagnostics", params={"profile": "wan"})
     assert page.status_code == 200
