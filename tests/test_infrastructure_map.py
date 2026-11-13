@@ -7012,6 +7012,19 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     smb_endpoint, = browser["servicePorts"]["snr"][0]["services"][0]["probeEndpoints"]
     assert smb_endpoint["smbNegotiations"] == [{"dialect": "2.1", "signingRequired": False},
                                                {"dialect": "2.1", "signingRequired": True}]
+    postgres = {**check, "method": "PostgreSQL SSLRequest", "port": 5432}
+    raw["nodes"][0]["serviceChecks"] = [
+        {**postgres, "postgresqlTls": "negotiated", "tlsVersion": "TLSv1.3"},
+        {**postgres, "postgresqlTls": "declined"},
+    ]
+    assert [(path["postgresqlTls"], path.get("tlsVersion")) for path in read()["servicePaths"]] == [
+        ("negotiated", "TLSv1.3"), ("declined", None),
+    ]
+    browser = client.get(browser_endpoint).json()["infrastructure"]
+    endpoint, = browser["servicePorts"]["snr"][0]["services"][0]["probeEndpoints"]
+    assert endpoint["postgresqlTlsResults"] == [
+        {"state": "negotiated", "version": "TLSv1.3"}, {"state": "declined"},
+    ]
     raw["nodes"][0]["serviceChecks"] = [
         {**check, "method": "SIP OPTIONS (UDP)", "port": 5060, "reason": "sip_response", "responseCode": 200},
         {**check, "method": "RTSP OPTIONS", "port": 554, "reason": "rtsp_auth_required", "rtspStatus": 401},

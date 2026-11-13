@@ -2074,7 +2074,7 @@ def _attachment_probe_location(check: dict) -> dict:
             **({"path": check["path"]} if check.get("path") else {}),
             **{key: check[key] for key in ("reason", "roundTripMs", "httpStatus", "responseCode", "rtspStatus", "dns",
                                            "rdpSecurity", "rdpFailureCode", "tlsExpiresAt", "tlsVersion", "zabbixVersion",
-                                           "smbDialect", "smbSigningRequired")
+                                           "smbDialect", "smbSigningRequired", "postgresqlTls")
                if key in check}}
 
 
@@ -2424,6 +2424,13 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime, *, endpoint_
                 negotiations = probe.setdefault("smbNegotiations", [])
                 if negotiation not in negotiations:
                     negotiations.append(negotiation)
+            if tls_state := check.get("postgresqlTls"):
+                tls_result = {"state": tls_state}
+                if version := check.get("tlsVersion"):
+                    tls_result["version"] = version
+                tls_results = probe.setdefault("postgresqlTlsResults", [])
+                if tls_result not in tls_results:
+                    tls_results.append(tls_result)
             if expires := check.get("tlsExpiresAt"):
                 certificate = {"expiresAt": expires}
                 if version := check.get("tlsVersion"):
