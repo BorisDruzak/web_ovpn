@@ -3507,17 +3507,26 @@ def summarize_guest_attachment_audit(graph: dict) -> dict:
         network = nodes[attachment["guest"]["id"]].get("guestNetwork")
         if network and _has_no_guest_network(attachment, network):
             continue
-        if not inactive and (incomplete or not attachment["interfaces"]):
+        active_ports = {interface["guestPort"] for interface in attachment["interfaces"] if not interface["linkDisabled"]}
+        missing_config = network and (network["configured"] != network["enabled"] + network["disabled"]
+                                      or len(active_ports) != network["enabled"])
+        if not inactive and (incomplete or not active_ports or missing_config):
             gaps.append({"guest": attachment["guest"], "hypervisor": attachment["hypervisor"],
                          "power": power, "placement": attachment["placement"], "interfaces": incomplete,
                          **({"networkTraffic": attachment["networkTraffic"]} if "networkTraffic" in attachment else {})})
 
     gaps.sort(key=lambda gap: (gap["power"] != "running", gap["guest"]["id"]))
+    without_network = _running_without_network(nodes, guests)
+    incomplete_running = sum(gap["power"] == "running" for gap in gaps)
+    disconnected_running = without_network["runningWithoutNetworkTotal"]
+    running_coverage = {"confirmed": guest_counts["running"] - incomplete_running - disconnected_running,
+                        "incomplete": incomplete_running, "withoutNetwork": disconnected_running}
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
     return {**metadata, "attachmentAudit": {"guestCounts": guest_counts, "interfaceCounts": interface_counts,
+                                            "runningNetworkCoverage": running_coverage,
                                             "gapTotal": len(gaps), "gaps": gaps[:64],
                                             **_confirmed_guest_uplinks(guests),
-                                            **_running_without_network(nodes, guests)}}
+                                            **without_network}}
 
 
 def _confirmed_guest_uplinks(guests: dict, *, switch_id: str | None = None, hypervisor_id: str | None = None,

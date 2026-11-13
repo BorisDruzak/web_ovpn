@@ -718,6 +718,7 @@ def test_guest_network_reports_an_empty_configuration_only_after_a_successful_re
     assert [(row["guest"]["vmid"], row["guestNetwork"]) for row in audit["runningWithoutNetwork"]] == [
         (127, node["guestNetwork"]),
     ]
+    assert audit["runningNetworkCoverage"] == {"confirmed": 0, "incomplete": 0, "withoutNetwork": 1}
     assert audit["gapTotal"] == 0
     assert node["mapStatus"] == "unknown"
     assert node["reachability"]["method"] == "Адаптеры Proxmox не заданы"
@@ -742,6 +743,7 @@ def test_guest_network_reports_an_empty_configuration_only_after_a_successful_re
     assert "guestNetwork" not in read()
     audit = summarize_guest_attachment_audit(load_infrastructure_map(path, now))["attachmentAudit"]
     assert audit["runningWithoutNetworkTotal"] == 0 and audit["gapTotal"] == 1
+    assert audit["runningNetworkCoverage"] == {"confirmed": 0, "incomplete": 1, "withoutNetwork": 0}
 
 
 def test_cluster_health_distinguishes_quorum_members_and_api(tmp_path):
@@ -8548,6 +8550,7 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
                             "uplinkPortLinks": port_links, "uplinkLinkHealth": {"state": "both_up", "checkedAt": stamp}}
     audit = read_audit()
     assert audit["interfaceCounts"]["local_neighbor_with_physical_pair"] == 1 and audit["gapTotal"] == 0
+    assert audit["runningNetworkCoverage"] == {"confirmed": 1, "incomplete": 0, "withoutNetwork": 0}
     raw["nodes"][0]["serviceChecks"][0]["vlanTransit"]["peer"]["state"] = "mismatch"
     assert "localNeighbor" not in read()["guests"][0]["interfaces"][0]
     assert read()["servicePaths"] == []
@@ -8559,7 +8562,9 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     raw["links"][1]["portEvidence"][0]["virtual"]["linkDisabled"] = True
     assert read()["guests"][0]["interfaces"][0]["switchObservations"] == []
     assert guests_on_port("xe3") == []
-    assert read_audit()["interfaceCounts"]["inactive"] == 1 and read_audit()["gapTotal"] == 0
+    audit = read_audit()
+    assert audit["interfaceCounts"]["inactive"] == 1 and audit["gapTotal"] == 1
+    assert audit["runningNetworkCoverage"] == {"confirmed": 0, "incomplete": 1, "withoutNetwork": 0}
     raw["links"][1]["confirmed"] = False
     guest, = read()["guests"]
     assert guest["placement"] == "unconfirmed" and guest["interfaces"] == []
