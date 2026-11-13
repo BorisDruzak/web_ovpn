@@ -8904,6 +8904,9 @@ def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_pa
     expected_peer = {"localPort": "ge15", "chassisId": "02:00:00:00:00:15", "portId": "bond0",
                      "portIdSubtype": "interface_name", "checkedAt": now}
     assert recorder["lldpPeers"] == {"a": [expected_peer]}
+    assert recorder["logicalPeerInterfaces"] == {"b": [{"name": "bond0", "checkedAt": now}]}
+    assert browser_recorder["logicalPeerInterfaces"] == recorder["logicalPeerInterfaces"]
+    assert port_audit["confirmationGapCounts"]["logical_lldp_interface"] == 1
     assert len(recorder["lldpObservations"]["a"]["neighbors"]) == 2
     snapshot = client.get("/api/v1/network/infrastructure", headers=headers).json()["infrastructure"]
     edge = next(edge for edge in snapshot["links"] if edge["a"] == "snr" and edge["b"] == "recorder")

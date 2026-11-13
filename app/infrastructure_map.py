@@ -2261,6 +2261,18 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
         gaps = []
         if row.get("missingPortSides"):
             gaps.append("missing_port_name")
+        logical_interfaces = {}
+        for side, observer in (("a", "b"), ("b", "a")):
+            if side not in row.get("missingPortSides", []):
+                continue
+            readings = {(peer["portId"], peer["checkedAt"]) for peer in row.get("lldpPeers", {}).get(observer, [])
+                        if peer.get("portIdSubtype") == "interface_name"
+                        and re.fullmatch(r"bond[0-9]+", peer.get("portId", ""), re.IGNORECASE)}
+            if readings:
+                logical_interfaces[side] = [{"name": name, "checkedAt": stamp} for name, stamp in sorted(readings)]
+        if logical_interfaces:
+            row["logicalPeerInterfaces"] = logical_interfaces
+            gaps.append("logical_lldp_interface")
         if row.get("archivedPortSides"):
             gaps.append("archived_port")
         if row.get("sharedPort"):
@@ -4415,7 +4427,8 @@ def load_infrastructure_map(
                  **{key: row[key] for key in ("archivedPortSides", "archivedPortAt", "inventoryPortSides", "inventorySources",
                                              "inventoryPeerPorts", "lldpPeers", "unconfirmedLldpCandidates", "multiMacPortSides",
                                              "stpBridgeConnections", "stpBridgeMacObservations", "arpDiagnostics",
-                                             "trafficComparison", "stoppedEndpoints", "conflictingPortSides") if key in row}}
+                                             "trafficComparison", "stoppedEndpoints", "conflictingPortSides",
+                                             "logicalPeerInterfaces") if key in row}}
                 for row in pending[:64]
             ],
             lacpPartnerInterfaceGapTotal=len(lacp_gaps),

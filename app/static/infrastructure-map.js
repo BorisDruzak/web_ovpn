@@ -314,7 +314,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       observedSourceTimes = {}, identifiedPeerSides = [], archivedPortSides = [], inventoryPortSides = [],
       portObservations = {}, stpPaths = [], stpBridgeConnections = [], stpBridgeMacObservations = [], lldpPeers = {},
       archivedPortAt = {}, inventorySources = [], inventoryPeerPorts = [], arpDiagnostics = {}, observedPaths = [],
-      multiMacPortSides = [], unconfirmedLldpCandidates = [], confirmationGaps = [], trafficComparison, linkHealth, stoppedEndpoints = {}}) {
+      multiMacPortSides = [], unconfirmedLldpCandidates = [], confirmationGaps = [], trafficComparison, linkHealth,
+      stoppedEndpoints = {}, logicalPeerInterfaces = {}}) {
     const item = make('li');
     const provenance = key => archivedPortSides.includes(key) ? ' (по архиву)' :
       inventoryPortSides.includes(key) ? ' (по инвентарю)' : '';
@@ -334,6 +335,11 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       item.append(make('small', `${side === 'a' ? nameA : nameB} выключен · Redfish · ${formatTime(evidence.checkedAt)}`));
     }
     if (gaps.length) item.append(make('small', gaps.join(' · ')));
+    for (const [side, interfaces] of Object.entries(logicalPeerInterfaces)) {
+      for (const {name, checkedAt} of interfaces) {
+        item.append(make('small', `${side === 'a' ? nameA : nameB} · Логический интерфейс LLDP ${name} · ${formatTime(checkedAt)}`));
+      }
+    }
     appendLinkComparison(item, linkHealth, 'Замеры портов · ');
     for (const [side, checkedAt] of Object.entries(archivedPortAt)) {
       if (checkedAt) item.append(make('small', `Архив · ${side === 'a' ? nameA : nameB} · ${formatTime(checkedAt)}`));
