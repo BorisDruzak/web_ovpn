@@ -11,6 +11,20 @@ PROFILE = "test-vlan"
 NOW = datetime(2026, 11, 13, 1, tzinfo=UTC)
 
 
+def test_receiver_loads_routes_even_with_newer_speed_fields(tmp_path, monkeypatch, push_profile):
+    from app import network_probe_profiles
+
+    config = tmp_path / "profiles.json"
+    config.write_text(json.dumps({
+        "routes": {PROFILE: push_profile.model_dump()},
+        "https_speed": {"future": {"future_speed_field": True}},
+    }), encoding="utf-8")
+    monkeypatch.setattr(network_probe_profiles, "PROFILE_PATH", config)
+    monkeypatch.setattr(network_probe_profiles, "_is_trusted_file", lambda info: True)
+    assert network_probe_profiles.load_probe_profiles().routes == {}
+    assert network_probe_profiles.load_probe_profiles(routes_only=True).routes[PROFILE] == push_profile
+
+
 @pytest.fixture
 def push_profile():
     return RouteProfile.model_validate({"label": "Windows", "probes": [{

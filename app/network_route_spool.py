@@ -172,7 +172,7 @@ def main() -> int:
         if args.action == "receive":
             if args.config or os.environ.get("SSH_ORIGINAL_COMMAND"):
                 raise ValueError("The receiver only accepts a receipt on standard input")
-            profile = load_probe_profiles().routes[args.profile]
+            profile = load_probe_profiles(routes_only=True).routes[args.profile]
             store_receipt(args.origin, args.profile, profile, sys.stdin.buffer.read(MAX_RECEIPT_BYTES + 1), now=utcnow())
         else:
             profile = RouteProfile.model_validate_json(args.config.read_bytes())

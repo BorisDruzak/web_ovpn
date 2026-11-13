@@ -272,7 +272,7 @@ def _is_trusted_file(info: os.stat_result) -> bool:
     )
 
 
-def load_probe_profiles() -> ProbeProfiles:
+def load_probe_profiles(*, routes_only: bool = False) -> ProbeProfiles:
     try:
         if PROFILE_PATH.is_symlink():
             raise ValueError("profile file must not be a symlink")
@@ -283,7 +283,10 @@ def load_probe_profiles() -> ProbeProfiles:
             data = config.read(32769)
         if len(data) > 32768:
             raise ValueError("profile file exceeds byte budget")
-        return ProbeProfiles.model_validate(json.loads(data))
+        catalog = json.loads(data)
+        if routes_only and isinstance(catalog, dict):
+            catalog = {"routes": catalog.get("routes", {})}
+        return ProbeProfiles.model_validate(catalog)
     except FileNotFoundError:
         return ProbeProfiles()
     except (OSError, ValueError, ValidationError):
