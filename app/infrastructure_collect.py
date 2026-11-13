@@ -3642,8 +3642,9 @@ def collect_hypervisor_memory(graph: dict, now: datetime) -> None:
     except EndpointPlatformServiceError:
         return
     try:
+        identities = adapter.list_agent_network_identities()
         audit = _summarize_agent_audit(
-            nodes, matching_keys, set(), adapter.list_agent_network_identities(), now,
+            nodes, matching_keys, set(), identities, datetime.now(timezone.utc),
             snapshot_fresh=True, enrollments={}, device_presences=[],
             hypervisor_evidence={node_id: raw[node_id]["agentMatchCheckedAt"] for node_id in keys},
             load_agent_profiles=adapter.read_observed_profiles, collect_hypervisor_health=True,
