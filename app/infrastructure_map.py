@@ -2234,6 +2234,7 @@ def _physical_attachments(nodes: dict, links: list[dict], host_ids: list[str]) -
         return []
     connections = {host_id: [] for host_id in host_ids}
     controllers = defaultdict(dict)
+    controller_services = defaultdict(set)
     pending_by_node = defaultdict(list)
     _, inventory_pairs, _, pending, current_pairs = _topology_port_pairs(nodes, links)
     inventory_by_node = defaultdict(list)
@@ -2246,6 +2247,9 @@ def _physical_attachments(nodes: dict, links: list[dict], host_ids: list[str]) -
         for side in ("a", "b"):
             pending_by_node[pair[side]].append(pair)
     for edge in links:
+        if (_is_service_attachment(edge) and nodes[edge["a"]]["kind"] == "Контроллер управления"
+                and nodes[edge["b"]]["kind"] == "Сервис"):
+            controller_services[edge["a"]].add(edge["b"])
         if (edge["kind"] == "Управление оборудованием" and edge["b"] in connections
                 and nodes[edge["a"]]["kind"] == "Контроллер управления"):
             candidates = controllers[edge["b"]]
@@ -2306,6 +2310,10 @@ def _physical_attachments(nodes: dict, links: list[dict], host_ids: list[str]) -
              **({"managementControllers": [
                  {"node": _attachment_node(nodes[controller]), "confirmed": confirmed,
                   "servicePaths": _management_service_paths(nodes[controller], controller, {}, observed_ports),
+                  "serviceTotal": len(controller_services[controller]),
+                  "services": [{"node": _attachment_node(nodes[service]),
+                                "serviceChecks": nodes[service]["serviceChecks"]}
+                               for service in sorted(controller_services[controller])[:12]],
                   "inventoryPairs": inventory_by_node[controller][:24],
                   "currentPortPairs": current_by_node[controller][:24],
                   **pending_pairs(controller)}

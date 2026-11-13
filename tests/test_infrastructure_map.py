@@ -7127,6 +7127,7 @@ def test_attachment_includes_controller_path_without_attributing_it_to_the_serve
     path = tmp_path / "map.json"
     links = [
         {"a": "bmc", "b": "server", "kind": "Управление оборудованием", "confirmed": True},
+        {"a": "bmc", "b": "redfish", "kind": "Размещение", "confirmed": True},
         {"a": "sw", "b": "bmc", "kind": "Сетевое соединение", "confirmed": False, "portEvidence": [
             {"a": "ge13", "b": "eth0", "source": "GitHub", "confirmed": False}]},
         {"a": "sw", "b": "bmc", "kind": "Путь по MAC-таблице", "confirmed": True, "portEvidence": [
@@ -7143,6 +7144,9 @@ def test_attachment_includes_controller_path_without_attributing_it_to_the_serve
                  "identityCheckedAt": stamp, "target": "192.0.2.31"}]},
             {"id": "sw", "name": "Switch", "kind": "Коммутатор", "ports": [
                 {"name": "ge13", "state": "up", "checkedAt": stamp}]},
+            {"id": "redfish", "name": "Redfish", "kind": "Сервис", "serviceChecks": [
+                {"method": "HTTPS", "source": "UI_VPN", "state": "reachable", "checkedAt": stamp,
+                 "required": True, "port": 443, "target": "192.0.2.31", "httpStatus": 200}]},
         ]}), encoding="utf-8")
         return summarize_guest_attachment(load_infrastructure_map(path), "server")["attachment"]
 
@@ -7151,6 +7155,10 @@ def test_attachment_includes_controller_path_without_attributing_it_to_the_serve
     controller, = host["managementControllers"]
     assert controller["node"]["id"] == "bmc"
     assert controller["confirmed"] is True
+    service, = controller["services"]
+    assert service["node"]["id"] == "redfish"
+    check, = service["serviceChecks"]
+    assert (check["port"], check["httpStatus"], check["state"]) == (443, 200, "reachable")
     probe, = controller["servicePaths"]
     assert probe["switchAttachment"]["port"] == "ge13"
     assert "physicalPair" not in probe["switchAttachment"]
@@ -7163,8 +7171,8 @@ def test_attachment_includes_controller_path_without_attributing_it_to_the_serve
     links[0]["confirmed"] = False
     candidate, = read()["physicalHosts"][0]["managementControllers"]
     assert candidate == {**controller, "confirmed": False}
-    links[1]["confirmed"] = True
-    links[1]["portEvidence"][0]["confirmed"] = True
+    links[2]["confirmed"] = True
+    links[2]["portEvidence"][0]["confirmed"] = True
     host, = read()["physicalHosts"]
     controller, = host["managementControllers"]
     pair, = controller["inventoryPairs"]
