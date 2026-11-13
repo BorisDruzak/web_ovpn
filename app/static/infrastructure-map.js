@@ -265,12 +265,18 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const summary = panel.querySelector('summary');
     const list = panel.querySelector('ul');
     const more = panel.querySelector('small');
-    const {pendingPortPairTotal = 0, pendingPortPairs = [],
+    const {pendingPortPairTotal = 0, pendingPortPairs = [], pendingPortPairLinkCounts = {},
       lacpPartnerInterfaceGapTotal = 0, lacpPartnerInterfaceGaps = []} = data;
     const total = pendingPortPairTotal + lacpPartnerInterfaceGapTotal;
     panel.hidden = view !== 'switches' || !total;
     if (panel.hidden) return;
     summary.textContent = 'Пары портов без подтверждения · ' + pendingPortPairTotal;
+    const {both_up = 0, unconfirmed = 0} = pendingPortPairLinkCounts;
+    const issues = ['one_down', 'both_down', 'port_down', 'speed_mismatch']
+      .reduce((count, state) => count + (pendingPortPairLinkCounts[state] ?? 0), 0);
+    if (both_up) summary.append(' · Оба линка подняты: ' + both_up);
+    if (issues) summary.append(' · Отклонения: ' + issues);
+    if (unconfirmed) summary.append(' · Мало замеров: ' + unconfirmed);
     if (lacpPartnerInterfaceGapTotal) summary.append(' · Интерфейсы LACP · ' + lacpPartnerInterfaceGapTotal);
     const pending = pendingPortPairs.map(pendingPortPairRow);
     const lacp = lacpPartnerInterfaceGaps.map(({name, switchId, aggregate, switchPort, partnerPort}) => {

@@ -8968,11 +8968,17 @@ def test_reciprocal_mac_path_shows_fresh_stp_evidence_without_confirming_cable(t
     assert comparison["trafficComparison"]["overlapSeconds"] == 300
     assert comparison["linkHealth"] == {"state": "both_up", "checkedAt": stamp}
     assert comparison_graph["pendingPortPairs"][0]["linkHealth"] == comparison["linkHealth"]
+    assert summarize_topology(comparison_graph)["topologyAudit"]["pendingPairLinkCounts"] == {"both_up": 1}
+    scoped = summarize_topology(comparison_graph, node_id=comparison["a"],
+                                port_name=comparison["portA"])["topologyAudit"]
+    assert scoped["pendingPairLinkCounts"] == {"both_up": 1}
+    assert comparison_graph["pendingPortPairLinkCounts"] == {"both_up": 1}
     assert comparison["trafficComparison"]["aToB"] == {"txBps": 1000, "rxBps": 1000, "differencePercent": 0}
     assert comparison["trafficComparison"]["bToA"]["differencePercent"] == 5
     assert comparison_graph["pendingPortPairs"][0]["trafficComparison"] == comparison["trafficComparison"]
     upstream = summarize_topology(graph, node_id="root", port_name="GE21")["topologyAudit"]
     assert upstream["currentPairs"] == [confirmed] and upstream["pendingTotal"] == 0
+    assert upstream["pendingPairLinkCounts"] == {}
     assert upstream["stpRelatedPending"] == [pending]
     assert summarize_topology(graph, node_id="root", port_name="ge22")["topologyAudit"]["stpRelatedPending"] == []
     assert graph["pendingPortPairs"][0]["stpBridgeConnections"] == [confirmed]

@@ -2400,6 +2400,7 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
             "inventoryPairs": [row for row in inventory_pairs if matches(row)][:64],
             "inventoryOnlyPairTotal": len(archived), "inventoryOnlyPairs": archived[:64],
             "pendingTotal": len(gaps), "pending": gaps[:64],
+            "pendingPairLinkCounts": dict(Counter(row["linkHealth"]["state"] for row in gaps)),
             "confirmationGapCounts": dict(Counter(reason for row in gaps for reason in row["confirmationGaps"])),
             "stpRelatedPendingTotal": len(stp_related_gaps), "stpRelatedPending": stp_related_gaps[:64],
             "portAlertTotal": len(port_alerts), "portAlerts": port_alerts[:64],
@@ -2429,6 +2430,8 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
         for check in node["serviceChecks"] if check["method"] == SNMP_COLLECTION_METHOD and check["state"] != "reachable"
     ]
     return {**metadata, "topologyAudit": {"directLinks": counts, "pendingTotal": len(pending),
+                                        "pendingPairLinkCounts": dict(Counter(
+                                            row["linkHealth"]["state"] for row in pending)),
                                         "confirmationGapCounts": dict(Counter(
                                             reason for row in pending for reason in row["confirmationGaps"])),
                                         "currentPairTotal": len(current_pairs), "currentPairs": current_pairs[:64],
@@ -4052,7 +4055,7 @@ def load_infrastructure_map(
             "lacpPartnerInterfaceGaps": []} if include_port_pairs else {}),
         **({"guestAttachments": {}, "servicePaths": {}, "servicePorts": {}, "inventoryPairs": [],
             "currentPortPairTotal": 0, "currentPortPairs": [],
-            "pendingPortPairTotal": 0, "pendingPortPairs": [],
+            "pendingPortPairTotal": 0, "pendingPortPairs": [], "pendingPortPairLinkCounts": {},
             "lacpPartnerInterfaceGapTotal": 0, "lacpPartnerInterfaceGaps": []} if include_guest_attachments else {}),
     }
     try:
@@ -4381,6 +4384,7 @@ def load_infrastructure_map(
             currentPortPairs=current_pairs[:64],
             sharedPorts=_summarize_shared_ports(pending),
             pendingPortPairTotal=len(pending),
+            pendingPortPairLinkCounts=dict(Counter(row["linkHealth"]["state"] for row in pending)),
             pendingPortPairs=[
                 {**{key: row[key] for key in ("a", "b", "nameA", "nameB", "portA", "portB")},
                  "observedPaths": [
