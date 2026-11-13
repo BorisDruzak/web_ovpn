@@ -101,6 +101,7 @@ def route_report(
                 ],
             }
         if "ipsec" in summary:
+            summary.update({key: probe[key] for key in ("origin", "source_address", "target") if probe.get(key)})
             policy = summary["ipsec"]
             counters = probe["ipsec"].get("peer_sa_counters")
             if isinstance(counters, dict):
@@ -205,6 +206,37 @@ def route_report(
         "probes": probes,
         "push_origins": push_origins,
     }
+
+
+def bidirectional_ipsec_report(routes: dict) -> dict:
+    pairs = []
+    unpaired = []
+    for profile, route in routes.items():
+        directions = {}
+        for probe in route["probes"]:
+            if "ipsec_policy_confirmed" not in probe:
+                continue
+            source, target, origin = (probe.get(field) for field in ("source_address", "target", "origin"))
+            if not source or not target or not origin or source == target:
+                unpaired.append({"profile": profile, "probe": probe.get("id")})
+                continue
+            row = directions.setdefault((source, target), {}).setdefault(origin, {
+                "source_address": source, "target": target, "origin": origin, "confirmed": False,
+            })
+            row["confirmed"] |= probe["ipsec_policy_confirmed"] and probe["status"] == "reachable"
+        for source, target in sorted({tuple(sorted(endpoints)) for endpoints in directions}):
+            forward = list(directions.get((source, target), {}).values())
+            reverse = list(directions.get((target, source), {}).values())
+            reciprocal = [(left, right) for left in forward for right in reverse if left["origin"] != right["origin"]]
+            if not reciprocal:
+                unpaired.append({"profile": profile, "endpoints": [source, target], "directions": forward + reverse})
+                continue
+            pairs.append({
+                "profile": profile, "endpoints": [source, target], "directions": forward + reverse,
+                "confirmed": any(left["confirmed"] and right["confirmed"] for left, right in reciprocal),
+            })
+    return {"configured": len(pairs), "confirmed": sum(pair["confirmed"] for pair in pairs),
+            "pairs": pairs, "unpaired": unpaired}
 
 
 def loop_observations_match(api: dict, mcp: dict) -> bool:
@@ -582,6 +614,10 @@ def main() -> int:
         help="require an established IPsec policy with Phase 2 and a reachable target for each IPsec probe",
     )
     parser.add_argument(
+        "--require-bidirectional-ipsec", action="store_true",
+        help="require reachable reciprocal IPsec probes from different routers in the same profile",
+    )
+    parser.add_argument(
         "--require-expected-first-hop", action="store_true",
         help="require confirmation for every configured first hop",
     )
@@ -670,6 +706,8 @@ def main() -> int:
         "targets_reachable": sum(probe["status"] == "reachable" for probe in ipsec_probes),
         "confirmed": ipsec_confirmed,
     }
+    if args.require_bidirectional_ipsec:
+        report["bidirectional_ipsec"] = bidirectional_ipsec_report(report["routes"])
     dns_probes = [probe for route in routes for probe in route["probes"] if probe.get("dns_transport")]
     confirmed_dns = sum(
         probe["status"] == "reachable"
@@ -743,6 +781,12 @@ def main() -> int:
         return 1
     if args.require_ipsec and not ipsec_probes:
         return 1
+    if args.require_bidirectional_ipsec:
+        bidirectional = report["bidirectional_ipsec"]
+        if not bidirectional["configured"] or bidirectional["unpaired"]:
+            return 1
+        if bidirectional["confirmed"] != bidirectional["configured"]:
+            return 2
     if args.require_http_status and not http_probes:
         return 1
     for required, field in (

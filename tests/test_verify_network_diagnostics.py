@@ -389,6 +389,32 @@ def test_ipsec_policy_confirmation_requires_positive_phase2(phase2, address, con
     assert report["probes"][0]["ipsec_policy_confirmed"] is confirmed
 
 
+@pytest.mark.parametrize("reverse_origin,reachable,expected", [
+    (None, False, 1), ("central", True, 1), ("remote", False, 2), ("remote", True, 0),
+])
+def test_require_bidirectional_ipsec_matches_reciprocal_endpoints(monkeypatch, capsys, reverse_origin, reachable, expected):
+    monkeypatch.setattr(sys, "argv", ["verifier", "--require-bidirectional-ipsec"])
+    forward = {"origin": "central", "source_address": "192.0.2.1", "target": "198.51.100.1",
+               "status": "reachable", "ipsec_policy_confirmed": True}
+    backward = {
+        "origin": reverse_origin, "source_address": forward["target"], "target": forward["source_address"],
+        "status": "reachable" if reachable else "timeout", "ipsec_policy_confirmed": reachable,
+    }
+    duplicate = {**forward, "status": "timeout"}
+    probes = [forward, duplicate] + ([backward] if reverse_origin else [])
+    monkeypatch.setattr(verifier, "verify", lambda *_: {"routes": {
+        "ipsec": {"fresh": True, "profile_matches": True, "api_matches": True, "probes": probes},
+    }})
+    assert verifier.main() == expected
+    report = json.loads(capsys.readouterr().out)["bidirectional_ipsec"]
+    assert report["configured"] == int(reverse_origin == "remote")
+    assert report["confirmed"] == int(expected == 0)
+    if reverse_origin == "remote":
+        [pair] = report["pairs"]
+        assert pair["profile"] == "ipsec"
+        assert [direction["origin"] for direction in pair["directions"]] == ["central", "remote"]
+
+
 @pytest.mark.parametrize("session,route,confirmed", [
     ("not_connected", None, False),
     ("connected", {"status": "route_found", "result": {"dev": "tun0"}}, True),
