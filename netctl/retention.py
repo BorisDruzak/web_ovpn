@@ -55,16 +55,14 @@ def _latest_run_ids(conn: sqlite3.Connection, table: str, group_column: str, sta
     placeholders = ", ".join("?" for _ in statuses)
     return _ids(
         conn.execute(
-            f"""SELECT runs.id FROM {table} AS runs
-                WHERE runs.status IN ({placeholders})
-                  AND runs.id = (
-                    SELECT latest.id FROM {table} AS latest
-                    WHERE latest.{group_column} IS runs.{group_column}
-                      AND latest.status IN ({placeholders})
-                    ORDER BY COALESCE(latest.finished_at, latest.started_at) DESC, latest.id DESC
-                    LIMIT 1
-                  )""",
-            (*statuses, *statuses),
+            f"""SELECT id FROM (
+                    SELECT id, ROW_NUMBER() OVER (
+                        PARTITION BY {group_column}
+                        ORDER BY COALESCE(finished_at, started_at) DESC, id DESC
+                    ) AS position
+                    FROM {table} WHERE status IN ({placeholders})
+                ) WHERE position = 1""",
+            statuses,
         )
     )
 
@@ -170,28 +168,26 @@ def protected_nmap_run_ids(conn: sqlite3.Connection) -> set[int]:
 
 
 def _old_ids(conn: sqlite3.Connection, table: str, timestamp_column: str, cutoff: str, protected: set[int] | None = None) -> list[int]:
-    query = f"SELECT id FROM {table} WHERE {timestamp_column} < ?"
-    params: list[object] = [cutoff]
-    if protected:
-        placeholders = ", ".join("?" for _ in protected)
-        query += f" AND id NOT IN ({placeholders})"
-        params.extend(sorted(protected))
-    return [int(row[0]) for row in conn.execute(query, params)]
+    excluded = protected or set()
+    rows = conn.execute(f"SELECT id FROM {table} WHERE {timestamp_column} < ?", (cutoff,))
+    return [int(row[0]) for row in rows if row[0] not in excluded]
+
+
+def _id_batches(conn: sqlite3.Connection, ids: list[int]) -> Iterable[list[int]]:
+    size = min(10_000, conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER))
+    for start in range(0, len(ids), size):
+        yield ids[start:start + size]
 
 
 def _child_ids_for_runs(
     conn: sqlite3.Connection, table: str, run_ids: list[int]
 ) -> list[int]:
-    if not run_ids:
-        return []
-    placeholders = ", ".join("?" for _ in run_ids)
-    return [
-        int(row[0])
-        for row in conn.execute(
-            f"SELECT id FROM {table} WHERE run_id IN ({placeholders}) ORDER BY id",
-            run_ids,
-        )
-    ]
+    ids = []
+    for batch in _id_batches(conn, run_ids):
+        placeholders = ", ".join("?" for _ in batch)
+        rows = conn.execute(f"SELECT id FROM {table} WHERE run_id IN ({placeholders})", batch)
+        ids.extend(int(row[0]) for row in rows)
+    return sorted(ids)
 
 
 def _count_current_references(conn: sqlite3.Connection, tables: tuple[str, ...], column: str) -> int:
@@ -259,7 +255,10 @@ def retention_report(
         cutoff,
         nmap_protected,
     )
-    delete = {table: len(_old_ids(conn, table, column, cutoff)) for table, column in _EVENT_TABLES}
+    delete = {
+        table: int(conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {column} < ?", (cutoff,)).fetchone()[0])
+        for table, column in _EVENT_TABLES
+    }
     delete["switch_port_counter_samples"] = len(counter_sample_ids)
     delete["nmap_fingerprint_ports"] = len(
         _child_ids_for_runs(conn, "nmap_fingerprint_ports", nmap_run_ids)
@@ -303,10 +302,11 @@ def retention_report(
 
 
 def _delete_ids(conn: sqlite3.Connection, table: str, ids: list[int]) -> int:
-    if not ids:
-        return 0
-    placeholders = ", ".join("?" for _ in ids)
-    return int(conn.execute(f"DELETE FROM {table} WHERE id IN ({placeholders})", ids).rowcount)
+    deleted = 0
+    for batch in _id_batches(conn, ids):
+        placeholders = ", ".join("?" for _ in batch)
+        deleted += conn.execute(f"DELETE FROM {table} WHERE id IN ({placeholders})", batch).rowcount
+    return deleted
 
 
 def _verify_database(conn: sqlite3.Connection) -> None:
@@ -357,7 +357,9 @@ def apply_retention(
             conn, "nmap_fingerprint_runs", nmap_run_ids
         )
         for table, timestamp_column in _EVENT_TABLES:
-            deleted[table] = _delete_ids(conn, table, _old_ids(conn, table, timestamp_column, cutoff))
+            deleted[table] = conn.execute(
+                f"DELETE FROM {table} WHERE {timestamp_column} < ?", (cutoff,)
+            ).rowcount
         deleted["ip_observations"] = int(conn.execute(
             "DELETE FROM ip_observations WHERE is_current = 0 AND last_seen_at < ?", (cutoff,)
         ).rowcount)

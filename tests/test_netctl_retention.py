@@ -20,6 +20,17 @@ def test_retention_parent_delete_uses_child_index(conn, parent, child):
     assert any(detail.startswith(f"SEARCH {child} ") for detail in details), details
 
 
+def test_delete_expired_ids_respects_sqlite_variable_limit(conn):
+    from netctl.retention import _delete_ids
+
+    conn.execute("CREATE TEMP TABLE retention_batch_test (id INTEGER PRIMARY KEY)")
+    conn.executemany("INSERT INTO retention_batch_test VALUES (?)", [(n,) for n in range(12)])
+    conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 4)
+
+    assert _delete_ids(conn, "retention_batch_test", list(range(11))) == 11
+    assert [row[0] for row in conn.execute("SELECT id FROM retention_batch_test")] == [11]
+
+
 @pytest.fixture
 def conn(tmp_path):
     from netctl.db import connect
