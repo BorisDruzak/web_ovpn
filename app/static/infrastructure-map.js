@@ -261,7 +261,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       observedSourceTimes = {}, identifiedPeerSides = [], archivedPortSides = [], inventoryPortSides = [],
       portObservations = {}, stpPaths = [], stpBridgeConnections = [], stpBridgeMacObservations = [], lldpPeers = {},
       archivedPortAt = {}, inventorySources = [], inventoryPeerPorts = [], arpDiagnostics = {}, observedPaths = [],
-      multiMacPortSides = []}) {
+      multiMacPortSides = [], unconfirmedLldpCandidates = []}) {
     const item = make('li');
     const provenance = key => archivedPortSides.includes(key) ? ' (по архиву)' :
       inventoryPortSides.includes(key) ? ' (по инвентарю)' : '';
@@ -292,6 +292,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     }
     if (!Object.keys(lldpPeers).length && lldpPortIds.length) {
       item.append(make('small', 'LLDP Port ID ' + lldpPortIds.join(', ')));
+    }
+    for (const {systemName, portId, portIdSubtype, chassisId, checkedAt} of unconfirmedLldpCandidates) {
+      const evidence = [systemName, portId && formatLldpPortId(portId, portIdSubtype), chassisId, formatTime(checkedAt)];
+      item.append(make('small', ['Возможный сосед LLDP', ...evidence.filter(Boolean)].join(' · ')));
     }
     for (const {port, inventorySources} of inventoryPeerPorts) {
       item.append(make('small', `По инвентарю · ${nameB} · ${port}`));
