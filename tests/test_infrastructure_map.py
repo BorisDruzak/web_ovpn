@@ -6850,6 +6850,11 @@ def test_attachment_view_includes_physical_service_hosts_and_distinguishes_port_
     switch, = switch_attachment["physicalHosts"]
     service_port, = switch_attachment["servicePorts"]
     assert service_port["port"] == "ge1" and service_port["total"] == 1
+    scope = "/api/v1/network/infrastructure?view=topology&node_id=sw"
+    for suffix, expected in (("", [service_port]), ("&port_name=GE1", [service_port]), ("&port_name=xe1", [])):
+        result = client.get(scope + suffix, headers=headers)
+        assert result.status_code == 200
+        assert result.json()["infrastructure"]["topologyAudit"]["servicePorts"] == expected
     assert [(service["id"], service["basis"]) for service in service_port["services"]] == [("web", ["host_mac"])]
     assert service_port["services"][0]["probeEndpoints"] == [{
         "method": "TCP", "target": "192.0.2.10", "port": 8000,

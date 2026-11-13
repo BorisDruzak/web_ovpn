@@ -1905,6 +1905,8 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
             "portAlertTotal": len(port_alerts), "portAlerts": port_alerts[:64],
             "vlanAudits": [row for row in vlan_audits if matches(row)][:64],
             "lacpHealth": aggregates[:64],
+            "servicePorts": [row for row in graph.get("servicePorts", {}).get(node_id, [])
+                             if not port_name or port_label_key(row["port"]) in keys],
             "lacpPartnerInterfaceGapTotal": len(partner_gaps), "lacpPartnerInterfaceGaps": partner_gaps[:64],
         }}
     stp = [{"id": node["id"], "name": node["name"], **node["stpRootPath"]}

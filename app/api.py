@@ -1075,7 +1075,7 @@ def api_network_infrastructure(
         graph = load_infrastructure_agent_audit(path, node_id=node_id)
     else:
         graph = load_infrastructure_map(path, db=db, include_service_ports=(
-            view is None and include_service_ports or view == "attachment" and node_id is not None
+            view is None and include_service_ports or view in {"attachment", "topology"} and node_id is not None
         ), include_port_pairs=view is None and include_port_pairs)
         if view == "services":
             graph = summarize_services(graph, offset=service_offset or 0)
