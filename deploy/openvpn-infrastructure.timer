@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh the UI_VPN infrastructure map
+
+[Timer]
+OnActiveSec=20s
+OnUnitInactiveSec=40s
+AccuracySec=1s
+Unit=openvpn-infrastructure.service
+
+[Install]
+WantedBy=timers.target
