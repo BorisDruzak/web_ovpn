@@ -151,6 +151,36 @@ def test_route_report_preserves_bounded_trace_evidence(trace):
     assert report["probes"][0]["trace"] == trace
 
 
+def test_route_report_preserves_packet_loss_and_latency_measurements():
+    now = datetime.now(UTC)
+    metrics = {
+        "sent": 3, "received": 3, "packet_loss_pct": 0.0,
+        "rtt_ms": {"min": 2.5, "avg": 3.0, "max": 4.0},
+        "rtt_variation": {"mean_abs_delta_ms": 0.5, "pairs": 2},
+    }
+    run = {
+        "id": 1, "trigger": "scheduled", "checked_at": now.isoformat(), "status": "partial",
+        "result": {"probes": [
+            {"id": "wan", "status": "reachable", "evidence": {**metrics, "rtt_ms": {
+                **metrics["rtt_ms"], "ignored": "raw output",
+            }}},
+            {"id": "offline", "status": "unreachable", "evidence": {
+                "sent": 3, "received": 0, "packet_loss_pct": 100.0,
+            }},
+            {"id": "unmeasured", "status": "unavailable", "evidence": {}},
+        ]},
+    }
+    report = route_report(
+        [run], now, timedelta(minutes=10), api_runs=[run],
+        expected_hops={"wan": None, "offline": None, "unmeasured": None},
+    )
+    assert report["probes"] == [
+        {"id": "wan", "status": "reachable", **metrics},
+        {"id": "offline", "status": "unreachable", "sent": 3, "received": 0, "packet_loss_pct": 100.0},
+        {"id": "unmeasured", "status": "unavailable"},
+    ]
+
+
 def test_route_report_rejects_previous_configuration_for_same_probe_id():
     now = datetime(2026, 11, 13, 2, 15, tzinfo=UTC)
     run = {

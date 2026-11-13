@@ -37,6 +37,8 @@ ROUTE_EVIDENCE_FIELDS = {
     "gateway_source": ("status", "dhcp", "dhcp_address", "dhcp_gateway"),
     "gateway_arp": ("status", "state", "resolved"),
     "linux_neighbor": ("address", "interface", "state"),
+    "rtt_ms": ("min", "avg", "max"),
+    "rtt_variation": ("mean_abs_delta_ms", "pairs"),
     "ipsec": ("status", "reason", "phase2_count", "local_sa_address_status",
               "local_subnet", "remote_subnet", "matching_policies"),
 }
@@ -67,6 +69,10 @@ def route_report(
             expected_digest = expected_digests.get(probe["id"])
             summary["configuration_matches"] = bool(expected_digest and probe.get("config_digest") == expected_digest)
         evidence = probe.get("evidence", {})
+        summary.update({
+            field: evidence[field] for field in ("sent", "received", "packet_loss_pct")
+            if evidence.get(field) is not None
+        })
         reason = evidence.get("reason") or probe.get("reason")
         if isinstance(reason, str) and reason:
             summary["reason"] = reason
