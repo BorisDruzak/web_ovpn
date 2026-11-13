@@ -2283,7 +2283,7 @@ def _physical_attachments(nodes: dict, links: list[dict], host_ids: list[str]) -
                 if lacp := report.get("lacp"):
                     reading["lacp"] = {"side": sides[lacp["side"]],
                                        **{key: lacp[key] for key in ("aggregate", "member", "partnerPort", "polledAt",
-                                                                      "partnerInterfaceState")
+                                                                      "partnerInterfaceState", "aggregateState")
                                           if key in lacp}}
                 readings.append(reading)
             connections[host_id].append({"peer": _attachment_node(peer), "kind": edge["kind"],
@@ -2527,7 +2527,7 @@ def _observed_management_ports(links: list[dict], nodes: dict) -> dict:
                 if report["at"] > previous.get("checkedAt", ""):
                     paths[key] = {"lacpAttachment": {"switchId": switch, "aggregate": aggregate,
                                                     "checkedAt": report["at"], "source": report["source"],
-                                                    "members": members}}
+                                                    "members": members, "aggregateState": state}}
                 continue
             if edge["kind"] == "Сетевое соединение":
                 continue

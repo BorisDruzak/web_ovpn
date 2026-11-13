@@ -3819,9 +3819,11 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
 
     probe, = service_paths()
     assert probe["target"] == "192.0.2.14" and probe["port"] == 8007
+    switch = next(node for node in load_infrastructure_map(path, now)["nodes"] if node["id"] == "snr")
+    aggregate_state = next(port for port in switch["ports"] if port["name"] == "po1")
     assert probe["lacpAttachment"] == {
         "switchId": "snr", "aggregate": "po1", "checkedAt": at, "source": "SNMP LACP + ARP",
-        "members": health["members"],
+        "members": health["members"], "aggregateState": aggregate_state,
     }
     assert "physicalPair" not in probe
 
@@ -3830,7 +3832,11 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
         host, = summarize_guest_attachment(snapshot, "pbs-web")["attachment"]["physicalHosts"]
         return host
 
-    assert service_host()["lacpHealth"] == [health]
+    host = service_host()
+    assert host["lacpHealth"] == [health]
+    members = [row["lacp"] for connection in host["connections"] for row in connection["ports"] if "lacp" in row]
+    assert len(members) == 2
+    assert all(member["aggregateState"] == probe["lacpAttachment"]["aggregateState"] for member in members)
 
     def lacp_gaps(stamp=now):
         audit = summarize_topology(load_infrastructure_map(path, stamp))["topologyAudit"]
