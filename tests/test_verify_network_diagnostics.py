@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 import struct
+import subprocess
 import sys
 
 import pytest
@@ -411,13 +412,38 @@ def test_capture_verification_compares_download_and_receipt(tmp_path, change, pa
     assert len(report["sha256"]) == 64
 
 
+@pytest.mark.parametrize("outside", [0, 1])
+def test_capture_filter_checks_bidirectional_peer_and_port(monkeypatch, outside):
+    header = struct.pack("<IHHIIII", 0xA1B2C3D4, 2, 4, 0, 0, 96, 1)
+    packet = struct.pack("<IIII", 1, 0, 1, 1) + b"x"
+    payload = header + packet
+    profile = {"interface": "ens18", "peer": "192.0.2.20", "protocol": "tcp", "port": 5201}
+
+    def run(args, **kwargs):
+        assert args == [
+            "tcpdump", "-n", "-r", "-", "-w", "-",
+            "tcp and ((src host 192.0.2.20 and src port 5201) or "
+            "(dst host 192.0.2.20 and dst port 5201))",
+        ]
+        assert kwargs["input"] == payload
+        return subprocess.CompletedProcess(args, 0, header + packet * (1 - outside))
+
+    monkeypatch.setattr(verifier.subprocess, "run", run)
+    if outside:
+        with pytest.raises(ValueError, match="outside"):
+            verifier.verify_capture_filter(profile, payload, 1)
+    else:
+        assert verifier.verify_capture_filter(profile, payload, 1) == {"filter": profile, "outside_filter_packets": 0}
+
+
 def test_capture_cli_reports_failed_verification(monkeypatch, capsys):
     capture_id = "12345678-1234-1234-1234-123456789abc"
     monkeypatch.setattr(sys, "argv", ["verifier", "--capture-id", capture_id])
     monkeypatch.setattr(verifier, "verify", lambda *_: {"contracts": "ok", "routes": {}})
 
-    def unavailable(_script, selected):
+    def unavailable(_script, selected, *, check_filter=False):
         assert str(selected) == capture_id
+        assert not check_filter
         raise ValueError("receipt missing")
 
     monkeypatch.setattr(verifier, "verify_capture", unavailable)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
@@ -14,7 +15,7 @@ import sys
 from urllib.parse import urlencode
 from uuid import UUID
 
-from app.network_capture import CAPTURE_MAX_KIB, CAPTURE_MAX_PACKETS, _pcap_packet_count
+from app.network_capture import CAPTURE_MAX_KIB, CAPTURE_MAX_PACKETS, _pcap_packet_count, capture_filter_expression
 from app.network_route_receipt_timing import CLOCK_TOLERANCE, MAX_AGE as PUSH_RECEIPT_MAX_AGE
 from mcp import openvpn_mcp_server as bridge
 
@@ -266,7 +267,26 @@ def capture_report(receipt: dict, download: dict, payload: bytes, directory: Pat
     return {"capture_id": capture_id, "packets": packets, "size_bytes": len(payload), "sha256": sha256(payload).hexdigest()}
 
 
-def verify_capture(script: Path, capture_id: UUID) -> dict:
+def verify_capture_filter(profile: dict, payload: bytes, packets: int) -> dict:
+    protocol = profile.get("protocol")
+    port = profile.get("port")
+    if protocol not in ("tcp", "udp") or type(port) is not int or not 1 <= port <= 65535:
+        raise ValueError("Invalid capture filter")
+    address = ipaddress.ip_address(profile.get("peer"))
+    if "%" in str(address):
+        raise ValueError("Invalid scoped capture peer")
+    expression = capture_filter_expression(address, port, protocol)
+    result = subprocess.run(
+        ["tcpdump", "-n", "-r", "-", "-w", "-", expression],
+        input=payload, capture_output=True, timeout=10, check=True,
+    )
+    matched = _pcap_packet_count(BytesIO(result.stdout), len(result.stdout), CAPTURE_MAX_PACKETS)
+    if matched != packets:
+        raise ValueError("PCAP contains packets outside the capture filter")
+    return {"filter": profile, "outside_filter_packets": 0}
+
+
+def verify_capture(script: Path, capture_id: UUID, *, check_filter: bool = False) -> dict:
     path = f"{API}/captures"
     catalog = bridge.api_request("GET", path)["data"]["captures"]
     listed = mcp_data(mcp_requests(script, [mcp_call("openvpn_network_capture_list")])[0])["captures"]
@@ -282,7 +302,10 @@ def verify_capture(script: Path, capture_id: UUID) -> dict:
     download = mcp_data(mcp_requests(script, [
         mcp_call("openvpn_network_download_pcap", {"capture_id": str(capture_id)}),
     ])[0])
-    return capture_report(receipt, download, payload, Path.home() / ".codex" / "network-captures")
+    report = capture_report(receipt, download, payload, Path.home() / ".codex" / "network-captures")
+    if check_filter:
+        report.update(verify_capture_filter(receipt.get("filter") or {}, payload, report["packets"]))
+    return report
 
 
 def interface_report(api: dict, mcp: dict, now: datetime, max_age: timedelta) -> dict:
@@ -487,6 +510,7 @@ def main() -> int:
         help="require recent usable broadcast intervals on every switch",
     )
     parser.add_argument("--capture-id", type=UUID, help="verify a nonempty PCAP owned by the current actor")
+    parser.add_argument("--require-capture-filter", action="store_true", help="verify all PCAP packets with local tcpdump")
     parser.add_argument(
         "--speed", action="append", nargs=3, metavar=("CHECK", "PROFILE", "INTERFACE"),
         help="verify both directions of a saved iperf3 or https_speed measurement for the current actor",
@@ -496,6 +520,8 @@ def main() -> int:
         help="verify recent interface telemetry in REST and MCP; repeat to check multiple interfaces",
     )
     args = parser.parse_args()
+    if args.require_capture_filter and args.capture_id is None:
+        parser.error("--require-capture-filter requires --capture-id")
     if args.max_age_minutes < 1:
         parser.error("--max-age-minutes must be positive")
     if any(check not in {"iperf3", "https_speed"} for check, _, _ in args.speed or ()):
@@ -551,7 +577,7 @@ def main() -> int:
             report["interface_error"] = "interface_verification_failed"
     if args.capture_id is not None:
         try:
-            report["capture"] = verify_capture(args.mcp_script, args.capture_id)
+            report["capture"] = verify_capture(args.mcp_script, args.capture_id, check_filter=args.require_capture_filter)
         except (OSError, LookupError, RuntimeError, TypeError, ValueError, subprocess.SubprocessError):
             report["capture"] = {"capture_id": str(args.capture_id), "error": "capture_verification_failed"}
             print(json.dumps(report, ensure_ascii=False, indent=2))

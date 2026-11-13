@@ -80,6 +80,13 @@ def _pcap_packet_count(stream: BinaryIO, size: int, max_packets: int) -> int | N
     return packets
 
 
+def capture_filter_expression(address: ipaddress.IPv4Address | ipaddress.IPv6Address, port: int, protocol: Literal["tcp", "udp"]) -> str:
+    return (
+        f"{protocol} and ((src host {address} and src port {port}) or "
+        f"(dst host {address} and dst port {port}))"
+    )
+
+
 def capture_packets(
     output: Path,
     *,
@@ -128,10 +135,6 @@ def capture_packets(
     if filesize_kb < 1:
         max_packets = min(max_packets, (max_bytes - _PCAP_HEADER_SIZE) // record_max_bytes)
         filesize_kb = 1
-    capture_filter = (
-        f"{protocol} and ((src host {address} and src port {port}) or "
-        f"(dst host {address} and dst port {port}))"
-    )
     command = [
         _DUMPCAP,
         "-P",
@@ -140,7 +143,7 @@ def capture_packets(
         "-i",
         interface,
         "-f",
-        capture_filter,
+        capture_filter_expression(address, port, protocol),
         "-s",
         str(CAPTURE_SNAPLEN),
         "-a",
