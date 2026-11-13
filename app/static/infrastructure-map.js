@@ -94,9 +94,12 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   }
   function appendRxErrorCounters(parent, counters, portName = '') {
     const labels = {ifInErrors:'Всего RX', fcsErrors:'FCS', alignmentErrors:'Выравнивание',
-      frameTooLongs:'Длинные кадры', internalMacRxErrors:'Внутренние ошибки MAC', symbolErrors:'Ошибки символов'};
+      frameTooLongs:'Длинные кадры', internalMacRxErrors:'Внутренние ошибки MAC', symbolErrors:'Ошибки символов',
+      rxPauseFrames:'Кадры PAUSE RX', txPauseFrames:'Кадры PAUSE TX'};
     const counts = Object.entries(labels).filter(([key]) => key in counters)
       .map(([key, label]) => `${label} ${counters[key].toLocaleString('ru-RU')}`);
+    const pauseModes = {disabled:'выключен', tx_only:'передача', rx_only:'приём', tx_rx:'приём и передача'};
+    if (Object.hasOwn(pauseModes, counters.pauseOperMode)) counts.push(`Режим PAUSE: ${pauseModes[counters.pauseOperMode]}`);
     const title = [portName, 'Накопленные счётчики SNMP', formatTime(counters.checkedAt)].filter(Boolean).join(' · ');
     parent.append(make('small', title), make('small', counts.join(' · ')));
   }

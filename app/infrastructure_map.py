@@ -12,7 +12,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from netctl.snmp.interfaces import BRIDGE_STP_PORT_STATES, LLDP_ADMIN_STATES, RX_ERROR_COLUMNS
+from netctl.snmp.interfaces import (
+    BRIDGE_STP_PORT_STATES, LLDP_ADMIN_STATES, PAUSE_FRAME_COLUMNS, PAUSE_MODES, RX_ERROR_COLUMNS,
+)
 from netctl.snmp.lldp import LLDP_PORT_ID_SUBTYPES
 
 from .endpoint_context_adapter import get_endpoint_context_adapter
@@ -402,6 +404,10 @@ def _public_port(row: dict, now: datetime) -> dict:
             readings = {key: value for key in RX_ERROR_COLUMNS
                         if type(value := counters.get(key)) is int and 0 <= value < 2**32}
             if "ifInErrors" in readings and len(readings) > 1:
+                readings.update({key: value for key in PAUSE_FRAME_COLUMNS
+                                 if type(value := counters.get(key)) is int and 0 <= value < 2**32})
+                if isinstance(mode := counters.get("pauseOperMode"), str) and mode in PAUSE_MODES.values():
+                    readings["pauseOperMode"] = mode
                 result["rxErrorCounters"] = {"checkedAt": _time(counters["checkedAt"]).isoformat(), **readings}
     if memberships := _public_port_vlans(row.get("vlanMemberships"), result):
         result["vlanMemberships"] = memberships

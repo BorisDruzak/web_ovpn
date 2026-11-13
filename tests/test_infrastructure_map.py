@@ -5081,6 +5081,7 @@ def test_switch_port_telemetry_requires_matching_current_collection(tmp_path):
                "ports": [{"source": "core", "port_key": "physical:7", "name": "Port7",
                           "collector_run_id": 11, "oper_status": "up", "last_seen_at": at,
                           "rxErrorCounters": {"checkedAt": at, "ifInErrors": 44, "fcsErrors": 0,
+                                              "pauseOperMode": "disabled", "rxPauseFrames": 0, "txPauseFrames": 17,
                                               "alignmentErrors": -1, "unrecognized": 1}}],
                "port_telemetry": [sample], "empty_vlan_collections": {"core": at}}
     path = tmp_path / "map.json"
@@ -5102,7 +5103,8 @@ def test_switch_port_telemetry_requires_matching_current_collection(tmp_path):
     assert "vlanCollection" not in read()[0]
     assert port["telemetry"] == {"checkedAt": at, "intervalSeconds": 300,
                                  "rxBps": 250000, "txBps": 0, "rxErrors": 2}
-    assert port["rxErrorCounters"] == {"checkedAt": at, "ifInErrors": 44, "fcsErrors": 0}
+    assert port["rxErrorCounters"] == {"checkedAt": at, "ifInErrors": 44, "fcsErrors": 0,
+                                       "pauseOperMode": "disabled", "rxPauseFrames": 0, "txPauseFrames": 17}
     assert audit == {"measuredPorts": 1, "affectedPorts": 1, "ports": [
         {"deviceId": "sw", "deviceName": "Switch", "port": "Port7", "telemetry": port["telemetry"],
          "rxErrorCounters": port["rxErrorCounters"]},

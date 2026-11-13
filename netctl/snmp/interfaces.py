@@ -51,6 +51,9 @@ RX_ERROR_COLUMNS = {
     "internalMacRxErrors": (*_DOT3_STATS_ENTRY, 16),
     "symbolErrors": (*_DOT3_STATS_ENTRY, 18),
 }
+_DOT3_PAUSE_ENTRY = (1, 3, 6, 1, 2, 1, 10, 7, 10, 1)
+PAUSE_FRAME_COLUMNS = {"rxPauseFrames": (*_DOT3_PAUSE_ENTRY, 3), "txPauseFrames": (*_DOT3_PAUSE_ENTRY, 4)}
+PAUSE_MODES = {1: "disabled", 2: "tx_only", 3: "rx_only", 4: "tx_rx"}
 BRIDGE_STP_PORT_STATES = {1: "disabled", 2: "blocking", 3: "listening", 4: "learning", 5: "forwarding", 6: "broken"}
 LLDP_ADMIN_STATES = {1: "tx_only", 2: "rx_only", 3: "tx_rx", 4: "disabled"}
 
@@ -250,7 +253,16 @@ async def read_interface_rx_error_counters(transport, if_index: int, expected_na
         row = await _interface_scalar(transport, column, if_index)
         if row and row.value_type == "counter32" and type(row.value) is int and 0 <= row.value < 2**32:
             counters[field] = row.value
-    return counters if len(counters) > 1 and "ifInErrors" in counters else {}
+    if "ifInErrors" not in counters or len(counters) < 2:
+        return {}
+    for field, column in PAUSE_FRAME_COLUMNS.items():
+        row = await _interface_scalar(transport, column, if_index)
+        if row and row.value_type == "counter32" and type(row.value) is int and 0 <= row.value < 2**32:
+            counters[field] = row.value
+    mode = await _interface_scalar(transport, (*_DOT3_PAUSE_ENTRY, 2), if_index)
+    if mode and mode.value_type == "integer" and mode.value in PAUSE_MODES:
+        counters["pauseOperMode"] = PAUSE_MODES[mode.value]
+    return counters
 
 
 async def read_interface_link(transport, if_index: int, expected_name: str) -> dict:
