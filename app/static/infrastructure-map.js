@@ -203,7 +203,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   }
   function pendingPortPairRow({a, b, nameA, nameB, portA, portB, observedSources = [], lldpPortIds = [],
       observedSourceTimes = {}, identifiedPeerSides = [], archivedPortSides = [], inventoryPortSides = [],
-      portObservations = {}, stpPaths = [], lldpPeers = {}}) {
+      portObservations = {}, stpPaths = [], stpBridgeConnections = [], lldpPeers = {}}) {
     const item = make('li');
     const provenance = key => archivedPortSides.includes(key) ? ' (по архиву)' :
       inventoryPortSides.includes(key) ? ' (по инвентарю)' : '';
@@ -229,6 +229,11 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       item.append(make('small', 'Сосед опознан со стороны ' + observers.join(', ')));
     }
     for (const path of stpPaths) appendStpPath(item, path);
+    if (stpBridgeConnections.length) {
+      const list = make('ul', null, 'map-detail-list');
+      list.append(...stpBridgeConnections.map(confirmedPortPairRow));
+      item.append(make('small', 'Подтверждённые пары на порту моста STP'), list);
+    }
     for (const [side, port] of Object.entries(portObservations)) {
       const label = `${side === 'a' ? nameA : nameB} ${port.name}`;
       const reading = [label, portLabels[port.state], formatPortSpeed(port.speedBps), formatTime(port.checkedAt)];

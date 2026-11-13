@@ -7434,23 +7434,28 @@ def test_reciprocal_mac_path_shows_fresh_stp_evidence_without_confirming_cable(t
     stamp = now.isoformat()
     path = tmp_path / "infrastructure.json"
     stp = {"localPort": "Port13", "designatedBridgeMac": "2c:c8:1b:9c:31:ea",
-           "designatedPortId": "80:03", "checkedAt": stamp, "bridgeDeviceId": "root"}
+           "designatedPortId": "80:03", "checkedAt": stamp, "bridgeDeviceId": "root",
+           "designatedPortName": "ge21", "designatedPortCheckedAt": stamp}
     switch = {"id": "css", "name": "CSS", "kind": "Коммутатор", "stpRootPath": stp,
               "ports": [{"name": "Port13", "state": "up", "checkedAt": stamp}]}
     declared = {"a": "Port13", "b": "Gi1/22", "source": "GitHub", "confirmed": False}
     observed = {**declared, "source": RECIPROCAL_MAC_SOURCE, "confirmed": True, "at": stamp}
     edges = [{"a": "css", "b": "tp", "kind": "Сетевое соединение", "portEvidence": [declared]},
              {"a": "css", "b": "tp", "kind": "Путь по MAC-таблице", "confirmed": True,
-              "portEvidence": [observed]}]
+              "portEvidence": [observed]},
+             {"a": "tp", "b": "root", "kind": "Сетевое соединение", "confirmed": True,
+              "portEvidence": [{"a": "Gi1/52", "b": "ge21", "source": "LLDP · двустороннее",
+                                "confirmed": True, "at": stamp}]}]
 
     def read(at=now):
         path.write_text(json.dumps({"schema": 1, "snapshotAt": stamp, "links": edges, "nodes": [switch,
                                     {"id": "tp", "name": "TP", "kind": "Коммутатор"},
-                                    {"id": "root", "name": "Root", "kind": "Маршрутизатор"}]}), encoding="utf-8")
+                                    {"id": "root", "name": "Root", "kind": "Коммутатор",
+                                     "ports": [{"name": "ge21", "state": "up", "checkedAt": stamp}]}]}), encoding="utf-8")
         return load_infrastructure_map(path, at, include_guest_attachments=True)
 
     graph = read()
-    direct, learned = graph["links"]
+    direct, learned, _ = graph["links"]
     assert direct["confirmed"] is False
     proof, = learned["portEvidence"]
     assert "pairEvidence" not in proof
@@ -7458,10 +7463,14 @@ def test_reciprocal_mac_path_shows_fresh_stp_evidence_without_confirming_cable(t
     pending, = summarize_topology(graph)["topologyAudit"]["pending"]
     assert pending["observedPaths"][0]["stpPaths"] == proof["stpPaths"]
     assert graph["pendingPortPairs"][0]["stpPaths"] == proof["stpPaths"]
+    confirmed, = summarize_topology(graph)["topologyAudit"]["currentPairs"]
+    assert pending["stpBridgeConnections"] == [confirmed]
+    assert graph["pendingPortPairs"][0]["stpBridgeConnections"] == [confirmed]
     assert read(now + timedelta(minutes=6))["pendingPortPairs"][0]["stpPaths"] == []
     assert "stpPaths" not in read(now + timedelta(minutes=6))["links"][1]["portEvidence"][0]
     observed["a"] = "Port14"
     assert "stpPaths" not in read()["links"][1]["portEvidence"][0]
+    assert "stpBridgeConnections" not in read()["pendingPortPairs"][0]
 
 
 def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(tmp_path, monkeypatch):

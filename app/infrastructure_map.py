@@ -1597,9 +1597,7 @@ def _summarize_port_rx_silence(nodes: dict) -> dict:
     return {"total": len(ports), "ports": ports[:64]}
 
 
-def _topology_port_pairs(nodes: dict, links: list[dict], host_ids: set[str] | None = None) -> tuple:
-    if host_ids is not None:
-        links = [link for link in links if link["a"] in host_ids or link["b"] in host_ids]
+def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
     port_aliases = {
         (node["id"], port_label_key(alias)): port_label_key(port["name"])
         for node in nodes.values()
@@ -1789,6 +1787,26 @@ def _topology_port_pairs(nodes: dict, links: list[dict], host_ids: set[str] | No
         {**pair, "evidence": [{"source": source, "checkedAt": at} for source, at in sorted(sources.items())]}
         for _, (pair, sources) in sorted(current_pairs.items())
     ]
+    by_port = defaultdict(list)
+    for pair in verified_pairs:
+        for side, field in (("a", "portA"), ("b", "portB")):
+            by_port[pair[side], port_key(pair[side], pair[field])].append(pair)
+    for row in pending.values():
+        connections = []
+        for reading in row["observedPaths"]:
+            for stp in reading.get("stpPaths", ()):
+                bridge, port = stp.get("bridgeDeviceId"), stp.get("designatedPortName")
+                if not bridge or not port:
+                    continue
+                matches = by_port.get((bridge, port_key(bridge, port)), [])
+                other = row["b"] if stp["deviceId"] == row["a"] else row["a"]
+                if len(matches) != 1:
+                    continue
+                pair, = matches
+                if {pair["a"], pair["b"]} == {bridge, other} and pair not in connections:
+                    connections.append(pair)
+        if connections:
+            row["stpBridgeConnections"] = connections
     return counts, inventory_pairs, alerts, [pending[key] for key in sorted(pending)], verified_pairs
 
 
@@ -2024,7 +2042,7 @@ def _physical_attachments(nodes: dict, links: list[dict], host_ids: list[str]) -
         return []
     connections = {host_id: [] for host_id in host_ids}
     pending_by_host = {host_id: [] for host_id in host_ids}
-    _, _, _, pending, _ = _topology_port_pairs(nodes, links, set(host_ids))
+    _, _, _, pending, _ = _topology_port_pairs(nodes, links)
     for pair in pending:
         for side in ("a", "b"):
             if pair[side] in pending_by_host:
@@ -3257,7 +3275,8 @@ def load_infrastructure_map(
                                                        "fdbLearned", "lldpPort") if key in port}
                      for side, port in row.get("portObservations", {}).items()
                  },
-                 **{key: row[key] for key in ("archivedPortSides", "inventoryPortSides", "lldpPeers") if key in row}}
+                 **{key: row[key] for key in ("archivedPortSides", "inventoryPortSides", "lldpPeers",
+                                             "stpBridgeConnections") if key in row}}
                 for row in pending[:64]
             ],
             lacpPartnerInterfaceGapTotal=len(lacp_gaps),
