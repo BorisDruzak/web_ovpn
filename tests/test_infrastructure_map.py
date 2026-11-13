@@ -7918,6 +7918,9 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     browser = client.get(browser_endpoint).json()["infrastructure"]
     assert browser["servicePaths"] == {"directum": [routed_path]}
     assert browser["servicePorts"]["snr"][0]["services"][0]["basis"] == ["guest_gateway"]
+    adapter["virtual"]["ipv4Observations"].append({**address, "address": routed["target"]})
+    assert read()["servicePaths"] == [routed_path]
+    adapter["virtual"]["ipv4Observations"].pop()
     dns_checks = [
         {**routed, "state": state, "dns": {"name": name, "record": record, "transport": transport}}
         for name, record, transport, state in (

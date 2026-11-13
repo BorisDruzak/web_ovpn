@@ -2555,14 +2555,13 @@ def _service_attachment_paths(service: dict, guests: dict, client_attachments: d
                 continue
             candidates = neighbors.get((target, peer["asset"], peer["guestPort"], vlan["id"], vlan["interface"]), [])
         else:
-            candidates = addresses.get(target, [])
             route = check.get("localRoute", {})
             next_hop = route.get("gateway")
-            if (not candidates and target and next_hop and next_hop != target
+            if (target and next_hop and next_hop != target
                     and route.get("state") == "reachable" and next_hop == route.get("expectedGateway")
                     and route.get("sourceIP") and route.get("interface")):
-                candidates = addresses.get(next_hop, [])
                 gateway = next_hop
+            candidates = addresses.get(gateway or target, [])
         if len(candidates) != 1:
             continue
         guest, adapter, address_at = candidates[0]
