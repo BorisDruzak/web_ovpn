@@ -1370,7 +1370,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const servicePaths = renderServicePaths(paths);
     if (servicePaths) propertiesSection.append(servicePaths);
     for (const edge of incident.get(placementHost.id) ?? []) {
-      if (!edge.confirmed || edge.b !== placementHost.id || edge.kind !== 'Управление оборудованием') continue;
+      if (edge.b !== placementHost.id || edge.kind !== 'Управление оборудованием') continue;
       const controller = byId.get(edge.a);
       if (controller?.kind !== 'Контроллер управления') continue;
       const panel = make('details', null, 'map-port-panel');
@@ -1378,6 +1378,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       const open = make('a', controller.name);
       open.href = '?' + new URLSearchParams({node: controller.id});
       panel.append(make('summary', 'Управление оборудованием'), open);
+      if (!edge.confirmed) panel.append(make('small', 'Принадлежность контроллера серверу не подтверждена'));
       const controllerPaths = renderServicePaths(data.servicePaths?.[controller.id]);
       if (controllerPaths) panel.append(controllerPaths);
       propertiesSection.append(panel);

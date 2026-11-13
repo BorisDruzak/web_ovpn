@@ -2091,7 +2091,7 @@ def _physical_attachments(nodes: dict, links: list[dict], host_ids: list[str]) -
     if not host_ids:
         return []
     connections = {host_id: [] for host_id in host_ids}
-    controllers = defaultdict(set)
+    controllers = defaultdict(dict)
     pending_by_host = {host_id: [] for host_id in host_ids}
     _, _, _, pending, _ = _topology_port_pairs(nodes, links)
     for pair in pending:
@@ -2099,9 +2099,10 @@ def _physical_attachments(nodes: dict, links: list[dict], host_ids: list[str]) -
             if pair[side] in pending_by_host:
                 pending_by_host[pair[side]].append(pair)
     for edge in links:
-        if (edge["kind"] == "Управление оборудованием" and edge["confirmed"] and edge["b"] in connections
+        if (edge["kind"] == "Управление оборудованием" and edge["b"] in connections
                 and nodes[edge["a"]]["kind"] == "Контроллер управления"):
-            controllers[edge["b"]].add(edge["a"])
+            candidates = controllers[edge["b"]]
+            candidates[edge["a"]] = candidates.get(edge["a"], False) or edge["confirmed"]
         direct = edge["kind"] == "Сетевое соединение"
         if not direct and (edge["kind"] not in ("Путь по MAC-таблице", SHARED_LLDP_KIND) or not edge["confirmed"]):
             continue
@@ -2149,9 +2150,9 @@ def _physical_attachments(nodes: dict, links: list[dict], host_ids: list[str]) -
     return [{"host": _attachment_node(nodes[host_id]), "connectionTotal": len(group), "connections": group[:24],
              "pendingPortPairTotal": len(pending_by_host[host_id]), "pendingPortPairs": pending_by_host[host_id][:24],
              **({"managementControllers": [
-                 {"node": _attachment_node(nodes[controller]),
+                 {"node": _attachment_node(nodes[controller]), "confirmed": confirmed,
                   "servicePaths": _management_service_paths(nodes[controller], controller, {}, observed_ports)}
-                 for controller in sorted(controllers[host_id])[:12]
+                 for controller, confirmed in sorted(controllers[host_id].items(), key=lambda item: (not item[1], item[0]))[:12]
              ]} if host_id in controllers else {}),
              **({"lacpHealth": nodes[host_id]["lacpHealth"]} if "lacpHealth" in nodes[host_id] else {})}
             for host_id, group in connections.items()]

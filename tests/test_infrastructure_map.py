@@ -6720,12 +6720,14 @@ def test_attachment_includes_controller_path_without_attributing_it_to_the_serve
     host, = attachment["physicalHosts"]
     controller, = host["managementControllers"]
     assert controller["node"]["id"] == "bmc"
+    assert controller["confirmed"] is True
     probe, = controller["servicePaths"]
     assert probe["switchAttachment"]["port"] == "ge13"
     assert "physicalPair" not in probe["switchAttachment"]
     assert host["connections"] == [] and "servicePaths" not in attachment
     links[0]["confirmed"] = False
-    assert "managementControllers" not in read()["physicalHosts"][0]
+    candidate, = read()["physicalHosts"][0]["managementControllers"]
+    assert candidate == {**controller, "confirmed": False}
 
 
 def test_attachment_view_includes_physical_service_hosts_and_distinguishes_port_evidence(tmp_path, monkeypatch):
