@@ -8,12 +8,49 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from itertools import takewhile
 from time import monotonic
+from urllib.error import HTTPError
 from urllib.parse import quote
 
-from .infrastructure_map import BACKUP_PROBE_METHOD, INTERFACE_NAME, PVE_STORAGE_ID
+from .infrastructure_map import BACKUP_PROBE_METHOD, INTERFACE_NAME, PBS_STORAGE_METHOD, PVE_STORAGE_ID
 
 _JOB_HEADER = "INFO: starting new backup job: vzdump "
 _RESULT = re.compile(r"^(INFO: Finished Backup of VM|ERROR: Backup of VM) ([1-9][0-9]{0,8})(?: |$)")
+
+
+def read_pbs_storage_checks(get, nodes: list[str], storage: str) -> dict[str, dict]:
+    if not PVE_STORAGE_ID.fullmatch(storage):
+        return {}
+
+    def read(node):
+        state, reason = "unknown", "pbs_storage_unconfirmed"
+        detail = {"id": storage, "node": node}
+        try:
+            data = get(f"nodes/{quote(node, safe='')}/storage/{quote(storage, safe='')}/status")
+        except HTTPError as exc:
+            if exc.code == 403:
+                reason = "pbs_storage_permission"
+            exc.close()
+        except (OSError, ValueError, KeyError):
+            pass
+        else:
+            if isinstance(data, dict) and data.get("type") == "pbs":
+                enabled, active = (data.get(key) if type(data.get(key)) in (bool, int) else None
+                                   for key in ("enabled", "active"))
+                if enabled == 0:
+                    state, reason = "unreachable", "pbs_storage_disabled"
+                elif enabled == 1 and active == 0:
+                    state, reason = "unreachable", "pbs_storage_inactive"
+                elif enabled == active == 1:
+                    state, reason = "reachable", ""
+                    for key, name in (("total", "totalBytes"), ("used", "usedBytes"), ("avail", "availableBytes")):
+                        detail[name] = data.get(key)
+        return node, {"source": "Proxmox", "method": PBS_STORAGE_METHOD, "state": state,
+                      "reason": reason, "pbsStorage": detail, "checkedAt": datetime.now(timezone.utc).isoformat(),
+                      "required": True, "component": True}
+
+    valid_nodes = sorted({node for node in nodes if isinstance(node, str) and INTERFACE_NAME.fullmatch(node)})
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        return dict(pool.map(read, valid_nodes[:16]))
 
 
 def backup_policy(spec: object) -> dict[int, int]:

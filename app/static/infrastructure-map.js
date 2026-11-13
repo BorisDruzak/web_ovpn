@@ -1235,6 +1235,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     backup_overdue: 'Копия старше порога',
     backup_schedule_missing: 'ВМ отсутствует в активном расписании',
     backup_untracked_schedule: 'Есть активное задание без настроенного порога',
+    pbs_storage_permission: 'У токена коллектора нет права чтения хранилища',
+    pbs_storage_disabled: 'Хранилище отключено для этого узла',
+    pbs_storage_inactive: 'Хранилище недоступно с этого узла',
+    pbs_storage_unconfirmed: 'Proxmox не подтвердил состояние хранилища',
     vlan_probe_error: 'Не удалось проверить транзит',
     vlan_interface_missing: 'Интерфейс VLAN отсутствует',
     vlan_id_mismatch: 'Тип или номер VLAN не совпал',
@@ -2327,10 +2331,12 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           wireguard.table && 'таблица ' + wireguard.table,
           wireguard.latestHandshake && 'handshake ' + formatTime(wireguard.latestHandshake)]
           .filter(Boolean).map(text => ' · ' + text).join('') : '';
-        const endpoint = [check.method, wireguard?.interface, vlan?.id, check.backupVmid && 'ВМ ' + check.backupVmid,
+        const storage = check.pbsStorage;
+        const endpoint = [check.method, storage?.id, storage && 'с ' + storage.node,
+          wireguard?.interface, vlan?.id, check.backupVmid && 'ВМ ' + check.backupVmid,
           check.target, check.ipsecPolicy && '↔ ' + check.ipsecPolicy.remoteNetwork, check.httpHost, check.port, check.path, check.dns?.name,
           check.dns?.record, check.tunnelInterface, check.tunnelAddress, check.smbShare].filter(Boolean).join(' ');
-        const confirmed = ['Маршрут', 'Маршрут · WireGuard', 'OpenVPN TUN', 'OpenVPN UDP-сокет', 'SMB Mount',
+        const confirmed = storage ? 'Доступно' : ['Маршрут', 'Маршрут · WireGuard', 'OpenVPN TUN', 'OpenVPN UDP-сокет', 'SMB Mount',
           'Копия Proxmox', 'IPsec фаза 2', 'Сбор данных SNMP']
           .includes(check.method) ? 'Подтверждён' :
           node.id === data.clusterId ? 'В норме' : 'Отвечает';
@@ -2400,6 +2406,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const ntp = check.ntp ? ' · ' + ntpLabel(check.ntp) : '';
         const tcp = check.sshTcpConnected && check.state !== 'reachable' && check.reason !== 'ssh_closed_before_identification' ? ' · TCP подключён' : '';
         row.append(title, make('small', result + http + rtsp + ftp + certificate + postgresql + smb + tcp + (reason ? ' · ' + reason + errorSource : '') + backup + policy + dns + ntp + rtt + attempts + gateway + egress + management + scope + source + time + identity + (check.stale ? ' · устарело' : '')));
+        if (storage?.totalBytes !== undefined) {
+          row.append(make('small', `Свободно ${measurement('bytes', storage.availableBytes)} из ${measurement('bytes', storage.totalBytes)}`));
+        }
         if (check.managementInterface) {
           row.append(make('small', `Интерфейс управления ${check.managementInterface.name} · ${check.managementInterface.source}`));
         }

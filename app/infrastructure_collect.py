@@ -47,7 +47,7 @@ from netctl.switch_queries import (
 )
 from netctl.switch_store import OPTIONAL_SWITCH_CAPABILITIES
 
-from .infrastructure_backup import backup_policy, backup_service_checks, read_proxmox_backup
+from .infrastructure_backup import backup_policy, backup_service_checks, read_pbs_storage_checks, read_proxmox_backup
 from .endpoint_context_adapter import get_endpoint_context_adapter
 from .endpoint_platform_client import EndpointPlatformServiceError
 from .infrastructure_map import (
@@ -1824,6 +1824,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 item["probeTargetIP"] = address_by_asset[asset]
     backup = bindings.get("proxmox_backup_monitor")
     backup_observation = pve.get("backup", {})
+    pbs_storage_checks = pve.get("pbsStorageChecks", {})
     guest_backup_checks = {}
     if (policy := backup_policy(backup)) and (asset := backup.get("asset")) in nodes:
         item = node(BACKUP_SERVICE_ID, "Резервное копирование Proxmox", "Сервис", nodes[asset]["site"], "UI_VPN")
@@ -1834,6 +1835,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         state = "reachable" if "reachable" in states else "unreachable" if states == {"unreachable"} else "unknown"
         item["reachability"] = _observation(state, "Проверка сервиса", BACKUP_PROBE_METHOD, checks[0]["checkedAt"])
         edge(asset, item["id"], "Размещение", "Настройки карты")
+        nodes[asset].setdefault("serviceChecks", []).extend(pbs_storage_checks.values())
     verified_host_ports = set()
     shared_ports = set()
     for link in context.get("links", []):
@@ -2542,6 +2544,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             online = host.get("status") == "online"
             if online:
                 online_hypervisors.add(key)
+                if key in pbs_storage_checks:
+                    item.setdefault("serviceChecks", []).append(pbs_storage_checks[key])
                 item["ports"] = pve.get("physicalPorts", {}).get(key, [])
                 item["resources"] = {
                     "checkedAt": pve_at, "cpuRatio": host.get("cpu"), "logicalCpus": host.get("maxcpu"),
@@ -3248,7 +3252,9 @@ def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: set[s
             if data.get("active") == 1 and data.get("bridge_ports") in active_ports.get(node, []):
                 result["management"][node] = {"address": data.get("address"), "port": data["bridge_ports"]}
     if backup_storage:
-        result["backup"] = read_proxmox_backup(get, [row["node"] for row in result["nodes"]],
+        nodes = [row["node"] for row in result["nodes"]]
+        result["pbsStorageChecks"] = read_pbs_storage_checks(get, nodes, backup_storage)
+        result["backup"] = read_proxmox_backup(get, nodes,
                                                backup_storage, datetime.now(timezone.utc))
     result["at"] = datetime.now(timezone.utc).isoformat()
     return result
