@@ -272,15 +272,30 @@ def _observe_gateway_source(client: RouterOSApiClient, address: str, interface: 
     try:
         client.sock.settimeout(timeout)
         rows = client.call([
-            "/ip/dhcp-client/print", "=.proplist=interface,status,disabled", f"?interface={interface}",
+            "/ip/dhcp-client/print", "=.proplist=interface,status,disabled,address,gateway", f"?interface={interface}",
         ])
     except (OSError, RuntimeError, ValueError):
         return result
     clients = [row for row in rows if row.get("interface") == interface and row.get("disabled") == "false"]
     if len(clients) == 1:
-        status = clients[0].get("status", "").rstrip(".")
+        lease = clients[0]
+        status = lease.get("status", "").rstrip(".")
         if status in {"searching", "requesting", "bound", "renewing", "rebinding", "stopped", "error"}:
             result["dhcp"] = status
+        if status in {"bound", "renewing", "rebinding"}:
+            try:
+                assigned = ipaddress.IPv4Interface(lease.get("address", ""))
+                _unicast_ipv4(str(assigned.ip), "DHCP address")
+            except ValueError:
+                pass
+            else:
+                result["dhcp_address"] = str(assigned)
+            try:
+                gateway = _unicast_ipv4(lease.get("gateway", ""), "DHCP gateway")
+            except ValueError:
+                pass
+            else:
+                result["dhcp_gateway"] = str(gateway)
     return result
 
 

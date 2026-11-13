@@ -238,9 +238,30 @@ def test_gateway_failure_checks_expected_address_dhcp_and_link(monkeypatch, inte
     assert result["evidence"]["gateway_source"] == {"status": "missing", "dhcp": "searching"}
     assert result["evidence"]["gateway_link"] == expected_link
     assert sock.words[-8:] == [
-        "/ip/dhcp-client/print", "=.proplist=interface,status,disabled", "?interface=ether9", "",
+        "/ip/dhcp-client/print", "=.proplist=interface,status,disabled,address,gateway", "?interface=ether9", "",
         "/interface/print", "=.proplist=name,running,disabled", "?name=ether9", "",
     ]
+
+
+@pytest.mark.parametrize("status,address,gateway,lease", [
+    ("bound", "192.0.2.99/24", "192.0.2.1", {"dhcp_address": "192.0.2.99/24", "dhcp_gateway": "192.0.2.1"}),
+    ("searching", "192.0.2.99/24", "192.0.2.1", {}),
+    ("bound", "not-an-ip", "224.0.0.1", {}),
+])
+def test_gateway_observation_preserves_only_valid_active_dhcp_lease(monkeypatch, status, address, gateway, lease):
+    fake_api(monkeypatch, [
+        "!re", "=sent=3", "=received=0", "", "!done", "",
+        "!done", "",
+        "!done", "",
+        "!re", "=interface=ether9", f"=status={status}", "=disabled=false",
+        f"=address={address}", f"=gateway={gateway}", "", "!done", "",
+        "!re", "=name=ether9", "=running=true", "=disabled=false", "", "!done", "",
+    ])
+    result = run_probe(
+        sources=[API_SOURCE], secrets=API_SECRETS, interface="ether9",
+        source_address="192.0.2.10", observe_neighbor=True,
+    )
+    assert result["evidence"]["gateway_source"] == {"status": "missing", "dhcp": status, **lease}
 
 
 def test_router_api_reports_icmp_error_without_guessing_a_path(monkeypatch):

@@ -32,7 +32,7 @@ MCP_TOOLS = {
 }
 ROUTE_EVIDENCE_FIELDS = {
     "gateway_link": ("status", "state"),
-    "gateway_source": ("status", "dhcp"),
+    "gateway_source": ("status", "dhcp", "dhcp_address", "dhcp_gateway"),
     "gateway_arp": ("status", "state", "resolved"),
     "ipsec": ("status", "reason", "phase2_count", "local_sa_address_status"),
 }

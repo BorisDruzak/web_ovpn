@@ -36,6 +36,8 @@
           {% if row.evidence.gateway_source is defined and row.evidence.gateway_source.status == 'missing' %}
           <br>Исходный IPv4 не назначен на интерфейсе
           {% if row.evidence.gateway_source.dhcp is defined %} · DHCP {{ row.evidence.gateway_source.dhcp }}{% endif %}
+          {% if row.evidence.gateway_source.dhcp_address is defined %}<br>Адрес аренды DHCP {{ row.evidence.gateway_source.dhcp_address }}{% endif %}
+          {% if row.evidence.gateway_source.dhcp_gateway is defined %}<br>Шлюз аренды DHCP {{ row.evidence.gateway_source.dhcp_gateway }}{% endif %}
           {% endif %}
           {% if row.evidence.duration_ms is defined %}<br>{{ row.evidence.duration_ms }} мс{% endif %}
           {% if row.evidence.http_status is defined %}<br>HTTP {{ row.evidence.http_status }}{% endif %}
