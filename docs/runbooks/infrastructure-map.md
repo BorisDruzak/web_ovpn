@@ -66,6 +66,8 @@
 
 Из того же ответа карта берёт `Status.Health`, `Status.HealthRollup` и `MemorySummary.TotalSystemMemoryGiB`, если контроллер их передал. Оценка `Warning` или `Critical` отображает доступный сервер жёлтым. Состояние питания и доступность ОС продолжают проверяться отдельно. [Модель данных Redfish](https://redfish.dmtf.org/schemas/v1/DSP0268_2025.3.html)
 
+Параметр `redfish_power.<ID BMC>.service_id` выводит результат авторизованного чтения ComputerSystem в карточке службы Redfish. Служба должна быть привязана к этому BMC подтверждённой связью «Размещение». Компонент `Redfish · ComputerSystem` использует уже полученный результат. При отсутствии пригодного ответа результат остаётся без подтверждения.
+
 В `view=attachment` для сервера поле `physicalHosts[].managementControllers[].services` содержит до 12 служб BMC с их статусом и проверками, а `serviceTotal` — полное число служб. Поле `confirmed` у контроллера показывает, подтверждена ли его принадлежность серверу. Проверки IPMI и Redfish относятся к контроллеру.
 
 В `vlanAudits[].vlans[].managementObservation` доступен IPv4 управления Proxmox, чей MAC виден в этом VLAN на указанном порту коммутатора. Требуются свежие ARP, FDB и наблюдение аплинка Proxmox. Режим тегирования проверяется отдельно с обеих сторон.

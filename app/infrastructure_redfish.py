@@ -136,7 +136,21 @@ def collect_redfish_power(graph: dict, specs: dict, credentials: Path | None, no
         if host["kind"] != "Сервер" or host.get("guest"):
             continue
         credential = credentials / f"redfish-{controller_id}" if credentials else None
-        if power := _read_power(spec, credential):
+        power = _read_power(spec, credential)
+        checked_at = datetime.now(timezone.utc).isoformat()
+        if power:
             host["hardwarePower"] = {**power, "controllerId": controller_id,
-                                     "checkedAt": datetime.now(timezone.utc).isoformat()}
+                                     "checkedAt": checked_at}
+        service_id = spec.get("service_id")
+        service = nodes.get(service_id, {}) if isinstance(service_id, str) else {}
+        if (service.get("kind") == "Сервис"
+                and any(edge["a"] == controller_id and edge["b"] == service_id
+                        and edge["kind"] == "Размещение" and edge["confirmed"] for edge in graph["links"])):
+            service.setdefault("serviceChecks", []).append({
+                "state": "reachable" if power else "unknown",
+                "source": "UI_VPN", "method": "Redfish · ComputerSystem",
+                "target": spec["ip"], "port": 443, "path": spec.get("path"),
+                "checkedAt": checked_at, "identityCheckedAt": controller["probeTargetIdentityAt"],
+                "required": True, "component": True,
+            })
         _confirm_management_pair(graph, nodes, controller_id, spec, credential, now)

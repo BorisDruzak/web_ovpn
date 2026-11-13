@@ -90,6 +90,41 @@ def test_redfish_power_does_not_equate_power_on_with_os_availability(monkeypatch
     redfish.collect_redfish_power(graph, spec, None, now)
 
 
+@pytest.mark.parametrize(("valid_system", "confirmed", "state"), [
+    (True, True, "reachable"),
+    (False, True, "unknown"),
+    (True, False, None),
+])
+def test_redfish_service_reports_authenticated_system_read(monkeypatch, valid_system, confirmed, state):
+    from app import infrastructure_redfish as redfish
+    from app.infrastructure_map import _public_node
+
+    now = datetime.now(timezone.utc)
+    stamp = now.isoformat()
+    path = "/redfish/v1/Systems/system"
+    ip = "192.0.2.31"
+    service = {"id": "redfish", "kind": "Сервис"}
+    host = {"id": "server", "kind": "Сервер"}
+    controller = {"id": "bmc", "kind": "Контроллер управления", "probeTargetIP": ip, "probeTargetIdentityAt": stamp}
+    graph = {"nodes": [service, host, controller], "links": [
+        {"a": "bmc", "b": "server", "kind": "Управление оборудованием", "confirmed": True},
+        {"a": "bmc", "b": "redfish", "kind": "Размещение", "confirmed": confirmed},
+    ]}
+    monkeypatch.setattr(redfish, "_read_resource", lambda *_: {"PowerState": "Off"} if valid_system else None)
+    redfish.collect_redfish_power(graph, {
+        "bmc": {"ip": ip, "path": path, "service_id": "redfish"},
+    }, None, now)
+    checks = _public_node(service, datetime.now(timezone.utc))["serviceChecks"]
+    if state is None:
+        assert checks == []
+    else:
+        check, = checks
+        assert check["method"] == "Redfish · ComputerSystem"
+        assert check["component"] and check["required"]
+        assert check["target"] == ip and check["path"] == path and check["identityCheckedAt"] == stamp
+        assert check["state"] == state
+
+
 @pytest.mark.parametrize("failure", [None, "mac", "stale", "shared", "speed"])
 def test_redfish_management_pair_requires_matching_current_switch_evidence(tmp_path, monkeypatch, failure):
     from app import infrastructure_redfish as redfish
