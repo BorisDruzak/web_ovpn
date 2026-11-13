@@ -7,6 +7,43 @@ import pytest
 from test_context_api import make_client
 
 
+@pytest.mark.parametrize(("power", "age", "network"), [
+    ("Off", 0, "unknown"),
+    ("Off", 6, "unknown"),
+    ("Off", 0, "reachable"),
+    ("On", 0, "unknown"),
+])
+def test_pending_port_pair_reports_fresh_redfish_shutdown(tmp_path, power, age, network):
+    from app.infrastructure_map import load_infrastructure_map, summarize_topology
+
+    now = datetime.now(timezone.utc)
+    stamp = (now - timedelta(minutes=age)).isoformat()
+    path = tmp_path / "map.json"
+    path.write_text(json.dumps({"schema": 1, "snapshotAt": now.isoformat(), "nodes": [
+        {"id": "sw", "name": "Switch", "kind": "Коммутатор"},
+        {"id": "server", "name": "Server", "kind": "Сервер",
+         "reachability": {"state": network, "source": "UI_VPN", "method": "ICMP", "checkedAt": now.isoformat()},
+         "hardwarePower": {"state": power, "controllerId": "bmc", "checkedAt": stamp}},
+        {"id": "bmc", "name": "BMC", "kind": "Контроллер управления"},
+    ], "links": [
+        {"a": "sw", "b": "server", "kind": "Сетевое соединение", "source": "GitHub", "confirmed": False,
+         "portEvidence": [{"a": "ge14", "b": "eth2", "source": "GitHub", "confirmed": False}]},
+    ]}), encoding="utf-8")
+    graph = load_infrastructure_map(path, now, include_guest_attachments=True)
+    audit = summarize_topology(graph)["topologyAudit"]
+    pending, = audit["pending"]
+    assert audit["currentPairTotal"] == 0
+    assert "no_live_peer_identity" in pending["confirmationGaps"]
+    if power == "Off" and age == 0 and network == "unknown":
+        assert pending["stoppedEndpoints"] == {"b": {"controllerId": "bmc", "checkedAt": stamp}}
+        assert audit["confirmationGapCounts"]["endpoint_powered_off"] == 1
+    else:
+        assert "stoppedEndpoints" not in pending
+        assert "endpoint_powered_off" not in audit["confirmationGapCounts"]
+    browser_pair, = graph["pendingPortPairs"]
+    assert browser_pair.get("stoppedEndpoints") == pending.get("stoppedEndpoints")
+
+
 @pytest.mark.parametrize(("placement", "other_host", "service_state", "age", "expected"), [
     (True, False, "unknown", 0, "stopped"),
     (False, False, "unknown", 0, "unknown"),

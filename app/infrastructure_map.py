@@ -2095,6 +2095,14 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
                 arp_diagnostics[side] = [readings[address] for address in sorted(readings)[:4]]
         if arp_diagnostics:
             row["arpDiagnostics"] = arp_diagnostics
+        stopped_endpoints = {}
+        for side in ("a", "b"):
+            node = nodes[row[side]]
+            power = node.get("hardwarePower", {})
+            if power.get("state") == "Off" and node["reachability"]["state"] == "stopped":
+                stopped_endpoints[side] = {key: power[key] for key in ("controllerId", "checkedAt")}
+        if stopped_endpoints:
+            row["stoppedEndpoints"] = stopped_endpoints
         gaps = []
         if row.get("missingPortSides"):
             gaps.append("missing_port_name")
@@ -2106,6 +2114,8 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
             gaps.append("multiple_learned_macs")
         if not row["observedPaths"] and not row.get("identifiedPeerSides"):
             gaps.append("no_live_peer_identity")
+        if stopped_endpoints:
+            gaps.append("endpoint_powered_off")
         row["confirmationGaps"] = gaps or ["physical_pair_unconfirmed"]
     return counts, inventory_pairs, alerts, [pending[key] for key in sorted(pending)], verified_pairs
 
@@ -4095,7 +4105,7 @@ def load_infrastructure_map(
                  **{key: row[key] for key in ("archivedPortSides", "archivedPortAt", "inventoryPortSides", "inventorySources",
                                              "inventoryPeerPorts", "lldpPeers", "multiMacPortSides",
                                              "stpBridgeConnections", "stpBridgeMacObservations", "arpDiagnostics",
-                                             "trafficComparison") if key in row}}
+                                             "trafficComparison", "stoppedEndpoints") if key in row}}
                 for row in pending[:64]
             ],
             lacpPartnerInterfaceGapTotal=len(lacp_gaps),

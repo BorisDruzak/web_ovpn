@@ -284,7 +284,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       observedSourceTimes = {}, identifiedPeerSides = [], archivedPortSides = [], inventoryPortSides = [],
       portObservations = {}, stpPaths = [], stpBridgeConnections = [], stpBridgeMacObservations = [], lldpPeers = {},
       archivedPortAt = {}, inventorySources = [], inventoryPeerPorts = [], arpDiagnostics = {}, observedPaths = [],
-      multiMacPortSides = [], unconfirmedLldpCandidates = [], confirmationGaps = [], trafficComparison}) {
+      multiMacPortSides = [], unconfirmedLldpCandidates = [], confirmationGaps = [], trafficComparison, stoppedEndpoints = {}}) {
     const item = make('li');
     const provenance = key => archivedPortSides.includes(key) ? ' (по архиву)' :
       inventoryPortSides.includes(key) ? ' (по инвентарю)' : '';
@@ -299,6 +299,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       physical_pair_unconfirmed: 'нет свежего подтверждения прямой пары',
     };
     const gaps = confirmationGaps.map(gap => gapLabels[gap]).filter(Boolean);
+    for (const [side, evidence] of Object.entries(stoppedEndpoints)) {
+      item.append(make('small', `${side === 'a' ? nameA : nameB} выключен · Redfish · ${formatTime(evidence.checkedAt)}`));
+    }
     if (gaps.length) item.append(make('small', gaps.join(' · ')));
     for (const [side, checkedAt] of Object.entries(archivedPortAt)) {
       if (checkedAt) item.append(make('small', `Архив · ${side === 'a' ? nameA : nameB} · ${formatTime(checkedAt)}`));
