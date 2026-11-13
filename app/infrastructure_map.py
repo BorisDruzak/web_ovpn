@@ -2825,6 +2825,8 @@ def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
         detail["checks"] = anchor["checks"]
         detail["serviceChecks"] = anchor["serviceChecks"]
         detail["reachability"] = anchor["reachability"]
+        if "probeTransition" in anchor:
+            detail["probeTransition"] = anchor["probeTransition"]
     if anchor and anchor["kind"] == "Сервис" and len(guest_ids) <= 12:
         detail["servicePaths"] = _service_attachment_paths(anchor, guests)
         if len(targets) == 1 and len(host_ids) == 1:

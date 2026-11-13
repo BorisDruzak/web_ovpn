@@ -256,7 +256,7 @@ def test_ntp_probe_requires_a_synchronized_reply_to_its_request(monkeypatch, rep
 
 def test_service_probe_transition_tracks_confirmed_recovery(tmp_path):
     from app.infrastructure_collect import _add_service_probe_transitions
-    from app.infrastructure_map import load_infrastructure_map, summarize_services
+    from app.infrastructure_map import load_infrastructure_map, summarize_guest_attachment, summarize_services
 
     now = datetime.now(timezone.utc)
     before = now - timedelta(minutes=2)
@@ -285,7 +285,10 @@ def test_service_probe_transition_tracks_confirmed_recovery(tmp_path):
     public = load_infrastructure_map(path, after)
     assert public["nodes"][0]["probeTransition"] == transition
     assert summarize_services(public)["serviceAudit"]["services"][0]["probeTransition"] == transition
-    assert "probeTransition" not in load_infrastructure_map(path, after + timedelta(days=1))["nodes"][0]
+    assert summarize_guest_attachment(public, "git")["attachment"]["probeTransition"] == transition
+    expired = load_infrastructure_map(path, after + timedelta(days=1))
+    assert "probeTransition" not in expired["nodes"][0]
+    assert "probeTransition" not in summarize_guest_attachment(expired, "git")["attachment"]
     for old in (snapshot(before, "unknown"), snapshot(before, "unreachable", "192.0.2.31"),
                 snapshot(before - timedelta(minutes=8), "unreachable")):
         changed = snapshot(now, "reachable")
