@@ -2965,6 +2965,22 @@ def load_infrastructure_agent_audit(path: Path, *, node_id: str | None = None) -
                 continue
             if comparison := _agent_ipv4_comparison(network, attachment):
                 entry["ipv4Comparison"] = comparison
+                local_services = entry.get("health", {}).get("services", [])
+                if any(service["name"] == "sshd" for service in local_services):
+                    service_ids = {edge["b"] for edge in graph["links"]
+                                   if edge["a"] == node_id and _is_service_attachment(edge)}
+                    guests = {guest["guest"]["id"]: guest for guest in attachment["guests"]}
+                    checks = [
+                        {"serviceId": service["id"], "localService": "sshd",
+                         **{key: check[key] for key in ("method", "target", "port", "state", "checkedAt", "reason")
+                            if key in check}}
+                        for service in graph["nodes"] if service["id"] in service_ids and service["kind"] == "Сервис"
+                        for check in _service_attachment_paths(service, guests)
+                        if check["method"] == "SSH" and check["port"] is not None and "gateway" not in check
+                        and check["target"] in comparison["matched"]
+                    ]
+                    if checks:
+                        entry["networkServiceChecks"] = checks[:16]
     return result
 
 

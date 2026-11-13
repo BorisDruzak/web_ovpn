@@ -826,6 +826,14 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const services = health.services.map(({name, status}) => name + ' — ' + states[status]);
         const units = make('div');
         units.append(make('small', 'Службы ОС · ' + services.join(' · ')));
+        const outcomes = {reachable: 'отвечает', unreachable: 'недоступен', unknown: 'нет подтверждения'};
+        for (const check of entry.networkServiceChecks ?? []) {
+          const reading = make('small', `Сетевая проверка · ${check.method} ${check.target}:${check.port} · ${outcomes[check.state]} · ${formatTime(check.checkedAt)} · `);
+          const service = make('a', byId.get(check.serviceId)?.name ?? check.serviceId);
+          service.href = '?' + new URLSearchParams({node: check.serviceId});
+          reading.append(service);
+          units.append(reading);
+        }
         label.append(units);
       }
     }

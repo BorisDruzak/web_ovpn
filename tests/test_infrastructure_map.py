@@ -7864,6 +7864,12 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
     service = {"id": "web", "name": "Web", "kind": "Сервис",
                "serviceChecks": [{"method": "HTTP", "source": "UI_VPN", "state": "reachable",
                                   "required": True, "checkedAt": at, "port": 443}]}
+    ssh_service = {"id": "ssh", "name": "SSH", "kind": "Сервис", "serviceChecks": [
+        {"method": "SSH", "source": "UI_VPN", "state": "reachable", "required": True,
+         "checkedAt": at, "port": 22, "target": "192.0.2.10"},
+        {"method": "SSH", "source": "UI_VPN", "state": "unknown", "required": True,
+         "checkedAt": at, "port": 22, "target": "192.0.2.99"},
+    ]}
     placement = {"a": "pve", "b": "vm:1", "kind": "Размещение ВМ", "confirmed": True,
                  "portEvidence": [{"a": "vmbr0", "b": "net0", "source": "Proxmox · конфигурация ВМ",
                                    "at": at, "confirmed": True,
@@ -7983,6 +7989,19 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
                                                  {"name": "sshd", "status": "active"},
                                                  {"name": "NetworkManager", "status": "inactive"},
                                              ]}}
+    snapshot = json.loads(path.read_text(encoding="utf-8"))
+    snapshot["nodes"].append(ssh_service)
+    snapshot["links"].append({"a": "vm:1", "b": "ssh", "kind": "Цель проверки", "confirmed": True})
+    path.write_text(json.dumps(snapshot), encoding="utf-8")
+    paired = client.get("/api/v1/network/infrastructure?view=agents&node_id=vm:1", headers=headers).json()
+    assert paired["infrastructure"]["agentAudit"]["guests"][0]["networkServiceChecks"] == [{
+        "serviceId": "ssh", "localService": "sshd", "method": "SSH", "target": "192.0.2.10",
+        "port": 22, "state": "reachable", "checkedAt": at,
+    }]
+    snapshot["nodes"].pop()
+    snapshot["links"].pop()
+    path.write_text(json.dumps(snapshot), encoding="utf-8")
+    Adapter.reads.pop()
     assert "private-service" not in selected.text
     assert "private-hostname" not in selected.text and "private-serial" not in selected.text
     assert Adapter.reads == [("00000000-0000-4000-8000-000000000000", ("health_v1", "inventory_v1", "network_v1"))]
