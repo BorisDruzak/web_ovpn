@@ -7,6 +7,44 @@ import pytest
 from test_context_api import make_client
 
 
+@pytest.mark.parametrize(("status", "headers", "state", "reason"), [
+    (401, [("Server", "Microsoft-HTTPAPI/2.0"), ("WWW-Authenticate", "Kerberos")], "reachable", "winrm_auth_required"),
+    (401, [("Server", "Microsoft-HTTPAPI/2.0"), ("WWW-Authenticate", "Basic")], "unknown", "unexpected_response"),
+    (401, [("WWW-Authenticate", "Negotiate")], "unknown", "unexpected_response"),
+    (200, [("Server", "Microsoft-HTTPAPI/2.0")], "unknown", "unexpected_response"),
+    (503, [], "unreachable", "http_status"),
+])
+def test_winrm_probe_checks_the_authentication_challenge(monkeypatch, status, headers, state, reason):
+    from types import SimpleNamespace
+    from app import infrastructure_service_probes as probes
+    from app.infrastructure_map import _public_service_check
+
+    class Connection:
+        def __init__(self, host, port, timeout):
+            assert (host, port, timeout) == ("192.0.2.91", 5985, probes.TIMEOUT)
+
+        def request(self, method, path, body, headers):
+            assert (method, path) == ("POST", "/wsman")
+            assert b"Identify" in body
+            assert headers == {"Content-Type": "application/soap+xml; charset=UTF-8"}
+
+        def getresponse(self):
+            return SimpleNamespace(status=status, getheaders=lambda: headers)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(probes.http.client, "HTTPConnection", Connection)
+    spec = {"type": "winrm", "ip": "192.0.2.91", "port": 5985}
+    node = {"id": "winrm", "kind": "Сервис", "probeTargetIP": spec["ip"]}
+    probes.apply_service_probes([node], {node["id"]: [spec]})
+    check = _public_service_check(node["serviceChecks"][0], datetime.now(timezone.utc))
+    assert (check["method"], check["state"], check["target"], check["port"],
+            check["path"], check["httpStatus"], check["reason"]) == (
+        "WinRM HTTP", state, spec["ip"], 5985, "/wsman", status, reason,
+    )
+
+
 def test_tcp_connect_probe_reports_transport_without_sending_data(monkeypatch):
     from contextlib import nullcontext
     from app import infrastructure_service_probes as probes

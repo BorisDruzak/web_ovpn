@@ -39,7 +39,7 @@ IPMI_PORT = 623
 RMCP_ASF_HEADER = bytes.fromhex("0600ff06000011be")
 PROBE_METHODS = {
     "http": "HTTP", "https": "HTTPS", "dns": "DNS", "ldap": "LDAP", "ldaps": "LDAPS RootDSE", "smb": "SMB2",
-    "tcp_connect": "TCP", "ntp": "NTP (UDP)",
+    "tcp_connect": "TCP", "ntp": "NTP (UDP)", "winrm": "WinRM HTTP",
     "smb_mount": "SMB Mount", "zabbix_api": "Zabbix API", "postgresql": "PostgreSQL SSLRequest",
     "openvpn_management": "OpenVPN Management", "openvpn_tunnel": "OpenVPN TUN",
     "sip_options": "SIP OPTIONS (UDP)", "icmp": "ICMP", "vlan_transit": "ICMP · VLAN",
@@ -1507,6 +1507,47 @@ def _dependency_protocol_probe(spec: dict) -> dict:
         return {"state": "unknown"}
 
 
+def _winrm(spec: dict) -> dict:
+    try:
+        address = str(ipaddress.ip_address(spec.get("ip")))
+    except ValueError:
+        return {"state": "unknown", "reason": "probe_configuration"}
+    if type(spec.get("port")) is not int or spec["port"] != 5985:
+        return {"state": "unknown", "reason": "probe_configuration"}
+
+    identify = (
+        b'<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope">'
+        b'<s:Header/><s:Body><i:Identify xmlns:i="http://schemas.dmtf.org/wbem/wsman/identity/1/wsmanidentity.xsd"/>'
+        b'</s:Body></s:Envelope>'
+    )
+    connection = http.client.HTTPConnection(address, 5985, timeout=TIMEOUT)
+    try:
+        connection.request("POST", "/wsman", body=identify, headers={"Content-Type": "application/soap+xml; charset=UTF-8"})
+        response = connection.getresponse()
+        status = response.status
+        headers = response.getheaders()
+    except TimeoutError:
+        return {"state": "unknown", "reason": "timeout"}
+    except ConnectionRefusedError:
+        return {"state": "unreachable", "reason": "http_connection_refused"}
+    except http.client.HTTPException:
+        return {"state": "unknown", "reason": "http_bad_response"}
+    except OSError:
+        return {"state": "unknown", "reason": "transport_error"}
+    finally:
+        connection.close()
+
+    observed = {"httpStatus": status}
+    if 500 <= status < 600:
+        return {**observed, "state": "unreachable", "reason": "http_status"}
+    servers = [value.strip().lower() for name, value in headers if name.lower() == "server"]
+    challenges = {challenge.strip().lower() for name, value in headers if name.lower() == "www-authenticate"
+                  for challenge in value.split(",")}
+    if status == 401 and servers == ["microsoft-httpapi/2.0"] and challenges & {"negotiate", "kerberos"}:
+        return {**observed, "state": "reachable", "reason": "winrm_auth_required"}
+    return {**observed, "state": "unknown", "reason": "unexpected_response"}
+
+
 def _ntp(spec: dict) -> dict:
     try:
         address = ipaddress.ip_address(spec.get("ip"))
@@ -1666,6 +1707,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 details = _tcp_connect(spec)
             elif protocol == "ntp":
                 details = _ntp(spec)
+            elif protocol == "winrm":
+                details = _winrm(spec)
             elif protocol == "dns":
                 details = _dns(spec)
             elif protocol == "icmp":
@@ -1695,10 +1738,12 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 **({"component": True} if component else {}),
                 "source": "UI_VPN", "method": method,
                 "port": valid_port,
-                "path": spec.get("path") if protocol in {"http", "https", "zabbix_api", "rtsp_options"} else None,
+                "path": "/wsman" if protocol == "winrm" else (
+                    spec.get("path") if protocol in {"http", "https", "zabbix_api", "rtsp_options"} else None
+                ),
                 "target": spec.get("ip") if not skip_reason and (
                     protocol in {"icmp", "vlan_transit", "sip_options", "ipmi_lan", "rtsp_options", "ssh_identification", "ftp_features",
-                                 "zabbix_api", "postgresql", "dns", "ldap", "ldaps", "smb", "tls_certificate", "tcp_connect", "ntp"}
+                                 "zabbix_api", "postgresql", "dns", "ldap", "ldaps", "smb", "tls_certificate", "tcp_connect", "ntp", "winrm"}
                     or protocol in DEPENDENCY_PROTOCOLS or "probeTargetIP" in node
                     or (protocol in {"http", "https"} and spec.get("report_target") is True
                         and details.get("reason") != "http_configuration")

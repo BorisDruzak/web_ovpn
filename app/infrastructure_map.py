@@ -728,7 +728,7 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         if reason in ("wireguard_route_unconfirmed", "wireguard_route_mismatch", "wireguard_evidence_unavailable",
                       "wireguard_mark_unconfirmed", "wireguard_mark_mismatch", "wireguard_handshake_unconfirmed"):
             result["reason"] = reason
-    if result["method"] in ("HTTP", "HTTPS"):
+    if result["method"] in ("HTTP", "HTTPS", "WinRM HTTP"):
         host = check.get("httpHost")
         if result["method"] == "HTTP" and isinstance(host, str) and re.fullmatch(r"[A-Za-z0-9.-]{1,253}", host):
             result["httpHost"] = host
@@ -746,6 +746,8 @@ def _public_service_check(check: dict, now: datetime) -> dict:
             "http_tls_certificate", "http_tls_error", "http_bad_response", "http_connection_refused",
             "http_connection_reset", "http_configuration", "oidc_rs256_key_missing",
         ):
+            result["reason"] = reason
+        if result["method"] == "WinRM HTTP" and reason in ("winrm_auth_required", "timeout", "probe_configuration"):
             result["reason"] = reason
     if result["method"] == "PostgreSQL SSLRequest":
         tls_state = check.get("postgresqlTls")
