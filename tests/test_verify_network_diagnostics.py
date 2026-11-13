@@ -87,6 +87,43 @@ def test_route_report_checks_configured_dns_transport_and_preserves_evidence():
     assert not removed["profile_matches"]
 
 
+def test_route_report_keeps_wan_and_ipsec_failure_evidence():
+    now = datetime(2026, 11, 13, 2, 15, tzinfo=UTC)
+    run = {
+        "id": 7, "trigger": "scheduled", "checked_at": now.isoformat(), "status": "unreachable",
+        "result": {"probes": [{
+            "id": "gateway", "status": "unreachable", "evidence": {
+                "reason": "icmp_unreachable",
+                "gateway_link": {"status": "observed", "state": "up"},
+                "gateway_source": {"status": "missing", "dhcp": "searching"},
+                "gateway_arp": {"status": "observed", "state": "failed", "resolved": False},
+                "ignored": "raw probe output",
+            },
+        }, {
+            "id": "tunnel", "status": "unreachable", "ipsec": {
+                "status": "inactive", "local_sa_address_status": "missing",
+                "phase2_count": 0, "local_subnet": "192.0.2.0/24",
+            },
+        }, {
+            "id": "remote", "status": "timeout", "ipsec": {
+                "status": "unavailable", "reason": "collector_timeout", "phase2_count": None,
+            },
+        }]},
+    }
+    report = route_report(
+        [run], now, timedelta(minutes=10), api_runs=[run],
+        expected_hops={"gateway": None, "tunnel": None, "remote": None},
+    )
+    gateway, tunnel, remote = report["probes"]
+    assert gateway["reason"] == "icmp_unreachable"
+    assert gateway["gateway_link"] == {"status": "observed", "state": "up"}
+    assert gateway["gateway_source"] == {"status": "missing", "dhcp": "searching"}
+    assert gateway["gateway_arp"] == {"status": "observed", "state": "failed", "resolved": False}
+    assert "ignored" not in gateway
+    assert tunnel["ipsec"] == {"status": "inactive", "phase2_count": 0, "local_sa_address_status": "missing"}
+    assert remote["ipsec"] == {"status": "unavailable", "reason": "collector_timeout"}
+
+
 def test_loop_report_preserves_per_source_coverage_without_copying_findings():
     coverage = {
         "fdb": {"status": "recent", "truncated": False},

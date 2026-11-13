@@ -25,6 +25,12 @@ MCP_TOOLS = {
     "openvpn_network_check_runs", "openvpn_network_capture_list",
     "openvpn_network_run_check", "openvpn_network_download_pcap",
 }
+ROUTE_EVIDENCE_FIELDS = {
+    "gateway_link": ("status", "state"),
+    "gateway_source": ("status", "dhcp"),
+    "gateway_arp": ("status", "state", "resolved"),
+    "ipsec": ("status", "reason", "phase2_count", "local_sa_address_status"),
+}
 
 
 def route_report(
@@ -41,6 +47,14 @@ def route_report(
     probes = []
     for probe in row["result"]["probes"]:
         summary = {"id": probe["id"], "status": probe["status"]}
+        evidence = probe.get("evidence", {})
+        reason = evidence.get("reason") or probe.get("reason")
+        if isinstance(reason, str) and reason:
+            summary["reason"] = reason
+        for name, fields in ROUTE_EVIDENCE_FIELDS.items():
+            details = (probe if name == "ipsec" else evidence).get(name)
+            if isinstance(details, dict):
+                summary[name] = {field: details[field] for field in fields if details.get(field) is not None}
         if probe.get("expected_first_hop"):
             summary.update(
                 expected_first_hop=probe["expected_first_hop"],
@@ -48,7 +62,6 @@ def route_report(
                 path_status=probe.get("path_status", "unconfirmed"),
             )
         if probe.get("dns_transport"):
-            evidence = probe.get("evidence", {})
             summary.update(
                 dns_transport=probe["dns_transport"],
                 observed_dns_transport=evidence.get("dns_transport"),
