@@ -3574,6 +3574,9 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
         assert selected["lacpPartnerInterfaceGapTotal"] == len(selected["lacpPartnerInterfaceGaps"])
         aggregate = summarize_topology(port_graph, node_id="snr", port_name="po1")["topologyAudit"]
         assert aggregate["lacpPartnerInterfaceGaps"] == audit["lacpPartnerInterfaceGaps"]
+        assert aggregate["lacpHealth"] == selected["lacpHealth"] == audit["lacpHealth"]
+        assert summarize_topology(port_graph, node_id="pbs")["topologyAudit"]["lacpHealth"] == audit["lacpHealth"]
+        assert summarize_topology(port_graph, node_id="snr", port_name="ge99")["topologyAudit"]["lacpHealth"] == []
         return audit["lacpPartnerInterfaceGaps"]
 
     assert lacp_gaps() == [{"id": "pbs", "name": "PBS", "switchId": "snr", "aggregate": "po1",
