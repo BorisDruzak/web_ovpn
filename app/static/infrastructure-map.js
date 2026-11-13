@@ -638,7 +638,15 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         return [label, ...label.split(' / ')].some(name => keys.includes(portKey(name)));
       });
       if (!evidence.length) return [];
-      return [{...edge, portEvidence: evidence, confirmed: edge.confirmed && evidence.some(report => report.confirmed)}];
+      const confirmedReports = evidence.filter(report => report.confirmed);
+      const confirmed = edge.confirmed && confirmedReports.length > 0;
+      const sources = (confirmed ? confirmedReports : evidence).map(report => report.source).filter(Boolean);
+      const scopedEdge = {...edge, portEvidence: evidence, confirmed};
+      if (sources.length && !sources.includes(edge.source)) {
+        scopedEdge.source = sources[0];
+        scopedEdge.details = '';
+      }
+      return [scopedEdge];
     });
   }
 

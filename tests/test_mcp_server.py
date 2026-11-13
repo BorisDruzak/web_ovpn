@@ -662,8 +662,10 @@ def test_mcp_infrastructure_port_scope_preserves_evidence_and_guest_observations
                                  {"name": "eno2", "source": "Proxmox", "stale": True}]},
         {"id": "vm", "name": "Guest", "vmid": 103},
     ], "links": [
-        {"a": "sw", "b": "other", "confirmed": True, "portEvidence": [
-            port, {"a": "Gi1/0/2"}, {"a": "po1 / ge6", "confirmed": True},
+        {"a": "sw", "b": "other", "confirmed": True, "source": "SNMP LACP + ARP",
+         "details": "LACP: подтверждено 1 из 2 портов", "portEvidence": [
+            {**port, "source": "LLDP"}, {"a": "Gi1/0/2", "source": "GitHub"},
+            {"a": "po1 / ge6", "confirmed": True, "source": "SNMP LACP + ARP"},
         ]},
         {"a": "unrelated", "b": "sw", "portEvidence": [{"a": "Gi1/0/22", "b": "Gi1/0/2"}]},
         {"a": "host", "b": "vm", "confirmed": True, "portEvidence": [
@@ -717,7 +719,8 @@ def test_mcp_infrastructure_port_scope_preserves_evidence_and_guest_observations
         assert observation["lacpHealth"] == [{**lacp, "host": {"id": "other", "name": "Peer"}}]
     assert server.call_tool(tool, {"node_id": "sw", "port_name": "ge6"})["infrastructure"]["lacpHealth"] == []
     assert result["pendingPortPairs"] == [pending]
-    assert result["links"] == [{**graph["links"][0], "portEvidence": [port]}]
+    assert result["links"] == [{**graph["links"][0], "source": "LLDP", "details": "",
+                                 "portEvidence": [{**port, "source": "LLDP"}]}]
     assert result["neighbors"] == [{"id": "other", "name": "Peer"}]
     assert "ports" not in result["node"]
     assert [(r["guest"]["id"], r["guestPort"], r["basis"]) for r in result["guestObservations"]] == [
@@ -738,6 +741,9 @@ def test_mcp_infrastructure_port_scope_preserves_evidence_and_guest_observations
     assert server.call_tool(tool, {"node_id": "sw", "port_name": "ge6"})["infrastructure"]["links"][0]["confirmed"]
     other_port = server.call_tool(tool, {"node_id": "sw", "port_name": "Gi1/0/2"})["infrastructure"]
     assert not any(edge["confirmed"] for edge in other_port["links"])
+    assert other_port["links"][0]["source"] == "GitHub"
+    assert other_port["links"][0]["details"] == ""
+    assert aggregate["links"][0]["source"] == "SNMP LACP + ARP"
     for args in ({"port_name": "ge17"}, {"node_id": "sw", "port_name": " "},
                  {"query": "switch", "port_name": "ge17"}):
         with pytest.raises(ValueError):

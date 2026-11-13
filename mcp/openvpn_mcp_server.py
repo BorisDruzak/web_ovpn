@@ -648,8 +648,14 @@ def _infrastructure_port(graph: dict, node: dict | None, port_name: str) -> dict
                 if any(_port_key(value) in port_keys for value in labels):
                     matches.append(report)
             if matches:
-                confirmed = edge.get("confirmed") is True and any(report.get("confirmed") is True for report in matches)
-                result["links"].append({**edge, "confirmed": confirmed, "portEvidence": matches})
+                confirmed_reports = [report for report in matches if report.get("confirmed") is True]
+                confirmed = edge.get("confirmed") is True and bool(confirmed_reports)
+                sources = [report["source"] for report in (confirmed_reports if confirmed else matches)
+                           if report.get("source")]
+                scoped_edge = {**edge, "confirmed": confirmed, "portEvidence": matches}
+                if sources and edge.get("source") not in sources:
+                    scoped_edge.update(source=sources[0], details="")
+                result["links"].append(scoped_edge)
 
         if not edge.get("confirmed"):
             continue
