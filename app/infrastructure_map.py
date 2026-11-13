@@ -1991,6 +1991,18 @@ def _lacp_partner_interface_gaps(nodes: dict) -> list[dict]:
 def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: str | None = None) -> dict:
     nodes = {node["id"]: node for node in graph["nodes"]}
     counts, inventory_pairs, alerts, pending, current_pairs = _topology_port_pairs(nodes, graph["links"])
+    port_aliases = {
+        (node["id"], port_label_key(alias)): port_label_key(port["name"])
+        for node in nodes.values() for port in node["ports"] for alias in port.get("aliases", [])
+    }
+
+    def pair_key(row):
+        ends = [(row[side], port_label_key(row[field])) for side, field in (("a", "portA"), ("b", "portB"))]
+        return tuple(sorted((device, port_aliases.get((device, port), port)) for device, port in ends))
+
+    current_keys = {pair_key(row) for row in current_pairs}
+    inventory_by_key = {pair_key(row): row for row in inventory_pairs}
+    inventory_only = [row for key, row in inventory_by_key.items() if key not in current_keys]
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
     lacp_gaps = _lacp_partner_interface_gaps(nodes)
     lacp = [{"id": node["id"], "name": node["name"], **report}
@@ -2028,6 +2040,7 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
             )
 
         current = [row for row in current_pairs if matches(row)]
+        archived = [row for row in inventory_only if matches(row)]
         gaps = [row for row in pending if matches(row)]
         stp_related_gaps = [row for row in pending if not matches(row) and (
             any(matches(pair) for pair in row.get("stpBridgeConnections", []))
@@ -2056,6 +2069,7 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
             "node": _attachment_node(node) if node else None, "portName": port_name, "ports": ports,
             "currentPairTotal": len(current), "currentPairs": current[:64],
             "inventoryPairs": [row for row in inventory_pairs if matches(row)][:64],
+            "inventoryOnlyPairTotal": len(archived), "inventoryOnlyPairs": archived[:64],
             "pendingTotal": len(gaps), "pending": gaps[:64],
             "confirmationGapCounts": dict(Counter(reason for row in gaps for reason in row["confirmationGaps"])),
             "stpRelatedPendingTotal": len(stp_related_gaps), "stpRelatedPending": stp_related_gaps[:64],
@@ -2089,6 +2103,7 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
                                             reason for row in pending for reason in row["confirmationGaps"])),
                                         "currentPairTotal": len(current_pairs), "currentPairs": current_pairs[:64],
                                         "inventoryPairs": inventory_pairs[:64],
+                                        "inventoryOnlyPairTotal": len(inventory_only), "inventoryOnlyPairs": inventory_only[:64],
                                         "portAlertTotal": len(alerts), "portAlerts": alerts[:64],
                                         "portCounterAudit": graph.get("portCounterAudit") or _summarize_port_counters(nodes),
                                         "portRxSilenceAudit": graph.get("portRxSilenceAudit") or _summarize_port_rx_silence(nodes),

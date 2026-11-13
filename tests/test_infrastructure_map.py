@@ -7979,6 +7979,24 @@ def test_inventory_port_sources_are_dated_and_kept_separate_from_live_checks(tmp
     assert audit["pending"][0]["inventorySources"] == expected
     assert audit["inventoryPairs"] == [{"a": "a", "b": "b", "portA": "ge1", "portB": "eth0",
                                          "inventorySources": expected}]
+    assert audit["inventoryOnlyPairTotal"] == 1
+    assert audit["inventoryOnlyPairs"] == audit["inventoryPairs"]
+    current_graph = {**graph, "links": [*graph["links"], {
+        "a": "b", "b": "a", "kind": "Сетевое соединение", "confirmed": True, "portEvidence": [
+            {"a": "ETH0", "b": "GE1", "source": "LLDP UI_VPN", "confirmed": True,
+             "at": now.isoformat(), "pairEvidence": "current"},
+        ],
+    }]}
+    scoped = summarize_topology(current_graph, node_id="a", port_name="ge1")["topologyAudit"]
+    assert scoped["currentPairTotal"] == 1
+    assert scoped["inventoryOnlyPairTotal"] == 0 and scoped["inventoryOnlyPairs"] == []
+    next(node for node in graph["nodes"] if node["id"] == "a")["ports"] = [
+        {"name": "Slot0/1", "aliases": ["ge1"]},
+    ]
+    current_graph["links"][-1]["portEvidence"][0]["b"] = "Slot0/1"
+    scoped = summarize_topology(current_graph, node_id="a", port_name="Slot0/1")["topologyAudit"]
+    assert len(scoped["inventoryPairs"]) == scoped["currentPairTotal"] == 1
+    assert scoped["inventoryOnlyPairTotal"] == 0
     port_graph = load_infrastructure_map(path, now, include_port_pairs=True)
     assert port_graph["inventoryPairs"] == audit["inventoryPairs"]
     assert port_graph["currentPortPairs"] == []
