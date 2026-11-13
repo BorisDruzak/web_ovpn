@@ -2110,10 +2110,26 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
                 if (state.get("state") == "up" and not state["stale"]
                         and endpoint and endpoint["deviceId"] == link[peer]):
                     endpoint_macs[side] = endpoint
+            fdb_observations = []
+            for origin, reading in paths.get(frozenset((a, b)), []):
+                learned = reading.get("learnedEndpoint")
+                if reading["source"] != "netctl FDB" or not learned or not reading["at"]:
+                    continue
+                switch = learned["switchId"]
+                side = "a" if switch == a else "b"
+                local = reading["a" if switch == origin else "b"]
+                if not local or port_key(switch, local) != port_key(switch, report[side]):
+                    continue
+                observation = {**learned, "port": report[side], "checkedAt": reading["at"]}
+                if address := reading.get("managementAddress"):
+                    observation["managementAddress"] = address
+                if observation not in fdb_observations:
+                    fdb_observations.append(observation)
             inventory_pairs.append({
                 "a": a, "b": b, "portA": report["a"], "portB": report["b"],
                 "inventorySources": report.get("inventorySources", []),
                 **({"portStates": port_states} if port_states else {}),
+                **({"fdbObservations": fdb_observations[:8]} if fdb_observations else {}),
                 **({"endpointMacObservations": endpoint_macs} if endpoint_macs else {}),
             })
         counts["current" if current else "verifiedInventory" if inventory else "unconfirmed"] += 1

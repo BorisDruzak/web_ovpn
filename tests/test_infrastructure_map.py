@@ -9079,6 +9079,14 @@ def test_inventory_port_sources_are_dated_and_kept_separate_from_live_checks(tmp
     switch["ports"] = [{"name": "ge1", "linkCheck": {
         "state": "up", "speedBps": 10**9, "checkedAt": now.isoformat(),
     }}]
+    learned = {"switchId": "a", "deviceId": "b", "mac": "02:00:00:00:00:01"}
+    raw["links"].append({"a": "b", "b": "a", "kind": "Путь по MAC-таблице",
+                         "source": "netctl FDB", "confirmed": True, "portEvidence": [
+        {"a": "", "b": "GE1", "source": "netctl FDB", "confirmed": True, "at": now.isoformat(),
+         "learnedEndpoint": learned, "managementAddress": "192.0.2.2"},
+        {"a": "", "b": "ge2", "source": "netctl FDB", "confirmed": True, "at": now.isoformat(),
+         "learnedEndpoint": {**learned, "mac": "02:00:00:00:00:02"}},
+    ]})
     path.write_text(json.dumps(raw), encoding="utf-8")
     measured = load_infrastructure_map(path, now, include_guest_attachments=True)
     scoped = summarize_topology(measured, node_id="a", port_name="ge1")["topologyAudit"]
@@ -9086,6 +9094,9 @@ def test_inventory_port_sources_are_dated_and_kept_separate_from_live_checks(tmp
     assert pair["portStates"] == {"a": {"state": "up", "speedBps": 10**9,
                                       "checkedAt": now.isoformat(), "source": "SNMP"}}
     assert measured["inventoryPairs"] == [pair]
+    assert pair["fdbObservations"] == [{
+        **learned, "port": "ge1", "checkedAt": now.isoformat(), "managementAddress": "192.0.2.2",
+    }]
     assert scoped["currentPairTotal"] == 0
     expired = load_infrastructure_map(path, now + timedelta(minutes=11), include_guest_attachments=True)
     assert "portStates" not in expired["inventoryPairs"][0]

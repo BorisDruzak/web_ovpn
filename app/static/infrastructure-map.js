@@ -1501,7 +1501,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const panel = make('details', null, 'map-port-panel');
     panel.dataset.section = 'inventory-port-pairs';
     const list = make('ul', null, 'map-detail-list');
-    for (const {a, b, portA, portB, inventorySources, portStates = {}, endpointMacObservations = {}} of pairs) {
+    for (const {a, b, portA, portB, inventorySources, portStates = {}, endpointMacObservations = {},
+      fdbObservations = []} of pairs) {
       const row = make('li');
       row.append(portPairEndpoint(a, byId.get(a)?.name ?? a, portA), ' ↔ ',
         portPairEndpoint(b, byId.get(b)?.name ?? b, portB));
@@ -1514,6 +1515,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       for (const [side, endpoint] of Object.entries(endpointMacObservations)) {
         const [device, port] = side === 'a' ? [a, portA] : [b, portB];
         row.append(make('small', `${byId.get(device)?.name ?? device} ${port} · ${formatEndpointMac(endpoint)}`));
+      }
+      for (const {switchId, port, mac, managementAddress, checkedAt} of fdbObservations) {
+        row.append(make('small', [`${byId.get(switchId)?.name ?? switchId} ${port}`, 'MAC-таблица', mac,
+          managementAddress, formatTime(checkedAt)].filter(Boolean).join(' · ')));
       }
       appendInventorySources(row, inventorySources);
       list.append(row);
