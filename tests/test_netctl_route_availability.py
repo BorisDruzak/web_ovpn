@@ -239,8 +239,26 @@ def test_gateway_failure_checks_expected_address_dhcp_and_link(monkeypatch, inte
     assert result["evidence"]["gateway_link"] == expected_link
     assert sock.words[-8:] == [
         "/ip/dhcp-client/print", "=.proplist=interface,status,disabled,address,gateway", "?interface=ether9", "",
-        "/interface/print", "=.proplist=name,running,disabled", "?name=ether9", "",
+        "/interface/print", "=.proplist=name,running,disabled,type", "?name=ether9", "",
     ]
+
+
+def test_gateway_failure_reports_ethernet_negotiation(monkeypatch):
+    fake_api(monkeypatch, [
+        "!re", "=sent=3", "=received=0", "", "!done", "",
+        "!done", "", "!done", "", "!done", "",
+        "!re", "=name=ether9", "=type=ether", "=running=true", "=disabled=false", "", "!done", "",
+        "!re", "=status=link-ok", "=auto-negotiation=done", "=rate=100Mbps", "=full-duplex=true", "",
+        "!done", "",
+    ])
+    result = run_probe(
+        sources=[API_SOURCE], secrets=API_SECRETS, interface="ether9",
+        source_address="192.0.2.10", observe_neighbor=True,
+    )
+    assert result["evidence"]["gateway_link"] == {
+        "status": "observed", "state": "up", "rate": "100Mbps",
+        "full_duplex": True, "auto_negotiation": "done",
+    }
 
 
 @pytest.mark.parametrize("status,address,gateway,lease", [

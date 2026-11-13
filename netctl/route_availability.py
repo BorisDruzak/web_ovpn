@@ -305,7 +305,7 @@ def _observe_gateway_link(client: RouterOSApiClient, interface: str, deadline: f
         return {"status": "unavailable"}
     try:
         client.sock.settimeout(timeout)
-        rows = client.call(["/interface/print", "=.proplist=name,running,disabled", f"?name={interface}"])
+        rows = client.call(["/interface/print", "=.proplist=name,running,disabled,type", f"?name={interface}"])
     except TimeoutError:
         return {"status": "timeout"}
     except (OSError, RuntimeError, ValueError):
@@ -319,7 +319,31 @@ def _observe_gateway_link(client: RouterOSApiClient, interface: str, deadline: f
     running = row.get("running")
     if row.get("disabled") != "false" or running not in {"true", "false"}:
         return {"status": "unavailable"}
-    return {"status": "observed", "state": "up" if running == "true" else "down"}
+    result = {"status": "observed", "state": "up" if running == "true" else "down"}
+    timeout = min(2.0, deadline - monotonic())
+    if running != "true" or row.get("type") != "ether" or timeout <= 0:
+        return result
+    try:
+        client.sock.settimeout(timeout)
+        details = client.call([
+            "/interface/ethernet/monitor", f"=numbers={interface}", "=once=",
+            "=.proplist=status,rate,full-duplex,auto-negotiation",
+        ])
+    except (OSError, RuntimeError, ValueError):
+        return result
+    if len(details) != 1 or details[0].get("status") != "link-ok":
+        return result
+    ethernet = details[0]
+    rate = ethernet.get("rate", "")
+    if re.fullmatch(r"[1-9][0-9]{0,4}(?:\.[0-9]{1,3})?[MG]bps", rate):
+        result["rate"] = rate
+    duplex = ethernet.get("full-duplex")
+    if duplex in {"true", "false"}:
+        result["full_duplex"] = duplex == "true"
+    negotiation = ethernet.get("auto-negotiation")
+    if negotiation in {"done", "disabled", "incomplete", "failed"}:
+        result["auto_negotiation"] = negotiation
+    return result
 
 
 def _trace_reply(rows: list[dict[str, str]], target: str, ttl: int) -> dict:

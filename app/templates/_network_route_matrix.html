@@ -32,6 +32,8 @@
             'up': 'активен', 'down': 'неактивен', 'disabled': 'отключён',
             'timeout': 'таймаут опроса'
           }.get(link.state if link.status == 'observed' else link.status, 'нет данных') }}
+          {% if link.rate is defined %} · {{ link.rate }}{% endif %}
+          {% if link.full_duplex is defined %} · {{ 'full duplex' if link.full_duplex else 'half duplex' }}{% endif %}
           {% endif %}
           {% if row.evidence.gateway_source is defined and row.evidence.gateway_source.status == 'missing' %}
           <br>Исходный IPv4 не назначен на интерфейсе
