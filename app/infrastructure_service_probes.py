@@ -106,6 +106,24 @@ def _oidc_rs256_key(key: dict) -> bool:
         return False
 
 
+def _is_digest_challenge(value: str) -> bool:
+    scheme, _, parameters = value.partition(" ")
+    if scheme.lower() != "digest" or len(parameters) > 4096:
+        return False
+    parameter = re.compile(r'[ \t]*([a-zA-Z][a-zA-Z0-9_-]*)[ \t]*=[ \t]*'
+                           r'("(?:[^"\\\r\n]|\\[^\r\n])*"|[!#$%&\x27*+\-.^_\x60|~0-9A-Za-z]+)'
+                           r'[ \t]*(,|$)')
+    seen = {}
+    position = 0
+    while position < len(parameters):
+        match = parameter.match(parameters, position)
+        if match is None or match[1].lower() in seen or match[3] and match.end() == len(parameters):
+            return False
+        seen[match[1].lower()] = match[2]
+        position = match.end()
+    return all(seen.get(name, "").startswith('"') and len(seen[name]) > 2 for name in ("realm", "nonce"))
+
+
 def _http(ip: str, port: int, spec: dict) -> dict:
     path = _http_path(spec.get("path"))
     body_expected = spec.get("body")
@@ -116,6 +134,7 @@ def _http(ip: str, port: int, spec: dict) -> dict:
     redfish_root = spec.get("redfish_service_root", False)
     oidc_jwks = spec.get("oidc_rs256_jwks", False)
     basic_auth_realm = spec.get("basic_auth_realm")
+    digest_challenge = spec.get("digest_auth_challenge", False)
     allow_gzip = spec.get("allow_gzip", False)
     tls = spec["type"] == "https"
     if type(redfish_root) is not bool or (redfish_root and (
@@ -134,7 +153,13 @@ def _http(ip: str, port: int, spec: dict) -> dict:
         content_type = "application/json"
     if type(allow_gzip) is not bool:
         raise ValueError("allow_gzip requires a boolean")
-    if basic_auth_realm is not None:
+    if type(digest_challenge) is not bool:
+        raise ValueError("digest_auth_challenge requires a boolean")
+    if digest_challenge:
+        if any(value is not None for value in (body_expected, body_marker, content_type, json_fields,
+                                                json_unavailable, basic_auth_realm)):
+            raise ValueError("invalid HTTP Digest authentication challenge contract")
+    elif basic_auth_realm is not None:
         if (not tls or not (spec.get("tls_server_name") or spec.get("tls_sha256"))
                 or not isinstance(basic_auth_realm, str)
                 or not re.fullmatch(r"[A-Za-z0-9 _.-]{0,80}", basic_auth_realm)
@@ -209,10 +234,14 @@ def _http(ip: str, port: int, spec: dict) -> dict:
         observed["httpStatus"] = response.status
         if 500 <= response.status < 600:
             return {**observed, "state": "unreachable", "reason": "http_status"}
-        if basic_auth_realm is not None:
+        if digest_challenge or basic_auth_realm is not None:
             if response.status != 401:
                 return {**observed, "state": "unknown", "reason": "http_status"}
             challenges = [value.strip() for name, value in response.getheaders() if name.lower() == "www-authenticate"]
+            if digest_challenge:
+                if any(map(_is_digest_challenge, challenges)):
+                    return {**observed, "state": "reachable"}
+                return {**observed, "state": "unknown", "reason": "http_payload_mismatch"}
             expected = (rf'(?i:Basic[ \t]+realm)[ \t]*=[ \t]*"{re.escape(basic_auth_realm)}"[ \t]*(?:,|$)'
                         if basic_auth_realm else r"(?i:Basic)$")
             if any(re.match(expected, value) for value in challenges):

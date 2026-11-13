@@ -1557,6 +1557,41 @@ def test_pinned_https_probe_checks_redfish_authentication_challenge(monkeypatch)
     assert _http_probe({**spec, "tls_sha256": None})["reason"] == "http_configuration"
 
 
+def test_http_digest_challenge_requires_401_realm_and_nonce(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.infrastructure_service_probes import _http_probe
+
+    response = SimpleNamespace(status=401)
+    response.getheaders = lambda: [("WWW-Authenticate", challenge)]
+    challenge = 'Digest realm="Device, API", qop="auth,auth-int", nonce="token"'
+
+    class Connection:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def request(self, method, path, headers):
+            assert (method, path) == ("GET", "/ISAPI/System/deviceInfo")
+            assert "Authorization" not in headers
+
+        def getresponse(self):
+            return response
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("app.infrastructure_service_probes.http.client.HTTPConnection", Connection)
+    spec = {"type": "http", "ip": "192.0.2.5", "port": 80, "path": "/ISAPI/System/deviceInfo",
+            "digest_auth_challenge": True}
+    assert _http_probe(spec) == {"state": "reachable", "httpStatus": 401}
+    for challenge in ('Basic realm="Device"', 'Digest realm="Device"', 'Digest nonce="token"',
+                      'Digest realm="Device", nonce=""', 'Digest realm="Device", nonce="one", nonce="two"'):
+        assert _http_probe(spec) == {"state": "unknown", "httpStatus": 401, "reason": "http_payload_mismatch"}
+    response.status = 200
+    assert _http_probe(spec) == {"state": "unknown", "httpStatus": 200, "reason": "http_status"}
+    assert _http_probe({**spec, "body": "hello"})["reason"] == "http_configuration"
+
+
 def test_zabbix_version_checks_matching_json_rpc_response():
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from threading import Thread
