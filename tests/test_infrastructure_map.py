@@ -7056,6 +7056,14 @@ def test_attachment_includes_controller_path_without_attributing_it_to_the_serve
     links[0]["confirmed"] = False
     candidate, = read()["physicalHosts"][0]["managementControllers"]
     assert candidate == {**controller, "confirmed": False}
+    links[1]["confirmed"] = True
+    links[1]["portEvidence"][0]["confirmed"] = True
+    host, = read()["physicalHosts"]
+    controller, = host["managementControllers"]
+    pair, = controller["inventoryPairs"]
+    assert (pair["a"], pair["portA"], pair["b"], pair["portB"]) == ("sw", "ge13", "bmc", "eth0")
+    assert controller["pendingPortPairTotal"] == 0
+    assert host["connections"] == []
 
 
 def test_attachment_view_includes_physical_service_hosts_and_distinguishes_port_evidence(tmp_path, monkeypatch):

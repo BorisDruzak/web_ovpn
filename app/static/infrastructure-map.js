@@ -1518,6 +1518,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       if (!edge.confirmed) panel.append(make('small', 'Принадлежность контроллера серверу не подтверждена'));
       const controllerPaths = renderServicePaths(data.servicePaths?.[controller.id]);
       if (controllerPaths) panel.append(controllerPaths);
+      for (const pairs of [renderHostPortPairs(controller), renderInventoryPortPairs(controller),
+        renderHostPortPairs(controller, true)]) {
+        if (pairs) panel.append(pairs);
+      }
       propertiesSection.append(panel);
     }
     if (node.kind === 'Сервис' && placementHost !== node && !placementHost.guest) {

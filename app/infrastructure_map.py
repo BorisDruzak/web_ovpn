@@ -2206,7 +2206,13 @@ def _physical_attachments(nodes: dict, links: list[dict], host_ids: list[str]) -
     connections = {host_id: [] for host_id in host_ids}
     controllers = defaultdict(dict)
     pending_by_node = defaultdict(list)
-    _, _, _, pending, _ = _topology_port_pairs(nodes, links)
+    _, inventory_pairs, _, pending, current_pairs = _topology_port_pairs(nodes, links)
+    inventory_by_node = defaultdict(list)
+    current_by_node = defaultdict(list)
+    for pairs, index in ((inventory_pairs, inventory_by_node), (current_pairs, current_by_node)):
+        for pair in pairs:
+            for side in ("a", "b"):
+                index[pair[side]].append(pair)
     for pair in pending:
         for side in ("a", "b"):
             pending_by_node[pair[side]].append(pair)
@@ -2270,6 +2276,8 @@ def _physical_attachments(nodes: dict, links: list[dict], host_ids: list[str]) -
              **({"managementControllers": [
                  {"node": _attachment_node(nodes[controller]), "confirmed": confirmed,
                   "servicePaths": _management_service_paths(nodes[controller], controller, {}, observed_ports),
+                  "inventoryPairs": inventory_by_node[controller][:24],
+                  "currentPortPairs": current_by_node[controller][:24],
                   **pending_pairs(controller)}
                  for controller, confirmed in sorted(controllers[host_id].items(), key=lambda item: (not item[1], item[0]))[:12]
              ]} if host_id in controllers else {}),
