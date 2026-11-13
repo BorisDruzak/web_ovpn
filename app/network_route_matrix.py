@@ -108,6 +108,10 @@ def _run_probe(profile_id: str, probe: RouteProbe, sessions: list[dict] | None =
             from .network_route_remote import probe_remote_route
 
             measurement = probe_remote_route(probe.agent_origin, profile_id, probe.id, probe.local_arguments())
+        elif probe.push_origin:
+            from .network_route_spool import read_measurement
+
+            measurement = read_measurement(profile_id, probe)
         else:
             measurement = probe_local_route(**probe.local_arguments())
     except (NetctlError, OSError, UnicodeError, ValueError):
@@ -127,7 +131,7 @@ def _run_probe(profile_id: str, probe: RouteProbe, sessions: list[dict] | None =
     return {
         "id": probe.id,
         "config_digest": config_digest,
-        "origin": probe.router_source or probe.agent_origin or "vpn-server",
+        "origin": probe.router_source or probe.agent_origin or probe.push_origin or "vpn-server",
         "target": probe.target,
         "protocol": probe.protocol,
         **({"dns_transport": probe.dns_transport} if probe.dns_transport is not None else {}),
@@ -140,7 +144,7 @@ def _run_probe(profile_id: str, probe: RouteProbe, sessions: list[dict] | None =
         "source_address": probe.source_address,
         "interface": probe.interface,
         "routing_table": probe.routing_table,
-        "checked_at": datetime.now(UTC).isoformat(),
+        "checked_at": measurement.get("measured_at") or datetime.now(UTC).isoformat(),
         "status": measurement["status"],
         "evidence": evidence,
         "reason": measurement.get("reason"),

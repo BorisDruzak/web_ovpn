@@ -360,6 +360,7 @@ def main() -> int:
         probe is None
         or probe.router_source is not None
         or probe.agent_origin is not None
+        or probe.push_origin is not None
     ):
         result = _result("unavailable", "origin_probe_not_configured", started)
     else:

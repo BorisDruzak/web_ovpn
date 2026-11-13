@@ -225,6 +225,7 @@ def _configured_origin(
         id="test-probe",
         router_source=router_source,
         agent_origin=agent_origin,
+        push_origin=None,
         local_arguments=lambda: arguments,
     )
     profiles = SimpleNamespace(routes={"test-profile": SimpleNamespace(probes=[probe])})

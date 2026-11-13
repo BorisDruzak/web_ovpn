@@ -127,6 +127,7 @@ class RouteProbe(BaseModel):
     openvpn_client: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
     expected_kernel_interface: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_][A-Za-z0-9_.:@-]{0,31}$")
     expected_kernel_gateway: str | None = None
+    push_origin: ProfileId | None = None
 
     @field_validator("target", "source_address", "expected_first_hop", "expected_kernel_gateway")
     @classmethod
@@ -140,10 +141,12 @@ class RouteProbe(BaseModel):
 
     @model_validator(mode="after")
     def validate_parameters(self):
-        if self.router_source and self.agent_origin:
+        if sum(origin is not None for origin in (self.router_source, self.agent_origin, self.push_origin)) > 1:
             raise ValueError("select one probe origin")
-        if self.openvpn_client and (self.router_source or self.agent_origin):
+        if self.openvpn_client and (self.router_source or self.agent_origin or self.push_origin):
             raise ValueError("OpenVPN session guard requires a probe from the VPN server")
+        if self.push_origin and not self.source_address:
+            raise ValueError("pushed probe requires an explicit source address")
         if self.router_source and self.protocol != "icmp":
             raise ValueError("RouterOS route probes require ICMP")
         if self.router_source and (self.expected_kernel_interface or self.expected_kernel_gateway):
@@ -194,7 +197,9 @@ class RouteProbe(BaseModel):
 
     def config_digest(self) -> str:
         exclude = {
-            field for field in ("openvpn_client", "dns_transport", "expected_kernel_interface", "expected_kernel_gateway")
+            field for field in (
+                "openvpn_client", "dns_transport", "expected_kernel_interface", "expected_kernel_gateway", "push_origin",
+            )
             if getattr(self, field) is None
         }
         return hashlib.sha256(self.model_dump_json(exclude=exclude).encode("utf-8")).hexdigest()

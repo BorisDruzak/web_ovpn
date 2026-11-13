@@ -54,7 +54,7 @@ def test_dns_transport_is_explicit_without_changing_existing_probe_digests():
     }
     original = network_probe_profiles.RouteProbe.model_validate(common)
     expected = original.model_dump_json(exclude={
-        "openvpn_client", "dns_transport", "expected_kernel_interface", "expected_kernel_gateway",
+        "openvpn_client", "dns_transport", "expected_kernel_interface", "expected_kernel_gateway", "push_origin",
     })
     assert original.config_digest() == hashlib.sha256(expected.encode()).hexdigest()
     assert "dns_transport" not in original.local_arguments()
