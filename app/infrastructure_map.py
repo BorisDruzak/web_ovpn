@@ -798,6 +798,10 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         status = check.get("httpStatus")
         if type(status) is int and 100 <= status <= 599 and (not windows_probe or not result["stale"]):
             result["httpStatus"] = status
+        if (result["method"] in ("HTTP", "HTTPS") and result["source"] == "UI_VPN"
+                and status == 401 and result["state"] == "reachable" and not result["stale"]
+                and check.get("httpAuthChallenge") == "Digest"):
+            result["httpAuthChallenge"] = "Digest"
         version = check.get("redfishVersion")
         if (result["method"] == "HTTPS" and result["path"] == "/redfish/v1/" and status == 200
                 and result["state"] == "reachable" and not result["stale"]
@@ -2574,7 +2578,7 @@ def _attachment_probe_location(check: dict) -> dict:
             **{key: check[key] for key in ("reason", "errorSource", "roundTripMs", "httpStatus", "responseCode", "rtspStatus", "dns", "ntp",
                                            "rdpSecurity", "rdpFailureCode", "tlsExpiresAt", "tlsVersion", "zabbixVersion",
                                            "smbDialect", "smbSigningRequired", "postgresqlTls", "redfishVersion", "ftpReply",
-                                           "sshTcpConnected", "localRoute")
+                                           "sshTcpConnected", "localRoute", "httpAuthChallenge")
                if key in check}}
 
 

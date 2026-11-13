@@ -1846,6 +1846,7 @@ def test_http_digest_challenge_requires_401_realm_and_nonce(monkeypatch):
     from types import SimpleNamespace
 
     from app.infrastructure_service_probes import _http_probe
+    from app.infrastructure_map import _public_service_check
 
     response = SimpleNamespace(status=401)
     response.getheaders = lambda: [("WWW-Authenticate", challenge)]
@@ -1868,7 +1869,13 @@ def test_http_digest_challenge_requires_401_realm_and_nonce(monkeypatch):
     monkeypatch.setattr("app.infrastructure_service_probes.http.client.HTTPConnection", Connection)
     spec = {"type": "http", "ip": "192.0.2.5", "port": 80, "path": "/ISAPI/System/deviceInfo",
             "digest_auth_challenge": True}
-    assert _http_probe(spec) == {"state": "reachable", "httpStatus": 401}
+    result = _http_probe(spec)
+    assert result == {"state": "reachable", "httpStatus": 401, "httpAuthChallenge": "Digest"}
+    now = datetime.now(timezone.utc)
+    check = {**result, "source": "UI_VPN", "method": "HTTP", "required": True, "checkedAt": now.isoformat()}
+    assert _public_service_check(check, now)["httpAuthChallenge"] == "Digest"
+    assert "httpAuthChallenge" not in _public_service_check({**check, "httpStatus": 200}, now)
+    assert "httpAuthChallenge" not in _public_service_check(check, now + timedelta(minutes=6))
     for challenge in ('Basic realm="Device"', 'Digest realm="Device"', 'Digest nonce="token"',
                       'Digest realm="Device", nonce=""', 'Digest realm="Device", nonce="one", nonce="two"'):
         assert _http_probe(spec) == {"state": "unknown", "httpStatus": 401, "reason": "http_payload_mismatch"}

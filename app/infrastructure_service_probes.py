@@ -240,7 +240,7 @@ def _http(ip: str, port: int, spec: dict) -> dict:
             challenges = [value.strip() for name, value in response.getheaders() if name.lower() == "www-authenticate"]
             if digest_challenge:
                 if any(map(_is_digest_challenge, challenges)):
-                    return {**observed, "state": "reachable"}
+                    return {**observed, "state": "reachable", "httpAuthChallenge": "Digest"}
                 return {**observed, "state": "unknown", "reason": "http_payload_mismatch"}
             expected = (rf'(?i:Basic[ \t]+realm)[ \t]*=[ \t]*"{re.escape(basic_auth_realm)}"[ \t]*(?:,|$)'
                         if basic_auth_realm else r"(?i:Basic)$")

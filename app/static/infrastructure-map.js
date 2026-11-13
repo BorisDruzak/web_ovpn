@@ -1189,7 +1189,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const responder = dns?.unexpectedResponder;
         const responseFrom = probe.errorSource ? `Отказ от ${probe.errorSource}` :
           responder && `Ответ от ${responder.address}:${responder.port}`;
-        const code = probe.httpStatus ? `HTTP ${probe.httpStatus}` : probe.responseCode ? `SIP ${probe.responseCode}` :
+        const code = probe.httpAuthChallenge ? `HTTP ${probe.httpStatus} · запрос аутентификации ${probe.httpAuthChallenge}`
+          : probe.httpStatus ? `HTTP ${probe.httpStatus}` : probe.responseCode ? `SIP ${probe.responseCode}` :
           probe.rtspStatus ? `RTSP ${probe.rtspStatus}` : probe.ftpReply ? `FTP ${probe.ftpReply}` : '';
         const rdp = probe.rdpSecurity ?? (probe.rdpFailureCode && `Код отказа RDP ${probe.rdpFailureCode}`);
         const tls = probe.tlsExpiresAt && certificateLabel(probe.tlsExpiresAt, probe.tlsVersion);
@@ -2157,6 +2158,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           responder?.matchesExpectedAddresses === true && 'записи совпали с ожидаемыми']
           .filter(Boolean).map(value => ' · ' + value).join('');
         const http = (check.httpStatus ? ' · HTTP ' + check.httpStatus : '')
+          + (check.httpAuthChallenge ? ' · запрос аутентификации ' + check.httpAuthChallenge : '')
           + (check.redfishVersion ? ' · Redfish ' + check.redfishVersion : '')
           + (check.zabbixVersion ? ' · Zabbix ' + check.zabbixVersion : '');
         const rtsp = check.rtspStatus ? ' · RTSP ' + check.rtspStatus : '';
