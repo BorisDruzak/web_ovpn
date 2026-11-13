@@ -2074,7 +2074,7 @@ def _attachment_probe_location(check: dict) -> dict:
             **({"path": check["path"]} if check.get("path") else {}),
             **{key: check[key] for key in ("reason", "roundTripMs", "httpStatus", "responseCode", "rtspStatus", "dns",
                                            "rdpSecurity", "rdpFailureCode", "tlsExpiresAt", "tlsVersion", "zabbixVersion",
-                                           "smbDialect", "smbSigningRequired", "postgresqlTls")
+                                           "smbDialect", "smbSigningRequired", "postgresqlTls", "redfishVersion", "ftpReply")
                if key in check}}
 
 
@@ -2406,7 +2406,7 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime, *, endpoint_
             })
             count = {"reachable": "passed", "unreachable": "failed"}.get(check["state"], "unconfirmed")
             probe[count] += 1
-            code = check.get("httpStatus") or check.get("responseCode") or check.get("rtspStatus")
+            code = check.get("httpStatus") or check.get("responseCode") or check.get("rtspStatus") or check.get("ftpReply")
             if code is not None:
                 codes = probe.setdefault("responseCodes", [])
                 if code not in codes:
@@ -2415,10 +2415,11 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime, *, endpoint_
                 modes = probe.setdefault("rdpSecurityModes", [])
                 if security not in modes:
                     modes.append(security)
-            if version := check.get("zabbixVersion"):
-                versions = probe.setdefault("zabbixVersions", [])
-                if version not in versions:
-                    versions.append(version)
+            for field in ("zabbixVersion", "redfishVersion"):
+                if version := check.get(field):
+                    versions = probe.setdefault(field + "s", [])
+                    if version not in versions:
+                        versions.append(version)
             if dialect := check.get("smbDialect"):
                 negotiation = {"dialect": dialect, "signingRequired": check["smbSigningRequired"]}
                 negotiations = probe.setdefault("smbNegotiations", [])

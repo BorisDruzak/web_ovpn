@@ -802,13 +802,14 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const responder = dns?.unexpectedResponder;
         const responseFrom = responder && `Ответ от ${responder.address}:${responder.port}`;
         const code = probe.httpStatus ? `HTTP ${probe.httpStatus}` : probe.responseCode ? `SIP ${probe.responseCode}` :
-          probe.rtspStatus ? `RTSP ${probe.rtspStatus}` : '';
+          probe.rtspStatus ? `RTSP ${probe.rtspStatus}` : probe.ftpReply ? `FTP ${probe.ftpReply}` : '';
         const rdp = probe.rdpSecurity ?? (probe.rdpFailureCode && `Код отказа RDP ${probe.rdpFailureCode}`);
         const tls = probe.tlsExpiresAt && certificateLabel(probe.tlsExpiresAt, probe.tlsVersion);
         const zabbix = probe.zabbixVersion && `Zabbix ${probe.zabbixVersion}`;
         const smb = probe.smbDialect && smbNegotiationLabel(probe.smbDialect, probe.smbSigningRequired);
         const postgres = postgresqlTlsLabel(probe.postgresqlTls, probe.tlsVersion);
-        readings.add([probe.path, question, outcome, code, rdp, tls, zabbix, smb, postgres, responseFrom, rtt,
+        const redfish = probe.redfishVersion && `Redfish ${probe.redfishVersion}`;
+        readings.add([probe.path, question, outcome, code, rdp, tls, zabbix, redfish, smb, postgres, responseFrom, rtt,
           probe.state && formatTime(probe.checkedAt)].filter(Boolean).join(' · '));
       }
       for (const reading of readings) {
@@ -2004,6 +2005,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
               probe.responseCodes?.length && `Ответ ${probe.responseCodes.join(', ')}`,
               probe.rdpSecurityModes?.join(', '),
               ...(probe.zabbixVersions ?? []).map(version => `Zabbix ${version}`),
+              ...(probe.redfishVersions ?? []).map(version => `Redfish ${version}`),
               ...(probe.smbNegotiations ?? []).map(item => smbNegotiationLabel(item.dialect, item.signingRequired)),
               ...(probe.postgresqlTlsResults ?? []).map(item => postgresqlTlsLabel(item.state, item.version)),
               ...(probe.tlsCertificates ?? []).map(cert => certificateLabel(cert.expiresAt, cert.version)),

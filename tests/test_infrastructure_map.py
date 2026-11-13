@@ -7034,6 +7034,16 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     browser = client.get(browser_endpoint).json()["infrastructure"]
     probes = browser["servicePorts"]["snr"][0]["services"][0]["probeEndpoints"]
     assert [(probe["port"], probe["responseCodes"]) for probe in probes] == [(554, [401]), (5060, [200])]
+    raw["nodes"][0]["serviceChecks"] = [
+        {**check, "method": "HTTPS", "port": 443, "path": "/redfish/v1/", "httpStatus": 200, "redfishVersion": "1.5.0"},
+        {**check, "method": "FTP FEAT", "port": 21, "ftpReply": 211},
+    ]
+    redfish, ftp = read()["servicePaths"]
+    assert redfish["redfishVersion"] == "1.5.0" and ftp["ftpReply"] == 211
+    browser = client.get(browser_endpoint).json()["infrastructure"]
+    ftp, redfish = browser["servicePorts"]["snr"][0]["services"][0]["probeEndpoints"]
+    assert ftp["responseCodes"] == [211]
+    assert redfish["responseCodes"] == [200] and redfish["redfishVersions"] == ["1.5.0"]
     route = {"state": "reachable", "gateway": address["address"], "expectedGateway": address["address"],
              "sourceIP": "192.0.2.20", "interface": "ens18"}
     routed = {**check, "method": "DNS", "port": 53, "target": "198.51.100.1", "localRoute": route}
