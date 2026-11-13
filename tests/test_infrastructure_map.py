@@ -9074,6 +9074,21 @@ def test_inventory_port_sources_are_dated_and_kept_separate_from_live_checks(tmp
     browser = load_infrastructure_map(path, now, include_guest_attachments=True)
     assert browser["inventoryPairs"] == audit["inventoryPairs"]
     assert browser["currentPortPairs"] == []
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    switch = next(node for node in raw["nodes"] if node["id"] == "a")
+    switch["ports"] = [{"name": "ge1", "linkCheck": {
+        "state": "up", "speedBps": 10**9, "checkedAt": now.isoformat(),
+    }}]
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    measured = load_infrastructure_map(path, now, include_guest_attachments=True)
+    scoped = summarize_topology(measured, node_id="a", port_name="ge1")["topologyAudit"]
+    pair, = scoped["inventoryOnlyPairs"]
+    assert pair["portStates"] == {"a": {"state": "up", "speedBps": 10**9,
+                                      "checkedAt": now.isoformat(), "source": "SNMP"}}
+    assert measured["inventoryPairs"] == [pair]
+    assert scoped["currentPairTotal"] == 0
+    expired = load_infrastructure_map(path, now + timedelta(minutes=11), include_guest_attachments=True)
+    assert "portStates" not in expired["inventoryPairs"][0]
 
 
 def test_topology_withholds_conflicting_live_pairs_even_without_inventory(tmp_path):

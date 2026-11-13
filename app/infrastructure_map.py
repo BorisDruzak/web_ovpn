@@ -2100,8 +2100,12 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
                 remember_ports(link[side], link[peer], lacp["member"], "")
         for report in inventory:
             endpoint_macs = {}
+            port_states = {}
             for side, peer in (("a", "b"), ("b", "a")):
                 state = report.get("portStates", {}).get(side, {})
+                if state and not state["stale"] and state["state"] != "unknown":
+                    port_states[side] = {key: state[key] for key in
+                                         ("state", "speedBps", "checkedAt", "source", "speedCheckedAt") if key in state}
                 endpoint = state.get("endpointMac")
                 if (state.get("state") == "up" and not state["stale"]
                         and endpoint and endpoint["deviceId"] == link[peer]):
@@ -2109,6 +2113,7 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
             inventory_pairs.append({
                 "a": a, "b": b, "portA": report["a"], "portB": report["b"],
                 "inventorySources": report.get("inventorySources", []),
+                **({"portStates": port_states} if port_states else {}),
                 **({"endpointMacObservations": endpoint_macs} if endpoint_macs else {}),
             })
         counts["current" if current else "verifiedInventory" if inventory else "unconfirmed"] += 1
