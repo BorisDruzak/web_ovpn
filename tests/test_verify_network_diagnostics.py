@@ -463,6 +463,27 @@ def test_speed_report_requires_measured_directions_and_path(check, path, expecte
     assert not report["directions"]["receive"]["confirmed"]
 
 
+@pytest.mark.parametrize("check", ["https_speed", "iperf3"])
+def test_speed_report_preserves_gateway_failure_evidence(check):
+    now = datetime(2026, 11, 13, 2, 15, tzinfo=UTC)
+    gateway = {
+        "profile": "central-wan", "probe": "is74-gateway", "interface": "wan2",
+        "status": "unreachable", "reason": "icmp_error",
+        "gateway_source": {"status": "missing", "dhcp": "searching"},
+        "gateway_link": {"state": "up"},
+        "gateway_arp": {"state": "failed", "resolved": False},
+    }
+    wan = {"status": "unconfirmed", "reason": "no_unique_connection", "expected_interface": "wan2"}
+    receive = {"check": check, "status": "wan_gateway_unavailable", "target": "test · receive",
+               "checked_at": now.isoformat(), "result": {"gateway_check": gateway}}
+    send = {**receive, "status": "wan_unconfirmed", "target": "test · send",
+            "result": {"wan_observation": wan}}
+    report = verifier.speed_report([receive, send], [receive, send], check, "test", "wan2", now, timedelta(minutes=10))
+    assert report["directions"]["receive"]["gateway_check"] == gateway
+    assert report["directions"]["send"]["wan_observation"] == wan
+    assert all(row["api_matches"] and not row["confirmed"] for row in report["directions"].values())
+
+
 def test_interface_report_uses_common_tail_when_mcp_limits_history(monkeypatch):
     now = datetime(2026, 11, 13, 2, 15, tzinfo=UTC)
     monkeypatch.setattr(verifier, "MCP_INTERFACE_LIMIT", 1)

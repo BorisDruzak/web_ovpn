@@ -352,12 +352,17 @@ def speed_report(
                     observed = observation.get("nat_interface")
             speed_fields = ("sender_mbps", "receiver_mbps")
         speeds = {field: result.get(field) for field in speed_fields}
+        wan_evidence = {
+            field: result[field] for field in ("gateway_check", "wan_observation")
+            if isinstance(result.get(field), dict)
+        }
         checked_at = datetime.fromisoformat(row["checked_at"])
         fresh = timedelta(0) <= now - checked_at <= max_age
         api_matches = row in api_runs
         directions[direction] = {
             "status": row["status"], "checked_at": row["checked_at"], "fresh": fresh,
             "api_matches": api_matches, "observed_interface": observed, **speeds,
+            **wan_evidence,
             "confirmed": (
                 fresh and api_matches and row["status"] == "measured" and observed == expected_interface
                 and all(type(value) in (int, float) and isfinite(value) and value > 0 for value in speeds.values())
