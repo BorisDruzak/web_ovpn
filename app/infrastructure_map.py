@@ -965,13 +965,18 @@ def _public_service_check(check: dict, now: datetime) -> dict:
             result["rtspStatus"] = rtsp
         if reason == "rtsp_connection_refused" or (rtsp == 401 and reason == "rtsp_auth_required"):
             result["reason"] = reason
-    if result["method"] == "Сертификат TLS" or (result["method"] == "HTTPS" and not result["stale"]):
+    if result["method"] in {"Сертификат TLS", "Рукопожатие TLS"} or (result["method"] == "HTTPS" and not result["stale"]):
         expires = _time(check.get("tlsExpiresAt"))
         version = check.get("tlsVersion")
         if expires:
             result["tlsExpiresAt"] = expires.isoformat()
         if version in ("TLSv1.2", "TLSv1.3"):
             result["tlsVersion"] = version
+    if result["method"] == "Рукопожатие TLS" and reason in {
+        "probe_configuration", "tls_handshake_rejected", "tls_handshake_unconfirmed",
+        "tls_connection_refused", "timeout", "transport_error",
+    }:
+        result["reason"] = reason
     if result["method"] == "Сертификат TLS":
         if reason in {"probe_configuration", "tls_certificate_pin", "tls_certificate_expired",
                       "tls_certificate_not_yet_valid", "tls_certificate_unconfirmed",

@@ -1251,6 +1251,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     ftp_unexpected_reply: 'Неожиданный код ответа FTP',
     ftp_invalid_reply: 'Неполный или некорректный ответ FTP',
     tls_certificate_pin: 'Отпечаток сертификата изменился',
+    tls_handshake_rejected: 'Сервер отклонил рукопожатие TLS',
+    tls_handshake_unconfirmed: 'Рукопожатие TLS не подтверждено',
     tls_certificate_expired: 'Срок действия сертификата истёк',
     tls_certificate_expiring: 'Срок действия сертификата истекает в ближайшие 30 дней',
     tls_certificate_not_yet_valid: 'Сертификат ещё не вступил в силу',

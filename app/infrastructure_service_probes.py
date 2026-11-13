@@ -47,6 +47,7 @@ PROBE_METHODS = {
     "sip_options": "SIP OPTIONS (UDP)", "icmp": "ICMP", "vlan_transit": "ICMP · VLAN",
     "wireguard_policy": "Маршрут · WireGuard", "ipmi_lan": "IPMI LAN (UDP)", "rtsp_options": "RTSP OPTIONS",
     "ssh_identification": "SSH", "ftp_features": "FTP FEAT", "tls_certificate": "Сертификат TLS",
+    "tls_handshake": "Рукопожатие TLS",
     "mongodb_ping": "MongoDB ping", "amqp_start": "AMQP Connection.Start", "redis_ping": "Redis PING",
 }
 DEPENDENCY_PROTOCOLS = {"mongodb_ping", "amqp_start", "redis_ping"}
@@ -930,6 +931,34 @@ def _udp_failure(connection: socket.socket, option: tuple[int, int] | None,
             return {"state": "unreachable", "reason": "icmp_port_unreachable", "errorSource": offender}
         return {"state": "unknown", "reason": "icmp_rejected", "errorSource": offender}
     return fallback
+
+
+def _tls_handshake(spec: dict) -> dict:
+    port = spec.get("port")
+    try:
+        address = str(ipaddress.ip_address(spec.get("ip")))
+    except ValueError:
+        return {"state": "unknown", "reason": "probe_configuration"}
+    if type(port) is not int or not 1 <= port <= 65535:
+        return {"state": "unknown", "reason": "probe_configuration"}
+    # Test negotiation only. No authentication or application data follows.
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    try:
+        with socket.create_connection((address, port), timeout=TIMEOUT) as tcp:
+            with context.wrap_socket(tcp, server_hostname=address) as tls:
+                return {"state": "reachable", "tlsVersion": tls.version()}
+    except ssl.SSLError as error:
+        if "ALERT" in (error.reason or ""):
+            return {"state": "unreachable", "reason": "tls_handshake_rejected"}
+        return {"state": "unknown", "reason": "tls_handshake_unconfirmed"}
+    except ConnectionRefusedError:
+        return {"state": "unreachable", "reason": "tls_connection_refused"}
+    except TimeoutError:
+        return {"state": "unknown", "reason": "timeout"}
+    except OSError:
+        return {"state": "unknown", "reason": "transport_error"}
 
 
 def _tls_certificate(spec: dict) -> dict:
@@ -1947,6 +1976,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 details = _ftp_features(spec)
             elif protocol == "tls_certificate":
                 details = _tls_certificate(spec)
+            elif protocol == "tls_handshake":
+                details = _tls_handshake(spec)
             elif protocol == "ldaps":
                 details = _ldaps(spec)
             elif protocol == "ssh_identification":
@@ -1996,7 +2027,7 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 "target": spec.get("ip") if not skip_reason and (
                     protocol in {"icmp", "vlan_transit", "sip_options", "ipmi_lan", "rtsp_options", "ssh_identification", "ftp_features",
                                  "zabbix_api", "postgresql", "dns", "ldap", "ldaps", "smb", "tls_certificate", "tcp_connect",
-                                 "ntp", "winrm", "rdp_negotiation"}
+                                 "ntp", "winrm", "rdp_negotiation", "tls_handshake"}
                     or protocol in DEPENDENCY_PROTOCOLS or "probeTargetIP" in node
                     or (protocol in {"http", "https"} and spec.get("report_target") is True
                         and details.get("reason") != "http_configuration")

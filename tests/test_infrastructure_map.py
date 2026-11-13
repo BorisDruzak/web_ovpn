@@ -7428,6 +7428,30 @@ def test_service_warns_before_required_tls_certificate_expires(days, required, a
         assert service["issues"][0]["tlsExpiresAt"] == check["tlsExpiresAt"]
 
 
+def test_routeros_tls_alert_degrades_reachable_api_ports(monkeypatch):
+    from unittest.mock import MagicMock
+    from app import infrastructure_service_probes as probes
+    from app.infrastructure_map import _map_statuses, _public_node
+
+    now = datetime.now(timezone.utc)
+    context = MagicMock()
+    context.wrap_socket.side_effect = probes.ssl.SSLError(1, "handshake failure")
+    context.wrap_socket.side_effect.reason = "SSLV3_ALERT_HANDSHAKE_FAILURE"
+    monkeypatch.setattr(probes.ssl, "SSLContext", lambda protocol: context)
+    monkeypatch.setattr(probes.socket, "create_connection", MagicMock())
+    monkeypatch.setattr(probes, "_tcp_connect", lambda spec: {"state": "reachable"})
+    raw = {"id": "api", "name": "RouterOS API", "kind": "Сервис",
+           "probeTargetIP": "192.0.2.1", "probeTargetIdentityAt": now.isoformat()}
+    probes.apply_service_probes([raw], {"api": [
+        {"type": "tcp_connect", "ip": "192.0.2.1", "port": 8729},
+        {"type": "tls_handshake", "ip": "192.0.2.1", "port": 8729, "component": True},
+    ]})
+    node = _public_node(raw, datetime.now(timezone.utc))
+    _map_statuses({"api": node}, [])
+    assert node["mapStatus"] == "warn"
+    assert node["serviceChecks"][-1]["reason"] == "tls_handshake_rejected"
+
+
 def test_tls_certificate_verifies_name_and_chain_for_configured_address(monkeypatch, tmp_path):
     from unittest.mock import MagicMock
 
