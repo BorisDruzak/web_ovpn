@@ -2918,13 +2918,17 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                      ports=(port_label(switch_source, port), remote_port), at=checked.isoformat(),
                      vlan=row["vlan_id"], learned_endpoint=learned_endpoint,
                      management_address=address if remote_port or identity_matches else None)
-            if identity_matches:
+            if remote_port or identity_matches:
                 checked = min(arp_at, datetime.fromisoformat(max(live)),
-                              max(datetime.fromisoformat(row["observed_at"]) for row in observations)).isoformat()
-                for item in identity_services.get(asset, []):
-                    item.update(probeTargetIP=address, probeTargetIdentityAt=checked)
-                if asset_ip_checks.get(asset) == address and "probeTargetIdentityAt" not in nodes[asset]:
-                    nodes[asset].update(probeTargetIP=address, probeTargetIdentityAt=checked,
+                              max(datetime.fromisoformat(row["observed_at"]) for row in observations))
+                checked_at = checked.isoformat()
+                if remote_port:
+                    checked = min(checked, datetime.fromisoformat(pve_at))
+                if remote_port or nodes[asset]["kind"] != "Гипервизор":
+                    for item in identity_services.get(asset, []):
+                        item.update(probeTargetIP=address, probeTargetIdentityAt=checked.isoformat())
+                if identity_matches and asset_ip_checks.get(asset) == address and "probeTargetIdentityAt" not in nodes[asset]:
+                    nodes[asset].update(probeTargetIP=address, probeTargetIdentityAt=checked_at,
                                         probeTargetIdentityMethod="ICMP · ARP + FDB")
     lacp_identity_sources = set()
     for spec in bindings.get("lacp_links", []):

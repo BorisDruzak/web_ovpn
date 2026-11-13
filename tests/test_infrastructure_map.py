@@ -6605,10 +6605,15 @@ def test_hypervisor_fdb_path_reports_management_interface_without_claiming_direc
            "bridges": {"pve1": {"vmbr0": {"active": 1, "bridge_ports": "enp134s0"}}},
            "activePorts": {"pve1": ["enp134s0"]},
            "management": {"pve1": {"address": address, "port": "enp134s0"}}}
-    bindings = {"asset_fdb_paths": {"pve1": "core"}}
+    bindings = {"asset_fdb_paths": {"pve1": "core"}, "asset_services": {
+        "pve1-management": {"asset": "pve1", "label": "PVE1", "require_network_identity": True},
+    }}
 
-    def proof():
+    def proof(identity_at=earlier):
         graph = build_graph(context, network, {}, pve, bindings, now)
+        service = next(node for node in graph["nodes"] if node["id"] == "pve1-management")
+        assert service["probeTargetIP"] == (address if identity_at else None)
+        assert service.get("probeTargetIdentityAt") == identity_at
         path, = [edge for edge in graph["links"] if edge["a"] == "observer:core"]
         assert path["kind"] == "Путь по MAC-таблице" and path["confirmed"]
         report, = path["portEvidence"]
@@ -6629,6 +6634,10 @@ def test_hypervisor_fdb_path_reports_management_interface_without_claiming_direc
                        "learnedEndpoint": {"switchId": "observer:core", "deviceId": "pve1", "mac": mac}}
     assert guest_uplink() == {"id": "observer:core", "port": "ge12", "at": earlier, "viaMacTable": True}
     assert guest_uplink(now + timedelta(minutes=25)) is None
+    context["devices"][0].pop("mac_addresses")
+    network["hosts"] = [{"ip": address, "mac": mac, "last_seen_at": at}]
+    assert proof()["b"] == "enp134s0"
+    context["devices"][0]["mac_addresses"] = [mac]
     pve["activePorts"]["pve1"] = []
     assert guest_uplink() is None
     pve["activePorts"]["pve1"] = ["enp134s0"]
@@ -6638,11 +6647,12 @@ def test_hypervisor_fdb_path_reports_management_interface_without_claiming_direc
     assert guest_uplink() is None
     del network["lldp"]
     pve["management"]["pve1"]["address"] = "192.0.2.12"
-    assert proof()["b"] == "" and proof()["source"] == "netctl FDB"
+    fallback = proof(None)
+    assert fallback["b"] == "" and fallback["source"] == "netctl FDB"
     assert guest_uplink() is None
     pve["management"]["pve1"]["address"] = address
     pve["at"] = (now - timedelta(hours=1)).isoformat()
-    assert proof()["b"] == ""
+    assert proof(None)["b"] == ""
 
 
 def test_transit_peer_management_port_requires_fresh_arp_fdb_and_active_ethernet(tmp_path):
