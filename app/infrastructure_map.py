@@ -4330,6 +4330,15 @@ def load_infrastructure_map(
     _attach_backup_scope(nodes)
     _attach_management_ports(nodes, links)
     _map_statuses(nodes, links)
+    lacp_services = defaultdict(set)
+    for edge in links:
+        host, service = nodes[edge["a"]], nodes[edge["b"]]
+        if "lacpHealth" in host and service["kind"] == "Сервис" and _is_service_attachment(edge):
+            lacp_services[host["id"]].add(service["id"])
+    for host_id, service_ids in lacp_services.items():
+        hosted = [_attachment_node(nodes[key]) for key in sorted(service_ids)[:24]]
+        for report in nodes[host_id]["lacpHealth"]:
+            report.update(hostedServiceTotal=len(service_ids), hostedServices=hosted)
     cluster_id = _text(raw.get("clusterId"))
     _attach_storage_assignments(nodes, links, cluster_id)
     revision = _text(raw.get("git"), 41)

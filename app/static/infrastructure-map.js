@@ -1029,7 +1029,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     panel.dataset.section = 'lacp-health';
     const list = make('ul', null, 'map-detail-list');
     const labels = {forwarding: 'Готов к передаче', up: 'Линк поднят', down: 'Линк опущен', disabled: 'Порт отключён', unknown: 'Нет подтверждения'};
-    for (const {host, report: {switchId, aggregate, members, aggregateLink, aggregateLinkFault}} of reports) {
+    for (const {host, report} of reports) {
+      const {switchId, aggregate, members, aggregateLink, aggregateLinkFault, hostedServices = []} = report;
       const row = make('li');
       const sw = byId.get(switchId);
       const confirmed = members.filter(member => member.status === 'forwarding').length;
@@ -1057,6 +1058,16 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           partnerInterfaceState === 'unconfirmed' && 'Имя интерфейса не сверено',
           checkedAt && `SNMP · ${formatTime(checkedAt)}`];
         row.append(make('small', fields.filter(Boolean).join(' · ')));
+      }
+      if (hostedServices.length) {
+        const services = make('small', 'Службы хоста · ');
+        for (const [index, service] of hostedServices.entries()) {
+          if (index) services.append(', ');
+          const open = make('a', service.name);
+          open.href = '?' + new URLSearchParams({node: service.id});
+          services.append(open);
+        }
+        row.append(services);
       }
       list.append(row);
     }

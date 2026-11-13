@@ -4296,6 +4296,11 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
     assert (color, health["status"]) == ("warn", "warn")
     assert health["aggregateLinkFault"] == {"state": "down", "checkedAt": at}
     assert service_host()["lacpHealth"] == [health]
+    audit = summarize_topology(load_infrastructure_map(path, now), node_id="snr", port_name="po1")["topologyAudit"]
+    assert audit["servicePorts"] == []
+    assert audit["lacpHealth"][0]["hostedServices"] == [
+        {"id": "pbs-web", "name": "PBS Web", "kind": "Сервис", "mapStatus": "ok"},
+    ]
     assert service_paths() == []
     assert service_ports() == [("ge6", ["host_lacp"]), ("ge7", ["host_lacp"])]
     ports[2]["oper_status"] = "up"
