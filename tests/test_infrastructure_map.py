@@ -7236,6 +7236,15 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     assert match["basis"] == "guest_mac" and match["switchPort"] == "xe3"
     assert match["physicalPair"] == {"hostPort": "ens7", "switchPort": "xe3",
                                       "source": "netctl FDB + Proxmox", "checkedAt": stamp}
+    cable_reports = raw["links"][2]["portEvidence"]
+    for conflict in ({"b": "eno1"}, {"a": "xe4"}):
+        cable_reports.append({**cable_reports[0], **conflict})
+        observation, = read()["guests"][0]["interfaces"][0]["switchObservations"]
+        assert observation["basis"] == "guest_mac"
+        assert "physicalPair" not in observation and "vlanMemberships" not in observation
+        cable_reports.pop()
+    assert read()["guests"] == [guest]
+
     def guests_on_port(port):
         response = client.get("/api/v1/network/infrastructure", params={
             "view": "topology", "node_id": "snr", "port_name": port,

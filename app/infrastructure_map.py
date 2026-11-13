@@ -2061,7 +2061,7 @@ def _guest_power(node: dict) -> str:
 def _guest_attachments(nodes: dict, links: list[dict], guest_ids: list[str], now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
     placements = defaultdict(list)
-    physical = defaultdict(list)
+    physical = _current_physical_port_pairs(links, include_port_states=True)
     local_neighbors = defaultdict(list)
     selected_guests = set(guest_ids)
     for edge in links:
@@ -2080,24 +2080,6 @@ def _guest_attachments(nodes: dict, links: list[dict], guest_ids: list[str], now
                         "vlan": vlan["id"], "interface": vlan["interface"],
                         "peerAddress": check["target"], "checkedAt": check["checkedAt"],
                     })
-        elif edge["kind"] == "Сетевое соединение":
-            if nodes[a]["kind"] == "Гипервизор" and nodes[b]["kind"] == NETWORK_KINDS[0]:
-                host_side, switch_side = "a", "b"
-            elif nodes[b]["kind"] == "Гипервизор" and nodes[a]["kind"] == NETWORK_KINDS[0]:
-                host_side, switch_side = "b", "a"
-            else:
-                continue
-            for report in edge["portEvidence"]:
-                if report.get("pairEvidence") == "current" and report["confirmed"]:
-                    host_port, switch_port = report[host_side], report[switch_side]
-                    pair = {
-                        "hostPort": host_port, "switchPort": switch_port,
-                        "source": report["source"], "checkedAt": report["at"],
-                    }
-                    states = report.get("portStates", {})
-                    physical[edge[host_side], edge[switch_side], port_label_key(switch_port)].append(
-                        (pair, {"host": states.get(host_side, {}), "switch": states.get(switch_side, {})})
-                    )
 
     guests = {}
     for guest_id in guest_ids:
@@ -2152,13 +2134,14 @@ def _guest_attachments(nodes: dict, links: list[dict], guest_ids: list[str], now
                 if match.get("viaMacTable"):
                     observation["viaMacTable"] = True
                 if basis != "configured_bridge" and virtual["bridgeActive"] is True:
-                    pairs = physical[host_id, switch_id, port_label_key(match["port"])]
+                    pair = physical.get((switch_id, port_label_key(match["port"])))
                     uplinks = {port_label_key(name) for name in virtual["uplinks"]}
-                    pairs = [(pair, ports) for pair, ports in pairs if port_label_key(pair["hostPort"]) in uplinks]
-                    if len({port_label_key(pair["hostPort"]) for pair, _ in pairs}) == 1:
-                        pair, ports = max(pairs, key=lambda item: item[0]["checkedAt"])
-                        observation["physicalPair"] = pair
-                        if vlans := _attachment_vlan_memberships(interface, match, ports, now):
+                    if (pair and pair["hostId"] == host_id and nodes[switch_id]["kind"] == NETWORK_KINDS[0]
+                            and port_label_key(pair["hostPort"]) in uplinks):
+                        observation["physicalPair"] = {
+                            field: pair[field] for field in ("hostPort", "switchPort", "source", "checkedAt")
+                        }
+                        if vlans := _attachment_vlan_memberships(interface, match, pair["portStates"], now):
                             observation["vlanMemberships"] = vlans
                 interface["switchObservations"].append(observation)
             mac_ports = {(row["switch"]["id"], port_label_key(row["switchPort"])): row["switchPort"]
@@ -2401,7 +2384,7 @@ def _management_port_paths(nodes: dict, links: list[dict]) -> dict:
     return confirmed
 
 
-def _current_physical_port_pairs(links: list[dict]) -> dict:
+def _current_physical_port_pairs(links: list[dict], *, include_port_states: bool = False) -> dict:
     peers = defaultdict(dict)
     for edge in links:
         if edge["kind"] != "Сетевое соединение" or not edge["confirmed"]:
@@ -2415,9 +2398,12 @@ def _current_physical_port_pairs(links: list[dict]) -> dict:
                 peer = (edge[remote], port_label_key(report[remote]))
                 previous = peers[endpoint].get(peer)
                 if previous is None or report["at"] > previous["checkedAt"]:
-                    peers[endpoint][peer] = {"hostId": edge[remote], "hostPort": report[remote],
-                                             "switchPort": report[local], "source": report["source"],
-                                             "checkedAt": report["at"]}
+                    pair = {"hostId": edge[remote], "hostPort": report[remote],
+                            "switchPort": report[local], "source": report["source"], "checkedAt": report["at"]}
+                    if include_port_states:
+                        states = report.get("portStates", {})
+                        pair["portStates"] = {"host": states.get(remote, {}), "switch": states.get(local, {})}
+                    peers[endpoint][peer] = pair
     return {endpoint: next(iter(choices.values())) for endpoint, choices in peers.items()
             if len(choices) == 1 and len(peers[next(iter(choices))]) == 1}
 
