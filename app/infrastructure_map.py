@@ -66,6 +66,7 @@ LACP_HEALTH_MAX_AGE = timedelta(minutes=5)
 LACP_PARTNER_MAX_AGE = timedelta(minutes=8)
 ROOT_FREE_WARNING_PERCENT = 10
 SWAP_USED_WARNING_PERCENT = 90
+MEMORY_AVAILABLE_WARNING_PERCENT = 10
 BACKUP_PROBE_METHOD = "Копия Proxmox"
 BACKUP_SERVICE_ID = "proxmox-pbs-backups"
 STATES = ("critical", "warn", "ok", "unknown")
@@ -3341,7 +3342,8 @@ def _guest_agent_exclusion(node: dict, snapshot_fresh: bool) -> str:
     return "no_enabled_network_adapter" if network["enabled"] == 0 else "no_unique_network_identity"
 
 
-def _guest_agent_health(snapshot: object, now: datetime, *, platform: str | None = None) -> dict:
+def _guest_agent_health(snapshot: object, now: datetime, *, platform: str | None = None,
+                        capacity: dict | None = None) -> dict:
     if not isinstance(snapshot, dict) or snapshot.get("profile") != "health_v1":
         return {}
     checked_at = snapshot.get("collected_at")
@@ -3355,6 +3357,17 @@ def _guest_agent_health(snapshot: object, now: datetime, *, platform: str | None
         resources = {}
     metrics = {label: value for key, label in (("free_bytes", "memoryAvailableBytes"), ("uptime_seconds", "uptimeSeconds"))
                if type(value := resources.get(key)) is int and 0 < value < 2**53}
+    if capacity and observation_is_fresh(capacity.get("checkedAt"), now, max_age=RESOURCE_CAPACITY_MAX_AGE):
+        total = capacity.get("memory", {}).get("totalBytes")
+        available = resources.get("free_bytes")
+        if type(total) is int and type(available) is int and 0 <= available <= total < 2**53 and total > 0:
+            metrics["memoryAvailableBytes"] = available
+            metrics["memoryHeadroom"] = {
+                "availablePercent": round(100 * available / total, 2),
+                "warningThreshold": MEMORY_AVAILABLE_WARNING_PERCENT,
+                "status": "warn" if 100 * available < MEMORY_AVAILABLE_WARNING_PERCENT * total else "ok",
+                "totalBytes": total, "capacityCheckedAt": capacity["checkedAt"],
+            }
     load = resources.get("load_1m")
     warnings = snapshot.get("warnings", [])
     if (platform == "linux" and type(load) in (int, float) and 0 <= load < 2**53
@@ -3565,7 +3578,8 @@ def _summarize_agent_audit(nodes: dict, keys: dict, conflicts: set[str], identit
                     operating_system = _guest_agent_os(snapshots.get("inventory_v1"), now)
                     if operating_system:
                         entry["operatingSystem"] = operating_system
-                    if health := _guest_agent_health(snapshots.get("health_v1"), now, platform=operating_system.get("platform")):
+                    if health := _guest_agent_health(snapshots.get("health_v1"), now, platform=operating_system.get("platform"),
+                                                     capacity=nodes[node_id].get("resourceCapacity")):
                         entry["health"] = health
                     if network := _guest_agent_network(snapshots.get("network_v1"), now):
                         entry["network"] = network

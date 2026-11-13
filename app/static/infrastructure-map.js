@@ -896,7 +896,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       const metrics = [];
       if (health.memoryAvailableBytes !== undefined) {
         const memory = (health.memoryAvailableBytes / 2**30).toLocaleString('ru-RU', {maximumFractionDigits: 2});
-        metrics.push(`Доступно в ОС ${memory} ГиБ`);
+        const headroom = health.memoryHeadroom;
+        const percent = headroom?.availablePercent.toLocaleString('ru-RU', {maximumFractionDigits: 2});
+        metrics.push(`Доступно в ОС ${memory} ГиБ${headroom ? ` (${percent}%)` : ''}`);
+        if (headroom?.status === 'warn') metrics.push(`Мало доступной памяти · порог ${headroom.warningThreshold}%`);
       }
       if (health.loadAverage1m !== undefined) {
         const load = health.loadAverage1m.toLocaleString('ru-RU', {maximumFractionDigits: 2});

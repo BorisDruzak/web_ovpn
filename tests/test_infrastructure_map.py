@@ -8844,6 +8844,20 @@ def test_agent_audit_reports_duplicate_guest_macs_without_using_them_for_presenc
     ]
 
 
+def test_hypervisor_agent_memory_uses_available_bytes_and_fresh_capacity():
+    from app.infrastructure_map import _guest_agent_health
+
+    now = datetime.now(timezone.utc)
+    snapshot = {"profile": "health_v1", "collected_at": now.isoformat(),
+                "sections": {"resources": {"free_bytes": 3 * 2**30}}}
+    capacity = {"memory": {"totalBytes": 64 * 2**30}, "checkedAt": now.isoformat()}
+    report = _guest_agent_health(snapshot, now, capacity=capacity)
+    assert report["memoryHeadroom"] == {"availablePercent": 4.69, "warningThreshold": 10, "status": "warn",
+                                        "totalBytes": 64 * 2**30, "capacityCheckedAt": now.isoformat()}
+    capacity["checkedAt"] = (now - timedelta(minutes=6)).isoformat()
+    assert "memoryHeadroom" not in _guest_agent_health(snapshot, now, capacity=capacity)
+
+
 def test_agent_audit_matches_hypervisor_using_verified_management_mac(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map
