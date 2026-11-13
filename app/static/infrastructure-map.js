@@ -2435,7 +2435,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const source = check.source ? ' · ' + check.source : '';
         const time = check.checkedAt ? ' · ' + formatTime(check.checkedAt) : '';
         const identity = check.identityCheckedAt ? ' · Адрес сверён ' + formatTime(check.identityCheckedAt) : '';
-        const attempts = check.attempts ? ' · попыток: ' + check.attempts : '';
+        const attempts = check.firstAttemptReason === 'timeout' ? ' · первая попытка: тайм-аут'
+          : check.attempts ? ' · попыток: ' + check.attempts : '';
         const responder = check.dns?.unexpectedResponder;
         const srvRecords = check.dns?.srvRecords?.map(record => `${record.target}:${record.port}`).join(', ');
         const dns = [check.dns?.rcode, check.dns?.transport, check.dns?.addresses?.join(', '), srvRecords,

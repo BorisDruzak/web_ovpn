@@ -7434,6 +7434,27 @@ def test_service_warns_before_required_tls_certificate_expires(days, required, a
         assert service["issues"][0]["tlsExpiresAt"] == check["tlsExpiresAt"]
 
 
+@pytest.mark.parametrize(("protocol", "probe_name"), [("tcp_connect", "_tcp_connect"), ("http", "_http_probe")])
+def test_management_probe_records_retry_after_timeout(monkeypatch, protocol, probe_name):
+    from unittest.mock import Mock
+    from app import infrastructure_service_probes as probes
+    from app.infrastructure_map import _public_node
+
+    for first, expected_attempts in (("timeout", 2), ("tcp_connection_refused", 1)):
+        probe = Mock(side_effect=[{"state": "unknown" if first == "timeout" else "unreachable", "reason": first},
+                                  {"state": "reachable"}])
+        monkeypatch.setattr(probes, probe_name, probe)
+        raw = {"id": "management", "name": "Management", "kind": "Сервис", "probeTargetIP": "192.0.2.1"}
+        probes.apply_service_probes([raw], {"management": [
+            {"type": protocol, "ip": "192.0.2.1", "port": 80, "retry_timeout": True},
+        ]})
+        assert probe.call_count == expected_attempts
+        check, = _public_node(raw, datetime.now(timezone.utc))["serviceChecks"]
+        if expected_attempts == 2:
+            assert check["state"] == "reachable"
+            assert (check["attempts"], check["firstAttemptReason"]) == (2, "timeout")
+
+
 def test_routeros_tls_alert_degrades_reachable_api_ports(monkeypatch):
     from unittest.mock import MagicMock
     from app import infrastructure_service_probes as probes

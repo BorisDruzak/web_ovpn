@@ -1982,8 +1982,12 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 details = _ldaps(spec)
             elif protocol == "ssh_identification":
                 details = _ssh_identification(spec)
-            elif protocol == "tcp_connect":
-                details = _tcp_connect(spec)
+            elif protocol in {"tcp_connect", "http", "https"}:
+                probe = _tcp_connect if protocol == "tcp_connect" else _http_probe
+                details = probe(spec)
+                if (spec.get("retry_timeout") is True and details.get("reason") == "timeout"
+                        and "attempts" not in details):
+                    details = {**probe(spec), "attempts": 2, "firstAttemptReason": "timeout"}
             elif protocol == "rdp_negotiation":
                 details = _rdp_negotiation(spec)
             elif protocol == "zabbix_api":
@@ -2009,8 +2013,6 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 details = _smb(spec)
             elif protocol == "smb_mount":
                 details = _smb_mount(spec)
-            elif protocol in {"http", "https"}:
-                details = _http_probe(spec)
             else:
                 details = {"state": _probe(spec)}
             if node["kind"] != "Сервис" and protocol == "icmp" and details["state"] == "reachable" and not identity_at:

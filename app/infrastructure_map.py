@@ -1008,9 +1008,12 @@ def _public_service_check(check: dict, now: datetime) -> dict:
     attempts = check.get("attempts")
     if type(attempts) is int and (
         (sip and 1 <= attempts <= 3)
-        or (result["method"] in ("HTTP", "HTTPS", "SSH") and result["source"] == "UI_VPN" and attempts == 2)
+        or (result["method"] in ("HTTP", "HTTPS", "SSH", "TCP") and result["source"] == "UI_VPN" and attempts == 2)
     ):
         result["attempts"] = attempts
+        if (result["method"] in ("TCP", "HTTP", "HTTPS") and result["source"] == "UI_VPN"
+                and attempts == 2 and check.get("firstAttemptReason") == "timeout"):
+            result["firstAttemptReason"] = "timeout"
     return result
 
 
@@ -3799,7 +3802,7 @@ def summarize_services(graph: dict, *, host_id: str | None = None, service_ids: 
              **{key: check[key] for key in ("source", "checkedAt", "stale", "reason", "path", "port", "target",
                                             "pppoe", "rtspStatus", "ftpReply", "tlsExpiresAt", "tlsVersion",
                                             "dns", "ntp", "localRoute", "vlanTransit", "identityCheckedAt", "errorSource",
-                                            "responseCode", "attempts", "ipsecPolicy", "configuredPort", "localUdpSocket",
+                                            "responseCode", "attempts", "firstAttemptReason", "ipsecPolicy", "configuredPort", "localUdpSocket",
                                             "sessionCount", "daemonReady", "arpDiagnostic", "sshTcpConnected")
                 if key in check and check[key] is not None and check[key] != ""}}
             for check in node["serviceChecks"] if check.get("required") or (
