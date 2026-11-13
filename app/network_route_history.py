@@ -22,7 +22,7 @@ SCHEDULE_OWNER = "schedule:"
 _SCHEDULE_ACTION = "network-check-route-availability"
 _PROBE_SELECTORS = (
     "origin", "target", "protocol", "source_address", "interface", "routing_table",
-    "expected_path", "expected_first_hop", "openvpn_client",
+    "expected_path", "expected_first_hop", "openvpn_client", "config_digest",
 )
 
 
@@ -67,7 +67,7 @@ def _scheduled_changes(db: Session, result: dict, checked_at: datetime) -> dict:
             changes["path_changes"].append({**event, "from": old_hop, "to": new_hop})
         old_status, new_status = previous.get("status"), probe.get("status")
         digest = probe.get("config_digest")
-        if (digest and digest == previous.get("config_digest") and old_status != new_status
+        if (digest and old_status != new_status
                 and old_status in PROBE_STATUSES and new_status in PROBE_STATUSES):
             changes["probe_changes"].append({**event, "from": old_status, "to": new_status})
     return changes

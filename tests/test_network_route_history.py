@@ -166,6 +166,7 @@ def test_scheduled_history_records_transition_once_and_ignores_manual_or_other_p
         ("192.0.2.1", "192.0.2.2", {"routing_table": "rtab-IS74"}),
         ("192.0.2.1", "192.0.2.2", {"expected_path": "secondary WAN"}),
         ("192.0.2.1", "192.0.2.2", {"expected_first_hop": "192.0.2.2"}),
+        ("192.0.2.1", "192.0.2.2", {"config_digest": "b" * 64}),
     ],
 )
 def test_scheduled_history_does_not_skip_past_incomparable_readings(
@@ -210,3 +211,24 @@ def test_scheduled_history_records_probe_status_changes_with_unchanged_config(db
           "checked_at": (now + timedelta(seconds=1)).isoformat()}],
         [],
     ]
+
+
+def test_scheduled_history_reports_hop_change_only_after_matching_configuration(db):
+    from app.network_route_history import list_route_runs, persist_route_run
+
+    now = datetime.now(UTC)
+    for index, hop, digest in [
+        (0, "192.0.2.1", "a" * 64),
+        (1, "192.0.2.2", "b" * 64),
+        (2, "192.0.2.1", "b" * 64),
+    ]:
+        result = _first_hop_result("wan-a", now + timedelta(seconds=index), hop, config_digest=digest)
+        persist_route_run(db, owner="schedule:", result=result)
+    db.commit()
+
+    latest, reconfigured, baseline = list_route_runs(db, owner="user:reader", profile="wan-a", limit=3)
+    assert reconfigured["result"]["path_changes"] == baseline["result"]["path_changes"] == []
+    assert latest["result"]["path_changes"] == [{
+        "probe_id": "wan", "from": "192.0.2.2", "to": "192.0.2.1",
+        "checked_at": (now + timedelta(seconds=2)).isoformat(),
+    }]
