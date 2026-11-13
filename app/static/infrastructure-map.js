@@ -211,9 +211,21 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     link.href = '?' + new URLSearchParams({node: id});
     return link;
   }
-  function confirmedPortPairRow({a, b, nameA, nameB, portA, portB, evidence, portStates = {}}) {
+  const linkComparisonLabels = {
+    both_up: 'Оба линка подняты',
+    one_down: 'Один линк опущен или отключён',
+    both_down: 'Оба линка опущены или отключены',
+    speed_mismatch: 'Скорости линков различаются',
+    port_down: 'Обнаружен недоступный порт',
+    unconfirmed: 'Нет сопоставимых данных по двум портам',
+  };
+  function confirmedPortPairRow({a, b, nameA, nameB, portA, portB, evidence, portStates = {}, linkHealth}) {
     const row = make('li');
     row.append(portPairEndpoint(a, nameA, portA), ' ↔ ', portPairEndpoint(b, nameB, portB));
+    if (linkHealth) {
+      const time = linkHealth.checkedAt ? ' · ' + formatTime(linkHealth.checkedAt) : '';
+      row.append(make('small', linkComparisonLabels[linkHealth.state] + time));
+    }
     for (const [side, port] of Object.entries(portStates)) {
       const name = side === 'a' ? nameA : nameB;
       const label = side === 'a' ? portA : portB;
@@ -2362,10 +2374,6 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     if (links.length || selectedPort) {
       const list = make('ul',null,'map-detail-list');
       const observations = make('ul',null,'map-detail-list');
-      const comparisonLabels = {
-        both_up: 'Оба линка подняты', one_down: 'Один линк опущен или отключён',
-        both_down: 'Оба линка опущены или отключены', speed_mismatch: 'Скорости линков различаются',
-      };
       const pairOf = edge => edgeKey(edge.a, edge.b);
       const reciprocalPaths = new Set(links
         .filter(edge => edge.confirmed && edge.source === reciprocalMacSource)
@@ -2467,7 +2475,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
               comparedPorts.add(pair);
               const {state, checkedAt} = evidence.portComparison;
               const sources = [...new Set(['a', 'b'].map(side => evidence.portStates[side].source ?? 'SNMP'))];
-              li.append(make('small', comparisonLabels[state] + ' · ' + sources.join(' + ') + ' · ' + formatTime(checkedAt)));
+              li.append(make('small', linkComparisonLabels[state] + ' · ' + sources.join(' + ') + ' · ' + formatTime(checkedAt)));
             }
           }
           if (evidence.vlanAudit?.length) {

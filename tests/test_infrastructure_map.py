@@ -3608,15 +3608,25 @@ def test_topology_port_alerts_require_confirmed_pairs_and_fresh_states(tmp_path)
         assert scoped["portAlerts"] == audit["portAlerts"]
         if edge["kind"] == "Сетевое соединение" and observed["confirmed"] and b["ports"][0]["checkedAt"] == stamp:
             pair, = scoped["currentPairs"]
+            browser = load_infrastructure_map(path, now, include_guest_attachments=True)
+            assert browser["currentPortPairs"] == scoped["currentPairs"]
+            expected_state = alerts[0]["state"] if alerts else "both_up"
+            assert pair["linkHealth"]["state"] == expected_state
+            assert pair["linkHealth"]["checkedAt"] == stamp
+            assert audit["currentPairLinkCounts"][expected_state] == 1
             assert pair["portStates"]["b"]["state"] == b["ports"][0]["state"]
-            assert pair["portStates"]["b"]["speedBps"] == (10**8 if b["ports"][0]["state"] == "up" else None)
+            expected_speed = b["ports"][0]["speedBps"] if b["ports"][0]["state"] == "up" else None
+            assert pair["portStates"]["b"]["speedBps"] == expected_speed
             assert ("a" in pair["portStates"]) == (a["ports"][0]["checkedAt"] == stamp)
         elif scoped["currentPairs"]:
             assert "portStates" not in scoped["currentPairs"][0]
+            assert scoped["currentPairs"][0]["linkHealth"] == {"state": "unconfirmed"}
         assert summarize_topology(graph, node_id="a", port_name="ge99")["topologyAudit"]["portAlerts"] == []
         return alerts
 
     assert read() == [{"portA": "ge1", "portB": "ge2", "state": "speed_mismatch", "checkedAt": stamp}]
+    b["ports"][0]["speedBps"] = 10**9
+    assert read() == []
     b["ports"][0].update(state="down")
     assert read() == [{"portA": "ge1", "portB": "ge2", "state": "one_down", "checkedAt": stamp}]
     a["ports"][0].update(checkedAt=old)
@@ -8748,7 +8758,9 @@ def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_pa
     audit = graph["topologyAudit"]
     assert audit["directLinks"] == {"current": 1, "verifiedInventory": 0, "unconfirmed": 1}
     assert audit["currentPairTotal"] == 1
+    assert audit["currentPairLinkCounts"] == {"unconfirmed": 1}
     assert audit["currentPairs"] == [{"a": "snr", "b": "pve", "nameA": "SNR", "nameB": "pve1",
+                                     "linkHealth": {"state": "unconfirmed"},
                                      "portA": "xe3", "portB": "ens7f1", "evidence": [
                                          {"source": "LLDP · двустороннее", "checkedAt": now,
                                           "expiresAt": (datetime.fromisoformat(now) + timedelta(minutes=25)).isoformat()},

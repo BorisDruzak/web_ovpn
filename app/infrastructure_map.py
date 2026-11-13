@@ -1705,6 +1705,14 @@ def _compare_link_ports(ports: dict) -> dict:
     return {"state": state, "checkedAt": first.isoformat()}
 
 
+def _link_ports_down(ports: dict) -> dict:
+    down = sorted(side for side, port in ports.items() if port["state"] in {"down", "disabled"})
+    if not down:
+        return {}
+    return {"state": "port_down", "downSides": down,
+            "checkedAt": min(ports[side]["checkedAt"] for side in down)}
+
+
 def _audit_link_vlans(expected: object, ports: dict, now: datetime) -> list[dict]:
     if not isinstance(expected, dict):
         return []
@@ -1756,11 +1764,9 @@ def _link_port_alerts(evidence: list[dict]) -> list[dict]:
                 continue
             alert = comparison
         else:
-            down = [side for side, port in ports.items() if port["state"] in {"down", "disabled"}]
-            if not down:
+            alert = _link_ports_down(ports)
+            if not alert:
                 continue
-            alert = {"state": "port_down", "downSides": sorted(down),
-                     "checkedAt": min(ports[side]["checkedAt"] for side in down)}
         a, b = (ports.get(side, {}).get("name", report[side]) for side in ("a", "b"))
         alerts[(port_label_key(a), port_label_key(b))] = {"portA": a, "portB": b, **alert}
     return list(alerts.values())
@@ -2167,10 +2173,12 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
         and port["state"] == "up" and not port["stale"] and port.get("lldpCheckedAt")
     }
     device_names = Counter(node["name"].casefold() for node in nodes.values())
-    verified_pairs = [
-        {**pair, "evidence": [sources[source] for source in sorted(sources)]}
-        for _, (pair, sources) in sorted(current_pairs.items())
-    ]
+    verified_pairs = []
+    for _, (pair, sources) in sorted(current_pairs.items()):
+        ports = pair.get("portStates", {})
+        health = _compare_link_ports(ports) or _link_ports_down(ports) or {"state": "unconfirmed"}
+        verified_pairs.append({**pair, "linkHealth": health,
+                               "evidence": [sources[source] for source in sorted(sources)]})
     by_port = defaultdict(list)
     for pair in verified_pairs:
         for side, field in (("a", "portA"), ("b", "portB")):
@@ -2352,6 +2360,7 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
         return {**metadata, "topologyAudit": {
             "node": _attachment_node(node) if node else None, "portName": port_name, "ports": ports,
             "currentPairTotal": len(current), "currentPairs": current[:64],
+            "currentPairLinkCounts": dict(Counter(row["linkHealth"]["state"] for row in current)),
             "inventoryPairs": [row for row in inventory_pairs if matches(row)][:64],
             "inventoryOnlyPairTotal": len(archived), "inventoryOnlyPairs": archived[:64],
             "pendingTotal": len(gaps), "pending": gaps[:64],
@@ -2387,6 +2396,8 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
                                         "confirmationGapCounts": dict(Counter(
                                             reason for row in pending for reason in row["confirmationGaps"])),
                                         "currentPairTotal": len(current_pairs), "currentPairs": current_pairs[:64],
+                                        "currentPairLinkCounts": dict(Counter(
+                                            row["linkHealth"]["state"] for row in current_pairs)),
                                         "inventoryPairs": inventory_pairs[:64],
                                         "inventoryOnlyPairTotal": len(inventory_only), "inventoryOnlyPairs": inventory_only[:64],
                                         "portAlertTotal": len(alerts), "portAlerts": alerts[:64],
