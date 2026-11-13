@@ -303,9 +303,10 @@ def test_ntp_probe_requires_a_synchronized_reply_to_its_request(monkeypatch, rep
         assert blocked == {"state": "unknown", "reason": "ntp_route_mismatch", "localRoute": route}
 
 
-def test_service_probe_transition_tracks_confirmed_recovery(tmp_path):
+@pytest.mark.parametrize("windows", [False, True])
+def test_service_probe_transition_tracks_confirmed_recovery(tmp_path, windows):
     from app.infrastructure_collect import _add_service_probe_transitions
-    from app.infrastructure_map import load_infrastructure_map, summarize_guest_attachment, summarize_services
+    from app.infrastructure_map import WINDOWS_DNS_SOURCE, load_infrastructure_map, summarize_guest_attachment, summarize_services
 
     now = datetime.now(timezone.utc)
     before = now - timedelta(minutes=2)
@@ -314,6 +315,9 @@ def test_service_probe_transition_tracks_confirmed_recovery(tmp_path):
         stamp = at.isoformat()
         check = {"source": "UI_VPN", "method": "HTTP", "state": state, "checkedAt": stamp,
                  "required": True, "target": target, "port": 3000, "path": "/health"}
+        if windows:
+            check.update(source=WINDOWS_DNS_SOURCE, method="DNS", port=53, path="",
+                         dns={"name": "example.test.", "record": "A", "transport": "UDP"})
         return {"schema": 1, "snapshotAt": stamp, "nodes": [
             {"id": "git", "name": "Git", "kind": "Сервис", "serviceChecks": [check],
              "reachability": {**check, "source": "Проверка сервиса"}},
@@ -325,6 +329,9 @@ def test_service_probe_transition_tracks_confirmed_recovery(tmp_path):
     transition = {"from": "unreachable", "to": "reachable", "previousCheckedAt": before.isoformat(),
                   "checkedAt": now.isoformat()}
     assert current["nodes"][0]["probeTransition"] == transition
+    repeated = snapshot(now, "reachable")
+    _add_service_probe_transitions(repeated, current)
+    assert repeated["nodes"][0]["probeTransition"] == transition
     after = now + timedelta(minutes=2)
     steady = snapshot(after, "reachable")
     _add_service_probe_transitions(steady, current)
@@ -352,6 +359,12 @@ def test_service_probe_transition_tracks_confirmed_recovery(tmp_path):
     assert summarize_services(expired)["serviceAudit"]["recentTransitionTotal"] == 0
     for old in (snapshot(before, "unknown"), snapshot(before, "unreachable", "192.0.2.31"),
                 snapshot(before - timedelta(minutes=8), "unreachable")):
+        changed = snapshot(now, "reachable")
+        _add_service_probe_transitions(changed, old)
+        assert "probeTransition" not in changed["nodes"][0]
+    if windows:
+        old = snapshot(before, "unreachable")
+        old["nodes"][0]["serviceChecks"][0]["dns"]["transport"] = "TCP"
         changed = snapshot(now, "reachable")
         _add_service_probe_transitions(changed, old)
         assert "probeTransition" not in changed["nodes"][0]

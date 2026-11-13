@@ -53,7 +53,7 @@ from .infrastructure_map import (
     PPPOE_INTERNET_METHOD, PPPOE_METHOD, PPPOE_SOURCE, PVE_DISK_DEVICE, PVE_STORAGE_ID, RECIPROCAL_MAC_SOURCE,
     RX_SILENCE_MAX_INTERVALS, RX_SILENCE_MAX_WINDOW, SERVICE_PROBE_MAX_AGE, SHARED_LLDP_KIND, SHARED_LLDP_SOURCE,
     SNMP_COLLECTION_METHOD, STP_ROOT_PATH_MAX_AGE,
-    TRANSCEIVER_MAX_AGE,
+    TRANSCEIVER_MAX_AGE, WINDOWS_DNS_SOURCE,
     _public_service_check, _service_reachability, index_port_states, inventory_link_sources,
     observation_is_fresh, port_label_key, public_probe_transition,
     project_hypervisor_disks, project_hypervisor_lvm_thin, project_hypervisor_zfs,
@@ -3433,11 +3433,11 @@ def _add_service_probe_transitions(graph: dict, previous: dict) -> None:
     def observe(node):
         raw = node.get("serviceChecks")
         checks = [_public_service_check(row, now) for row in raw[:16]
-                  if isinstance(row, dict) and row.get("source") == "UI_VPN"]
+                  if isinstance(row, dict) and row.get("source") in ("UI_VPN", WINDOWS_DNS_SOURCE)]
         reachability = _service_reachability(node.get("reachability"), checks, now)
         identity = Counter(
-            (c["method"], c.get("target"), c.get("port"), c.get("path"), c.get("via"),
-             c.get("dns", {}).get("name"), c.get("dns", {}).get("record"))
+            (c["source"], c["method"], c.get("target"), c.get("port"), c.get("path"), c.get("via"),
+             c.get("dns", {}).get("name"), c.get("dns", {}).get("record"), c.get("dns", {}).get("transport"))
             for c in checks if c.get("required") and not c.get("component")
         )
         return reachability, identity
@@ -3450,11 +3450,13 @@ def _add_service_probe_transitions(graph: dict, previous: dict) -> None:
         before, before_identity = observe(old)
         after, after_identity = observe(node)
         if (not after_identity or before_identity != after_identity or before["source"] != after["source"]
-                or not before["checkedAt"] or not after["checkedAt"] or before["checkedAt"] >= after["checkedAt"]
+                or not before["checkedAt"] or not after["checkedAt"] or before["checkedAt"] > after["checkedAt"]
                 or before["state"] not in ("reachable", "unreachable")):
             continue
         change = old.get("probeTransition")
         if before["state"] != after["state"]:
+            if before["checkedAt"] == after["checkedAt"]:
+                continue
             change = {"from": before["state"], "to": after["state"],
                       "previousCheckedAt": before["checkedAt"], "checkedAt": after["checkedAt"]}
         if transition := public_probe_transition(change, after, now):
