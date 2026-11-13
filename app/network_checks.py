@@ -393,7 +393,8 @@ def _https_speed_check(check: HttpsSpeedCheck) -> dict:
     if not _throughput_lock.acquire(blocking=False):
         return {"status": "busy", "result": {}}
     try:
-        route = lookup_linux_route(ipaddress.IPv4Address(profile.peer), tcp_port=profile.port)
+        source = ipaddress.IPv4Address(profile.source_address) if profile.source_address else None
+        route = lookup_linux_route(ipaddress.IPv4Address(profile.peer), source=source, tcp_port=profile.port)
         result = {
             "label": profile.label, "point": "vpn_server", "host": SPEED_HOST, "peer": profile.peer,
             "direction": check.direction, "kernel_route": route,
@@ -405,7 +406,7 @@ def _https_speed_check(check: HttpsSpeedCheck) -> dict:
             if result["gateway_check"]["status"] != "reachable":
                 return {"status": "wan_gateway_unavailable", "result": result}
         size = profile.upload_bytes if check.direction == "send" else profile.download_bytes
-        reading = run_https_speed(profile.peer, check.direction, size)
+        reading = run_https_speed(profile.peer, check.direction, size, source_address=profile.source_address)
         status = reading["status"]
         result.update(reading["result"])
         if profile.router_source and status == "measured":

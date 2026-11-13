@@ -10,7 +10,8 @@ PEER = "162.159.140.220"
 
 
 @pytest.mark.parametrize("direction", ["send", "receive"])
-def test_https_speed_pins_tls_peer_and_caps_transfer(monkeypatch, direction):
+@pytest.mark.parametrize("source_address", [None, "192.0.2.10"])
+def test_https_speed_pins_tls_peer_and_caps_transfer(monkeypatch, direction, source_address):
     upload = direction == "send"
     size = 500_000
 
@@ -19,6 +20,10 @@ def test_https_speed_pins_tls_peer_and_caps_transfer(monkeypatch, direction):
         assert argv[argv.index("--resolve") + 1] == f"speed.cloudflare.com:443:{PEER}"
         assert argv[argv.index("--noproxy") + 1] == "*"
         assert "--location" not in argv and "--insecure" not in argv
+        if source_address is None:
+            assert "--interface" not in argv
+        else:
+            assert argv[argv.index("--interface") + 1] == source_address
         assert kwargs["timeout"] == 13
         if upload:
             assert argv[-1] == "https://speed.cloudflare.com/__up"
@@ -34,7 +39,7 @@ def test_https_speed_pins_tls_peer_and_caps_transfer(monkeypatch, direction):
         return subprocess.CompletedProcess(argv, 0, json.dumps(output).encode(), b"")
 
     monkeypatch.setattr(subprocess, "run", run)
-    assert run_https_speed(PEER, direction, size) == {
+    assert run_https_speed(PEER, direction, size, source_address=source_address) == {
         "status": "measured",
         "result": {
             "mbps": 8.0, "duration_seconds": 0.5,
@@ -57,6 +62,18 @@ def test_https_speed_rejects_incomplete_or_mismatched_transfer(monkeypatch, over
     monkeypatch.setattr(subprocess, "run", lambda argv, **kwargs:
         subprocess.CompletedProcess(argv, 0, json.dumps(output).encode(), b""))
     assert run_https_speed(PEER, "receive", 100_000) == {"status": "failed", "result": {}}
+
+
+def test_https_speed_rejects_a_different_observed_source(monkeypatch):
+    output = {
+        "http_status": 200, "bytes_down": 100_000, "duration": 1,
+        "peer": PEER, "source": "192.0.2.20", "source_port": 42013,
+    }
+    monkeypatch.setattr(subprocess, "run", lambda argv, **kwargs:
+        subprocess.CompletedProcess(argv, 0, json.dumps(output).encode(), b""))
+    assert run_https_speed(PEER, "receive", 100_000, source_address="192.0.2.10") == {
+        "status": "failed", "result": {},
+    }
 
 
 @pytest.mark.parametrize("peer,direction,size", [

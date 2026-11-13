@@ -2789,12 +2789,15 @@ def test_https_speed_uses_profile_and_records_result_in_api_and_ui(
     })
     monkeypatch.setattr(network_probe_profiles, "load_probe_profiles", lambda: profiles)
     monkeypatch.setattr(network_checks, "load_probe_profiles", lambda: profiles)
-    monkeypatch.setattr(network_checks, "lookup_linux_route", lambda *args, **kwargs: {
-        "status": "route_found", "result": {"dev": "eth0", "gateway": "192.0.2.1"},
-    })
+    def route_lookup(destination, *, source, tcp_port):
+        assert str(destination) == peer and str(source) == "192.0.2.10" and tcp_port == 443
+        return {"status": "route_found", "result": {"dev": "eth0", "gateway": "192.0.2.1"}}
+
+    monkeypatch.setattr(network_checks, "lookup_linux_route", route_lookup)
     calls = []
 
-    def measure(address, direction, size):
+    def measure(address, direction, size, *, source_address):
+        assert source_address == "192.0.2.10"
         calls.append((address, direction, size))
         return {"status": "measured", "result": {
             "mbps": 8.0, "duration_seconds": 1.0, "transferred_bytes": size,

@@ -21,8 +21,12 @@ def validate_speed_peer(value: str) -> str:
     return value
 
 
-def run_https_speed(peer: str, direction: str, size: int) -> dict:
+def run_https_speed(peer: str, direction: str, size: int, *, source_address: str | None = None) -> dict:
     validate_speed_peer(peer)
+    if source_address is not None:
+        source = ipaddress.IPv4Address(source_address)
+        if source_address != str(source) or source.is_unspecified or source.is_multicast:
+            raise ValueError("HTTPS speed source must be a unicast IPv4 address")
     if direction not in ("send", "receive"):
         raise ValueError("Invalid HTTPS transfer direction")
     upload = direction == "send"
@@ -42,6 +46,8 @@ def run_https_speed(peer: str, direction: str, size: int) -> dict:
             '"peer":"%{remote_ip}","source":"%{local_ip}","source_port":%{local_port}}'
         ),
     ]
+    if source_address is not None:
+        argv.extend(("--interface", source_address))
     if upload:
         argv.extend((
             "--header", "Content-Type: application/octet-stream", "--data-binary", "@-",
@@ -78,6 +84,8 @@ def run_https_speed(peer: str, direction: str, size: int) -> dict:
         ):
             raise ValueError("Incomplete or mismatched HTTPS transfer")
         source = str(ipaddress.IPv4Address(data["source"]))
+        if source_address is not None and source != source_address:
+            raise ValueError("Unexpected HTTPS transfer source address")
     except (KeyError, ValueError, RecursionError):
         return {"status": "failed", "result": {}}
     return {
