@@ -3561,6 +3561,20 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
         return [(row["port"], row["services"][0]["basis"]) for row in graph["servicePorts"].get("snr", [])]
 
     assert service_ports() == [("ge6", ["host_lacp"]), ("ge7", ["host_lacp"])]
+    snapshot = json.loads(path.read_text(encoding="utf-8"))
+    snapshot["nodes"].append({"id": "proxmox-pbs-backups", "name": "Backups", "kind": "Сервис", "serviceChecks": [
+        {"method": "Копия Proxmox", "source": "Proxmox", "checkedAt": stamp, "state": state,
+         "required": True, "backupVmid": vmid, "backupMaxAgeHours": 30}
+        for vmid, stamp, state in ((100, at, "reachable"), (101, at, "unreachable"),
+                                  (102, (now - timedelta(hours=1)).isoformat(), "reachable"))
+    ]})
+    snapshot["links"].append({"a": "pbs", "b": "proxmox-pbs-backups", "kind": "Размещение", "confirmed": True})
+    path.write_text(json.dumps(snapshot), encoding="utf-8")
+    projected = load_infrastructure_map(path, now, include_service_ports=True)["servicePorts"]["snr"]
+    for port in projected:
+        backup = next(service for service in port["services"] if service["id"] == "proxmox-pbs-backups")
+        assert backup["backupChecks"] == {"passed": 1, "failed": 1, "unconfirmed": 1}
+        assert "probeEndpoints" not in backup
     network["arp"][0]["last_seen_at"] = (now - timedelta(minutes=6)).isoformat()
     assert read()[0] == "ok"
     network["arp"][0]["last_seen_at"] = (now - timedelta(minutes=9)).isoformat()

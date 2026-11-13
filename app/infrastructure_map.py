@@ -2383,6 +2383,16 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime, *, endpoint_
 
     def service_row(switch, port, key, bases):
         node = nodes[key]
+        backup_checks = {}
+        if key == BACKUP_SERVICE_ID:
+            states = Counter(
+                "unknown" if check["stale"] else check["state"]
+                for check in node["serviceChecks"] if check["method"] == BACKUP_PROBE_METHOD
+                and check["source"] == "Proxmox" and "backupVmid" in check and check.get("required")
+            )
+            if states:
+                backup_checks = {"passed": states["reachable"], "failed": states["unreachable"],
+                                 "unconfirmed": states.total() - states["reachable"] - states["unreachable"]}
         selected = path_checks.get((switch, port, key), set())
         physical = "switch_mac" not in bases and bool(bases & {"host_mac", "host_lacp"})
         probes = {}
@@ -2440,6 +2450,7 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime, *, endpoint_
                 if certificate not in certificates:
                     certificates.append(certificate)
         return {**_attachment_node(node), "basis": sorted(bases),
+                **({"backupChecks": backup_checks} if backup_checks else {}),
                 **({"linkChecks": link_checks[key]} if bases & {"lldp_peer", "endpoint_mac"} else {}),
                 **({"probeEndpoints": [probes[entry] for entry in sorted(probes)]} if probes else {})}
 
