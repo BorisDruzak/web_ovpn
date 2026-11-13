@@ -1077,7 +1077,8 @@ def api_network_infrastructure(
     else:
         graph = load_infrastructure_map(path, db=db, include_service_ports=(
             view is None and include_service_ports or view in {"attachment", "topology"} and node_id is not None
-        ), include_port_pairs=view is None and include_port_pairs)
+        ), include_port_pairs=view is None and include_port_pairs,
+            include_counter_service_counts=view == "topology" and node_id is None)
         if view == "services":
             graph = summarize_services(graph, offset=service_offset or 0)
         elif view == "topology":

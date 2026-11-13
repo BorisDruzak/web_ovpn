@@ -8408,6 +8408,25 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     vlan_ports["switch"]["telemetry"] = telemetry
     measured = read()["servicePaths"][0]
     assert measured["switchPortTelemetry"] == telemetry
+    raw["nodes"][-1]["ports"].append({**vlan_ports["switch"], "name": "ge12"})
+    service_checks = raw["nodes"][0]["serviceChecks"]
+    raw["nodes"][0]["serviceChecks"] = [{**service_checks[0], "state": "unreachable", "required": True}]
+    raw["nodes"][0]["reachability"] = {"state": "unreachable", "source": "Проверка сервиса",
+                                        "method": "LDAP", "checkedAt": stamp}
+    read()
+    url_topology = "/api/v1/network/infrastructure?view=topology"
+    audit = client.get(url_topology, headers=headers).json()["infrastructure"]["topologyAudit"]["portCounterAudit"]
+    rows = {row["port"]: row for row in audit["ports"]}
+    assert rows["xe3"]["linkedStatusCounts"] == {"critical": 1, "warn": 0, "unknown": 0, "ok": 0}
+    assert "linkedStatusCounts" not in rows["ge12"]
+    scoped = client.get(url_topology + "&node_id=snr&port_name=XE3", headers=headers).json()["infrastructure"]
+    assert scoped["topologyAudit"]["portCounterAudit"]["ports"] == [rows["xe3"]]
+    from app.infrastructure_map import load_infrastructure_map
+
+    assert load_infrastructure_map(path, include_guest_attachments=True)["portCounterAudit"] == audit
+    raw["nodes"][-1]["ports"].pop()
+    raw["nodes"][0]["serviceChecks"] = service_checks
+    raw["nodes"][0].pop("reachability")
     vlan_ports["switch"]["telemetry"] = {**telemetry, "checkedAt": old}
     assert "switchPortTelemetry" not in read()["servicePaths"][0]
     from app.infrastructure_map import WINDOWS_PROBE_SOURCE

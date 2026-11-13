@@ -185,11 +185,21 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       verified_inventory: 'Проверено по инвентарю',
       unconfirmed: 'Пара не подтверждена',
     };
-    list.replaceChildren(...ports.map(({deviceId, deviceName, port, configuredLabel, telemetry, peers = []}) => {
+    list.replaceChildren(...ports.map(({deviceId, deviceName, port, configuredLabel, telemetry, linkedStatusCounts, peers = []}) => {
       const item = make('li');
       const link = make('a', `${deviceName} · ${port}` + (configuredLabel ? ` · ${configuredLabel.text}` : ''));
       link.href = '?' + new URLSearchParams({node: deviceId, port});
       item.append(link, make('small', formatPortCounterChanges(telemetry)));
+      if (linkedStatusCounts) {
+        const {critical, warn, unknown, ok} = linkedStatusCounts;
+        const counts = [
+          critical > 0 && `недоступны ${critical}`,
+          warn > 0 && `есть сбои у ${warn}`,
+          unknown > 0 && `без подтверждения ${unknown}`,
+          ok > 0 && `доступны ${ok}`,
+        ].filter(Boolean);
+        item.append(make('small', 'Связанные узлы и сервисы · ' + counts.join(' · ')));
+      }
       for (const peer of peers) {
         const line = make('small', evidenceLabels[peer.evidence] + ' · ');
         const destination = make('a', [peer.name, peer.port].filter(Boolean).join(' · '));
