@@ -340,6 +340,8 @@
 
 Для `MT-b2-k4`, `MT-B2-k4-2` и `MT-kizzem-k3` отдельные карточки проверяют WebFig на TCP/80 и строку идентификации SSH на TCP/22. Перед запросом адрес сверяется с ARP и свежей таблицей MAC коммутатора школы №7. Общий порт `Gi1/0/48` подтверждает путь к маршрутизаторам. Имена их физических разъёмов требуют отдельных наблюдений. [Адреса управления маршрутизаторами школы №7](https://github.com/BorisDruzak/network_configuration/blob/main/evidence/manual/2026-11-13-school7-router-addresses.md) · [Адрес MT-kizzem-k3](https://github.com/BorisDruzak/network_configuration/blob/main/evidence/manual/2026-11-12-router-management-addresses.md)
 
+У `MT-b2-k12` и `MT-B2-kab7` проверки SSH используют те же привязки ARP и FDB, что и WebFig. MCP показывает отдельный результат SSH для каждого адреса управления и наблюдаемый порт коммутатора. Пара портов добавляется к пути при наличии свежего подтверждения обоих концов. [Адреса управления RouterOS](https://github.com/BorisDruzak/network_configuration/blob/main/evidence/manual/2026-11-12-router-management-addresses.md)
+
 Проверка `smb_mount` читает метаданные корневого каталога уже подключённого CIFS/SMB3-ресурса. Укажите `ip`, имя ресурса `share`, локальную точку `mount` и `component: true`. Перед чтением и после него сборщик сверяет источник и идентификатор подключения. Ожидающее автоподключение даёт «Нет подтверждения». API и MCP публикуют адрес ресурса в `smbShare`. Содержимое каталога и параметры аутентификации не публикуются.
 
 Проверка `zabbix_api` вызывает `apiinfo.version` без учётных данных. В `path` укажите путь к `api_jsonrpc.php` конкретной установки. Результат показывает доступность API Zabbix.
