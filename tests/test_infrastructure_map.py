@@ -5497,6 +5497,7 @@ def test_transit_peer_management_port_requires_fresh_arp_fdb_and_active_ethernet
     assert public["pendingPortPairs"][0]["archivedPortSides"] == ["b"]
     service_path, = summarize_guest_attachment(public, "coordinator-web")["attachment"]["servicePaths"]
     assert service_path == {"target": address, "port": 8080, "method": "HTTPS", "checkedAt": at,
+                            "state": "reachable",
                             "addressCheckedAt": at, "routerAttachment": {"routerId": "rb", "port": "ether7",
                             "source": "MikroTik · ARP + FDB", "checkedAt": at}}
     reverse, = summarize_guest_attachment(public, "rb")["attachment"]["servicePorts"]
@@ -6829,6 +6830,7 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     raw["nodes"][0]["serviceChecks"] = [check, {**check, "target": "192.0.2.12"}]
     service_path, = read()["servicePaths"]
     assert service_path == {"target": "192.0.2.11", "port": 389, "method": "LDAP", "checkedAt": stamp,
+                            "state": "reachable",
                             "guestId": "vm", "guestPort": "net0", "bridge": "vmbr1", "hypervisorId": "pve",
                             "switchId": "snr", "physicalPair": match["physicalPair"], "addressCheckedAt": stamp}
     raw["links"][1]["portEvidence"].append({**adapter, "b": "net1"})
@@ -6891,10 +6893,13 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     assert switch["servicePorts"] == switch_ports
     http = {**check, "method": "HTTP", "port": 8787}
     raw["nodes"][0]["serviceChecks"] = [
-        {**http, "path": "/api/session"}, {**http, "path": "/app.js", "state": "unreachable"},
+        {**http, "path": "/api/session", "httpStatus": 200},
+        {**http, "path": "/app.js", "state": "unreachable", "httpStatus": 503},
         {**http, "path": "/style.css", "state": "unknown"},
     ]
-    assert [path["path"] for path in read()["servicePaths"]] == ["/api/session", "/app.js", "/style.css"]
+    assert [(path["path"], path["state"], path.get("httpStatus")) for path in read()["servicePaths"]] == [
+        ("/api/session", "reachable", 200), ("/app.js", "unreachable", 503), ("/style.css", "unknown", None),
+    ]
     browser = client.get(browser_endpoint).json()["infrastructure"]
     probes = browser["servicePorts"]["snr"][0]["services"][0]["probeEndpoints"]
     assert [(probe["path"], probe["passed"], probe["failed"], probe["unconfirmed"]) for probe in probes] == [
@@ -6971,6 +6976,7 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     assert interface["switchObservations"][0]["vlanMemberships"]["id"] == 50
     transit_path, = read()["servicePaths"]
     assert transit_path == {"target": "192.0.2.1", "port": None, "method": "ICMP · VLAN", "checkedAt": stamp,
+                            "state": "reachable",
                             "guestId": "vm", "guestPort": "net0", "bridge": "vmbr1", "hypervisorId": "pve",
                             "switchId": "snr", "physicalPair": interface["switchObservations"][0]["physicalPair"],
                             "addressCheckedAt": stamp, "localNeighbor": interface["localNeighbor"]}

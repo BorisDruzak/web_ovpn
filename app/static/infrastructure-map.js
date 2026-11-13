@@ -767,22 +767,27 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       const key = JSON.stringify([path.method, path.target, path.port, path.gateway, path.guestId, path.guestPort,
         path.hypervisorId, path.physicalPair?.hostPort, path.switchId, path.physicalPair?.switchPort,
         attachment?.routerId, attachment?.switchId, attachment?.port]);
-      if (!groups.has(key)) groups.set(key, {path, resources: new Set()});
-      if (path.path) groups.get(key).resources.add(path.path);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(path);
     }
-    for (const {path, resources} of groups.values()) {
+    for (const probes of groups.values()) {
+      const [path] = probes;
       const endpoint = path.target + (path.port ? ':' + path.port : '');
       const label = [path.method, endpoint].join(' · ');
       const row = make('li');
       row.append(make('strong', label));
-      if (path.state) {
-        const result = {reachable: 'Отвечает', unreachable: 'Недоступен', unknown: 'Нет подтверждения'};
-        const rtt = path.roundTripMs === undefined ? '' :
-          `RTT ${path.roundTripMs.toLocaleString('ru-RU', {maximumFractionDigits: 3})} мс`;
-        row.append(make('small', [path.reason === 'icmp_no_echo_reply' ? 'Нет ответа ICMP Echo Reply' : result[path.state],
-          rtt, formatTime(path.checkedAt)].filter(Boolean).join(' · ')));
+      const result = {reachable: 'Отвечает', unreachable: 'Недоступен', unknown: 'Нет подтверждения'};
+      const readings = new Set();
+      for (const probe of probes) {
+        const rtt = probe.roundTripMs === undefined ? '' :
+          `RTT ${probe.roundTripMs.toLocaleString('ru-RU', {maximumFractionDigits: 3})} мс`;
+        const outcome = probe.reason === 'icmp_no_echo_reply' ? 'Нет ответа ICMP Echo Reply' : result[probe.state];
+        readings.add([probe.path, outcome, probe.httpStatus && `HTTP ${probe.httpStatus}`, rtt,
+          probe.state && formatTime(probe.checkedAt)].filter(Boolean).join(' · '));
       }
-      if (resources.size) row.append(make('small', [...resources].join(' · ')));
+      for (const reading of readings) {
+        if (reading) row.append(make('small', reading));
+      }
       const attachment = path.routerAttachment ?? path.switchAttachment;
       if (attachment) {
         const {routerId, switchId, port, source, checkedAt, physicalPair} = attachment;

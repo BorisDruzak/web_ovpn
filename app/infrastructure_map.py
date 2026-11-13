@@ -2057,7 +2057,9 @@ def _attachment_service_checks(service: dict):
 
 def _attachment_probe_location(check: dict) -> dict:
     return {"target": check["target"], "port": check["port"], "method": check["method"],
-            "checkedAt": check["checkedAt"], **({"path": check["path"]} if check.get("path") else {})}
+            "checkedAt": check["checkedAt"], "state": check["state"],
+            **({"path": check["path"]} if check.get("path") else {}),
+            **{key: check[key] for key in ("reason", "roundTripMs", "httpStatus") if key in check}}
 
 
 def _service_attachment_paths(service: dict, guests: dict) -> list[dict]:
@@ -2231,9 +2233,7 @@ def _management_service_paths(service: dict, host: str, management: dict, observ
             )
             if asset_icmp or service_probe:
                 paths.append({**_attachment_probe_location(check), "addressCheckedAt": observation["checkedAt"],
-                              **attachment,
-                              **({key: check[key] for key in ("state", "reason", "roundTripMs") if key in check}
-                                 if asset_icmp else {})})
+                              **attachment})
     return paths
 
 
