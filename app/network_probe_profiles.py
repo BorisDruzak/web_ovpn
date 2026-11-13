@@ -125,6 +125,7 @@ class RouteProbe(BaseModel):
         default_factory=list, max_length=8,
     )
     openvpn_client: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+    expected_kernel_interface: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_][A-Za-z0-9_.:@-]{0,31}$")
 
     @field_validator("target", "source_address", "expected_first_hop")
     @classmethod
@@ -144,6 +145,8 @@ class RouteProbe(BaseModel):
             raise ValueError("OpenVPN session guard requires a probe from the VPN server")
         if self.router_source and self.protocol != "icmp":
             raise ValueError("RouterOS route probes require ICMP")
+        if self.router_source and self.expected_kernel_interface:
+            raise ValueError("Expected kernel interface requires a host probe")
         if (self.interface or self.routing_table) and not self.router_source:
             raise ValueError("interface and table selectors require RouterOS")
         if self.expected_first_hop and (not self.router_source or self.expected_first_hop == self.target):
@@ -184,10 +187,14 @@ class RouteProbe(BaseModel):
             "dns_name": self.dns_name, "dns_type": (self.dns_type or "A") if self.protocol == "dns" else None,
             "expected_dns_answers": tuple(self.expected_dns_answers), "mtu": self.mtu,
             **({"dns_transport": self.dns_transport} if self.dns_transport is not None else {}),
+            **({"expected_kernel_interface": self.expected_kernel_interface} if self.expected_kernel_interface else {}),
         }
 
     def config_digest(self) -> str:
-        exclude = {field for field in ("openvpn_client", "dns_transport") if getattr(self, field) is None}
+        exclude = {
+            field for field in ("openvpn_client", "dns_transport", "expected_kernel_interface")
+            if getattr(self, field) is None
+        }
         return hashlib.sha256(self.model_dump_json(exclude=exclude).encode("utf-8")).hexdigest()
 
 

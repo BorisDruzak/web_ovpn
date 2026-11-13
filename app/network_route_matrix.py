@@ -131,6 +131,7 @@ def _run_probe(profile_id: str, probe: RouteProbe, sessions: list[dict] | None =
         "target": probe.target,
         "protocol": probe.protocol,
         **({"dns_transport": probe.dns_transport} if probe.dns_transport is not None else {}),
+        **({"expected_kernel_interface": probe.expected_kernel_interface} if probe.expected_kernel_interface else {}),
         "expected_path": probe.expected_path,
         "expected_first_hop": probe.expected_first_hop,
         "observed_path": observed_path,

@@ -49,6 +49,8 @@
             'origin_probe_not_configured': 'Профиль отсутствует на пробнике',
             'profile_mismatch': 'Параметры панели и пробника различаются',
             'source_unavailable': 'Исходный адрес недоступен',
+            'kernel_interface_mismatch': 'Выбран другой интерфейс, проба остановлена',
+            'kernel_route_unconfirmed': 'Маршрут ядра не подтверждён, проба остановлена',
             'probe_runner_unavailable': 'Команда проверки недоступна',
             'timeout': 'Истекло время ожидания ответа цели',
             'icmp_no_echo_reply': 'Цель не ответила на ICMP',
@@ -64,6 +66,7 @@
           {% if row.evidence.dns_answers_match is sameas false %}<br>DNS-записи отличаются от ожидаемых{% endif %}
         </td>
         <td>
+          {% if row.expected_kernel_interface %}Ожидаемый интерфейс {{ row.expected_kernel_interface }}<br>{% endif %}
           {% if row.observed_path %}
           Первый узел {{ row.observed_path }}
           {% if row.path_status == 'first_hop_matches' %}<br>Совпадает с ожидаемым{% endif %}

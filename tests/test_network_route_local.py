@@ -61,6 +61,24 @@ def test_windows_kernel_route_uses_bound_ipv4_and_matching_interface(monkeypatch
     assert network_route_local._kernel_route(TARGET, SOURCE) == {"status": "failed", "result": {}}
 
 
+def test_expected_kernel_interface_blocks_traffic_on_mismatch(monkeypatch, routed):
+    def unexpected(*args, **kwargs):
+        pytest.fail("must not send probe traffic on another interface")
+
+    monkeypatch.setattr(network_route_local, "_tcp", unexpected)
+    result = probe_local_route(target=TARGET, protocol="tcp", port=443, expected_kernel_interface="tun0")
+    assert result["status"] == "unavailable"
+    assert result["evidence"]["reason"] == "kernel_interface_mismatch"
+    assert result["kernel_route"]["result"]["dev"] == "eth0"
+
+
+def test_expected_kernel_interface_allows_probe_on_match(monkeypatch, routed):
+    monkeypatch.setattr(network_route_local, "_tcp", lambda *args: "reachable")
+    result = probe_local_route(target=TARGET, protocol="tcp", port=443, expected_kernel_interface="eth0")
+    assert result["status"] == "reachable"
+    assert result["kernel_route"]["result"]["dev"] == "eth0"
+
+
 @pytest.mark.parametrize(
     "stdout, stderr, exit_code, status, reason",
     [

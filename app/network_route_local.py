@@ -36,6 +36,7 @@ ROUTE_FIELDS = (
     "metric",
 )
 DNS_TYPES = ("A", "AAAA", "CNAME", "SOA", "SRV", "TXT", "MX", "PTR")
+KERNEL_INTERFACE_PATTERN = r"^[A-Za-z0-9_][A-Za-z0-9_.:@-]{0,31}$"
 LINUX_NEIGHBOR_STATES = (
     "incomplete", "reachable", "stale", "delay", "probe", "failed",
     "noarp", "permanent", "none", "not_cached",
@@ -152,7 +153,7 @@ def linux_neighbor_target(route_fields: dict) -> tuple[str, str] | None:
     except ValueError:
         return None
     if not isinstance(interface, str) or not re.fullmatch(
-        r"[A-Za-z0-9_][A-Za-z0-9_.:@-]{0,31}", interface
+        KERNEL_INTERFACE_PATTERN, interface
     ):
         return None
     return address, interface
@@ -468,6 +469,7 @@ def probe_local_route(
     dns_transport: str | None = None,
     expected_dns_answers: tuple[str, ...] = (),
     mtu: int | None = None,
+    expected_kernel_interface: str | None = None,
 ) -> dict:
     """Probe the endpoint and report the kernel's route estimate separately."""
     started = monotonic()
@@ -475,6 +477,11 @@ def probe_local_route(
         _ipv4(target)
         if source_address is not None:
             _ipv4(source_address)
+        if expected_kernel_interface is not None and (
+            not isinstance(expected_kernel_interface, str)
+            or re.fullmatch(KERNEL_INTERFACE_PATTERN, expected_kernel_interface) is None
+        ):
+            raise ValueError("Invalid expected kernel interface")
         if protocol not in ("icmp", "tcp", "tls", "http", "https", "dns"):
             raise ValueError("Invalid protocol")
         if port is not None and (
@@ -528,6 +535,13 @@ def probe_local_route(
         }
 
     route = _kernel_route(target, source_address)
+    if expected_kernel_interface is not None and (
+        route["status"] != "route_found" or route["result"].get("dev") != expected_kernel_interface
+    ):
+        reason = "kernel_interface_mismatch" if route["status"] == "route_found" else "kernel_route_unconfirmed"
+        return {"status": "unavailable", "evidence": {
+            "reason": reason, "duration_ms": round((monotonic() - started) * 1000, 2),
+        }, "kernel_route": route}
     started = monotonic()
     evidence: dict = {}
     try:
