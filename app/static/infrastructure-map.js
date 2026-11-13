@@ -1635,6 +1635,47 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     return panel;
   }
 
+  function renderDownstreamDevices(downstreamNode, fromUpstream = false) {
+    const {upstreamId, port, basis, checkedAt, stpCheckedAt, deviceCount, devices} = downstreamNode.downstream;
+    const panel = make('details', null, 'map-port-panel');
+    const list = make('ul', null, 'map-detail-list');
+    const labels = {reachable: 'Доступен', unreachable: 'Недоступен', unknown: 'Нет подтверждения'};
+    for (const {mac, ip, reachability, switchPort, rtsp} of devices) {
+      const row = make('li');
+      row.append(make('strong', ip ?? mac), make('small', [ip && mac, labels[reachability.state],
+        reachability.method, reachability.checkedAt && formatTime(reachability.checkedAt)].filter(Boolean).join(' · ')));
+      if (rtsp) {
+        row.append(make('small', [rtsp.rtspStatus ? `RTSP ${rtsp.rtspStatus}` : 'RTSP', labels[rtsp.state],
+          serviceCheckReasons[rtsp.reason], formatTime(rtsp.checkedAt)].filter(Boolean).join(' · ')));
+      }
+      if (switchPort) {
+        const portButton = make('button', switchPort.name);
+        portButton.type = 'button';
+        portButton.addEventListener('click', () => selectPort(downstreamNode.id, switchPort.name));
+        row.append(portButton, make('small', 'MAC виден на порту · SNMP · ' + formatTime(switchPort.checkedAt)));
+      }
+      list.append(row);
+    }
+    const method = {
+      lldp: 'Аплинк по LLDP',
+      reciprocal_mac: 'Путь по взаимным MAC',
+      inventory_stp: 'Порты по инвентарю · STP',
+    }[basis ?? 'lldp'];
+    const source = [`${byId.get(upstreamId).name} ${port}`, method,
+      formatTime(stpCheckedAt ?? checkedAt)].join(' · ');
+    const count = devices.length === deviceCount ? deviceCount : `${devices.length} из ${deviceCount}`;
+    panel.append(make('summary', `Устройства за ${fromUpstream ? downstreamNode.name : 'коммутатором'} (${count})`), make('small', source), list);
+    const destination = fromUpstream ? downstreamNode : byId.get(upstreamId);
+    const open = make('button', fromUpstream ? destination.name : `${destination.name} · ${port}`);
+    open.type = 'button';
+    open.addEventListener('click', () => {
+      if (fromUpstream) select(destination.id);
+      else selectPort(destination.id, port);
+    });
+    panel.insertBefore(open, list);
+    return panel;
+  }
+
   function renderSelection(id, reveal, port=null) {
     buttons.get(selected)?.setAttribute('aria-pressed','false');
     selected = id;
@@ -2161,37 +2202,14 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     }
     const lacpHealth = renderLacpHealth(node, placementHost, chosenPort);
     if (lacpHealth) propertiesSection.append(lacpHealth);
-    if (node.downstream) {
-      const {upstreamId, port, basis, checkedAt, stpCheckedAt, deviceCount, devices} = node.downstream;
-      const panel = make('details', null, 'map-port-panel');
-      const list = make('ul', null, 'map-detail-list');
-      const labels = {reachable: 'Доступен', unreachable: 'Недоступен', unknown: 'Нет подтверждения'};
-      for (const {mac, ip, reachability, switchPort, rtsp} of devices) {
-        const row = make('li');
-        row.append(make('strong', ip ?? mac), make('small', [ip && mac, labels[reachability.state],
-          reachability.method, reachability.checkedAt && formatTime(reachability.checkedAt)].filter(Boolean).join(' · ')));
-        if (rtsp) {
-          row.append(make('small', [rtsp.rtspStatus ? `RTSP ${rtsp.rtspStatus}` : 'RTSP', labels[rtsp.state],
-            serviceCheckReasons[rtsp.reason], formatTime(rtsp.checkedAt)].filter(Boolean).join(' · ')));
+    if (node.downstream) propertiesSection.append(renderDownstreamDevices(node));
+    if (chosenPort) {
+      const aliases = portKeys(chosenPort);
+      for (const peer of byId.values()) {
+        if (peer.downstream?.upstreamId === id && aliases.includes(portKey(peer.downstream.port))) {
+          propertiesSection.append(renderDownstreamDevices(peer, true));
         }
-        if (switchPort) {
-          const portButton = make('button', switchPort.name);
-          portButton.type = 'button';
-          portButton.addEventListener('click', () => selectPort(id, switchPort.name));
-          row.append(portButton, make('small', 'MAC виден на порту · SNMP · ' + formatTime(switchPort.checkedAt)));
-        }
-        list.append(row);
       }
-      const method = {
-        lldp: 'Аплинк по LLDP',
-        reciprocal_mac: 'Путь по взаимным MAC',
-        inventory_stp: 'Порты по инвентарю · STP',
-      }[basis ?? 'lldp'];
-      const source = [`${byId.get(upstreamId).name} ${port}`, method,
-        formatTime(stpCheckedAt ?? checkedAt)].join(' · ');
-      const count = devices.length === deviceCount ? deviceCount : `${devices.length} из ${deviceCount}`;
-      panel.append(make('summary', `Устройства за коммутатором (${count})`), make('small', source), list);
-      propertiesSection.append(panel);
     }
     if (node.stpRoot) {
       const {localPort, rootBridgeMac, rootDeviceId, checkedAt} = node.stpRoot;

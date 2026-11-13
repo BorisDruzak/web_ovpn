@@ -4840,7 +4840,13 @@ def test_downstream_devices_require_the_expected_live_lldp_pair(tmp_path):
     assert endpoint["mac"] == endpoint_mac and endpoint["ip"] == address
     assert endpoint["reachability"]["state"] == "reachable"
     assert len(graph["nodes"]) == 2 and len(graph["links"]) == 1
-    assert summarize_topology(graph)["topologyAudit"]["downstreamSwitches"][0]["devices"] == downstream["devices"]
+    downstream_switch, = summarize_topology(graph)["topologyAudit"]["downstreamSwitches"]
+    assert downstream_switch["devices"] == downstream["devices"]
+    assert summarize_topology(graph, node_id="core", port_name="slot0/51")["topologyAudit"]["downstreamSwitches"] == [
+        downstream_switch
+    ]
+    assert summarize_topology(graph, node_id="core", port_name="Slot0/52")["topologyAudit"]["downstreamSwitches"] == []
+    assert summarize_topology(graph, node_id="poe")["topologyAudit"]["downstreamSwitches"] == [downstream_switch]
     context["devices"][1]["management_ip"] = "192.0.2.2"
     network["sources"].append({"id": 2, "name": "remote", "host": "192.0.2.2", "driver": "snmp_switch", "enabled": True})
     network["ports"].append({"source": "remote", "port_key": "ifindex:2", "name": "Ge2", "oper_status": "up",

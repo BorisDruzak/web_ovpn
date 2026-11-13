@@ -2479,6 +2479,8 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
         for link in graph["links"] for report in link["portEvidence"] if report.get("vlanAudit")
     ]
     shared_ports = _summarize_shared_ports(pending)
+    downstream = [{"id": node["id"], "name": node["name"], **node["downstream"]}
+                  for node in nodes.values() if "downstream" in node]
     if node_id is not None:
         node = nodes.get(node_id)
         keys = {port_label_key(port_name)} if port_name else set()
@@ -2546,6 +2548,10 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
                 nodes, topology_pairs, port_nodes=scoped_nodes, service_ports=graph.get("servicePorts")),
             "portRxSilenceAudit": _summarize_port_rx_silence(scoped_nodes, pending),
             "vlanAudits": [row for row in vlan_audits if matches(row)][:64],
+            "downstreamSwitches": [row for row in downstream if (
+                row["id"] == node_id and not port_name or row["upstreamId"] == node_id
+                and (not port_name or port_label_key(row["port"]) in keys)
+            )][:MAX_DOWNSTREAM_SWITCHES],
             "lacpHealth": aggregates[:64],
             "servicePorts": [row for row in graph.get("servicePorts", {}).get(node_id, [])
                              if not port_name or port_label_key(row["port"]) in keys],
@@ -2559,8 +2565,6 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
            for node in nodes.values() if "stpRootPath" in node]
     roots = [{"id": node["id"], "name": node["name"], **node["stpRoot"]}
              for node in nodes.values() if "stpRoot" in node]
-    downstream = [{"id": node["id"], "name": node["name"], **node["downstream"]}
-                  for node in nodes.values() if "downstream" in node]
     collection_issues = [
         {"id": node["id"], "name": node["name"], "state": check["state"],
          "checkedAt": check["checkedAt"], "stale": check["stale"],
