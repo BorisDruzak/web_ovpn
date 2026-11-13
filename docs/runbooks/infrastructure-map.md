@@ -807,6 +807,8 @@ Server Observer измеряет доступную физическую пам�
 
 Для коммутатора с настроенным `asset_ip_checks` и MAC в инвентаре адресная доступность из Netctl учитывается при совпадении MAC. Активная проверка с подтверждением LLDP и ARP выполняется и после внесения адреса управления в канонический контекст.
 
+В рабочей карте адресные ICMP-проверки с `asset_fdb_paths` настроены для D-Link Server_switch, TP-Link ИТО и школы №7, а также пяти MikroTik CSS. Результат адресной проверки доступен рядом с опросом SNMP. При отсутствии свежей сверки карта показывает причину пропуска проверки.
+
 Для службы из `asset_services` флаг `require_network_identity: true` требует однозначного MAC в контексте, свежей записи ARP и наблюдения на рабочем порту источника из `asset_fdb_paths`. Запрос выполняется только при совпадении IP настройки и подтверждённого адреса. API публикует время подтверждения `serviceChecks[].identityCheckedAt`. Если подтверждение отсутствует или устарело, результат недоступен для расчёта зелёного статуса.
 
 Эта сверка включена для веб-панелей D-Link Server_switch, пяти коммутаторов MikroTik CSS и двух TP-Link (ИТО и школа №7), а также для SSH на обоих TP-Link. Наблюдаемый порт для адреса управления и подтверждение физической пары доступны через MCP `view=attachment`. [Сверка D-Link и MikroTik CSS](https://github.com/BorisDruzak/network_configuration/blob/main/evidence/manual/2026-11-13-dlink-css-management-ports.md) · [Сверка TP-Link](https://github.com/BorisDruzak/network_configuration/blob/main/evidence/manual/2026-11-13-tplink-management-ports.md)
