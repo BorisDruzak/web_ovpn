@@ -2507,11 +2507,40 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       if (!ids.length) continue;
       const list = make('ul', null, 'map-detail-list');
       for (const service of ids) {
+        const target = byId.get(service);
+        if (!target) continue;
         const row = make('li');
-        const open = make('button', byId.get(service).name);
+        const open = make('button', target.name);
         open.type = 'button';
         open.addEventListener('click', () => select(service));
         row.append(open);
+        const check = target.serviceChecks?.find(check => check.required && !check.stale
+          && (check.state === 'unreachable' || check.reason === 'tls_certificate_expiring'))
+          ?? target.serviceChecks?.find(check => check.required && (check.stale || check.state === 'unknown'));
+        if (check) {
+          const result = check.stale ? 'Замер устарел' : serviceCheckReasons[check.reason]
+            ?? check.dns?.rcode ?? (check.state === 'unreachable' ? 'Сбой проверки' : 'Нет подтверждения');
+          row.append(make('small', [check.method, check.dns?.name, check.dns?.transport, result].filter(Boolean).join(' · ')));
+          const path = (data.servicePaths?.[service] ?? []).find(path =>
+            (path.source ?? 'UI_VPN') === check.source && path.target === check.target && path.port === check.port
+            && path.method === check.method && path.checkedAt === check.checkedAt
+            && (path.path ?? '') === (check.path ?? '') && path.dns?.name === check.dns?.name
+            && path.dns?.transport === check.dns?.transport && path.dns?.record === check.dns?.record);
+          const attachment = path?.switchAttachment ?? path?.routerAttachment;
+          const portNode = byId.get(attachment?.switchId ?? attachment?.routerId ?? path?.switchId);
+          const port = attachment?.port ?? path?.physicalPair?.switchPort;
+          if (portNode && port) {
+            const detail = make('small', 'Путь проверки · ');
+            const link = make('a', portNode.name + ' · ' + port);
+            link.href = '?' + new URLSearchParams({node: portNode.id, port});
+            detail.append(link);
+            row.append(detail);
+          }
+        } else {
+          const issue = target.checks?.find(check => check.status === 'critical' || check.status === 'warn');
+          if (issue) row.append(make('small', [issue.label || issue.name, observerStates[issue.status],
+            !issue.stale && measurement(issue.unit, issue.observed)].filter(Boolean).join(' · ')));
+        }
         list.append(row);
       }
       propertiesSection.append(make('h3', title), list);
