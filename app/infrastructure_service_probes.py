@@ -1335,8 +1335,11 @@ def _local_vlan_transit(spec: dict) -> dict:
     return {**target, **result}
 
 
-def _dns_over_vlan(spec: dict, transit: dict) -> dict:
+def _probe_over_vlan(spec: dict, transit: dict) -> dict:
     if "route_via" in spec:
+        return {"state": "unknown", "reason": "vlan_probe_error"}
+    probe = {"dns": _dns, "ntp": _ntp}.get(spec["type"])
+    if probe is None:
         return {"state": "unknown", "reason": "vlan_probe_error"}
     observation = _local_vlan_transit(transit)
     vlan = observation.get("vlanTransit", {})
@@ -1345,7 +1348,7 @@ def _dns_over_vlan(spec: dict, transit: dict) -> dict:
         return {"state": "unknown", "reason": reason if reason.startswith("vlan_") else "vlan_peer_identity_unconfirmed",
                 "vlanTransit": vlan}
     source = str(ipaddress.IPv4Interface(vlan["localAddress"]).ip)
-    return {**_dns(spec, source=source), "vlanTransit": vlan}
+    return {**probe(spec, source=source), "vlanTransit": vlan}
 
 
 def _wireguard_policy(spec: dict) -> dict:
@@ -1614,7 +1617,7 @@ def _winrm(spec: dict) -> dict:
     return {**observed, "state": "unknown", "reason": "unexpected_response"}
 
 
-def _ntp(spec: dict) -> dict:
+def _ntp(spec: dict, *, source: str | None = None) -> dict:
     try:
         address = ipaddress.ip_address(spec.get("ip"))
     except ValueError:
@@ -1630,6 +1633,8 @@ def _ntp(spec: dict) -> dict:
     try:
         with socket.socket(family, socket.SOCK_DGRAM) as connection:
             connection.settimeout(TIMEOUT)
+            if source is not None:
+                connection.bind((source, 0))
             connection.connect((str(address), 123))
             connection.send(request)
             response = connection.recv(512)
@@ -1781,8 +1786,7 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                         and (arp := _local_arp_diagnostic(spec.get("ip"), spec["arp_expected_mac"]))):
                     details["arpDiagnostic"] = arp
             elif vlan:
-                details = (_dns_over_vlan(spec, vlan) if protocol == "dns"
-                           else {"state": "unknown", "reason": "vlan_probe_error"})
+                details = _probe_over_vlan(spec, vlan)
             elif protocol == "openvpn_management" and valid_port is not None:
                 details = {**_openvpn_management(), "configuredPort": valid_port,
                            "localUdpSocket": _openvpn_udp_socket(valid_port)}

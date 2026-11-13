@@ -119,6 +119,10 @@ def test_ntp_probe_requires_a_synchronized_reply_to_its_request(monkeypatch, rep
     from app import infrastructure_service_probes as probes
 
     class Datagram:
+        def bind(self, address):
+            assert address == ("192.0.2.2", 0)
+            self.bound = True
+
         def settimeout(self, value):
             assert value == probes.TIMEOUT
 
@@ -153,6 +157,11 @@ def test_ntp_probe_requires_a_synchronized_reply_to_its_request(monkeypatch, rep
 
     public = _public_service_check(check, datetime.now(timezone.utc))
     assert (public["state"], public["port"], public.get("reason")) == (state, 123, reason)
+    if reply == "synchronized":
+        datagram = Datagram()
+        monkeypatch.setattr(probes.socket, "socket", lambda *args: nullcontext(datagram))
+        assert probes._ntp(spec, source="192.0.2.2")["state"] == "reachable"
+        assert datagram.bound
 
 
 def test_service_probe_transition_tracks_confirmed_recovery(tmp_path):
@@ -2050,7 +2059,8 @@ def test_collector_vm_uses_its_local_interface_address_only_for_matching_adapter
     assert "ipv4Observations" not in interface and target is None
 
 
-def test_dns_service_requires_verified_vlan_peer_and_uses_local_address(monkeypatch):
+@pytest.mark.parametrize(("protocol", "port"), [("dns", 53), ("ntp", 123)])
+def test_service_requires_verified_vlan_peer_and_uses_local_address(monkeypatch, protocol, port):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import _public_service_check
     from app import infrastructure_service_probes as probes
@@ -2062,17 +2072,17 @@ def test_dns_service_requires_verified_vlan_peer_and_uses_local_address(monkeypa
     context = {"devices": [{"id": "gateway", "name": "Gateway", "kind": "firewall_dns_host",
                             "management_ip": "198.51.100.1"}]}
     bindings = {"asset_services": {"dns50": {"asset": "gateway", "label": "DNS", "local_vlan_transit": "link"}}}
-    config = {"dns50": [{"type": "dns", "ip": address, "port": 53, "transport": "udp"}]}
+    config = {"dns50": [{"type": protocol, "ip": address, "port": port, "transport": "udp"}]}
     vlan = {"interface": "eth0.50", "id": 50, "localAddress": "192.0.2.2/30",
             "peer": {"asset": "gateway", "guestPort": "net2", "state": "matched"}}
     calls = []
 
-    def dns_probe(spec, *, source=None):
+    def service_probe(spec, *, source=None):
         calls.append((spec["ip"], source))
-        return {"state": "reachable", "dns": {"name": "example.test.", "record": "A", "transport": "UDP"}}
+        return {"state": "reachable"}
 
     monkeypatch.setattr(probes, "_local_vlan_transit", lambda spec: {"state": "reachable", "vlanTransit": vlan})
-    monkeypatch.setattr(probes, "_dns", dns_probe)
+    monkeypatch.setattr(probes, "_" + protocol, service_probe)
 
     def check(transits):
         graph = build_graph(context, {}, {}, {}, bindings, now, local_vlan_probes=transits)

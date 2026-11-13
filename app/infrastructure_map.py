@@ -701,7 +701,7 @@ def _public_service_check(check: dict, now: datetime) -> dict:
             if isinstance(interface, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", interface):
                 details["interface"] = interface
             result["localRoute"] = details
-    if result["method"] in ("ICMP · VLAN", "DNS") and result["source"] == "UI_VPN":
+    if result["method"] in ("ICMP · VLAN", "DNS", "NTP (UDP)") and result["source"] == "UI_VPN":
         vlan = check.get("vlanTransit")
         if isinstance(vlan, dict):
             name, vlan_id = vlan.get("interface"), vlan.get("id")
