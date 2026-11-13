@@ -2631,6 +2631,8 @@ def _guest_attachments(nodes: dict, links: list[dict], guest_ids: list[str], now
         node = nodes[guest_id]
         guest = {"guest": _attachment_node(node), "hypervisor": None, "interfaces": [], "power": _guest_power(node),
                  "placement": "ambiguous" if len(candidates) > 1 else "unconfirmed"}
+        if "backupCoverage" in node:
+            guest["backupCoverage"] = node["backupCoverage"]
         guests[guest_id] = guest
         io = node.get("guestIo", {})
         if all(key in io for key in GUEST_NETWORK_RATE_FIELDS):

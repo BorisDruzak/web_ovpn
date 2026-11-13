@@ -3150,6 +3150,11 @@ def test_guest_backup_coverage_is_scoped_and_failures_apply_to_the_right_guest(t
         assert guest["backupCoverage"]["state"] == next(
             row["backupCoverage"]["state"] for row in graph["nodes"] if row["id"] == "pve-guest:103"
         )
+        graph["links"].append({"a": "pve-guest:103", "b": node["id"], "kind": "Размещение",
+                               "confirmed": True, "portEvidence": []})
+        hosted = summarize_guest_attachment(graph, node["id"])["attachment"]["guests"]
+        assert hosted[0]["backupCoverage"] == guest["backupCoverage"]
+        graph["links"].pop()
         pbs = summarize_guest_attachment(graph, "pbs")["attachment"]
         backup = next(row for row in pbs["services"] if row["node"]["id"] == node["id"])
         assert backup["backupScope"] == node["backupScope"]
