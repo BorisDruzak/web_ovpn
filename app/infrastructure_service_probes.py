@@ -1143,24 +1143,84 @@ def _sip_response_code(response: bytes, transaction: str) -> int | None:
 
 def _sip_options(spec: dict) -> dict:
     port = spec.get("port")
+    transport = spec.get("transport", "udp")
     try:
         ip = str(ipaddress.ip_address(spec["ip"]))
     except (KeyError, ValueError):
         return {"state": "unknown"}
-    if type(port) is not int or not 1 <= port <= 65535:
+    if type(port) is not int or not 1 <= port <= 65535 or transport not in ("udp", "tcp"):
         return {"state": "unknown"}
+    probe = _sip_tcp if transport == "tcp" else _sip_udp
     if "route_via" in spec:
         route = _local_ipv4_route(ip, spec["route_via"])
         if route["state"] != "reachable":
             reason = "sip_route_mismatch" if route["state"] == "unreachable" else "sip_route_unconfirmed"
             return {"state": "unknown", "reason": reason, "localRoute": route}
-        return {**_sip_udp(ip, port, source=route["sourceIP"]), "localRoute": route}
-    return _sip_udp(ip, port)
+        return {**probe(ip, port, source=route["sourceIP"]), "localRoute": route}
+    return probe(ip, port)
+
+
+def _sip_request(connection, ip: str, port: int, transaction: str, transport: str) -> bytes:
+    local, local_port, *_ = connection.getsockname()
+    if ":" in ip:
+        ip, local = f"[{ip}]", f"[{local}]"
+    uri = f"sip:{ip}:{port}"
+    request = [
+        f"OPTIONS {uri} SIP/2.0",
+        f"Via: SIP/2.0/{transport} {local}:{local_port};branch=z9hG4bK{transaction};rport",
+        "Max-Forwards: 0", f"To: <{uri}>",
+        f"From: <sip:monitor@{local}>;tag={transaction}", f"Call-ID: {transaction}",
+        "CSeq: 1 OPTIONS", "Content-Length: 0", "", "",
+    ]
+    return "\r\n".join(request).encode("ascii")
+
+
+def _sip_final_response(code: int) -> dict:
+    state = "reachable" if code < 300 else "unreachable" if code in {500, 502, 503, 504} else "unknown"
+    return {"state": state, "reason": "sip_response", "responseCode": code}
+
+
+def _sip_tcp(ip: str, port: int, *, source: str | None = None) -> dict:
+    transaction = uuid.uuid4().hex
+    deadline = monotonic() + TIMEOUT
+    incomplete = {"state": "unknown", "reason": "unexpected_response"}
+    try:
+        with socket.create_connection((ip, port), timeout=TIMEOUT, source_address=(source, 0) if source else None) as connection:
+            connection.settimeout(max(0.001, deadline - monotonic()))
+            connection.sendall(_sip_request(connection, ip, port, transaction, "TCP"))
+            buffer = b""
+            received = 0
+            while (remaining := deadline - monotonic()) > 0 and received < 32_768:
+                connection.settimeout(remaining)
+                chunk = connection.recv(min(8192, 32_768 - received))
+                if not chunk:
+                    return incomplete
+                received += len(chunk)
+                buffer = (buffer + chunk).lstrip(b"\r\n")
+                while b"\r\n\r\n" in buffer:
+                    header, separator, body = buffer.partition(b"\r\n\r\n")
+                    lengths = re.findall(rb"(?im)^(?:content-length|l)[ \t]*:[ \t]*([0-9]{1,5})[ \t]*\r?$", header)
+                    if len(lengths) != 1 or (length := int(lengths[0])) > 32_768:
+                        return incomplete
+                    if len(body) < length:
+                        break
+                    code = _sip_response_code(header + separator, transaction)
+                    if code is not None and code >= 200:
+                        return _sip_final_response(code)
+                    if code is not None:
+                        incomplete = {"state": "unknown", "reason": "sip_response", "responseCode": code}
+                    buffer = body[length:].lstrip(b"\r\n")
+            return incomplete
+    except ConnectionRefusedError:
+        return {"state": "unreachable", "reason": "tcp_connection_refused"}
+    except TimeoutError:
+        return {"state": "unknown", "reason": "timeout"}
+    except OSError:
+        return {"state": "unknown", "reason": "transport_error"}
 
 
 def _sip_udp(ip: str, port: int, *, source: str | None = None) -> dict:
     family = socket.AF_INET6 if ":" in ip else socket.AF_INET
-    destination = f"[{ip}]" if family == socket.AF_INET6 else ip
     transaction = uuid.uuid4().hex
     try:
         with socket.socket(family, socket.SOCK_DGRAM) as connection:
@@ -1169,18 +1229,7 @@ def _sip_udp(ip: str, port: int, *, source: str | None = None) -> dict:
             if source is not None:
                 connection.bind((source, 0))
             connection.connect((ip, port))
-            local, local_port, *_ = connection.getsockname()
-            if family == socket.AF_INET6:
-                local = f"[{local}]"
-            uri = f"sip:{destination}:{port}"
-            request = [
-                f"OPTIONS {uri} SIP/2.0",
-                f"Via: SIP/2.0/UDP {local}:{local_port};branch=z9hG4bK{transaction};rport",
-                "Max-Forwards: 0", f"To: <{uri}>",
-                f"From: <sip:monitor@{local}>;tag={transaction}", f"Call-ID: {transaction}",
-                "CSeq: 1 OPTIONS", "Content-Length: 0", "", "",
-            ]
-            payload = "\r\n".join(request).encode("ascii")
+            payload = _sip_request(connection, ip, port, transaction, "UDP")
             incomplete = {"state": "unknown", "reason": "timeout"}
             for attempts, wait in enumerate(SIP_OPTIONS_WAIT, 1):
                 deadline = monotonic() + wait
@@ -1197,8 +1246,7 @@ def _sip_udp(ip: str, port: int, *, source: str | None = None) -> dict:
                         if code < 200:
                             incomplete.update(reason="sip_response", responseCode=code)
                             continue
-                        state = "reachable" if code < 300 else "unreachable" if code in {500, 502, 503, 504} else "unknown"
-                        return {"state": state, "reason": "sip_response", "responseCode": code, "attempts": attempts}
+                        return {**_sip_final_response(code), "attempts": attempts}
                 except TimeoutError:
                     continue
                 except OSError as exc:
@@ -1790,6 +1838,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
             protocol = spec["type"]
             vlan = node.get("probeTargetVlan")
             method = PROBE_METHODS[protocol]
+            if protocol == "sip_options" and spec.get("transport") == "tcp":
+                method = "SIP OPTIONS (TCP)"
             supplemental = not service or spec.get("supplemental") is True
             component = not supplemental and spec.get("component") is True
             if node["kind"] != "Сервис":

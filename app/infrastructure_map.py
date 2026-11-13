@@ -655,7 +655,7 @@ def _public_service_check(check: dict, now: datetime) -> dict:
             result["reason"] = reason
     if reason == "timeout" and result["method"] in ("HTTP", "HTTPS", "DNS", "SMB2", "PostgreSQL SSLRequest", "TCP", "Zabbix API"):
         result["reason"] = reason
-    if reason == "tcp_connection_refused" and result["method"] in ("TCP", "RDP Negotiation") and result["state"] == "unreachable":
+    if reason == "tcp_connection_refused" and result["method"] in ("TCP", "RDP Negotiation", "SIP OPTIONS (TCP)") and result["state"] == "unreachable":
         result["reason"] = reason
     if result["method"] == "RDP Negotiation":
         security, failure = check.get("rdpSecurity"), check.get("rdpFailureCode")
@@ -710,7 +710,7 @@ def _public_service_check(check: dict, now: datetime) -> dict:
                       "icmp_source_ssh_unavailable",
                       "icmp_route_unconfirmed", "icmp_route_mismatch"):
             result["reason"] = reason
-    sip = result["method"] == "SIP OPTIONS (UDP)"
+    sip = result["method"] in ("SIP OPTIONS (UDP)", "SIP OPTIONS (TCP)")
     if sip and reason in ("sip_route_mismatch", "sip_route_unconfirmed"):
         result["reason"] = reason
     if icmp or sip or result["method"] in ("DNS", "NTP (UDP)"):

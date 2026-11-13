@@ -7016,6 +7016,38 @@ def test_ipmi_lan_requires_a_matching_rmcp_pong_with_ipmi_support(monkeypatch):
     assert destinations == [(address, 623)] * 3
 
 
+@pytest.mark.parametrize("truncated", [False, True])
+def test_sip_tcp_waits_for_a_complete_transaction_reply(monkeypatch, truncated):
+    from app import infrastructure_service_probes as probes
+
+    class Stream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def getsockname(self):
+            return "192.0.2.14", 12345
+
+        def settimeout(self, timeout):
+            assert timeout > 0
+
+        def sendall(self, request):
+            assert b"Via: SIP/2.0/TCP" in request
+            headers = [line for line in request.split(b"\r\n") if line.startswith((b"Via:", b"Call-ID:", b"CSeq:"))]
+            head = b"\r\n".join([b"SIP/2.0 200 OK", *headers, b"l: 4", b"", b""])
+            self.chunks = iter((head[:25], head[25:] + (b"no" if truncated else b"body"), b""))
+
+        def recv(self, _):
+            return next(self.chunks)
+
+    monkeypatch.setattr(probes.socket, "create_connection", lambda *args, **kwargs: Stream())
+    result = probes._sip_options({"ip": "192.0.2.13", "port": 5060, "transport": "tcp"})
+    assert result == ({"state": "unknown", "reason": "unexpected_response"} if truncated else
+                      {"state": "reachable", "reason": "sip_response", "responseCode": 200})
+
+
 def test_sip_options_validates_transaction_and_treats_silence_as_unknown(monkeypatch):
     import ipaddress
     import struct
