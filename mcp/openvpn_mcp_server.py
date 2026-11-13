@@ -175,7 +175,8 @@ TOOLS: dict[str, dict[str, Any]] = {
     "openvpn_nat_status": tool_schema("Show ViPNet NAT counters."),
     "openvpn_network_dashboard": tool_schema("Show network observer dashboard summary and source health."),
     "openvpn_network_infrastructure": tool_schema(
-        "Read the map. Use view=services for service checks, view=topology for port confirmation gaps, "
+        "Read the map. Use view=services for service checks (pass nextOffset as service_offset for more), "
+        "view=topology for port confirmation gaps, "
         "view=agents for Proxmox agent matches (node_id for guest health), "
         "view=attachment for VM-to-switch coverage (node_id for VM, host, or service paths), "
         "query to search, or node_id and optional port_name to inspect links, guests and service checks on a port.",
@@ -183,6 +184,7 @@ TOOLS: dict[str, dict[str, Any]] = {
             "query": {"type": "string", "minLength": 1, "maxLength": 160},
             "node_id": {"type": "string", "minLength": 1, "maxLength": 160},
             "port_name": {"type": "string", "minLength": 1, "maxLength": 64},
+            "service_offset": {"type": "integer", "minimum": 0, "maximum": 600},
             "view": {"type": "string", "enum": ["topology", "agents", "services", "attachment"]},
         },
     ),
@@ -658,9 +660,11 @@ def _infrastructure_port(graph: dict, node: dict | None, port_name: str) -> dict
 
 
 def _infrastructure_snapshot(node_id: str | None, query: str | None, port_name: str | None,
-                             view: str | None = None) -> dict[str, Any]:
+                             view: str | None = None, service_offset: int | None = None) -> dict[str, Any]:
     if node_id is not None and (not isinstance(node_id, str) or not 1 <= len(node_id) <= 160):
         raise ValueError("node_id must be a non-empty string of at most 160 characters")
+    if service_offset is not None and (view != "services" or type(service_offset) is not int or not 0 <= service_offset <= 600):
+        raise ValueError("service_offset requires view=services and must be an integer from 0 to 600")
     if view in ("attachment", "agents"):
         if query is not None or port_name is not None:
             raise ValueError(f"view={view} cannot be combined with query or port_name")
@@ -669,7 +673,8 @@ def _infrastructure_snapshot(node_id: str | None, query: str | None, port_name: 
     if view is not None:
         if view not in ("topology", "services") or any(value is not None for value in (node_id, query, port_name)):
             raise ValueError("view must be topology or services and cannot be combined with node_id, query, or port_name")
-        return api_request("GET", f"/api/v1/network/infrastructure?view={view}")
+        return api_request("GET", _query_path("/api/v1/network/infrastructure",
+                                             [("view", view), ("service_offset", service_offset)]))
     if node_id is not None and query is not None:
         raise ValueError("pass either node_id or query")
     if query is not None and (not isinstance(query, str) or not query.strip() or len(query) > 160):
@@ -829,6 +834,7 @@ def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     if name == "openvpn_network_infrastructure":
         return _infrastructure_snapshot(
             arguments.get("node_id"), arguments.get("query"), arguments.get("port_name"), arguments.get("view"),
+            arguments.get("service_offset"),
         )
     if name == "openvpn_network_hosts":
         return api_request(

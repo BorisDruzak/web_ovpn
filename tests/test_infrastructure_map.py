@@ -7247,6 +7247,21 @@ def test_service_audit_shares_map_status_and_reports_required_check_gaps(tmp_pat
     hint, = vipnet["issues"]
     assert hint["check"] == "ICMP" and hint["required"] is False and hint["reason"] == "icmp_no_echo_reply"
     assert response.headers["cache-control"] == "no-store"
+    paged = client.get(url + "?view=services&service_offset=1", headers=headers).json()["infrastructure"]["serviceAudit"]
+    assert paged["offset"] == 1 and paged["nextOffset"] is None
+    assert paged["counts"] == audit["counts"] and paged["services"] == [vipnet]
+    assert client.get(url + "?view=topology&service_offset=1", headers=headers).status_code == 422
+    assert client.get(url + "?view=services&service_offset=-1", headers=headers).status_code == 422
+
+    snapshot = json.loads(path.read_text(encoding="utf-8"))
+    snapshot["nodes"].extend({"id": f"service-{i}", "name": f"Service {i:03}", "kind": "Сервис"} for i in range(130))
+    path.write_text(json.dumps(snapshot), encoding="utf-8")
+    first = client.get(url + "?view=services", headers=headers).json()["infrastructure"]["serviceAudit"]
+    last = client.get(url + f"?view=services&service_offset={first['nextOffset']}", headers=headers)
+    last = last.json()["infrastructure"]["serviceAudit"]
+    assert first["nextOffset"] == 128 and last["nextOffset"] is None
+    assert first["total"] == last["total"] == 132
+    assert len({row["id"] for page in (first, last) for row in page["services"]}) == 132
 
 
 def test_inventory_port_sources_are_dated_and_kept_separate_from_live_checks(tmp_path):

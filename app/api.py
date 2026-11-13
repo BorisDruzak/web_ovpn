@@ -1055,6 +1055,7 @@ def api_network_dashboard(actor: str = Depends(require_api_actor)):
 def api_network_infrastructure(
     view: Literal["topology", "agents", "services", "attachment"] | None = None,
     node_id: str | None = Query(default=None, min_length=1, max_length=160),
+    service_offset: int | None = Query(default=None, ge=0, le=600),
     include_service_ports: bool = False,
     include_port_pairs: bool = False,
     actor: str = Depends(require_api_actor),
@@ -1062,6 +1063,8 @@ def api_network_infrastructure(
 ):
     if view not in ("attachment", "agents") and node_id is not None:
         raise HTTPException(status_code=422, detail="node_id is supported only for view=attachment or view=agents")
+    if service_offset is not None and view != "services":
+        raise HTTPException(status_code=422, detail="service_offset is supported only for view=services")
     path = get_settings().infrastructure_map_snapshot_path
     if view == "agents":
         graph = load_infrastructure_agent_audit(path, node_id=node_id)
@@ -1070,7 +1073,7 @@ def api_network_infrastructure(
             view is None and include_service_ports or view == "attachment" and node_id is not None
         ), include_port_pairs=view is None and include_port_pairs)
         if view == "services":
-            graph = summarize_services(graph)
+            graph = summarize_services(graph, offset=service_offset or 0)
         elif view == "topology":
             graph = summarize_topology(graph)
         elif view == "attachment":

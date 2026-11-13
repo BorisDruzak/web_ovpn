@@ -2566,7 +2566,7 @@ def summarize_guest_attachment_audit(graph: dict) -> dict:
                                             "gapTotal": len(gaps), "gaps": gaps[:64]}}
 
 
-def summarize_services(graph: dict, *, host_id: str | None = None) -> dict:
+def summarize_services(graph: dict, *, host_id: str | None = None, offset: int = 0) -> dict:
     nodes = {node["id"]: node for node in graph["nodes"]}
     hosts = {}
     for link in graph["links"]:
@@ -2619,7 +2619,11 @@ def summarize_services(graph: dict, *, host_id: str | None = None) -> dict:
         })
     services.sort(key=lambda node: (priority[node["status"]], node["name"].casefold(), node["id"]))
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
-    return {**metadata, "serviceAudit": {"total": len(services), "counts": counts, "services": services[:128]}}
+    end = offset + 128
+    return {**metadata, "serviceAudit": {
+        "total": len(services), "counts": counts, "offset": offset,
+        "nextOffset": end if end < len(services) else None, "services": services[offset:end],
+    }}
 
 
 def load_infrastructure_agent_audit(path: Path, *, node_id: str | None = None) -> dict:
