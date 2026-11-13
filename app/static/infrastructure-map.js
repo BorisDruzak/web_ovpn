@@ -1029,7 +1029,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     panel.dataset.section = 'lacp-health';
     const list = make('ul', null, 'map-detail-list');
     const labels = {forwarding: 'Готов к передаче', down: 'Линк опущен', disabled: 'Порт отключён', unknown: 'Нет подтверждения'};
-    for (const {host, report: {switchId, aggregate, members}} of reports) {
+    for (const {host, report: {switchId, aggregate, members, aggregateLinkFault}} of reports) {
       const row = make('li');
       const sw = byId.get(switchId);
       const confirmed = members.filter(member => member.status === 'forwarding').length;
@@ -1040,6 +1040,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         row.append(open);
       }
       row.append(make('strong', `${sw.name} ${aggregate} · ${confirmed} из ${members.length} портов готовы к передаче`));
+      if (aggregateLinkFault) {
+        row.append(make('small', `Агрегат ${aggregate} · ${labels[aggregateLinkFault.state]} · SNMP · ${formatTime(aggregateLinkFault.checkedAt)}`));
+      }
       const appendPort = port => {
         const target = sw.ports?.find(item => portKeys(item).includes(portKey(port)));
         if (target && !selectedKeys.includes(portKey(port))) row.append(switchPortButton(switchId, sw.name, target.name));

@@ -4287,11 +4287,20 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
     assert service_host()["lacpHealth"] == [health]
     assert [gap["switchPort"] for gap in lacp_gaps()] == ["ge6"]
     assert service_ports() == [("ge6", ["host_lacp"]), ("po1", ["host_lacp"])]
+    ports[1]["oper_status"] = "up"
+    report["members"].append({"port": "ge7", "partner_port": 2, "mac": mac})
     ports[2]["oper_status"] = "down"
-    read()
+    color, health = read()
+    assert all(member["status"] == "forwarding" for member in health["members"])
+    assert (color, health["status"]) == ("warn", "warn")
+    assert health["aggregateLinkFault"] == {"state": "down", "checkedAt": at}
+    assert service_host()["lacpHealth"] == [health]
     assert service_paths() == []
-    assert service_ports() == [("ge6", ["host_lacp"])]
+    assert service_ports() == [("ge6", ["host_lacp"]), ("ge7", ["host_lacp"])]
     ports[2]["oper_status"] = "up"
+    color, health = read()
+    assert (color, health["status"]) == ("ok", "ok")
+    assert "aggregateLinkFault" not in health
     assert read(now + timedelta(minutes=6))[0] == "unknown"
     assert all(member["status"] == "unknown" for member in service_host(now + timedelta(minutes=6))["lacpHealth"][0]["members"])
     network.clear()

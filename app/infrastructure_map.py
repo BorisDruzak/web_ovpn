@@ -1685,9 +1685,15 @@ def _attach_lacp_health(nodes: dict, expectations: dict, links: list[dict], port
                 else:
                     members.append({"name": name, "status": "unknown"})
             states = {member["status"] for member in members}
-            status = "warn" if states & {"down", "disabled"} else "unknown" if "unknown" in states else "ok"
+            aggregate_port = port_states.get(switch_id, {}).get(port_label_key(aggregate), {})
+            fault = {}
+            if (aggregate_port.get("state") in {"down", "disabled"}
+                    and observation_is_fresh(aggregate_port.get("checkedAt"), now, max_age=LACP_HEALTH_MAX_AGE)):
+                fault = {key: aggregate_port[key] for key in ("state", "checkedAt")}
+            status = "warn" if fault or states & {"down", "disabled"} else "unknown" if "unknown" in states else "ok"
             nodes[node_id].setdefault("lacpHealth", []).append({
                 "switchId": switch_id, "aggregate": aggregate, "members": members, "status": status,
+                **({"aggregateLinkFault": fault} if fault else {}),
             })
 
 
