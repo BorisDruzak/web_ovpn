@@ -3482,14 +3482,19 @@ def load_infrastructure_map(
                     elif source in CURRENT_PORT_PAIR_SOURCES:
                         evidence[-1]["pairEvidence"] = "current"
                 if source == "SNMP LACP + ARP":
+                    polled = _time(report.get("lacpPolledAt", report.get("at")))
+                    evidence[-1]["confirmed"] = bool(evidence[-1]["confirmed"] and observed and polled
+                                                     and observed <= polled <= now
+                                                     and now - polled <= LACP_HEALTH_MAX_AGE
+                                                     and now - observed <= LACP_PARTNER_MAX_AGE)
                     if edge["kind"] == "Сетевое соединение" and both_ports and evidence[-1]["confirmed"]:
                         _attach_lacp_port_states(evidence[-1], edge, nodes, port_states)
-                        polled = _time(report.get("lacpPolledAt"))
-                        if "lacp" in evidence[-1] and observed and polled and observed <= polled <= now:
+                        if "lacp" in evidence[-1]:
                             evidence[-1]["lacp"]["polledAt"] = polled.isoformat()
                             address = _network_address(report.get("managementAddress"))
                             if address and ":" not in address and "/" not in address:
                                 evidence[-1]["managementAddress"] = address
+                    evidence[-1]["confirmed"] = "lacp" in evidence[-1]
                 elif edge["kind"] == "Сетевое соединение" or both_ports or source == SHARED_LLDP_SOURCE or observed_attachment:
                     states = {}
                     for side in ("a", "b"):
@@ -3579,8 +3584,10 @@ def load_infrastructure_map(
             confirmed = row.get("confirmed") is True
             if edge["source"] == PPPOE_SOURCE:
                 confirmed = confirmed and observation_is_fresh(row.get("observedAt"), now, max_age=SERVICE_PROBE_MAX_AGE)
+            elif edge["source"] == "SNMP LACP + ARP":
+                confirmed = confirmed and any(report["confirmed"] for report in evidence)
             elif edge["source"] in {"netctl", "LLDP UI_VPN", "LLDP · двустороннее", "netctl FDB",
-                                  "netctl FDB + Proxmox", "Proxmox", "SNMP LACP + ARP", "MikroTik · ARP",
+                                  "netctl FDB + Proxmox", "Proxmox", "MikroTik · ARP",
                                   "MikroTik · ARP + FDB", RECIPROCAL_MAC_SOURCE, SHARED_LLDP_SOURCE} and row.get("observedAt"):
                 confirmed = confirmed and observation_is_fresh(row["observedAt"], now)
             alerts = []

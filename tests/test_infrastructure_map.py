@@ -3891,6 +3891,10 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
                            "switchPort": port, "partnerPort": partner, "checkedAt": at}
                           for port, partner in (("ge6", 1), ("ge7", 2))]
     assert lacp_gaps(now + timedelta(minutes=6)) == []
+    expired_graph = load_infrastructure_map(path, now + timedelta(minutes=6))
+    expired_link, = [edge for edge in expired_graph["links"] if edge["source"] == "SNMP LACP + ARP"]
+    assert not expired_link["confirmed"]
+    assert all(not port["confirmed"] and "lacp" not in port for port in expired_link["portEvidence"])
 
     def service_ports():
         graph = load_infrastructure_map(path, now, include_guest_attachments=True)
