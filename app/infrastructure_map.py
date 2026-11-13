@@ -3661,7 +3661,8 @@ def load_infrastructure_agent_audit(path: Path, *, node_id: str | None = None) -
             adapter.close()
     result = {**{key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph},
               "agentAudit": graph.get("agentAudit", {"sourceState": "unavailable"})}
-    if node_id is not None and any(node["id"] == node_id and node["guest"] for node in graph["nodes"]):
+    if node_id is not None and any(node["id"] == node_id and (node["guest"] or node["kind"] == "Гипервизор")
+                                   for node in graph["nodes"]):
         attachment = summarize_guest_attachment(graph, node_id)["attachment"]
         result["attachment"] = attachment
         result["serviceAudit"] = summarize_services(graph, host_id=node_id)["serviceAudit"]

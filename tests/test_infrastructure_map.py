@@ -9429,7 +9429,8 @@ def test_hypervisor_agent_memory_uses_available_bytes_and_fresh_capacity():
     assert "memoryHeadroom" not in _guest_agent_health(snapshot, now, capacity=capacity)
 
 
-def test_agent_audit_matches_hypervisor_using_verified_management_mac(tmp_path):
+def test_agent_audit_matches_hypervisor_using_verified_management_mac(tmp_path, monkeypatch):
+    from app import infrastructure_map
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map
 
@@ -9459,6 +9460,20 @@ def test_agent_audit_matches_hypervisor_using_verified_management_mac(tmp_path):
                      "lastSeenAt": at, "identityCheckedAt": arp_at, "identitySource": "proxmox_management_mac",
                      "healthProfileState": "unconfirmed"}
     assert identity["id"] not in json.dumps(audit) and mac not in json.dumps(audit)
+
+    class Adapter:
+        def list_agent_network_identities(self):
+            return [identity]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(infrastructure_map, "get_endpoint_context_adapter", Adapter)
+    result = infrastructure_map.load_infrastructure_agent_audit(path, node_id="pve1")
+    assert result["attachment"]["node"]["id"] == "pve1"
+    assert result["attachment"]["physicalHosts"][0]["host"]["id"] == "pve1"
+    assert result["serviceAudit"]["total"] == 0
+    assert result["agentAudit"]["hypervisors"][0]["identitySource"] == "proxmox_management_mac"
 
     stale, = read(now + timedelta(minutes=24))["hypervisors"]
     assert stale["state"] == "not_eligible" and stale["reason"] == "management_mac_unconfirmed"
