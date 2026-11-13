@@ -5688,6 +5688,25 @@ def test_routeros_ping_uses_one_packet_and_rejects_injected_addresses(monkeypatc
     assert calls == ["/ping address=192.0.2.30 src-address=198.51.100.1 count=1"]
 
 
+def test_port_comparison_uses_speed_measurement_times():
+    from app.infrastructure_map import _compare_link_ports
+
+    now = datetime.now(timezone.utc)
+    older = (now - timedelta(minutes=3)).isoformat()
+    recent = (now - timedelta(seconds=20)).isoformat()
+    ports = {
+        "a": {"state": "up", "speedBps": 10**9, "checkedAt": older, "speedCheckedAt": recent},
+        "b": {"state": "up", "speedBps": 10**8, "checkedAt": now.isoformat()},
+    }
+    assert _compare_link_ports(ports) == {"state": "speed_mismatch", "checkedAt": recent}
+    ports["a"]["speedCheckedAt"] = older
+    assert _compare_link_ports(ports) == {}
+    ports["a"]["checkedAt"] = recent
+    assert _compare_link_ports(ports) == {"state": "both_up", "checkedAt": recent}
+    ports["a"].update(state="down", speedCheckedAt=older)
+    assert _compare_link_ports(ports) == {"state": "one_down", "checkedAt": recent}
+
+
 def test_routeros_speed_has_its_own_freshness_and_preserves_telemetry():
     from app.infrastructure_map import _public_port
 

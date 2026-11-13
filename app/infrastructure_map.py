@@ -1644,12 +1644,17 @@ def _compare_link_ports(ports: dict) -> dict:
     if set(ports) != {"a", "b"} or any(port["state"] == "unknown" for port in ports.values()):
         return {}
     a, b = ports["a"], ports["b"]
+    up_count = sum(port["state"] == "up" for port in (a, b))
+    if up_count == 2 and a["speedBps"] and b["speedBps"]:
+        first, last = sorted(_time(port.get("speedCheckedAt", port["checkedAt"])) for port in (a, b))
+        if last - first <= timedelta(minutes=2):
+            state = "speed_mismatch" if a["speedBps"] != b["speedBps"] else "both_up"
+            return {"state": state, "checkedAt": first.isoformat()}
     first, last = sorted((_time(a["checkedAt"]), _time(b["checkedAt"])))
     if last - first > timedelta(minutes=2):
         return {}
-    up_count = sum(port["state"] == "up" for port in (a, b))
     if up_count == 2:
-        state = "speed_mismatch" if a["speedBps"] and b["speedBps"] and a["speedBps"] != b["speedBps"] else "both_up"
+        state = "both_up"
     else:
         state = "one_down" if up_count else "both_down"
     return {"state": state, "checkedAt": first.isoformat()}
