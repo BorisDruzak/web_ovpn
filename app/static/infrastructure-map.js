@@ -2726,12 +2726,18 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           router_arp: 'Подключённый маршрут и ARP', router_mac: 'ARP и FDB маршрутизатора',
           switch_mac: 'Адрес проверен по ARP и FDB', lldp_peer: 'Сосед по LLDP',
           endpoint_mac: 'MAC станции подтверждён на порту'};
-        for (const service of serviceGroup.services) {
+        const priority = {critical: 0, warn: 1, unknown: 2, ok: 3};
+        const ordered = [...serviceGroup.services].sort((a, b) =>
+          (priority[a.mapStatus] ?? 2) - (priority[b.mapStatus] ?? 2));
+        for (const service of ordered) {
           const row = make('li');
           const open = make('button', service.name);
           open.type = 'button';
           open.addEventListener('click', () => select(service.id));
           row.append(open);
+          if (service.mapStatus && service.mapStatus !== 'ok') {
+            row.append(make('small', observerStates[service.mapStatus]));
+          }
           const observed = (service.basis ?? []).map(basis => bases[basis]).filter(Boolean);
           if (observed.length) row.append(make('small', observed.join(' · ')));
           for (const check of service.observerIssues ?? []) {
@@ -2796,7 +2802,12 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           services.append(row);
         }
         const title = serviceGroup.services.some(service => service.kind !== 'Сервис') ? 'Узлы и сервисы на порту' : 'Сервисы на порту';
-        panel.append(make('summary', `${title} (${serviceGroup.total})`), services);
+        const {critical = 0, warn = 0, unknown = 0} = serviceGroup.statusCounts ?? {};
+        const counts = [
+          critical + warn > 0 && `с проблемами: ${critical + warn}`,
+          unknown > 0 && `без подтверждения: ${unknown}`,
+        ].filter(Boolean);
+        panel.append(make('summary', [`${title} (${serviceGroup.total})`, ...counts].join(' · ')), services);
         if (serviceGroup.services.length < serviceGroup.total) {
           panel.append(make('small', `Показано ${serviceGroup.services.length} из ${serviceGroup.total}`));
         }

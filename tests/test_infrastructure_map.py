@@ -8592,6 +8592,7 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     assert browser["servicePaths"] == {"directum": [service_path, {**service_path, "port": 3268}]}
     switch_ports = browser["servicePorts"]["snr"]
     assert len(switch_ports) == 1 and switch_ports[0]["port"] == "xe3" and switch_ports[0]["total"] == 1
+    assert switch_ports[0]["statusCounts"] == {"critical": 0, "warn": 0, "unknown": 1, "ok": 0}
     assert [service["id"] for service in switch_ports[0]["services"]] == ["directum"]
     issue, = switch_ports[0]["services"][0]["observerIssues"]
     assert (issue["name"], issue["status"], issue["observed"], issue["unit"]) == (
