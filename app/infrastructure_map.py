@@ -1819,10 +1819,13 @@ def _link_port_alerts(evidence: list[dict]) -> list[dict]:
     return list(alerts.values())
 
 
-def _summarize_port_counters(nodes: dict) -> dict:
+def _summarize_port_counters(nodes: dict, topology_pairs: tuple | None, *,
+                             port_nodes: dict | None = None) -> dict:
     measured = 0
     affected = []
-    for node in nodes.values():
+    selected = nodes if port_nodes is None else port_nodes
+    port_by_key = {}
+    for node in selected.values():
         for port in node["ports"]:
             telemetry = port.get("telemetry", {})
             if not any(key in telemetry for key in PORT_COUNTER_KEYS):
@@ -1833,6 +1836,7 @@ def _summarize_port_counters(nodes: dict) -> dict:
                        "telemetry": telemetry}
                 row.update({key: port[key] for key in ("configuredLabel", "rxErrorCounters") if key in port})
                 affected.append(row)
+                port_by_key[node["id"], port["name"]] = port
 
     def severity(row):
         counters = row["telemetry"]
@@ -1841,7 +1845,37 @@ def _summarize_port_counters(nodes: dict) -> dict:
         return -errors, -discards, row["deviceId"], row["port"]
 
     affected.sort(key=severity)
-    return {"measuredPorts": measured, "affectedPorts": len(affected), "ports": affected[:64]}
+    ports = affected[:64]
+    if ports and topology_pairs:
+        _, inventory, _, pending, current = topology_pairs
+        peers_by_port = defaultdict(dict)
+        for evidence, pairs in (("current", current), ("verified_inventory", inventory), ("unconfirmed", pending)):
+            for pair in pairs:
+                for side, remote in (("A", "B"), ("B", "A")):
+                    local_id, peer_id = pair[side.lower()], pair[remote.lower()]
+                    if not pair[f"port{side}"]:
+                        continue
+                    peer_port = pair[f"port{remote}"]
+                    peers = peers_by_port[local_id, port_label_key(pair[f"port{side}"])]
+                    peers.setdefault((peer_id, port_label_key(peer_port)), {
+                        "id": peer_id, "port": peer_port, "evidence": evidence,
+                        "name": nodes[peer_id]["name"],
+                    })
+        evidence_rank = {"current": 0, "verified_inventory": 1, "unconfirmed": 2}
+        for row in ports:
+            device_id = row["deviceId"]
+            port = port_by_key[device_id, row["port"]]
+            candidates = sorted(
+                (peer for name in (port["name"], *port.get("aliases", []))
+                 for peer in peers_by_port.get((device_id, port_label_key(name)), {}).values()),
+                key=lambda peer: (evidence_rank[peer["evidence"]], peer["id"], port_label_key(peer["port"])),
+            )
+            unique = {}
+            for peer in candidates:
+                unique.setdefault((peer["id"], port_label_key(peer["port"])), peer)
+            if unique:
+                row["peers"] = list(unique.values())[:8]
+    return {"measuredPorts": measured, "affectedPorts": len(affected), "ports": ports}
 
 
 def _summarize_port_rx_silence(nodes: dict, pending: list[dict]) -> dict:
@@ -2396,7 +2430,8 @@ def _summarize_pair_measurement_gaps(pairs: list[dict]) -> dict:
 
 def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: str | None = None) -> dict:
     nodes = {node["id"]: node for node in graph["nodes"]}
-    counts, inventory_pairs, alerts, pending, current_pairs = _topology_port_pairs(nodes, graph["links"])
+    topology_pairs = _topology_port_pairs(nodes, graph["links"])
+    counts, inventory_pairs, alerts, pending, current_pairs = topology_pairs
     port_aliases = {
         (node["id"], port_label_key(alias)): port_label_key(port["name"])
         for node in nodes.values() for port in node["ports"] for alias in port.get("aliases", [])
@@ -2481,7 +2516,7 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
             "confirmationGapCounts": dict(Counter(reason for row in gaps for reason in row["confirmationGaps"])),
             "stpRelatedPendingTotal": len(stp_related_gaps), "stpRelatedPending": stp_related_gaps[:64],
             "portAlertTotal": len(port_alerts), "portAlerts": port_alerts[:64],
-            "portCounterAudit": _summarize_port_counters(scoped_nodes),
+            "portCounterAudit": _summarize_port_counters(nodes, topology_pairs, port_nodes=scoped_nodes),
             "portRxSilenceAudit": _summarize_port_rx_silence(scoped_nodes, pending),
             "vlanAudits": [row for row in vlan_audits if matches(row)][:64],
             "lacpHealth": aggregates[:64],
@@ -2518,7 +2553,7 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
                                         "inventoryPairs": inventory_pairs[:64],
                                         "inventoryOnlyPairTotal": len(inventory_only), "inventoryOnlyPairs": inventory_only[:64],
                                         "portAlertTotal": len(alerts), "portAlerts": alerts[:64],
-                                        "portCounterAudit": graph.get("portCounterAudit") or _summarize_port_counters(nodes),
+                                        "portCounterAudit": graph.get("portCounterAudit") or _summarize_port_counters(nodes, topology_pairs),
                                         "portRxSilenceAudit": graph.get("portRxSilenceAudit") or _summarize_port_rx_silence(nodes, pending),
                                         "stpRootPaths": stp, "stpRoots": roots, "vlanAudits": vlan_audits[:64],
                                         "lacpHealth": lacp[:64],
@@ -4494,7 +4529,8 @@ def load_infrastructure_map(
             pass
     attachments = {}
     topology_pairs = _topology_port_pairs(nodes, links) if (include_guest_attachments or include_port_pairs or any(
-        "rxSilence" in port for node in nodes.values() for port in node["ports"]
+        "rxSilence" in port or any(port.get("telemetry", {}).get(key, 0) for key in PORT_COUNTER_KEYS)
+        for node in nodes.values() for port in node["ports"]
     )) else None
     if include_guest_attachments:
         attachments = _map_attachments(nodes, links, now, endpoint_keys=endpoint_keys)
@@ -4564,7 +4600,7 @@ def load_infrastructure_map(
     return {
         **empty, "availability": "stale" if now - stamp > MAX_AGE else "ready",
         "snapshotAt": stamp.isoformat(), "nodes": list(nodes.values()), "links": links,
-        "portCounterAudit": _summarize_port_counters(nodes),
+        "portCounterAudit": _summarize_port_counters(nodes, topology_pairs),
         "portRxSilenceAudit": _summarize_port_rx_silence(nodes, topology_pairs[3] if topology_pairs else []),
         "clusterId": cluster_id, "nodeOrder": node_ids("nodeOrder"),
         "overviewGuests": node_ids("overviewGuests"),

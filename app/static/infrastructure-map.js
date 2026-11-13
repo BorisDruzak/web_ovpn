@@ -180,11 +180,25 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const {affectedPorts = 0, ports = []} = data.portCounterAudit ?? {};
     panel.hidden = !affectedPorts;
     summary.textContent = 'Ошибки и отбросы на портах · ' + affectedPorts;
-    list.replaceChildren(...ports.map(({deviceId, deviceName, port, configuredLabel, telemetry}) => {
+    const evidenceLabels = {
+      current: 'Подтверждено замером',
+      verified_inventory: 'Проверено по инвентарю',
+      unconfirmed: 'Пара не подтверждена',
+    };
+    list.replaceChildren(...ports.map(({deviceId, deviceName, port, configuredLabel, telemetry, peers = []}) => {
       const item = make('li');
       const link = make('a', `${deviceName} · ${port}` + (configuredLabel ? ` · ${configuredLabel.text}` : ''));
       link.href = '?' + new URLSearchParams({node: deviceId, port});
       item.append(link, make('small', formatPortCounterChanges(telemetry)));
+      for (const peer of peers) {
+        const line = make('small', evidenceLabels[peer.evidence] + ' · ');
+        const destination = make('a', [peer.name, peer.port].filter(Boolean).join(' · '));
+        const params = new URLSearchParams({node: peer.id});
+        if (peer.port) params.set('port', peer.port);
+        destination.href = '?' + params;
+        line.append(destination);
+        item.append(line);
+      }
       return item;
     }));
     if (activeLink && !panel.hidden) {

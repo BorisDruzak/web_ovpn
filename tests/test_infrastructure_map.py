@@ -5530,6 +5530,45 @@ def test_switch_vlans_join_current_port_by_unique_ifindex(tmp_path):
     assert "fdbLearned" not in read()[1]
 
 
+def test_port_counter_audit_includes_peer_evidence_in_map_and_mcp(tmp_path):
+    from app.infrastructure_map import load_infrastructure_map, summarize_topology
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    nodes = [{"id": "core", "name": "Core", "kind": "Коммутатор", "ports": [
+        {"name": f"ge{index}", "state": "up", "checkedAt": at,
+         "telemetry": {"checkedAt": at, "intervalSeconds": 60, "rxErrors": 2}}
+        for index in range(1, 5)
+    ]}]
+    nodes.extend({"id": name, "name": name.title(), "kind": "Коммутатор"}
+                 for name in ("live", "recorded", "pending"))
+    links = []
+    for index, peer, confirmed, source in ((1, "live", True, "LLDP UI_VPN"),
+                                           (2, "recorded", True, "GitHub"),
+                                           (3, "pending", False, "GitHub")):
+        links.append({"a": "core", "b": peer, "kind": "Сетевое соединение", "confirmed": confirmed,
+                      "portEvidence": [{"a": f"ge{index}", "b": "eth1", "source": source,
+                                        "confirmed": confirmed, "at": at if index == 1 else None,
+                                        **({"pairEvidence": "verified_inventory",
+                                            "inventorySources": [{"path": "evidence/manual/verified.md",
+                                                                  "observedOn": now.date().isoformat()}]}
+                                           if index == 2 else {})}]})
+    links[0]["portEvidence"].append({**links[1]["portEvidence"][0], "a": "ge1"})
+    path = tmp_path / "map.json"
+    path.write_text(json.dumps({"schema": 1, "snapshotAt": at, "nodes": nodes, "links": links}), encoding="utf-8")
+    graph = load_infrastructure_map(path, now)
+    audit = graph["portCounterAudit"]
+    assert summarize_topology(graph)["topologyAudit"]["portCounterAudit"] == audit
+    assert audit["affectedPorts"] == 4
+    for index, (peer, evidence) in enumerate((("live", "current"), ("recorded", "verified_inventory"),
+                                              ("pending", "unconfirmed")), start=1):
+        scoped = summarize_topology(graph, node_id="core", port_name=f"ge{index}")["topologyAudit"]
+        row = audit["ports"][index - 1]
+        assert scoped["portCounterAudit"]["ports"] == [row]
+        assert row["peers"] == [{"id": peer, "name": peer.title(), "port": "eth1", "evidence": evidence}]
+    assert "peers" not in audit["ports"][3]
+
+
 def test_switch_port_telemetry_requires_matching_current_collection(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map, summarize_topology
