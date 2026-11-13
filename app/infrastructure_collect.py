@@ -2926,6 +2926,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 if asset_ip_checks.get(asset) == address and "probeTargetIdentityAt" not in nodes[asset]:
                     nodes[asset].update(probeTargetIP=address, probeTargetIdentityAt=checked,
                                         probeTargetIdentityMethod="ICMP · ARP + FDB")
+    lacp_identity_sources = set()
     for spec in bindings.get("lacp_links", []):
         asset, aggregate = spec["asset"], spec["aggregate"]
         if asset not in nodes:
@@ -2942,6 +2943,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             nodes[asset].setdefault("lacpExpectations", []).append({
                 "switchId": switch, "aggregate": aggregate, "members": spec["members"],
             })
+            if source_nodes.get(spec["source"]) == switch:
+                lacp_identity_sources.add((asset, spec["source"], aggregate))
     for report in network.get("lacp", []):
         asset = report["asset"]
         address = address_by_asset.get(asset)
@@ -2961,6 +2964,10 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         peer_counts = Counter(member["partner_port"] for member in matching)
         confirmed = [member for member in matching if peer_counts[member["partner_port"]] == 1]
         checked_at = min(arp_at, datetime.fromisoformat(report["at"])).isoformat()
+        if confirmed and (asset, report["source"], report["aggregate"]) in lacp_identity_sources:
+            for service in identity_services.get(asset, []):
+                if service.get("probeTargetIP") is None:
+                    service.update(probeTargetIP=address, probeTargetIdentityAt=checked_at)
         for member in confirmed:
             edge(switch, asset, "Сетевое соединение", "SNMP LACP + ARP", at=checked_at,
                  details=f"LACP: подтверждено {len(confirmed)} из {report['expected']} портов",

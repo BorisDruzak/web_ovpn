@@ -4203,7 +4203,14 @@ def test_lacp_confirms_only_ports_whose_partner_matches_fresh_arp(tmp_path):
     path = tmp_path / "map.json"
 
     def link(stamp=now):
-        graph = build_graph(context, network, {}, {}, {}, now)
+        graph = build_graph(context, network, {}, {}, {
+            "asset_services": {"pbs-ssh": {"asset": "pbs", "label": "PBS SSH", "require_network_identity": True}},
+            "lacp_links": [{"source": "snr", "asset": "pbs", "aggregate": "po1", "members": ["ge6", "ge7"]}],
+        }, now)
+        ssh = next(node for node in graph["nodes"] if node["id"] == "pbs-ssh")
+        verified = len(network["arp"]) == 1
+        assert ssh["probeTargetIP"] == (address if verified else None)
+        assert ssh.get("probeTargetIdentityAt") == (at if verified else None)
         path.write_text(json.dumps(graph), encoding="utf-8")
         return next(e for e in load_infrastructure_map(path, stamp)["links"] if {e["a"], e["b"]} == {"sw", "pbs"})
 

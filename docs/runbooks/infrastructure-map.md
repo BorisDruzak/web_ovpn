@@ -464,6 +464,8 @@
 
 Для библиотек страницы входа PBS создайте карточку `asset_services.pbs-web-libraries` с `asset: pbs` и `used_by: ["pbs-web"]`. Обе HTTPS-проверки в `service_probes.pbs-web-libraries` используют IP, порт и отпечаток TLS карточки PBS Web. Запрос `/extjs/ext-all.js` проверяет `Ext.util`, а `/widgettoolkit/proxmoxlib.js` — `Proxmox.Utils`. Оба ответа должны иметь тип `application/javascript`.
 
+Для `pbs-web`, `pbs-web-libraries` и `pbs-ssh` в `asset_services` включите `require_network_identity: true`. При настроенном `lacp_links` сборщик сверяет MAC партнёра хотя бы одного работающего участника агрегата с актуальным ARP адреса PBS. Проверки публикуют время сверки. Если подтверждение адреса отсутствует, запрос пропускается. Имена физических интерфейсов PBS требуют отдельных наблюдений.
+
 У `pve1-management`, `pve2-management` и `pve3-management` запрос списка областей входа проверяется отдельно на каждом узле по HTTPS/8006 с теми же `tls_server_name` и `tls_ca_file`, что у веб-панели. Для `pve2-redfish`, `yadro-vegman-redfish`, `pbs-ipmi-web`, `pve3-ipmi-web` и `ucm6302-web` добавьте `type: tls_certificate` с `component: true` и уже проверенным отпечатком веб-службы. Истёкший сертификат даёт сбой обязательной проверки, и отвечающая веб-служба отображается жёлтой. [Документация Proxmox по областям входа](https://github.com/proxmox/pve-docs/blob/master/pveum.adoc)
 
 Свежая обязательная проверка сертификата TLS предупреждает за 30 дней до окончания срока. Сервис остаётся доступным, а его карточка становится жёлтой и показывает дату окончания. MCP `view=services` возвращает причину `tls_certificate_expiring` и время `tlsExpiresAt`.
