@@ -460,13 +460,14 @@ async def _check_declared_switch_ports(context: dict, network: dict, pve: dict, 
                     if mac_owners[mac] == 1:
                         access_macs.setdefault((address, row["if_index"]), set()).add((device, mac))
                         access = True
-            if not access and not all(
+            peer_observable = all(
                 row is not None or (end["device"], end.get("interface")) in host_ports
                 or (end["device"] in controllers and label)
                 for row, (_, label, end) in zip(available, ends)
-            ):
+            )
+            if not access and not peer_observable and not all(label for _, label, _ in ends):
                 continue
-            target = checks
+            target = checks if access or peer_observable else pending
         else:
             target = pending
         for row, (address, _, _) in zip(available, ends):

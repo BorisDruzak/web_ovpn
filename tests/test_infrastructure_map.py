@@ -2880,8 +2880,9 @@ def test_declared_switch_port_checks_cover_unverified_sides_and_exclude_retired_
                                               ("s1", "Slot0/16", 16), ("s1", "Slot0/17", 17))],
     }
     asyncio.run(collector._check_declared_switch_ports(context, network, {}, now))
-    assert set(calls) == {(52, "Slot0/52"), (5021, "ge21"), (15, "Slot0/15"), (5022, "ge22"), (16, "Slot0/16")}
-    assert sum("linkCheck" in row for row in network["ports"]) == 5
+    assert set(calls) == {(52, "Slot0/52"), (5021, "ge21"), (51, "Slot0/51"),
+                          (15, "Slot0/15"), (5022, "ge22"), (16, "Slot0/16")}
+    assert sum("linkCheck" in row for row in network["ports"]) == 6
 
 
 @pytest.mark.parametrize("learned_port", [7, 8])
