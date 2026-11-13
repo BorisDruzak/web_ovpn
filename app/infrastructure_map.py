@@ -338,7 +338,7 @@ def _public_port(row: dict, now: datetime) -> dict:
                     result["transceiver"]["opticalPower"] = {"state": "available", **readings}
                 elif power["state"] == "unavailable":
                     result["transceiver"]["opticalPower"] = {"state": "unavailable"}
-    mode = row.get("linkMode")
+    mode = row.get("routerLink") if source == "RouterOS" else row.get("linkMode")
     if (result["state"] == "up" and isinstance(mode, dict)
             and observation_is_fresh(mode.get("checkedAt"), now, max_age=PORT_LINK_CHECK_MAX_AGE)):
         duplex = mode.get("duplex")
@@ -348,6 +348,8 @@ def _public_port(row: dict, now: datetime) -> dict:
             details["autoNegotiation"] = autoneg
         if details:
             result["linkMode"] = {"checkedAt": _time(mode["checkedAt"]).isoformat(), **details}
+        if source == "RouterOS" and type(rate := mode.get("speedBps")) is int and 0 < rate <= 10**15:
+            result.update(speedBps=rate, speedCheckedAt=_time(mode["checkedAt"]).isoformat())
     stp = row.get("stpPort")
     if (fresh and isinstance(stp, dict) and stp.get("state") in BRIDGE_STP_PORT_STATES.values()
             and observation_is_fresh(stp.get("checkedAt"), now, max_age=STP_ROOT_PATH_MAX_AGE)):
@@ -1868,7 +1870,8 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
                 pair_side = "a" if pair["a"] == device else "b"
                 states = pair.setdefault("portStates", {})
                 if state["checkedAt"] > states.get(pair_side, {}).get("checkedAt", ""):
-                    states[pair_side] = {key: state[key] for key in ("state", "speedBps", "checkedAt", "source") if key in state}
+                    states[pair_side] = {key: state[key] for key in
+                                         ("state", "speedBps", "checkedAt", "source", "speedCheckedAt") if key in state}
             if source not in sources or at > sources[source]["checkedAt"]:
                 expires = _time(at) + PORT_EVIDENCE_MAX_AGE.get(source, MAX_AGE)
                 sources[source] = {"source": source, "checkedAt": at, "expiresAt": expires.isoformat()}
@@ -4107,7 +4110,7 @@ def load_infrastructure_map(
                  "lldpPortIds": sorted({peer["portId"] for peers in row.get("lldpPeers", {}).values()
                                         for peer in peers if peer.get("portId")}),
                  "portObservations": {
-                     side: {key: port[key] for key in ("name", "state", "speedBps", "checkedAt", "rxSilence",
+                     side: {key: port[key] for key in ("name", "state", "speedBps", "speedCheckedAt", "checkedAt", "rxSilence",
                                                        "fdbLearned", "lldpPort", "telemetry", "rxErrorCounters",
                                                        "linkMode", "transceiver") if key in port}
                      for side, port in row.get("portObservations", {}).items()

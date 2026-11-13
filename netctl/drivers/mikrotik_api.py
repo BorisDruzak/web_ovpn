@@ -558,6 +558,23 @@ class MikroTikApiDriver(NetworkDriver):
             rows = api.call(words)
         return any(row.get("host", "").lower() == mac.lower() and row.get("received") == "1" for row in rows)
 
+    def read_ethernet_link_modes(self, names: list[str]) -> dict[str, dict[str, str]]:
+        if len(names) > 8 or any(not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}", name) for name in names):
+            raise ValueError("invalid RouterOS Ethernet interfaces")
+        readings = {}
+        client = self._client()
+        client.timeout = 2
+        with client as api:
+            for name in names:
+                try:
+                    rows = api.call(["/interface/ethernet/monitor", f"=numbers={name}", "=once=",
+                                     "=.proplist=name,status,rate,full-duplex,auto-negotiation"])
+                except (OSError, RuntimeError, ValueError):
+                    break
+                if len(rows) == 1 and rows[0].get("name") == name and rows[0].get("status") == "link-ok":
+                    readings[name] = rows[0]
+        return readings
+
     def test(self) -> dict[str, Any]:
         with self._client() as api:
             identity = self._query(api, "/system/identity/print", ["name"])

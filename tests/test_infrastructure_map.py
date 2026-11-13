@@ -5688,6 +5688,54 @@ def test_routeros_ping_uses_one_packet_and_rejects_injected_addresses(monkeypatc
     assert calls == ["/ping address=192.0.2.30 src-address=198.51.100.1 count=1"]
 
 
+def test_routeros_speed_has_its_own_freshness_and_preserves_telemetry():
+    from app.infrastructure_map import _public_port
+
+    now = datetime.now(timezone.utc)
+    stamp = (now - timedelta(minutes=4)).isoformat()
+    row = {
+        "name": "ether6", "source": "RouterOS", "state": "up", "checkedAt": stamp,
+        "routerLink": {"checkedAt": now.isoformat(), "speedBps": 10**9},
+        "telemetry": {"checkedAt": stamp, "intervalSeconds": 60, "rxBps": 1200},
+    }
+    port = _public_port(row, now)
+    assert port["speedBps"] == 10**9 and port["speedCheckedAt"] == now.isoformat()
+    assert port["telemetry"]["checkedAt"] == stamp
+    stale = _public_port(row, now + timedelta(minutes=6))
+    assert stale["speedBps"] is None and "speedCheckedAt" not in stale
+    assert _public_port({**row, "state": "down"}, now)["speedBps"] is None
+    assert _public_port({**row, "checkedAt": now.isoformat()}, now)["speedBps"] == 10**9
+
+
+def test_routeros_link_modes_poll_only_configured_active_ethernet(monkeypatch):
+    from types import SimpleNamespace
+
+    from app import infrastructure_collect as collector
+
+    now = datetime.now(timezone.utc)
+    network = {
+        "sources": [{"name": "main", "driver": "mikrotik_api", "enabled": 1}],
+        "router_interfaces": [
+            {"source": "main", "name": name, "type": kind, "running": running,
+             "disabled": 0, "last_seen_at": now.isoformat()}
+            for name, kind, running in (
+                ("ether6", "ether", 1), ("ether7", "ether", 1), ("ether8", "ether", 0), ("bridge", "bridge", 1)
+            )
+        ],
+    }
+
+    def read(names):
+        assert names == ["ether6"]
+        return {"ether6": {"rate": "2.5Gbps", "full-duplex": "true", "auto-negotiation": "done"}}
+
+    monkeypatch.setattr(collector, "load_secrets", lambda: {})
+    monkeypatch.setattr(collector, "legacy_driver_for", lambda *_: SimpleNamespace(read_ethernet_link_modes=read))
+    modes = collector._collect_router_link_modes(network, {"main": ["ether6", "ether8", "bridge"]})
+    sample = modes.pop(("main", "ether6"))
+    assert not modes and datetime.fromisoformat(sample.pop("checkedAt")) >= now
+    assert sample == {"speedBps": 2_500_000_000, "duplex": "full", "autoNegotiation": True}
+
+
 def test_transit_port_requires_direct_route_running_ethernet_and_neighbor_arp(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map, summarize_guest_attachment

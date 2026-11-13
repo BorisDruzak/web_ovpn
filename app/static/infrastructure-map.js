@@ -209,7 +209,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       const name = side === 'a' ? nameA : nameB;
       const label = side === 'a' ? portA : portB;
       row.append(make('small', [`${name} ${label}`, portLabels[port.state], formatPortSpeed(port.speedBps),
-        port.source, formatTime(port.checkedAt)].filter(Boolean).join(' · ')));
+        port.source, formatTime(port.speedCheckedAt ?? port.checkedAt)].filter(Boolean).join(' · ')));
     }
     for (const {source, checkedAt, expiresAt, windowsAdapter} of evidence) {
       const expiry = expiresAt ? ` · актуально до ${formatTime(expiresAt)}` : '';
@@ -368,7 +368,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     }
     for (const [side, port] of Object.entries(portObservations)) {
       const label = `${side === 'a' ? nameA : nameB} ${port.name}`;
-      const reading = [label, portLabels[port.state], formatPortSpeed(port.speedBps), formatTime(port.checkedAt)];
+      const reading = [label, portLabels[port.state], formatPortSpeed(port.speedBps), formatTime(port.speedCheckedAt ?? port.checkedAt)];
       if (port.rxSilence) reading.push(formatRxSilence(port.rxSilence));
       item.append(make('small', reading.filter(Boolean).join(' · ')));
       const counterChanges = port.telemetry && formatPortCounterChanges(port.telemetry);
@@ -2002,7 +2002,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       for (const port of sorted) {
         if (selectedPort && portKey(port.name) !== portKey(selectedPort)) continue;
         const row = make('li');
-        const time = port.checkedAt ? formatTime(port.checkedAt) : '';
+        const checkedAt = port.speedCheckedAt ?? port.checkedAt;
+        const time = checkedAt ? formatTime(checkedAt) : '';
         const speed = formatPortSpeed(port.speedBps);
         const state = port.source === 'Proxmox' ? proxmoxPortStatus(port) : states[port.state];
         const status = [state, speed, port.source, time, port.stale && time ? 'устарело' : ''].filter(Boolean).join(' · ');
@@ -2331,7 +2332,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
             renderedPorts.add(key);
             const device = byId.get(edge[side]).name;
             const label = port.source === 'Proxmox' ? proxmoxPortStatus(port) : portLabels[port.state];
-            const state = [label, formatPortSpeed(port.speedBps), port.source ?? 'SNMP', formatTime(port.checkedAt)];
+            const state = [label, formatPortSpeed(port.speedBps), port.source ?? 'SNMP', formatTime(port.speedCheckedAt ?? port.checkedAt)];
             state.push(...lldpCounts(port));
             li.append(make('small', `${device} ${port.name}: ${state.filter(Boolean).join(' · ')}`));
             for (const {localPort, chassisId, portId, portIdSubtype, checkedAt} of evidence.lldpPeers?.[side] ?? []) {

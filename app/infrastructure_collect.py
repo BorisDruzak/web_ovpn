@@ -1036,6 +1036,53 @@ def _pppoe_wans(context: dict) -> list[dict]:
             and wan.get("device")]
 
 
+def _collect_router_link_modes(network: dict, configured: object) -> dict:
+    if not isinstance(configured, dict):
+        return {}
+    now = datetime.now(timezone.utc)
+    active = {(row["source"], row["name"]) for row in network.get("router_interfaces", [])
+              if row.get("type") == "ether" and row.get("running") == 1 and row.get("disabled") == 0
+              and observation_is_fresh(row.get("last_seen_at"), now)}
+    targets = []
+    for source in network.get("sources", []):
+        names = configured.get(source["name"])
+        if (source.get("enabled") and source.get("driver") == "mikrotik_api" and isinstance(names, list)
+                and 1 <= len(names) <= 8 and all(isinstance(name, str) for name in names)):
+            selected = sorted({name for name in names if (source["name"], name) in active})
+            if selected:
+                targets.append((source, selected))
+    if not targets:
+        return {}
+    try:
+        secrets = load_secrets()
+    except (OSError, ValueError):
+        return {}
+
+    def read(target):
+        source, names = target
+        try:
+            readings = legacy_driver_for(source, secrets).read_ethernet_link_modes(names)
+        except (OSError, RuntimeError, ValueError):
+            return {}
+        stamp = datetime.now(timezone.utc).isoformat()
+        samples = {}
+        for name, row in readings.items():
+            rate = re.fullmatch(r"([1-9][0-9]{0,4}(?:\.[0-9]{1,3})?)([MG])bps", row.get("rate", ""))
+            if rate is None:
+                continue
+            speed = int(Decimal(rate[1]) * (10**9 if rate[2] == "G" else 10**6))
+            sample = {"checkedAt": stamp, "speedBps": speed}
+            if (duplex := row.get("full-duplex")) in ("true", "false"):
+                sample["duplex"] = "full" if duplex == "true" else "half"
+            if (negotiation := row.get("auto-negotiation")) in ("done", "disabled"):
+                sample["autoNegotiation"] = negotiation == "done"
+            samples[source["name"], name] = sample
+        return samples
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        return {key: value for samples in pool.map(read, targets) for key, value in samples.items()}
+
+
 def _collect_pppoe(context: dict, sources: list[dict], configured: object = None) -> dict:
     wans = _pppoe_wans(context)
     devices = {wan["device"] for wan in wans}
@@ -1847,6 +1894,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         router_ports.setdefault(interface["source"], []).append({
             "name": name, "source": "RouterOS", "state": state, "checkedAt": interface.get("last_seen_at"),
             **({"telemetry": sample} if (sample := network.get("router_port_telemetry", {}).get((interface["source"], name))) else {}),
+            **({"routerLink": mode} if (mode := network.get("router_link_modes", {}).get((interface["source"], name))) else {}),
         })
     for reading in network.get("router_neighbors", []):
         interfaces = reading.get("interface")
@@ -3812,6 +3860,7 @@ def main() -> int:
                 context, network["sources"], bindings.get("asset_mac_probes", {}),
             )
         start_stage("build graph")
+        network["router_link_modes"] = _collect_router_link_modes(network, bindings.get("router_link_modes"))
         network["guest_local_ipv4"] = _collect_local_guest_ipv4(bindings)
         now = datetime.now(timezone.utc)
         network["windows_dns_neighbors"] = read_windows_dns_neighbors(bindings, now)
