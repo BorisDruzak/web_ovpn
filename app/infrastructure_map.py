@@ -1828,6 +1828,16 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
             row["stpBridgeConnections"] = connections
         if mac_observations:
             row["stpBridgeMacObservations"] = [mac_observations[key] for key in sorted(mac_observations)[:12]]
+        arp_diagnostics = {}
+        for side in ("a", "b"):
+            checks = nodes[row[side]]["serviceChecks"]
+            readings = {check["arpDiagnostic"]["address"]: {**check["arpDiagnostic"], "checkedAt": check["checkedAt"]}
+                        for check in sorted(checks, key=lambda check: check["checkedAt"] or "")
+                        if check.get("supplemental") and not check["stale"] and "arpDiagnostic" in check}
+            if readings:
+                arp_diagnostics[side] = [readings[address] for address in sorted(readings)[:4]]
+        if arp_diagnostics:
+            row["arpDiagnostics"] = arp_diagnostics
     return counts, inventory_pairs, alerts, [pending[key] for key in sorted(pending)], verified_pairs
 
 
@@ -3348,7 +3358,7 @@ def load_infrastructure_map(
                      for side, port in row.get("portObservations", {}).items()
                  },
                  **{key: row[key] for key in ("archivedPortSides", "inventoryPortSides", "lldpPeers",
-                                             "stpBridgeConnections", "stpBridgeMacObservations") if key in row}}
+                                             "stpBridgeConnections", "stpBridgeMacObservations", "arpDiagnostics") if key in row}}
                 for row in pending[:64]
             ],
             lacpPartnerInterfaceGapTotal=len(lacp_gaps),

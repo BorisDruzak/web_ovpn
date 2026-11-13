@@ -7373,7 +7373,11 @@ def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_pa
                                               "nominalBps": 10**10, "serialNumber": "excluded"}},
                              {"name": "xe3", "key": "physical:3", "state": "up", "checkedAt": "2026-01-01T00:00:00Z",
                               "ifAlias": "Expired"}]},
-                  {"id": "recorder", "name": "Recorder", "kind": "Сервер"},
+                  {"id": "recorder", "name": "Recorder", "kind": "Сервер", "serviceChecks": [
+                      {"method": "ICMP адреса из инвентаря", "source": "UI_VPN", "state": "unknown", "checkedAt": now,
+                       "supplemental": True, "skipped": True, "reason": "probe_target_unconfirmed",
+                       "arpDiagnostic": {"state": "no_reply", "address": "192.0.2.15", "sourceIP": "192.0.2.30",
+                                         "interface": "ens18", "private": "excluded"}}]},
                   {"id": "pve", "name": "pve1", "kind": "Гипервизор", "ports": [{"name": "enp2s0"}]}],
         "links": [
             {"a": "snr", "b": "pve", "kind": "Сетевое соединение", "confirmed": True, "portEvidence": [
@@ -7436,6 +7440,8 @@ def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_pa
               "transceiver": {"checkedAt": now, "formFactor": "SFP+", "nominalBps": 10**10}},
     }
     assert recorder["missingPortSides"] == ["b"] and recorder["identifiedPeerSides"] == ["a"]
+    assert recorder["arpDiagnostics"] == {"b": [{"state": "no_reply", "address": "192.0.2.15",
+                                                 "sourceIP": "192.0.2.30", "interface": "ens18", "checkedAt": now}]}
     expected_peer = {"localPort": "ge15", "chassisId": "02:00:00:00:00:15", "portId": "bond0",
                      "portIdSubtype": "interface_name", "checkedAt": now}
     assert recorder["lldpPeers"] == {"a": [expected_peer]}

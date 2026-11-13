@@ -10,6 +10,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   const feedback = root.querySelector('#map-search-result');
   const pathKinds = new Set(['Путь по MAC-таблице', 'Путь через общий порт']);
   const reciprocalMacSource = 'SNMP · взаимные MAC';
+  const arpDiagnosticLabels = {no_reply: 'Нет ответа ARP', matched: 'MAC совпал с инвентарём',
+    different_mac: 'ARP показывает другой MAC', unconfirmed: 'Ответ ARP не подтверждён'};
   const availabilityStates = {
     ok: 'Доступен',
     warn: 'Доступен, есть сбои проверок',
@@ -207,7 +209,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   }
   function pendingPortPairRow({a, b, nameA, nameB, portA, portB, observedSources = [], lldpPortIds = [],
       observedSourceTimes = {}, identifiedPeerSides = [], archivedPortSides = [], inventoryPortSides = [],
-      portObservations = {}, stpPaths = [], stpBridgeConnections = [], stpBridgeMacObservations = [], lldpPeers = {}}) {
+      portObservations = {}, stpPaths = [], stpBridgeConnections = [], stpBridgeMacObservations = [], lldpPeers = {},
+      arpDiagnostics = {}}) {
     const item = make('li');
     const provenance = key => archivedPortSides.includes(key) ? ' (по архиву)' :
       inventoryPortSides.includes(key) ? ' (по инвентарю)' : '';
@@ -243,6 +246,12 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       const row = make('small', `MAC моста STP ${bridge} виден на `);
       row.append(portPairEndpoint(switchId, byId.get(switchId)?.name ?? switchId, port), ` · ${formatTime(checkedAt)}`);
       item.append(row);
+    }
+    for (const [side, readings] of Object.entries(arpDiagnostics)) {
+      const name = side === 'a' ? nameA : nameB;
+      for (const {address, state, interface: sourcePort, checkedAt} of readings) {
+        item.append(make('small', `${name} · ARP к ${address} · ${arpDiagnosticLabels[state]} · UI_VPN ${sourcePort} · ${formatTime(checkedAt)}`));
+      }
     }
     for (const [side, port] of Object.entries(portObservations)) {
       const label = `${side === 'a' ? nameA : nameB} ${port.name}`;
@@ -1846,8 +1855,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           'Действует до ' + formatTime(check.tlsExpiresAt)].filter(Boolean).join(' · ') : '';
         const localRoute = check.localRoute;
         const arp = check.arpDiagnostic;
-        const arpResult = arp && {no_reply: 'Нет ответа ARP', matched: 'MAC совпал с инвентарём',
-          different_mac: 'ARP показывает другой MAC', unconfirmed: 'Ответ ARP не подтверждён'}[arp.state];
+        const arpResult = arp && arpDiagnosticLabels[arp.state];
         const vlanPeer = vlan?.peer;
         const peer = vlanPeer && ({matched: ' · Сосед ' + vlanPeer.guestPort + ' подтверждён',
           unconfirmed: ' · Сосед не подтверждён'}[vlanPeer.state] ?? '');
