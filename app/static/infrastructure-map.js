@@ -277,7 +277,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       observedSourceTimes = {}, identifiedPeerSides = [], archivedPortSides = [], inventoryPortSides = [],
       portObservations = {}, stpPaths = [], stpBridgeConnections = [], stpBridgeMacObservations = [], lldpPeers = {},
       archivedPortAt = {}, inventorySources = [], inventoryPeerPorts = [], arpDiagnostics = {}, observedPaths = [],
-      multiMacPortSides = [], unconfirmedLldpCandidates = [], confirmationGaps = []}) {
+      multiMacPortSides = [], unconfirmedLldpCandidates = [], confirmationGaps = [], trafficComparison}) {
     const item = make('li');
     const provenance = key => archivedPortSides.includes(key) ? ' (по архиву)' :
       inventoryPortSides.includes(key) ? ' (по инвентарю)' : '';
@@ -308,6 +308,13 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       row.append(portPairEndpoint(a, nameA, path.portA), ' ↔ ', portPairEndpoint(b, nameB, path.portB));
       if (path.checkedAt) row.append(` · ${formatTime(path.checkedAt)}`);
       item.append(row);
+    }
+    if (trafficComparison) {
+      const rate = value => (value / 1000).toLocaleString('ru-RU', {maximumFractionDigits: 2});
+      item.append(make('small', `Сравнение трафика SNMP · общая часть интервалов ${Math.round(trafficComparison.overlapSeconds)} с`));
+      for (const [from, to, reading] of [[nameA, nameB, trafficComparison.aToB], [nameB, nameA, trafficComparison.bToA]]) {
+        item.append(make('small', `${from} → ${to} · TX ${rate(reading.txBps)} / RX ${rate(reading.rxBps)} кбит/с · разница ${reading.differencePercent.toLocaleString('ru-RU')}%`));
+      }
     }
     for (const [side, peers] of Object.entries(lldpPeers)) {
       const [observer, neighbor] = side === 'a' ? [nameA, nameB] : [nameB, nameA];

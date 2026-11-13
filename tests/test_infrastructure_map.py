@@ -8378,6 +8378,19 @@ def test_reciprocal_mac_path_shows_fresh_stp_evidence_without_confirming_cable(t
     assert graph["pendingPortPairs"][0]["stpPaths"] == proof["stpPaths"]
     confirmed, = summarize_topology(graph)["topologyAudit"]["currentPairs"]
     assert pending["stpBridgeConnections"] == [confirmed]
+    switch["ports"][0]["telemetry"] = {"checkedAt": stamp, "intervalSeconds": 300, "rxBps": 1900, "txBps": 1000}
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["nodes"][0] = switch
+    raw["nodes"][1]["ports"] = [{"name": "Gi1/22", "state": "up", "checkedAt": stamp,
+                                    "telemetry": {"checkedAt": stamp, "intervalSeconds": 300,
+                                                  "rxBps": 1000, "txBps": 2000}}]
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    comparison_graph = load_infrastructure_map(path, now, include_guest_attachments=True)
+    comparison, = summarize_topology(comparison_graph)["topologyAudit"]["pending"]
+    assert comparison["trafficComparison"]["overlapSeconds"] == 300
+    assert comparison["trafficComparison"]["aToB"] == {"txBps": 1000, "rxBps": 1000, "differencePercent": 0}
+    assert comparison["trafficComparison"]["bToA"]["differencePercent"] == 5
+    assert comparison_graph["pendingPortPairs"][0]["trafficComparison"] == comparison["trafficComparison"]
     upstream = summarize_topology(graph, node_id="root", port_name="GE21")["topologyAudit"]
     assert upstream["currentPairs"] == [confirmed] and upstream["pendingTotal"] == 0
     assert upstream["stpRelatedPending"] == [pending]

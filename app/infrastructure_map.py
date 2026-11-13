@@ -1720,6 +1720,27 @@ def _archived_router_peer(edge: dict) -> dict:
             **({"inventorySources": report["inventorySources"]} if "inventorySources" in report else {})}
 
 
+def _compare_port_traffic(ports: dict) -> dict:
+    if not all(side in ports for side in ("a", "b")):
+        return {}
+    a, b = (ports[side].get("telemetry", {}) for side in ("a", "b"))
+    if not all("rxBps" in sample and "txBps" in sample for sample in (a, b)):
+        return {}
+    a_end, b_end = (_time(sample["checkedAt"]) for sample in (a, b))
+    a_start = a_end - timedelta(seconds=a["intervalSeconds"])
+    b_start = b_end - timedelta(seconds=b["intervalSeconds"])
+    overlap = (min(a_end, b_end) - max(a_start, b_start)).total_seconds()
+    if overlap < 0.75 * max(a["intervalSeconds"], b["intervalSeconds"]):
+        return {}
+
+    def direction(tx: float, rx: float) -> dict:
+        return {"txBps": tx, "rxBps": rx,
+                "differencePercent": round(100 * abs(tx - rx) / max(tx, rx), 2) if tx or rx else 0}
+
+    return {"overlapSeconds": round(overlap, 2), "checkedAtA": a["checkedAt"], "checkedAtB": b["checkedAt"],
+            "aToB": direction(a["txBps"], b["rxBps"]), "bToA": direction(b["txBps"], a["rxBps"])}
+
+
 def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
     port_aliases = {
         (node["id"], port_label_key(alias)): port_label_key(port["name"])
@@ -1979,6 +2000,9 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
         for side, field in (("a", "portA"), ("b", "portB")):
             by_port[pair[side], port_key(pair[side], pair[field])].append(pair)
     for row in pending.values():
+        if any(path["source"] == RECIPROCAL_MAC_SOURCE for path in row["observedPaths"]):
+            if traffic := _compare_port_traffic(row.get("portObservations", {})):
+                row["trafficComparison"] = traffic
         if row.get("sharedPort") and not any(path["source"] == SHARED_LLDP_SOURCE for path in row["observedPaths"]):
             port = shared_lldp_ports.get((row["a"], port_key(row["a"], row["portA"])), {})
             name = row["nameB"].casefold()
@@ -3991,7 +4015,8 @@ def load_infrastructure_map(
                  },
                  **{key: row[key] for key in ("archivedPortSides", "archivedPortAt", "inventoryPortSides", "inventorySources",
                                              "inventoryPeerPorts", "lldpPeers", "multiMacPortSides",
-                                             "stpBridgeConnections", "stpBridgeMacObservations", "arpDiagnostics") if key in row}}
+                                             "stpBridgeConnections", "stpBridgeMacObservations", "arpDiagnostics",
+                                             "trafficComparison") if key in row}}
                 for row in pending[:64]
             ],
             lacpPartnerInterfaceGapTotal=len(lacp_gaps),
