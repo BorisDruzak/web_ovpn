@@ -2598,10 +2598,12 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime, *, endpoint_
                 **({"transport": transport} if transport else {}),
                 **({"dns": {"name": dns_name, "record": dns_record}} if dns_name else {}),
                 **({"localListener": True} if local else {}),
-                "passed": 0, "failed": 0, "unconfirmed": 0,
+                "passed": 0, "failed": 0, "unconfirmed": 0, "lastCheckedByOutcome": {},
             })
             count = {"reachable": "passed", "unreachable": "failed"}.get(check["state"], "unconfirmed")
             probe[count] += 1
+            latest = probe["lastCheckedByOutcome"]
+            latest[count] = max(latest.get(count, ""), checked_at)
             if count != "passed" and (reason := check.get("reason")):
                 issue = {"state": check["state"], "reason": reason}
                 if error_source := check.get("errorSource"):

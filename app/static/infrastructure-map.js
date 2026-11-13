@@ -2152,10 +2152,14 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           for (const probe of service.probeEndpoints ?? []) {
             const address = probe.target.includes(':') ? `[${probe.target}]` : probe.target;
             const count = probe.passed + probe.failed + probe.unconfirmed;
+            const latest = probe.lastCheckedByOutcome ?? {};
+            const withTime = (label, outcome) => latest[outcome] ? `${label} · ${formatTime(latest[outcome])}` : label;
             const states = probe.localListener ? ['Открыт локально'] : count === 1
-              ? [probe.passed ? 'Отвечает' : probe.failed ? 'Сбой' : 'Нет подтверждения']
-              : [probe.passed && `прошли: ${probe.passed}`, probe.failed && `сбои: ${probe.failed}`,
-                probe.unconfirmed && `без подтверждения: ${probe.unconfirmed}`];
+              ? [probe.passed ? withTime('Отвечает', 'passed') : probe.failed ? withTime('Сбой', 'failed')
+                : withTime('Нет подтверждения', 'unconfirmed')]
+              : [probe.passed && withTime(`прошли: ${probe.passed}`, 'passed'),
+                probe.failed && withTime(`сбои: ${probe.failed}`, 'failed'),
+                probe.unconfirmed && withTime(`без подтверждения: ${probe.unconfirmed}`, 'unconfirmed')];
             row.append(make('small', [
               [probe.method, probe.localListener ? '' : probe.transport].filter(Boolean).join(' '),
               `${address}${probe.port ? ':' + probe.port : ''}${probe.path ?? ''}`, ...states,

@@ -5085,7 +5085,7 @@ def test_transit_port_requires_direct_route_running_ethernet_and_neighbor_arp(tm
     row, = port["services"]
     assert port["port"] == "ether8" and row["basis"] == ["router_arp"]
     assert row["probeEndpoints"] == [{"target": "192.0.2.2", "port": None, "method": "ICMP",
-                                      "passed": 1, "failed": 0, "unconfirmed": 0}]
+                                      "passed": 1, "failed": 0, "unconfirmed": 0, "lastCheckedByOutcome": {"passed": at}}]
     assert not attachment("transit:transit", now + timedelta(hours=1))["servicePaths"]
     network["arp"][0]["interface"] = "bridge1"
     assert build()[0]["probeTargetIP"] is None and build()[1] == []
@@ -5357,7 +5357,8 @@ def test_configured_asset_fdb_path_is_scoped_and_requires_a_unique_live_port(mon
     check, = port["services"]
     assert check["id"] == "gateway" and check["basis"] == ["switch_mac"]
     assert check["probeEndpoints"] == [{"target": address, "port": None, "method": "ICMP · ARP + FDB",
-                                       "passed": 1, "failed": 0, "unconfirmed": 0}]
+                                       "passed": 1, "failed": 0, "unconfirmed": 0,
+                                       "lastCheckedByOutcome": {"passed": observation["checkedAt"]}}]
     expired = load_infrastructure_map(snapshot, now + timedelta(hours=1))
     assert not summarize_guest_attachment(expired, "gateway")["attachment"].get("servicePaths")
     stale, = load_infrastructure_map(snapshot, now + timedelta(hours=1))["links"]
@@ -6774,11 +6775,12 @@ def test_attachment_includes_controller_path_without_attributing_it_to_the_serve
 
 def test_attachment_view_includes_physical_service_hosts_and_distinguishes_port_evidence(tmp_path, monkeypatch):
     stamp = datetime.now(timezone.utc).isoformat()
+    earlier = (datetime.fromisoformat(stamp) - timedelta(seconds=10)).isoformat()
     expired = (datetime.fromisoformat(stamp) - timedelta(minutes=8)).isoformat()
     checks = [
         {"method": "TCP", "source": "UI_VPN", "state": state, "target": "192.0.2.10",
          "port": port, "checkedAt": checked, "required": True}
-        for state, port, checked in (("reachable", 8000, stamp), ("unreachable", 8000, stamp), ("reachable", 22, expired))
+        for state, port, checked in (("reachable", 8000, stamp), ("unreachable", 8000, earlier), ("reachable", 22, expired))
     ]
     path = tmp_path / "map.json"
     monkeypatch.setenv("INFRASTRUCTURE_MAP_SNAPSHOT_PATH", str(path))
@@ -6859,6 +6861,7 @@ def test_attachment_view_includes_physical_service_hosts_and_distinguishes_port_
     assert service_port["services"][0]["probeEndpoints"] == [{
         "method": "TCP", "target": "192.0.2.10", "port": 8000,
         "passed": 1, "failed": 1, "unconfirmed": 0,
+        "lastCheckedByOutcome": {"passed": stamp, "failed": earlier},
     }]
     extra_ids = [f"web-{index:02d}" for index in range(69)]
     extra_nodes = [{**raw["nodes"][0], "id": key} for key in extra_ids]
