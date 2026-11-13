@@ -156,6 +156,15 @@
             {% elif device.coverage.stp.reason == 'no_participating_stp_ports' %}
             <br>STP · опрос не обнаружил портов, участвующих в STP
             {% endif %}
+            {% set detector = device.coverage.loopback_detection %}
+            {% if detector is defined %}
+            <br>Детектор D-Link · {{ {
+              'disabled': 'выключен', 'port_mode': 'режим портов', 'stale': 'данные устарели',
+              'vlan_mode': 'VLAN ' ~ (detector.enabled_vlans | default([]) | join(', '))
+            }.get(detector.status, 'нет данных') }}
+            {% if detector.truncated %} · список ограничен{% endif %}
+            {% if detector.detected_vlans %}<br>Обнаружена петля · VLAN {{ detector.detected_vlans | join(', ') }}{% endif %}
+            {% endif %}
             {% set broadcast = device.coverage.broadcast %}
             {% if broadcast is defined %}
             <br>Широковещание · {{ {

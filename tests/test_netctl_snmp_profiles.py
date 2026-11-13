@@ -1244,6 +1244,29 @@ def test_snr_malformed_optional_stp_is_a_sanitized_nonblocking_parse_error() -> 
     assert "untrusted-payload" not in repr(snapshot.to_dict()["capabilities"])
 
 
+@pytest.mark.parametrize("port_bitmap,detected", [(None, []), (b"\x80", [4]), (b"\x00", [])])
+def test_dgs_loopback_detection_reads_vlan_scope_and_current_loops(port_bitmap, detected):
+    from netctl.snmp.dgs_loop import DGS_LOOP_CAPABILITY
+    from netctl.snmp.oids import DGS_LBD_ENABLED_VLANS, DGS_LBD_MODE, DGS_LBD_STATE, DGS_LBD_VLAN_PORTS
+
+    transport = _dgs_fixture_transport()
+    for oid, value, kind in (
+        (DGS_LBD_STATE, 1, "integer"),
+        (DGS_LBD_MODE, 2, "integer"),
+        (DGS_LBD_ENABLED_VLANS, b"1,4-6", "octet_string"),
+    ):
+        transport.results[oid] = CapabilityResult("", SnmpOutcome.SUCCESS_WITH_ROWS, (SnmpVarBind(oid, kind, value),))
+    if port_bitmap is not None:
+        transport.results[DGS_LBD_VLAN_PORTS] = CapabilityResult("", SnmpOutcome.SUCCESS_WITH_ROWS, (
+            SnmpVarBind(DGS_LBD_VLAN_PORTS + (4,), "octet_string", port_bitmap),
+        ))
+    snapshot = asyncio.run(collect_switch_snapshot({}, transport))
+    detector, = (item for item in snapshot.capabilities if item.capability == DGS_LOOP_CAPABILITY)
+    assert detector.details == {
+        "status": "vlan_mode", "enabled_vlans": [1, 4, 5, 6], "detected_vlans": detected, "truncated": False,
+    }
+
+
 def test_dgs_fixture_selects_profile_and_normalizes_paginated_qbridge_fdb() -> None:
     snapshot = asyncio.run(collect_switch_snapshot({}, _dgs_fixture_transport()))
 

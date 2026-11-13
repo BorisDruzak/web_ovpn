@@ -7,6 +7,7 @@ from functools import partial
 from typing import Protocol
 
 from .counters import parse_broadcast_column, parse_counter_samples
+from .dgs_loop import read_dgs_loop_detection
 from .fdb import QBridgeIndexMismatch, parse_legacy_fdb, parse_qbridge_fdb_with_rejections
 from .interfaces import parse_bridge_port_map, parse_interfaces
 from .lldp import parse_lldp_neighbors
@@ -531,6 +532,8 @@ async def collect_switch_snapshot(
                 )
                 capabilities[-len(vlan_results) :] = vlan_results
 
+    if profile.profile_id == "dgs":
+        capabilities.append(await read_dgs_loop_detection(transport))
     collect_stp = profile.profile_id in {"snr", "css326"}
     if profile.profile_id in {"dgs", "tplink"}:
         port_states = await transport.walk(DOT1D_STP_PORT_STATE, capability="stp_port_state")

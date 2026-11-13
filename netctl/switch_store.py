@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from ipaddress import IPv4Address
 from typing import Any, Protocol
 
+from .snmp.dgs_loop import DGS_LOOP_CAPABILITY, MAX_REPORTED_VLANS
 from .snmp.models import (
     CapabilityResult,
     SwitchCounterSample,
@@ -52,6 +53,7 @@ _OPTIONAL_CAPABILITIES = frozenset(
         "stp_root_cost",
         "stp_root_port",
         "stp_port_state",
+        DGS_LOOP_CAPABILITY,
         "lldp_remote",
         "lldp_remote_chassis_id_subtype",
         "lldp_remote_port_id_subtype",
@@ -522,6 +524,22 @@ def _valid_capability(capability: CapabilityResult) -> bool:
         and type(capability.error_message) is str
         and type(capability.details) is dict
     )
+    if valid and capability.capability == DGS_LOOP_CAPABILITY:
+        details = capability.details
+        if capability.outcome is not SnmpOutcome.SUCCESS_WITH_ROWS:
+            return not details
+        if details.get("status") in ("disabled", "port_mode"):
+            return set(details) == {"status"}
+        return (
+            set(details) == {"status", "enabled_vlans", "detected_vlans", "truncated"}
+            and details["status"] == "vlan_mode"
+            and type(details["truncated"]) is bool
+            and all(
+                type(details[key]) is list and len(details[key]) <= MAX_REPORTED_VLANS
+                and all(type(vlan) is int and 1 <= vlan <= 4094 for vlan in details[key])
+                for key in ("enabled_vlans", "detected_vlans")
+            )
+        )
     if not valid or capability.capability != _QBRIDGE_REJECTED_ROWS_CAPABILITY:
         return valid
     rejected_row_count = capability.details.get("rejected_row_count")
@@ -1109,14 +1127,14 @@ def _upsert_capabilities(
             INSERT INTO switch_capabilities (
                 source_id, capability, outcome, rows_seen, profile_fingerprint,
                 checked_at, expires_at, details_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, '{}')
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(source_id, capability) DO UPDATE SET
                 outcome = excluded.outcome,
                 rows_seen = excluded.rows_seen,
                 profile_fingerprint = excluded.profile_fingerprint,
                 checked_at = excluded.checked_at,
                 expires_at = excluded.expires_at,
-                details_json = '{}'
+                details_json = excluded.details_json
             """,
             (
                 source_id,
@@ -1126,6 +1144,7 @@ def _upsert_capabilities(
                 snapshot.profile_fingerprint,
                 checked_at,
                 expires_at,
+                _json(capability.details) if capability.capability == DGS_LOOP_CAPABILITY else "{}",
             ),
         )
 

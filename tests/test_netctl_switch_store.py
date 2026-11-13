@@ -820,6 +820,29 @@ def test_migration_7_creates_typed_current_switch_stp_state(
     ]
 
 
+@pytest.mark.parametrize("detected,expected", [([], "insufficient_data"), ([1], "suspected_loop")])
+def test_saved_dgs_detector_is_evidence_only_for_covered_vlans(switch_conn, detected, expected):
+    from dataclasses import replace
+    from datetime import UTC, datetime
+    from netctl.network_loop_diagnostics import read_loop_diagnostics
+    from netctl.snmp.dgs_loop import DGS_LOOP_CAPABILITY
+    from netctl.switch_store import collect_and_save_switch
+
+    source = _source(switch_conn, "dgs_test")
+    switch_conn.execute("UPDATE network_sources SET enabled = 1 WHERE id = ?", (source["id"],))
+    switch_conn.commit()
+    snapshot = _snapshot((_entry("02:00:00:00:00:01", 1),))
+    details = {"status": "vlan_mode", "enabled_vlans": [1], "detected_vlans": detected, "truncated": False}
+    detector = CapabilityResult(DGS_LOOP_CAPABILITY, SnmpOutcome.SUCCESS_WITH_ROWS, details=details)
+    snapshot = replace(snapshot, profile_id="dgs", capabilities=(*snapshot.capabilities, detector))
+    collect_and_save_switch(switch_conn, source, _FakeDriver(snapshot), "2026-11-13T05:40:00Z")
+    result = read_loop_diagnostics(switch_conn, now=datetime(2026, 11, 13, 5, 45, tzinfo=UTC))
+    assert result["status"] == expected
+    assert result["sources"][0]["coverage"]["loopback_detection"] == {
+        "last_observed_at": "2026-11-13T05:40:00Z", **details,
+    }
+
+
 def test_successful_stp_replaces_current_normalized_state(
     switch_conn: sqlite3.Connection,
 ) -> None:

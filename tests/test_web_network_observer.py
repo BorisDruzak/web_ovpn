@@ -3046,6 +3046,8 @@ def test_loop_panel_shows_port_broadcast_as_context(tmp_path, monkeypatch, reaso
     device = {"source": "switch-1", "status": "mac_flapping",
               "coverage": {"fdb": {"status": "insufficient", "reason": reason},
                            "stp": {"status": "insufficient", "reason": "failed_stp_poll"},
+                           "loopback_detection": {"status": "vlan_mode", "enabled_vlans": [1],
+                                                  "detected_vlans": [1], "truncated": False},
                            "broadcast": {"status": "recent", "sampled_ports": 2, "valid_intervals": 1}},
               "unclassified_mac_movements": [movement],
               "evidence": [{"ports": ["ether1", "ether2"], "vlan_id": 20, "mac": "00:11:22:33:44:55",
@@ -3057,6 +3059,7 @@ def test_loop_panel_shows_port_broadcast_as_context(tmp_path, monkeypatch, reaso
     report = api.json()["data"]["result"]["sources"][0]
     assert report["coverage"]["fdb"]["reason"] == reason
     assert report["coverage"]["stp"]["reason"] == "failed_stp_poll"
+    assert report["coverage"]["loopback_detection"]["enabled_vlans"] == [1]
     assert report["evidence"][0]["broadcast_intervals"] == [interval]
     assert report["unclassified_mac_movements"] == [movement]
     csrf = login(client)
@@ -3068,6 +3071,7 @@ def test_loop_panel_shows_port_broadcast_as_context(tmp_path, monkeypatch, reaso
     assert "Обнаружено повторное перемещение MAC" in panel.text
     assert f"FDB · {label}" in panel.text
     assert "STP · новый опрос не подтвердил сохранённое состояние" in panel.text
+    assert "Детектор D-Link · VLAN 1" in panel.text and "Обнаружена петля · VLAN 1" in panel.text
     assert "Перемещения MAC без VLAN · 1" in panel.text
     assert "ether3 ↔ ether4" in panel.text
 

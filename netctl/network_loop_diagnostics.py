@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
 
+from .snmp.dgs_loop import DGS_LOOP_CAPABILITY
 from .switch_telemetry import broadcast_counters_unreliable, derive_broadcast_rates
 
 WINDOW = timedelta(hours=1)
@@ -348,7 +350,24 @@ def _read_source(
         conn, source_id, since, until, lower, upper, findings, has_history=has_broadcast_history,
         unreliable=broadcast_counters_unreliable(device["profile_id"], device["sys_descr"]),
     )
-    if findings:
+    detector = None
+    if device["profile_id"] == "dgs":
+        observation = conn.execute(
+            "SELECT outcome, checked_at, details_json FROM switch_capabilities "
+            "WHERE source_id = ? AND capability = ?",
+            (source_id, DGS_LOOP_CAPABILITY),
+        ).fetchone()
+        if observation is not None:
+            observed_at = _timestamp(observation["checked_at"])
+            detector = {"last_observed_at": observation["checked_at"], "status": "unavailable"}
+            if observed_at is not None and observed_at < since:
+                detector["status"] = "stale"
+            elif _in_window(observed_at, since, until) and observation["outcome"] == "success_with_rows":
+                detector.update(json.loads(observation["details_json"]))
+            coverage["loopback_detection"] = detector
+    if detector and detector.get("detected_vlans"):
+        status = "suspected_loop"
+    elif findings:
         status = "suspected_loop" if findings[0]["stp_events"] else "mac_flapping"
     elif fdb_status == stp_status == "recent" and not truncated:
         status = "no_evidence"
