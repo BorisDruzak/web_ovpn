@@ -308,6 +308,7 @@ def test_route_report_keeps_wan_and_ipsec_failure_evidence():
         }, {
             "id": "tunnel", "status": "unreachable", "ipsec": {
                 "status": "inactive", "local_sa_address_status": "missing",
+                "sa_src_address": "203.0.113.10", "sa_dst_address": "203.0.113.20",
                 "phase2_count": 0, "local_subnet": "192.0.2.0/24", "remote_subnet": "198.51.100.0/24",
                 "peer_sa_counters": {
                     "outgoing": {"associations": 2, "bytes": 0, "ignored": "raw output"},
@@ -337,6 +338,7 @@ def test_route_report_keeps_wan_and_ipsec_failure_evidence():
     }
     assert tunnel["ipsec"] == {
         "status": "inactive", "phase2_count": 0, "local_sa_address_status": "missing",
+        "sa_src_address": "203.0.113.10", "sa_dst_address": "203.0.113.20",
         "local_subnet": "192.0.2.0/24", "remote_subnet": "198.51.100.0/24",
         "peer_sa_counters": {
             "outgoing": {"associations": 2, "bytes": 0},

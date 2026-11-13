@@ -127,6 +127,9 @@
           {% if row.ipsec %}
           <br>IPsec {{ {'established': 'установлен', 'inactive': 'не активен', 'no_matching_policy': 'политика не найдена', 'ambiguous_policy': 'несколько политик'}.get(row.ipsec.status, 'нет данных') }}
           {% if row.ipsec.phase2_count is defined and row.ipsec.phase2_count is not none %} · Phase 2: {{ row.ipsec.phase2_count }}{% endif %}
+          {% if row.ipsec.sa_src_address or row.ipsec.sa_dst_address %}
+          <br>Адреса SA {{ row.ipsec.sa_src_address or '—' }} → {{ row.ipsec.sa_dst_address or '—' }}
+          {% endif %}
           {% if row.ipsec.local_sa_address_status == 'missing' %}<br>Локальный IPv4 для SA не назначен{% endif %}
           {% if row.ipsec.local_sa_address_status == 'unavailable' %}<br>Назначение локального IPv4 для SA не проверено{% endif %}
           {% if row.ipsec.reason %} · {{ {

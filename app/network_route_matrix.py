@@ -56,6 +56,15 @@ def _ipsec_evidence(snapshot: dict, probe: RouteProbe) -> dict:
     if policy.get("local_sa_address_status") in {"assigned", "missing", "unavailable"}:
         observed["local_sa_address_status"] = policy["local_sa_address_status"]
     local_peer, remote_peer = policy.get("sa_src_address"), policy.get("sa_dst_address")
+    for field, address in (("sa_src_address", local_peer), ("sa_dst_address", remote_peer)):
+        if not isinstance(address, str):
+            continue
+        try:
+            peer = ipaddress.ip_address(address)
+        except ValueError:
+            continue
+        if not peer.is_unspecified and getattr(peer, "scope_id", None) is None:
+            observed[field] = str(peer)
     if not local_peer or not remote_peer or local_peer == remote_peer or "0.0.0.0" in (local_peer, remote_peer):
         return observed
     counters = {}

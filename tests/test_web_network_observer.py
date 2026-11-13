@@ -2729,6 +2729,7 @@ def test_route_ipsec_phase_and_unavailable_reason_in_history_and_ui(
         return {"sources": [{"source": "central-router", "status": "warn", "policies": [{
             "src_address": "198.51.100.0/24", "dst_address": "192.0.2.0/24", "action": "encrypt",
             "established": False, "ph2_count": 0, "local_sa_address_status": "missing",
+            "sa_src_address": "203.0.113.10", "sa_dst_address": "203.0.113.20",
         }]}]}
 
     monkeypatch.setattr(network_route_matrix, "run_netctl", netctl)
@@ -2742,6 +2743,8 @@ def test_route_ipsec_phase_and_unavailable_reason_in_history_and_ui(
     central, archive = stored_run["result"]["probes"]
     assert central["ipsec"]["phase2_count"] == 0
     assert central["ipsec"]["local_sa_address_status"] == "missing"
+    assert central["ipsec"]["sa_src_address"] == "203.0.113.10"
+    assert central["ipsec"]["sa_dst_address"] == "203.0.113.20"
     assert archive["ipsec"]["reason"] == "source_error"
 
     from app import main
@@ -2755,6 +2758,7 @@ def test_route_ipsec_phase_and_unavailable_reason_in_history_and_ui(
     assert f"<summary>Archive · {label} · По расписанию" in page.text
     assert "IPsec не активен" in page.text and "Phase 2: 0" in page.text
     assert "Локальный IPv4 для SA не назначен" in page.text
+    assert "Адреса SA 203.0.113.10 → 203.0.113.20" in page.text
     assert "источник вернул ошибку опроса" in page.text
 
 

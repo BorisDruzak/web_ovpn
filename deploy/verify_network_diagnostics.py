@@ -41,7 +41,7 @@ ROUTE_EVIDENCE_FIELDS = {
     "rtt_ms": ("min", "avg", "max"),
     "rtt_variation": ("mean_abs_delta_ms", "pairs"),
     "ipsec": ("status", "reason", "phase2_count", "local_sa_address_status",
-              "local_subnet", "remote_subnet", "matching_policies"),
+              "local_subnet", "remote_subnet", "sa_src_address", "sa_dst_address", "matching_policies"),
 }
 INTERFACE_COUNTERS = ("in_errors_delta", "out_errors_delta", "in_discards_delta", "out_discards_delta")
 MCP_INTERFACE_LIMIT = 300
