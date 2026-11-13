@@ -2200,8 +2200,10 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
         for side, field in (("a", "portA"), ("b", "portB")):
             by_port[pair[side], port_key(pair[side], pair[field])].append(pair)
     for row in pending.values():
+        ports = row.get("portObservations", {})
+        row["linkHealth"] = _compare_link_ports(ports) or _link_ports_down(ports) or {"state": "unconfirmed"}
         if any(path["source"] == RECIPROCAL_MAC_SOURCE for path in row["observedPaths"]):
-            if traffic := _compare_port_traffic(row.get("portObservations", {})):
+            if traffic := _compare_port_traffic(ports):
                 row["trafficComparison"] = traffic
         if row.get("sharedPort") and not any(path["source"] == SHARED_LLDP_SOURCE for path in row["observedPaths"]):
             port = shared_lldp_ports.get((row["a"], port_key(row["a"], row["portA"])), {})
@@ -4393,6 +4395,7 @@ def load_infrastructure_map(
                  },
                  "identifiedPeerSides": row["identifiedPeerSides"],
                  "confirmationGaps": row["confirmationGaps"],
+                 "linkHealth": row["linkHealth"],
                  "stpPaths": list({
                      path["deviceId"]: path
                      for reading in row["observedPaths"] for path in reading.get("stpPaths", [])

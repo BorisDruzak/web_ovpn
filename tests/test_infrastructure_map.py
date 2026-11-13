@@ -8966,6 +8966,8 @@ def test_reciprocal_mac_path_shows_fresh_stp_evidence_without_confirming_cable(t
     comparison_graph = load_infrastructure_map(path, now, include_guest_attachments=True)
     comparison, = summarize_topology(comparison_graph)["topologyAudit"]["pending"]
     assert comparison["trafficComparison"]["overlapSeconds"] == 300
+    assert comparison["linkHealth"] == {"state": "both_up", "checkedAt": stamp}
+    assert comparison_graph["pendingPortPairs"][0]["linkHealth"] == comparison["linkHealth"]
     assert comparison["trafficComparison"]["aToB"] == {"txBps": 1000, "rxBps": 1000, "differencePercent": 0}
     assert comparison["trafficComparison"]["bToA"]["differencePercent"] == 5
     assert comparison_graph["pendingPortPairs"][0]["trafficComparison"] == comparison["trafficComparison"]

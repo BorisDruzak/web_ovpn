@@ -219,11 +219,11 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     port_down: 'Обнаружен недоступный порт',
     unconfirmed: 'Нет сопоставимых данных по двум портам',
   };
-  function appendLinkComparison(row, health) {
+  function appendLinkComparison(row, health, prefix = '') {
     const label = linkComparisonLabels[health?.state];
     if (!label) return;
     const time = health.checkedAt ? ' · ' + formatTime(health.checkedAt) : '';
-    row.append(make('small', label + time));
+    row.append(make('small', prefix + label + time));
   }
   function confirmedPortPairRow({a, b, nameA, nameB, portA, portB, evidence, portStates = {}, linkHealth}) {
     const row = make('li');
@@ -308,7 +308,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       observedSourceTimes = {}, identifiedPeerSides = [], archivedPortSides = [], inventoryPortSides = [],
       portObservations = {}, stpPaths = [], stpBridgeConnections = [], stpBridgeMacObservations = [], lldpPeers = {},
       archivedPortAt = {}, inventorySources = [], inventoryPeerPorts = [], arpDiagnostics = {}, observedPaths = [],
-      multiMacPortSides = [], unconfirmedLldpCandidates = [], confirmationGaps = [], trafficComparison, stoppedEndpoints = {}}) {
+      multiMacPortSides = [], unconfirmedLldpCandidates = [], confirmationGaps = [], trafficComparison, linkHealth, stoppedEndpoints = {}}) {
     const item = make('li');
     const provenance = key => archivedPortSides.includes(key) ? ' (по архиву)' :
       inventoryPortSides.includes(key) ? ' (по инвентарю)' : '';
@@ -328,6 +328,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       item.append(make('small', `${side === 'a' ? nameA : nameB} выключен · Redfish · ${formatTime(evidence.checkedAt)}`));
     }
     if (gaps.length) item.append(make('small', gaps.join(' · ')));
+    appendLinkComparison(item, linkHealth, 'Замеры портов · ');
     for (const [side, checkedAt] of Object.entries(archivedPortAt)) {
       if (checkedAt) item.append(make('small', `Архив · ${side === 'a' ? nameA : nameB} · ${formatTime(checkedAt)}`));
     }
