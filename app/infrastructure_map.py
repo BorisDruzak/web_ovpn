@@ -2223,7 +2223,13 @@ def _management_service_paths(service: dict, host: str, management: dict, observ
                           "management": True, "hypervisorId": host, "switchId": switch, "physicalPair": pair})
         elif attachment := observed_ports.get((host, check["target"])):
             observation, = attachment.values()
-            if check["port"] is not None or (check["method"] == "ICMP" and observation["source"] == "MikroTik · ARP"):
+            asset_icmp = (service["kind"] != "Сервис" and check["method"] == "ICMP · ARP + FDB"
+                          and observation["source"] == "netctl FDB"
+                          and check.get("identityCheckedAt") == observation["checkedAt"])
+            service_probe = service["kind"] == "Сервис" and (
+                check["port"] is not None or (check["method"] == "ICMP" and observation["source"] == "MikroTik · ARP")
+            )
+            if asset_icmp or service_probe:
                 paths.append({**_attachment_probe_location(check), "addressCheckedAt": observation["checkedAt"], **attachment})
     return paths
 
@@ -2281,6 +2287,9 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime) -> dict:
                 service_paths[service] = paths
         elif paths := _transit_service_paths(nodes[service], hosts, observed_ports):
             service_paths[service] = paths
+    for node_id in sorted({host for host, _ in observed_ports}):
+        if paths := _management_service_paths(nodes[node_id], node_id, {}, observed_ports):
+            service_paths[node_id] = paths
     port_services = defaultdict(lambda: defaultdict(lambda: defaultdict(set)))
     port_names = {}
     path_checks = defaultdict(set)
@@ -2331,9 +2340,10 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime) -> dict:
         for check in _attachment_service_checks(node):
             target, number, method, path, checked_at = check_key(check)
             local = check.get("localListener") is True
-            if (not target or (number is None and not (method == "ICMP" and "router_arp" in bases))
+            selected_path = check_key(check) in selected
+            if (not target or (number is None and not selected_path)
                     or not method or not checked_at or check["stale"] or check.get("skipped")
-                    or check["source"] != "UI_VPN" or not ((physical and not local) or check_key(check) in selected)):
+                    or check["source"] != "UI_VPN" or not ((physical and not local) or selected_path)):
                 continue
             transport = "UDP" if local else check.get("dns", {}).get("transport", "")
             probe = probes.setdefault((target, number or 0, method, transport, path), {
@@ -2382,6 +2392,11 @@ def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
     elif anchor and anchor["kind"] in NETWORK_KINDS[:2]:
         attachments = _map_attachments(nodes, links, datetime.now(timezone.utc))
         detail["servicePorts"] = attachments["servicePorts"].get(node_id, [])
+        if paths := attachments["servicePaths"].get(node_id):
+            detail["servicePaths"] = paths
+    elif anchor and not anchor["guest"]:
+        if paths := _management_service_paths(anchor, node_id, {}, _observed_management_ports(links)):
+            detail["servicePaths"] = paths
     return {**metadata, "attachment": {"node": _attachment_node(anchor) if anchor else None,
                                        "guestTotal": len(guest_ids), "guests": list(guests.values()),
                                        "physicalHostTotal": len(host_ids),

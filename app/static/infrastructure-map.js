@@ -1960,7 +1960,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           }
           services.append(row);
         }
-        panel.append(make('summary', `Сервисы на порту (${serviceGroup.total})`), services);
+        const title = serviceGroup.services.some(service => service.kind !== 'Сервис') ? 'Узлы и сервисы на порту' : 'Сервисы на порту';
+        panel.append(make('summary', `${title} (${serviceGroup.total})`), services);
         if (serviceGroup.services.length < serviceGroup.total) {
           panel.append(make('small', `Показано ${serviceGroup.services.length} из ${serviceGroup.total}`));
         }

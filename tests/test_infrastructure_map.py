@@ -5182,7 +5182,7 @@ def test_active_router_arp_supersedes_only_its_own_conflicting_cache(monkeypatch
 
 def test_configured_asset_fdb_path_is_scoped_and_requires_a_unique_live_port(monkeypatch, tmp_path):
     from app.infrastructure_collect import build_graph
-    from app.infrastructure_map import load_infrastructure_map
+    from app.infrastructure_map import load_infrastructure_map, summarize_guest_attachment
     from app.infrastructure_service_probes import apply_service_probes
 
     now = datetime.now(timezone.utc)
@@ -5227,6 +5227,17 @@ def test_configured_asset_fdb_path_is_scoped_and_requires_a_unique_live_port(mon
     assert evidence["portStates"]["a"]["telemetry"]["rxErrors"] == 3
     assert evidence["learnedEndpoint"] == learned
     assert "pairEvidence" not in evidence
+    host = summarize_guest_attachment(public, "gateway")["attachment"]
+    observation, = host["servicePaths"]
+    assert observation["switchAttachment"]["port"] == "Gi1/0/23"
+    switch = summarize_guest_attachment(public, "observer:access")["attachment"]
+    port, = switch["servicePorts"]
+    check, = port["services"]
+    assert check["id"] == "gateway" and check["basis"] == ["switch_mac"]
+    assert check["probeEndpoints"] == [{"target": address, "port": None, "method": "ICMP · ARP + FDB",
+                                       "passed": 1, "failed": 0, "unconfirmed": 0}]
+    expired = load_infrastructure_map(snapshot, now + timedelta(hours=1))
+    assert not summarize_guest_attachment(expired, "gateway")["attachment"].get("servicePaths")
     stale, = load_infrastructure_map(snapshot, now + timedelta(hours=1))["links"]
     assert "learnedEndpoint" not in stale["portEvidence"][0]
     assert links(now + timedelta(hours=1)) == []
