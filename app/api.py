@@ -1065,7 +1065,9 @@ def api_network_infrastructure(
     if view == "agents":
         graph = load_infrastructure_agent_audit(path, node_id=node_id)
     else:
-        graph = load_infrastructure_map(path, db=db, include_service_ports=include_service_ports and view is None)
+        graph = load_infrastructure_map(path, db=db, include_service_ports=(
+            view is None and include_service_ports or view == "attachment" and node_id is not None
+        ))
         if view == "services":
             graph = summarize_services(graph)
         elif view == "topology":

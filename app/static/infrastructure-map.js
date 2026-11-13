@@ -1962,7 +1962,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const bases = {host_mac: 'MAC устройства', host_lacp: 'LACP хоста', host_management: 'Интерфейс управления',
           guest_gateway: 'Вход через шлюз', guest_local_udp: 'Привязка к интерфейсу ВМ',
           router_arp: 'Подключённый маршрут и ARP', router_mac: 'ARP и FDB маршрутизатора',
-          switch_mac: 'Адрес проверен по ARP и FDB', lldp_peer: 'Сосед по LLDP'};
+          switch_mac: 'Адрес проверен по ARP и FDB', lldp_peer: 'Сосед по LLDP',
+          endpoint_mac: 'MAC станции подтверждён на порту'};
         for (const service of serviceGroup.services) {
           const row = make('li');
           const open = make('button', service.name);

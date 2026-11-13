@@ -108,8 +108,8 @@ def test_infrastructure_uses_fresh_agent_presence_with_stale_baseline(tmp_path, 
     key = host()['device_key']
     node = {'id': 'workstation', 'name': 'Workstation', 'kind': 'Рабочая станция', 'endpointKey': key}
     path = tmp_path / 'map.json'
-    def write(*nodes):
-        path.write_text(json.dumps({'schema': 1, 'snapshotAt': now.isoformat(), 'nodes': nodes}), encoding='utf-8')
+    def write(*nodes, links=()):
+        path.write_text(json.dumps({'schema': 1, 'snapshotAt': now.isoformat(), 'nodes': nodes, 'links': links}), encoding='utf-8')
 
     write(node)
     with get_sessionmaker()() as db:
@@ -135,6 +135,29 @@ def test_infrastructure_uses_fresh_agent_presence_with_stale_baseline(tmp_path, 
         assert read()['mapStatus'] == 'ok'
         assert read()['reachability']['source'] == 'Endpoint Platform'
         assert read()['serviceChecks'][0]['checkedAt'] == now.isoformat()
+        endpoint = {'deviceId': node['id'], 'mac': key.split(':', 1)[1].lower()}
+        port = {'name': 'Port7', 'state': 'up', 'checkedAt': (now - timedelta(minutes=1)).isoformat(),
+                'linkCheck': {'state': 'up', 'checkedAt': now.isoformat(), 'endpointMac': endpoint}}
+        switch = {'id': 'switch', 'name': 'Switch', 'kind': 'Коммутатор', 'ports': [port]}
+        pair = {'a': 'Port7', 'b': 'Ethernet', 'source': 'GitHub', 'confirmed': True}
+        link = {'a': switch['id'], 'b': node['id'], 'kind': 'Сетевое соединение', 'confirmed': True,
+                'portEvidence': [pair]}
+        write(node, switch, links=[link])
+        graph = load_infrastructure_map(path, now, db=db, include_service_ports=True)
+        entry, = graph['servicePorts']['switch'][0]['services']
+        assert entry['basis'] == ['endpoint_mac']
+        assert entry['linkChecks'] == [{'method': 'Агент на связи', 'source': 'Endpoint Platform',
+                                       'state': 'reachable', 'checkedAt': now.isoformat()}]
+        stale_graph = load_infrastructure_map(path, now + timedelta(minutes=11), db=db, include_service_ports=True)
+        assert stale_graph['servicePorts'] == {}
+        endpoint['mac'] = '02:00:00:00:00:22'
+        write(node, switch, links=[link])
+        assert load_infrastructure_map(path, now, db=db, include_service_ports=True)['servicePorts'] == {}
+        endpoint['mac'] = key.split(':', 1)[1].lower()
+        port['linkCheck']['state'] = 'down'
+        write(node, switch, links=[link])
+        assert load_infrastructure_map(path, now, db=db, include_service_ports=True)['servicePorts'] == {}
+        write(node)
         assert read(now + timedelta(minutes=11))['mapStatus'] == 'unknown'
         write(node, {**node, 'id': 'other'})
         assert {row['mapStatus'] for row in load_infrastructure_map(path, now, db=db)['nodes']} == {'unknown'}

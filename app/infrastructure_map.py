@@ -2277,7 +2277,7 @@ def _physical_service_port_evidence(nodes: dict, links: list[dict]) -> dict:
     return evidence
 
 
-def _map_attachments(nodes: dict, links: list[dict], now: datetime) -> dict:
+def _map_attachments(nodes: dict, links: list[dict], now: datetime, *, endpoint_keys: dict[str, str] | None = None) -> dict:
     guests = _guest_attachments(nodes, links, [key for key, node in nodes.items() if node["guest"]], now)
     service_hosts = defaultdict(set)
     service_guests = defaultdict(dict)
@@ -2306,11 +2306,13 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime) -> dict:
     port_services = defaultdict(lambda: defaultdict(lambda: defaultdict(set)))
     port_names = {}
     path_checks = defaultdict(set)
+    link_methods = {"Точка доступа": ("MAC ping · L2",), "Рабочая станция": ("Агент на связи",)}
     link_checks = {
         key: [{field: check[field] for field in ("method", "source", "state", "checkedAt")}
-              for check in node["serviceChecks"] if check["method"] == "MAC ping · L2"
+              for check in node["serviceChecks"] if check["method"] in link_methods[node["kind"]]
+              and (check["method"] != "Агент на связи" or check["source"] == "Endpoint Platform")
               and check["checkedAt"] and not check["stale"]]
-        for key, node in nodes.items() if node["kind"] == "Точка доступа"
+        for key, node in nodes.items() if node["kind"] in link_methods
     }
 
     def check_key(check):
@@ -2332,8 +2334,16 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime) -> dict:
                 continue
             for report in edge["portEvidence"]:
                 if (report.get("pairEvidence") == "current" and report["source"] == "LLDP UI_VPN"
-                        and report[side] and report[peer]):
+                        and nodes[device]["kind"] == "Точка доступа" and report[side] and report[peer]):
                     record(switch, report[side], device, "lldp_peer")
+                if report.get("pairEvidence") not in ("current", "verified_inventory") or not endpoint_keys:
+                    continue
+                port_state = report.get("portStates", {}).get(side, {})
+                endpoint = port_state.get("endpointMac", {})
+                if (nodes[device]["kind"] == "Рабочая станция" and endpoint.get("deviceId") == device
+                        and endpoint_keys.get(device, "").lower() == "mac:" + endpoint["mac"]
+                        and port_state["state"] == "up" and not port_state["stale"]):
+                    record(switch, report[side], device, "endpoint_mac")
 
     for service, paths in service_paths.items():
         for path in paths:
@@ -2407,7 +2417,7 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime) -> dict:
                 if certificate not in certificates:
                     certificates.append(certificate)
         return {**_attachment_node(node), "basis": sorted(bases),
-                **({"linkChecks": link_checks[key]} if "lldp_peer" in bases else {}),
+                **({"linkChecks": link_checks[key]} if bases & {"lldp_peer", "endpoint_mac"} else {}),
                 **({"probeEndpoints": [probes[entry] for entry in sorted(probes)]} if probes else {})}
 
     service_ports = {
@@ -2443,7 +2453,7 @@ def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
             detail["servicePaths"].extend(_transit_service_paths(anchor, targets, _observed_management_ports(links)))
     elif anchor and anchor["kind"] in NETWORK_KINDS[:2]:
         attachments = _map_attachments(nodes, links, datetime.now(timezone.utc))
-        detail["servicePorts"] = attachments["servicePorts"].get(node_id, [])
+        detail["servicePorts"] = graph.get("servicePorts", attachments["servicePorts"]).get(node_id, [])
         if paths := attachments["servicePaths"].get(node_id):
             detail["servicePaths"] = paths
     elif anchor and not anchor["guest"]:
@@ -3095,7 +3105,7 @@ def load_infrastructure_map(
             pass
     attachments = {}
     if include_guest_attachments:
-        attachments = _map_attachments(nodes, links, now)
+        attachments = _map_attachments(nodes, links, now, endpoint_keys=endpoint_keys)
         _, _, _, pending, current_pairs = _topology_port_pairs(nodes, links)
         lacp_gaps = _lacp_partner_interface_gaps(nodes)
         attachments.update(
@@ -3129,7 +3139,7 @@ def load_infrastructure_map(
             lacpPartnerInterfaceGaps=lacp_gaps[:64],
         )
     elif include_service_ports:
-        attachments["servicePorts"] = _map_attachments(nodes, links, now)["servicePorts"]
+        attachments["servicePorts"] = _map_attachments(nodes, links, now, endpoint_keys=endpoint_keys)["servicePorts"]
     return {
         **empty, "availability": "stale" if now - stamp > MAX_AGE else "ready",
         "snapshotAt": stamp.isoformat(), "nodes": list(nodes.values()), "links": links,
