@@ -167,6 +167,13 @@ def route_report(
 
 def loop_report(result: dict) -> dict:
     sources = result["sources"]
+    broadcast = [source["coverage"].get("broadcast", {}) for source in sources]
+    broadcast_assessed = sum(
+        row.get("status") == "recent"
+        and row.get("valid_intervals", 0) > 0
+        and row.get("truncated") is False
+        for row in broadcast
+    )
     assessed = sum(
         not source["truncated"]
         and source["coverage"]["fdb"]["status"] == "recent"
@@ -183,6 +190,11 @@ def loop_report(result: dict) -> dict:
             "assessed": assessed,
             "total": len(sources),
             "complete": bool(sources) and assessed == len(sources) and not result["truncated"],
+        },
+        "broadcast_coverage": {
+            "assessed": broadcast_assessed,
+            "total": len(sources),
+            "complete": bool(sources) and broadcast_assessed == len(sources) and not result["truncated"],
         },
         "source_coverage": [
             {field: source[field] for field in ("source", "status", "coverage", "truncated")}
@@ -441,6 +453,10 @@ def main() -> int:
         "--require-loop-coverage", action="store_true",
         help="require recent VLAN-aware FDB and STP observations on every switch",
     )
+    parser.add_argument(
+        "--require-broadcast-coverage", action="store_true",
+        help="require recent usable broadcast intervals on every switch",
+    )
     parser.add_argument("--capture-id", type=UUID, help="verify a nonempty PCAP owned by the current actor")
     parser.add_argument(
         "--speed", action="append", nargs=3, metavar=("CHECK", "PROFILE", "INTERFACE"),
@@ -544,8 +560,13 @@ def main() -> int:
         return 1
     if args.require_ipsec and not ipsec_probes:
         return 1
-    if args.require_loop_coverage:
-        coverage = report["loop_diagnostics"]["coverage"]
+    for required, field in (
+        (args.require_loop_coverage, "coverage"),
+        (args.require_broadcast_coverage, "broadcast_coverage"),
+    ):
+        if not required:
+            continue
+        coverage = report["loop_diagnostics"][field]
         if not coverage["total"]:
             return 1
         if not coverage["complete"]:

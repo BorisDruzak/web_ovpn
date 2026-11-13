@@ -284,7 +284,7 @@ def test_loop_report_preserves_per_source_coverage_without_copying_findings():
     coverage = {
         "fdb": {"status": "recent", "truncated": False},
         "stp": {"status": "unavailable", "last_observed_at": None},
-        "broadcast": {"status": "recent", "sampled_ports": 4, "valid_intervals": 9},
+        "broadcast": {"status": "recent", "sampled_ports": 4, "valid_intervals": 9, "truncated": False},
     }
     source = {"source": "switch-a", "status": "insufficient_data", "coverage": coverage, "truncated": False}
     result = {
@@ -299,6 +299,7 @@ def test_loop_report_preserves_per_source_coverage_without_copying_findings():
         "status": result["status"], "since": result["since"], "until": result["until"],
         "truncated": False, "sources": 1, "source_coverage": [source],
         "coverage": {"assessed": 0, "total": 1, "complete": False},
+        "broadcast_coverage": {"assessed": 1, "total": 1, "complete": True},
     }
 
 
@@ -327,6 +328,28 @@ def test_require_loop_coverage_distinguishes_missing_partial_and_complete(monkey
         "routes": {"lan": {"fresh": True, "profile_matches": True, "api_matches": True, "probes": []}},
         "loop_diagnostics": {"coverage": {"total": total, "complete": complete}},
     })
+    assert verifier.main() == expected
+
+
+@pytest.mark.parametrize("broadcast,truncated,expected", [
+    (None, False, 1),
+    ({"status": "recent", "valid_intervals": 0, "truncated": False}, False, 2),
+    ({"status": "insufficient", "valid_intervals": 0, "truncated": False}, False, 2),
+    ({"status": "recent", "valid_intervals": 3, "truncated": True}, False, 2),
+    ({"status": "recent", "valid_intervals": 3, "truncated": False}, True, 2),
+    ({"status": "recent", "valid_intervals": 3, "truncated": False}, False, 0),
+])
+def test_require_broadcast_coverage(monkeypatch, broadcast, truncated, expected):
+    coverage = {"fdb": {"status": "insufficient"}, "stp": {"status": "recent"}}
+    if broadcast is not None:
+        coverage["broadcast"] = broadcast
+    loops = verifier.loop_report({
+        "status": "insufficient_data", "since": "start", "until": "end", "truncated": truncated,
+        "sources": [{"source": "switch", "status": "insufficient_data", "coverage": coverage, "truncated": False}]
+        if broadcast is not None else [],
+    })
+    monkeypatch.setattr(sys, "argv", ["verifier", "--require-broadcast-coverage"])
+    monkeypatch.setattr(verifier, "verify", lambda *_: {"routes": {}, "loop_diagnostics": loops})
     assert verifier.main() == expected
 
 
