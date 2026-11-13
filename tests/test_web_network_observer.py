@@ -2546,6 +2546,31 @@ def test_network_diagnostics_shows_latest_scheduled_result_per_profile(tmp_path,
     assert "/network/diagnostics?profile=archive#route-history" in summary
 
 
+def test_route_history_shows_expected_http_status_on_mismatch(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, monkeypatch)
+    from app.db import get_sessionmaker
+    from app.network_route_history import persist_route_run
+
+    with get_sessionmaker()() as db:
+        persist_route_run(db, owner="schedule:", result={
+            "check": "route_availability", "target": "services", "status": "unreachable",
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+            "result": {"label": "Services", "probes": [{
+                "id": "http", "origin": "vpn-server", "target": "192.0.2.1", "protocol": "http",
+                "status": "unreachable", "expected_path": "LAN", "evidence": {
+                    "http_status": 503, "expected_http_status": 200, "reason": "http_status_mismatch",
+                },
+            }]},
+        })
+        db.commit()
+
+    login(client)
+    page = client.get("/network/diagnostics?profile=services")
+    assert page.status_code == 200
+    assert "HTTP 503 · ожидался 200" in " ".join(page.text.split())
+    assert "HTTP-код отличается от ожидаемого" in page.text
+
+
 def test_route_history_marks_changed_configuration(tmp_path, monkeypatch):
     client, headers = make_client(tmp_path, monkeypatch)
     from app import api, main

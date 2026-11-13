@@ -45,7 +45,11 @@
           {% if row.evidence.gateway_source.dhcp_gateway is defined %}<br>Шлюз аренды DHCP {{ row.evidence.gateway_source.dhcp_gateway }}{% endif %}
           {% endif %}
           {% if row.evidence.duration_ms is defined %}<br>{{ row.evidence.duration_ms }} мс{% endif %}
-          {% if row.evidence.http_status is defined %}<br>HTTP {{ row.evidence.http_status }}{% endif %}
+          {% if row.evidence.http_status is defined and row.evidence.http_status is not none %}
+          <br>HTTP {{ row.evidence.http_status }}{% if row.evidence.expected_http_status is defined and row.evidence.expected_http_status is not none %} · ожидался {{ row.evidence.expected_http_status }}{% endif %}
+          {% elif row.evidence.expected_http_status is defined and row.evidence.expected_http_status is not none %}
+          <br>Ожидался HTTP {{ row.evidence.expected_http_status }}
+          {% endif %}
           {% if row.evidence.dns_rcode is defined %}<br>DNS{% if row.evidence.dns_transport %} {{ row.evidence.dns_transport }}{% endif %} {{ row.evidence.dns_rcode }}{% endif %}
           {% set probe_reason = {
             'origin_not_configured': 'Подключение к пробнику не настроено',
@@ -69,6 +73,7 @@
             'icmp_fragmentation_required': 'Пакет требует фрагментации',
             'connection_refused': 'Цель отклонила соединение',
             'connection_unreachable': 'Сеть или узел недоступны',
+            'http_status_mismatch': 'HTTP-код отличается от ожидаемого',
             'dns_truncated': 'DNS по UDP вернул усечённый ответ',
             'dns_no_answer': 'DNS не вернул запрошенную запись',
             'tls_certificate_invalid': 'Сертификат TLS не прошёл проверку'
