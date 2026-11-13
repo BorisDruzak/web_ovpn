@@ -102,6 +102,29 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const duration = (Date.parse(checkedAt) - Date.parse(startedAt)) / 1000;
     return `RX 0 байт за ${formatUptime(duration)} · TX ${txBytes.toLocaleString('ru-RU')} байт · ${intervalCount} интервалов SNMP · ${formatTime(checkedAt)}`;
   }
+  function appendPortLinkDetails(row, port, label) {
+    if (port.linkMode) {
+      const {duplex, autoNegotiation, checkedAt} = port.linkMode;
+      const configured = {true: 'Автосогласование включено', false: 'Автосогласование выключено'};
+      const mode = {full: 'Полный дуплекс', half: 'Полудуплекс'};
+      row.append(make('small', [label, mode[duplex], configured[autoNegotiation], 'SNMP · ' + formatTime(checkedAt)]
+        .filter(Boolean).join(' · ')));
+    }
+    if (port.transceiver) {
+      const {formFactor, vendor, media, nominalBps, checkedAt, opticalPower} = port.transceiver;
+      const rate = nominalBps && 'номинал ' + (nominalBps / 1e9).toLocaleString('ru-RU') + ' Гбит/с';
+      row.append(make('small', [label, 'Модуль ' + formFactor, vendor, media, rate, 'SNMP · ' + formatTime(checkedAt)]
+        .filter(Boolean).join(' · ')));
+      if (opticalPower?.state === 'unavailable') {
+        row.append(make('small', [label, 'DDM · нет достоверных показаний мощности'].filter(Boolean).join(' · ')));
+      } else if (opticalPower?.state === 'available') {
+        const power = [['RX', opticalPower.rxDbm], ['TX', opticalPower.txDbm]]
+          .filter(([, value]) => value !== undefined)
+          .map(([direction, value]) => direction + ' ' + value.toLocaleString('ru-RU') + ' дБм');
+        row.append(make('small', [label, 'DDM', ...power].filter(Boolean).join(' · ')));
+      }
+    }
+  }
   function formatPortCounterChanges(telemetry) {
     const counters = {rxErrors:'Ошибки RX', txErrors:'Ошибки TX', rxDiscards:'Отбросы RX', txDiscards:'Отбросы TX'};
     const counts = Object.entries(counters).filter(([key]) => telemetry[key] > 0)
@@ -291,6 +314,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       const counterChanges = port.telemetry && formatPortCounterChanges(port.telemetry);
       if (counterChanges) item.append(make('small', `${label} · ${counterChanges}`));
       if (port.rxErrorCounters) appendRxErrorCounters(item, port.rxErrorCounters, label);
+      appendPortLinkDetails(item, port, label);
       if (port.fdbLearned) {
         const {learnedMacCount, partial, checkedAt} = port.fdbLearned;
         item.append(make('small', [label, `Изучено MAC ${learnedMacCount}`, partial ? 'неполный опрос' : '',
@@ -1844,29 +1868,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           const vlans = port.fdbVlans.vlans.map(vlan => `${vlan.id} (${vlan.learnedMacCount} MAC)`);
           row.append(make('small', 'VLAN по MAC-таблице · ' + vlans.join(', ')));
         }
-        if (selectedPort && port.linkMode) {
-          const {duplex, autoNegotiation, checkedAt} = port.linkMode;
-          const configured = {true: 'Автосогласование включено', false: 'Автосогласование выключено'};
-          const mode = {full: 'Полный дуплекс', half: 'Полудуплекс'};
-          row.append(make('small', [mode[duplex], configured[autoNegotiation], 'SNMP · ' + formatTime(checkedAt)]
-            .filter(Boolean).join(' · ')));
-        }
+        if (selectedPort) appendPortLinkDetails(row, port);
         if (selectedPort && port.stpPort) row.append(make('small', formatStpPort(port.stpPort)));
         if (selectedPort && port.endpointMac) row.append(make('small', formatEndpointMac(port.endpointMac)));
-        if (selectedPort && port.transceiver) {
-          const {formFactor, vendor, media, nominalBps, checkedAt, opticalPower} = port.transceiver;
-          const rate = nominalBps && 'номинал ' + (nominalBps / 1e9).toLocaleString('ru-RU') + ' Гбит/с';
-          row.append(make('small', ['Модуль ' + formFactor, vendor, media, rate, 'SNMP · ' + formatTime(checkedAt)]
-            .filter(Boolean).join(' · ')));
-          if (opticalPower?.state === 'unavailable') {
-            row.append(make('small', 'DDM · нет достоверных показаний мощности'));
-          } else if (opticalPower?.state === 'available') {
-            const power = [['RX', opticalPower.rxDbm], ['TX', opticalPower.txDbm]]
-              .filter(([, value]) => value !== undefined)
-              .map(([direction, value]) => direction + ' ' + value.toLocaleString('ru-RU') + ' дБм');
-            row.append(make('small', ['DDM', ...power].join(' · ')));
-          }
-        }
         if (selectedPort && node.kind === 'Коммутатор' && port.state === 'up') {
           const learned = port.fdbLearned;
           const summary = learned

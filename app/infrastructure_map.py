@@ -3573,7 +3573,8 @@ def load_infrastructure_map(
                                         for peer in peers if peer.get("portId")}),
                  "portObservations": {
                      side: {key: port[key] for key in ("name", "state", "speedBps", "checkedAt", "rxSilence",
-                                                       "fdbLearned", "lldpPort", "telemetry", "rxErrorCounters") if key in port}
+                                                       "fdbLearned", "lldpPort", "telemetry", "rxErrorCounters",
+                                                       "linkMode", "transceiver") if key in port}
                      for side, port in row.get("portObservations", {}).items()
                  },
                  **{key: row[key] for key in ("archivedPortSides", "archivedPortAt", "inventoryPortSides", "inventorySources",

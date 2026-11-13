@@ -2238,6 +2238,9 @@ def test_lldp_neighbor_count_on_ports_and_declared_links_uses_current_poll(tmp_p
     ports = [{"source": key, "name": "ge1", "port_key": "ifindex:1", "if_index": 1,
               "oper_status": "up", "last_seen_at": stamp, "collector_run_id": 7} for key in ("a", "b")]
     ports[0]["rxErrorCounters"] = {"checkedAt": stamp, "ifInErrors": 44, "fcsErrors": 0}
+    modes = {"a": {"checkedAt": stamp, "ports": {1: {"port": "ge1", "duplex": "full", "autoNegotiation": True}}}}
+    modules = {"a": {"checkedAt": stamp, "ports": {1: {"port": "ge1", "formFactor": "SFP+",
+                                                       "opticalPower": {"state": "unavailable"}}}}}
     sample = {"source": "a", "port_key": "ifindex:1", "collector_run_id": 7, "observed_at": stamp,
               "sample_interval_seconds": 300, "in_errors_delta": 2}
     neighbor = {"source": "a", "local_port_key": "ifindex:1", "observed_at": stamp, "collector_run_id": 7,
@@ -2255,7 +2258,8 @@ def test_lldp_neighbor_count_on_ports_and_declared_links_uses_current_poll(tmp_p
                    "b": {"checkedAt": (now - timedelta(minutes=6)).isoformat(),
                          "ports": {"ge1": {"admin": "rx_only", "rxFrames": 3}}}}
     graph = build_graph(context, {"sources": sources, "ports": ports, "lldp": lldp, "hosts": hosts,
-                                  "lldp_port_status": lldp_status, "port_telemetry": [sample]}, {}, {}, {}, now)
+                                  "lldp_port_status": lldp_status, "port_telemetry": [sample],
+                                  "link_modes": modes, "transceivers": modules}, {}, {}, {}, now)
     path = tmp_path / "map.json"
     publish_snapshot(path, graph)
     public = load_infrastructure_map(path, now)
@@ -2283,7 +2287,7 @@ def test_lldp_neighbor_count_on_ports_and_declared_links_uses_current_poll(tmp_p
     assert pending["portObservations"]["a"]["lldpPort"] == expected_status
     browser_pair, = load_infrastructure_map(path, now, include_guest_attachments=True)["pendingPortPairs"]
     assert browser_pair["portObservations"]["a"]["lldpPort"] == expected_status
-    for key in ("telemetry", "rxErrorCounters"):
+    for key in ("telemetry", "rxErrorCounters", "linkMode", "transceiver"):
         assert browser_pair["portObservations"]["a"][key] == pending["portObservations"]["a"][key]
         assert key not in browser_pair["portObservations"]["b"]
     assert browser_pair["portObservations"]["a"]["telemetry"]["rxErrors"] == 2
