@@ -102,6 +102,12 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const duration = (Date.parse(checkedAt) - Date.parse(startedAt)) / 1000;
     return `RX 0 байт за ${formatUptime(duration)} · TX ${txBytes.toLocaleString('ru-RU')} байт · ${intervalCount} интервалов SNMP · ${formatTime(checkedAt)}`;
   }
+  function formatPortCounterChanges(telemetry) {
+    const counters = {rxErrors:'Ошибки RX', txErrors:'Ошибки TX', rxDiscards:'Отбросы RX', txDiscards:'Отбросы TX'};
+    const counts = Object.entries(counters).filter(([key]) => telemetry[key] > 0)
+      .map(([key, label]) => `${label} ${telemetry[key].toLocaleString('ru-RU')}`);
+    return counts.length ? [...counts, `${telemetry.intervalSeconds} с`, formatTime(telemetry.checkedAt)].join(' · ') : '';
+  }
   function renderPortCounterSummary() {
     const panel = root.querySelector('#map-port-counters');
     const summary = panel.querySelector('summary');
@@ -110,14 +116,11 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const {affectedPorts = 0, ports = []} = data.portCounterAudit ?? {};
     panel.hidden = !affectedPorts;
     summary.textContent = 'Ошибки и отбросы на портах · ' + affectedPorts;
-    const counters = {rxErrors:'Ошибки RX', txErrors:'Ошибки TX', rxDiscards:'Отбросы RX', txDiscards:'Отбросы TX'};
     list.replaceChildren(...ports.map(({deviceId, deviceName, port, configuredLabel, telemetry}) => {
       const item = make('li');
       const link = make('a', `${deviceName} · ${port}` + (configuredLabel ? ` · ${configuredLabel.text}` : ''));
       link.href = '?' + new URLSearchParams({node: deviceId, port});
-      const counts = Object.entries(counters).filter(([key]) => telemetry[key] > 0)
-        .map(([key, label]) => `${label} ${telemetry[key].toLocaleString('ru-RU')}`);
-      item.append(link, make('small', [...counts, `${telemetry.intervalSeconds} с`, formatTime(telemetry.checkedAt)].join(' · ')));
+      item.append(link, make('small', formatPortCounterChanges(telemetry)));
       return item;
     }));
     if (activeLink && !panel.hidden) {
@@ -285,6 +288,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       const reading = [label, portLabels[port.state], formatPortSpeed(port.speedBps), formatTime(port.checkedAt)];
       if (port.rxSilence) reading.push(formatRxSilence(port.rxSilence));
       item.append(make('small', reading.filter(Boolean).join(' · ')));
+      const counterChanges = port.telemetry && formatPortCounterChanges(port.telemetry);
+      if (counterChanges) item.append(make('small', `${label} · ${counterChanges}`));
+      if (port.rxErrorCounters) appendRxErrorCounters(item, port.rxErrorCounters, label);
       if (port.fdbLearned) {
         const {learnedMacCount, partial, checkedAt} = port.fdbLearned;
         item.append(make('small', [label, `Изучено MAC ${learnedMacCount}`, partial ? 'неполный опрос' : '',
