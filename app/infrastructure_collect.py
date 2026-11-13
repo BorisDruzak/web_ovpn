@@ -2243,6 +2243,11 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 port, observed = attachment
                 edge(router, asset, "Путь по MAC-таблице", "MikroTik · ARP + FDB",
                      details=f"{address} · {bridge}", ports=(port, ""), at=observed, management_address=address)
+                mac, _ = arp_mappings[address]
+                if (port == spec.get("lan_port") and (not declared_macs[asset] or mac in declared_macs[asset])
+                        and declared_devices_by_mac.get(mac, set()) <= {asset}):
+                    for service in identity_services.get(asset, []):
+                        service.update(probeTargetIP=address, probeTargetIdentityAt=observed)
                 if archived := _inventory_ipv4_interface(devices[asset], address, now):
                     name, checked_at, references = archived
                     edge(router, asset, "Путь по MAC-таблице", "GitHub", False, ports=("", name), at=checked_at,

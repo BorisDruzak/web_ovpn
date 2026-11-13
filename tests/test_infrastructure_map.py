@@ -6674,7 +6674,9 @@ def test_transit_peer_management_port_requires_fresh_arp_fdb_and_active_ethernet
                "segments": [{"id": "transit", "cidr": "192.0.2.0/30",
                              "local_address": "192.0.2.1", "gateway_device": "rb"}]}
     bindings = {"transit_links": {"transit": {"asset": "coordinator", "source": "main",
-                                            "peer": "192.0.2.2", "label": "Transit", "lan_bridge": "bridge-lan"}}}
+                                            "peer": "192.0.2.2", "label": "Transit", "lan_bridge": "bridge-lan",
+                                            "lan_port": "ether7"}},
+                "asset_services": {"coordinator-web": {"asset": "coordinator", "require_network_identity": True}}}
     learned = {"source": "main", "mac": mac, "bridge": "bridge-lan", "interface": "ether7", "last_seen_at": at}
     network = {
         "sources": [{"name": "main", "driver": "mikrotik_api", "enabled": 1,
@@ -6699,6 +6701,18 @@ def test_transit_peer_management_port_requires_fresh_arp_fdb_and_active_ethernet
         path.write_text(json.dumps(graph), encoding="utf-8")
         return [e for e in load_infrastructure_map(path, public_at)["links"] if e["a"] == "rb" and e["b"] == "coordinator"]
 
+    def target_identity():
+        graph = build_graph(context, network, {}, {}, bindings, now)
+        service = next(node for node in graph["nodes"] if node["id"] == "coordinator-web")
+        return service["probeTargetIP"], service.get("probeTargetIdentityAt")
+
+    assert target_identity() == (address, at)
+    bindings["transit_links"]["transit"]["lan_port"] = "ether9"
+    assert target_identity() == (None, None)
+    bindings["transit_links"]["transit"]["lan_port"] = "ether7"
+    network["router_bridge_hosts"].append({**learned, "interface": "ether9"})
+    assert target_identity() == (None, None)
+    network["router_bridge_hosts"].pop()
     link, = lan()
     assert link["kind"] == "Путь по MAC-таблице" and link["confirmed"]
     expected = {"name": "ether7", "source": "RouterOS", "state": "up",
