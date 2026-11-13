@@ -5,11 +5,15 @@ from __future__ import annotations
 import argparse
 import json
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
+from io import BytesIO
 from pathlib import Path
 import subprocess
 import sys
 from urllib.parse import urlencode
+from uuid import UUID
 
+from app.network_capture import CAPTURE_MAX_KIB, CAPTURE_MAX_PACKETS, _pcap_packet_count
 from mcp import openvpn_mcp_server as bridge
 
 
@@ -146,6 +150,46 @@ def mcp_data(reply: dict) -> dict:
     return json.loads(reply["content"][0]["text"])["data"]
 
 
+def capture_report(receipt: dict, download: dict, payload: bytes, directory: Path) -> dict:
+    capture_id = str(UUID(receipt["capture_id"]))
+    if (
+        download["capture_id"] != capture_id
+        or download["size_bytes"] != receipt["size_bytes"]
+        or len(payload) != receipt["size_bytes"]
+        or not 24 <= len(payload) <= CAPTURE_MAX_KIB * 1024
+    ):
+        raise ValueError("Capture receipt does not match downloads")
+    path = directory / f"network-{capture_id}.pcap"
+    if Path(download["path"]) != path or path.is_symlink() or not path.is_file():
+        raise ValueError("Unexpected MCP download path")
+    with path.open("rb") as file:
+        if file.read(len(payload) + 1) != payload:
+            raise ValueError("REST and MCP PCAP contents differ")
+    packets = _pcap_packet_count(BytesIO(payload), len(payload), CAPTURE_MAX_PACKETS)
+    if not packets or packets != receipt["packets"]:
+        raise ValueError("PCAP is empty, invalid or has a different packet count")
+    return {"capture_id": capture_id, "packets": packets, "size_bytes": len(payload), "sha256": sha256(payload).hexdigest()}
+
+
+def verify_capture(script: Path, capture_id: UUID) -> dict:
+    path = f"{API}/captures"
+    catalog = bridge.api_request("GET", path)["data"]["captures"]
+    listed = mcp_data(mcp_requests(script, [mcp_call("openvpn_network_capture_list")])[0])["captures"]
+    receipt = next((row for row in catalog if row["capture_id"] == str(capture_id)), None)
+    if receipt is None or receipt not in listed:
+        raise ValueError("Capture is missing from REST or MCP list")
+    media_type = "application/vnd.tcpdump.pcap"
+    request = bridge._legacy_api_request("GET", f"{path}/{capture_id}", accept=media_type)
+    with bridge._open_capture(request) as response:
+        if response.headers.get_content_type() != media_type:
+            raise ValueError("REST did not return PCAP")
+        payload = response.read(CAPTURE_MAX_KIB * 1024 + 1)
+    download = mcp_data(mcp_requests(script, [
+        mcp_call("openvpn_network_download_pcap", {"capture_id": str(capture_id)}),
+    ])[0])
+    return capture_report(receipt, download, payload, Path.home() / ".codex" / "network-captures")
+
+
 def verify(script: Path, max_age: timedelta) -> dict:
     spec = bridge.api_request("GET", "/openapi.json")
     paths = spec["paths"]
@@ -215,6 +259,7 @@ def main() -> int:
         "--require-loop-coverage", action="store_true",
         help="require recent VLAN-aware FDB and STP observations on every switch",
     )
+    parser.add_argument("--capture-id", type=UUID, help="verify a nonempty PCAP owned by the current actor")
     args = parser.parse_args()
     if args.max_age_minutes < 1:
         parser.error("--max-age-minutes must be positive")
@@ -241,6 +286,13 @@ def main() -> int:
         for probe in dns_probes
     )
     report["dns_transports"] = {"configured": len(dns_probes), "confirmed": confirmed_dns}
+    if args.capture_id is not None:
+        try:
+            report["capture"] = verify_capture(args.mcp_script, args.capture_id)
+        except (OSError, LookupError, RuntimeError, TypeError, ValueError, subprocess.SubprocessError):
+            report["capture"] = {"capture_id": str(args.capture_id), "error": "capture_verification_failed"}
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 1
     print(json.dumps(report, ensure_ascii=False, indent=2))
     if any(not (route["fresh"] and route["profile_matches"] and route["api_matches"]) for route in routes):
         return 1
