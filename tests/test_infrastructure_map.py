@@ -408,7 +408,7 @@ def test_observer_disk_measurements_publish_units_and_reported_warning_threshold
              "disk_capacity": {"free_bytes": 5320, "total_bytes": 100000}},
             {"name": "rxdata_log_bytes", "status": "ok", "observed": 9 * 2**30, "expected": 20 * 2**30},
             {"name": "windows_memory_available_bytes", "status": "ok", "observed": 2**30},
-            {"name": "windows_memory_available_percent", "status": "ok", "observed": 12.5},
+            {"name": "windows_memory_available_percent", "status": "ok", "observed": 4.5},
             {"name": "data_disk_free", "status": "ok", "observed": 102, "expected": "unrelated"},
             {"name": "unrelated_metric", "status": "ok", "observed": 42, "expected": 45},
         ]},
@@ -431,8 +431,15 @@ def test_observer_disk_measurements_publish_units_and_reported_warning_threshold
     assert checks["windows_memory_available_bytes"]["unit"] == "bytes"
     assert checks["windows_memory_available_bytes"]["observed"] == 2**30
     assert checks["windows_memory_available_percent"]["unit"] == "percent"
-    assert checks["windows_memory_available_percent"]["observed"] == 12.5
+    assert checks["windows_memory_available_percent"]["observed"] == 4.5
     assert "warningThreshold" not in checks["windows_memory_available_percent"]
+    configured = {"roles": {"directum": {"windows_memory_warning_percent": 5}}}
+    with_threshold = build_graph({}, {}, report, {}, configured, now)
+    with_threshold["serverObserverAt"] = stamp
+    snapshot.write_text(json.dumps(with_threshold), encoding="utf-8")
+    memory = read()["windows_memory_available_percent"]
+    assert (memory["status"], memory["required"], memory["warningThreshold"]) == ("warn", True, 5)
+    snapshot.write_text(json.dumps(graph), encoding="utf-8")
     assert checks["data_disk_free"]["observed"] is None
     assert "warningThreshold" not in checks["data_disk_free"]
     assert "warningThreshold" not in checks["unrelated_metric"]
