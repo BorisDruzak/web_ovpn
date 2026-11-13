@@ -44,7 +44,7 @@ _STP_CAPABILITIES = (
     "stp_root_cost",
     "stp_root_port",
 )
-_OPTIONAL_CAPABILITIES = frozenset(
+OPTIONAL_SWITCH_CAPABILITIES = frozenset(
     {
         *_VLAN_CAPABILITIES,
         "stp_protocol",
@@ -971,7 +971,7 @@ def _has_newer_or_equal_completed(
 
 def _has_failed_optional_capability(snapshot: SwitchSnapshot) -> bool:
     return any(
-        capability.capability in _OPTIONAL_CAPABILITIES
+        capability.capability in OPTIONAL_SWITCH_CAPABILITIES
         and capability.outcome not in _OPTIONAL_HEALTHY_OUTCOMES
         for capability in snapshot.capabilities
     )

@@ -4925,8 +4925,16 @@ def test_switch_collection_check_keeps_failed_fdb_separate_from_host_reachabilit
 
     _, check, _ = read(now + timedelta(minutes=26))
     assert check["stale"] and check["state"] == "unknown" and "reason" not in check
-    report.update(status="partial", error_class="")
-    assert read()[1]["reason"] == "snmp_collection_partial"
+    report.update(status="partial", error_class="", outcomes_json=json.dumps({
+        "fdb": "success_with_rows", "lldp_remote": "success_with_rows",
+        "lldp_remote_management_address": "timeout", "pvid": "unsupported_no_such_object",
+        "unrecognized": "auth_or_view_failure",
+    }))
+    _, check, issues = read()
+    assert check["reason"] == "snmp_collection_partial"
+    failures = [{"capability": "lldp_remote_management_address", "outcome": "timeout"}]
+    assert check["snmpFailures"] == issues[0]["snmpFailures"] == failures
+    assert "snmpFailures" not in read(now + timedelta(minutes=26))[1]
     report.update(status="success")
     node, check, issues = read()
     assert node["mapStatus"] == "ok" and check["state"] == "reachable" and issues == []

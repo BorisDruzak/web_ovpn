@@ -16,6 +16,8 @@ from netctl.snmp.interfaces import (
     BRIDGE_STP_PORT_STATES, LLDP_ADMIN_STATES, PAUSE_FRAME_COLUMNS, PAUSE_MODES, RX_ERROR_COLUMNS,
 )
 from netctl.snmp.lldp import LLDP_PORT_ID_SUBTYPES
+from netctl.snmp.outcomes import SnmpOutcome
+from netctl.switch_store import OPTIONAL_SWITCH_CAPABILITIES
 
 from .endpoint_context_adapter import get_endpoint_context_adapter
 from .endpoint_platform_client import EndpointPlatformServiceError
@@ -608,6 +610,12 @@ def _public_service_check(check: dict, now: datetime) -> dict:
                 "snmp_fdb_unavailable", "snmp_collection_failed", "snmp_collection_partial", "snmp_collection_unconfirmed",
             )):
         result["reason"] = check["reason"]
+        if result["reason"] == "snmp_collection_partial" and isinstance(outcomes := check.get("snmpOutcomes"), dict):
+            failures = [{"capability": capability, "outcome": outcomes[capability]}
+                        for capability in sorted(OPTIONAL_SWITCH_CAPABILITIES)
+                        if outcomes.get(capability) in (SnmpOutcome.TIMEOUT, SnmpOutcome.AUTH_OR_VIEW_FAILURE, SnmpOutcome.PARSE_ERROR)]
+            if failures:
+                result["snmpFailures"] = failures
     pppoe = check.get("pppoe")
     if (result["method"] == PPPOE_METHOD and not result["stale"] and isinstance(pppoe, dict)
             and pppoe.get("state") in ("connected", "disconnected", "disabled")):
@@ -2119,7 +2127,7 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
     collection_issues = [
         {"id": node["id"], "name": node["name"], "state": check["state"],
          "checkedAt": check["checkedAt"], "stale": check["stale"],
-         **({"reason": check["reason"]} if "reason" in check else {})}
+         **{key: check[key] for key in ("reason", "snmpFailures") if key in check}}
         for node in nodes.values() if node["kind"] == NETWORK_KINDS[0]
         for check in node["serviceChecks"] if check["method"] == SNMP_COLLECTION_METHOD and check["state"] != "reachable"
     ]

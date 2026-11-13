@@ -2113,6 +2113,11 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         }
         const ntp = check.ntp ? ' · ' + ntpLabel(check.ntp) : '';
         row.append(title, make('small', result + http + rtsp + ftp + certificate + postgresql + smb + (reason ? ' · ' + reason + errorSource : '') + backup + policy + dns + ntp + rtt + attempts + gateway + egress + management + scope + source + time + identity + (check.stale ? ' · устарело' : '')));
+        for (const {capability, outcome} of check.snmpFailures ?? []) {
+          const label = capability === 'lldp_remote_management_address' ? 'Адреса управления соседей LLDP' : capability;
+          const detail = {timeout: 'таймаут', auth_or_view_failure: 'нет доступа к таблице', parse_error: 'ошибка разбора'}[outcome];
+          row.append(make('small', `${label} · ${detail}`));
+        }
         if (udp) {
           const addresses = udp.addresses?.map(address => address.includes(':') ? `[${address}]` : address).join(', ');
           const label = {bound: 'Открыт локальный UDP-сокет', unbound: 'Локальный UDP-сокет отсутствует',

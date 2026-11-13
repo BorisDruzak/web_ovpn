@@ -45,6 +45,7 @@ from netctl.switch_queries import (
     FDB_PORT_MATCH, query_confirmed_attachment_ports, query_observed_mac_ports,
     query_switch_lldp_neighbors, query_switch_ports, query_switch_stp,
 )
+from netctl.switch_store import OPTIONAL_SWITCH_CAPABILITIES
 
 from .infrastructure_backup import backup_policy, backup_service_checks, read_proxmox_backup
 from .infrastructure_map import (
@@ -1893,6 +1894,14 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             if state == "unreachable" and run.get("error_class") == "fdb_unavailable":
                 reason = "snmp_fdb_unavailable"
             check = _observation(state, "Network Observer", SNMP_COLLECTION_METHOD, run.get("finished_at") or now.isoformat())
+            if reason == "snmp_collection_partial" and isinstance(raw_outcomes := run.get("outcomes_json"), str):
+                try:
+                    outcomes = json.loads(raw_outcomes)
+                    if isinstance(outcomes, dict):
+                        check["snmpOutcomes"] = {key: outcomes[key] for key in OPTIONAL_SWITCH_CAPABILITIES
+                                                 if isinstance(outcomes.get(key), str) and len(outcomes[key]) <= 24}
+                except (ValueError, RecursionError):
+                    pass
             item.setdefault("serviceChecks", []).append({**check, "required": True, **({"reason": reason} if reason else {})})
         item["properties"]["Источник сбора"] = name
         if row.get("enabled") and row.get("driver") in {"mikrotik_api", "mikrotik_ssh"} and name in router_ports:
@@ -3270,7 +3279,7 @@ def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | N
         )}
         data["switch_collection"] = {row["source"]: dict(row) for row in connection.execute(
             """
-            SELECT s.name AS source, r.finished_at, r.status, r.error_class
+            SELECT s.name AS source, r.finished_at, r.status, r.error_class, r.outcomes_json
             FROM network_sources AS s
             JOIN switch_collection_runs AS r ON r.id = (
                 SELECT last.id FROM switch_collection_runs AS last
