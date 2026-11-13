@@ -426,6 +426,8 @@
 
 Проверки SSH центрального маршрутизатора `sosn` и узлов `pve1`, `pve2`, `pve3` используют адреса управления из сетевого контекста. У `sosn-management-ssh` порт TCP/2022, у `pve1-management-ssh`, `pve2-management-ssh` и `pve3-management-ssh` — TCP/22. В MCP `view=attachment` показывает путь к порту коммутатора там, где связь подтверждена наблюдениями карты.
 
+Карточка `m-arhiv-management-ssh` проверяет строку идентификации SSH на TCP/22 канонического адреса управления `192.168.99.1` из UI_VPN. В `asset_services` укажите `asset: mikrotik-rb750gr3-m-arhiv`, в `service_probes` — `type: ssh_identification`. Вход под учётной записью источника, состояние PPPoE и IPsec имеют отдельные наблюдения.
+
 Карточка `yadro-os-ssh` проверяет TCP/22 на адресе Astra Linux `192.168.100.120` после той же сверки ARP и FDB SNR, что и `yadro-findface-web`. При отсутствии подтверждения адреса сборщик пропускает запрос. Веб-интерфейс FindFace и Redfish на отдельном адресе BMC имеют собственные проверки. [Инвентарь YADRO VEGMAN](https://github.com/BorisDruzak/network_configuration/blob/main/docs/devices/yadro-vegman-r220-g2-videoanalytics.md)
 
 Карточка `tplink-ito-management-ssh` проверяет TCP/22 коммутатора ИТО. Сборщик принимает наблюдавшийся у этого TP-Link формат версии `IPSSH-<major>.<minor>.<patch>` и завершает соединение после строки идентификации.
