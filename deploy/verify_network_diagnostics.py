@@ -580,8 +580,6 @@ def main() -> int:
             report["capture"] = verify_capture(args.mcp_script, args.capture_id, check_filter=args.require_capture_filter)
         except (OSError, LookupError, RuntimeError, TypeError, ValueError, subprocess.SubprocessError):
             report["capture"] = {"capture_id": str(args.capture_id), "error": "capture_verification_failed"}
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 1
     if args.speed:
         try:
             report["speed"] = verify_speed(args.mcp_script, args.speed, timedelta(minutes=args.max_age_minutes))
@@ -589,6 +587,8 @@ def main() -> int:
             report["speed"] = []
             report["speed_error"] = "speed_verification_failed"
     print(json.dumps(report, ensure_ascii=False, indent=2))
+    if args.capture_id is not None and "error" in report["capture"]:
+        return 1
     if args.speed and (
         not report["speed"] or any(
             not row["confirmed"] for profile in report["speed"] for row in profile["directions"].values()

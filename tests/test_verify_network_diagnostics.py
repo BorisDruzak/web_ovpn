@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+import json
 import struct
 import subprocess
 import sys
@@ -438,7 +439,9 @@ def test_capture_filter_checks_bidirectional_peer_and_port(monkeypatch, outside)
 
 def test_capture_cli_reports_failed_verification(monkeypatch, capsys):
     capture_id = "12345678-1234-1234-1234-123456789abc"
-    monkeypatch.setattr(sys, "argv", ["verifier", "--capture-id", capture_id])
+    monkeypatch.setattr(sys, "argv", [
+        "verifier", "--capture-id", capture_id, "--speed", "iperf3", "lan-test", "ens18",
+    ])
     monkeypatch.setattr(verifier, "verify", lambda *_: {"contracts": "ok", "routes": {}})
 
     def unavailable(_script, selected, *, check_filter=False):
@@ -447,8 +450,12 @@ def test_capture_cli_reports_failed_verification(monkeypatch, capsys):
         raise ValueError("receipt missing")
 
     monkeypatch.setattr(verifier, "verify_capture", unavailable)
+    speed = [{"directions": {"receive": {"confirmed": True}, "send": {"confirmed": True}}}]
+    monkeypatch.setattr(verifier, "verify_speed", lambda *_: speed)
     assert verifier.main() == 1
-    assert "capture_verification_failed" in capsys.readouterr().out
+    report = json.loads(capsys.readouterr().out)
+    assert report["capture"]["error"] == "capture_verification_failed"
+    assert report["speed"] == speed
 
 
 def test_interface_report_distinguishes_zero_from_missing_and_rejects_drift():
