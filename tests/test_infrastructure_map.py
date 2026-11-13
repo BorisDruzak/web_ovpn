@@ -75,6 +75,35 @@ def test_tcp_connect_probe_reports_transport_without_sending_data(monkeypatch):
     assert probes._tcp_connect(spec) == {"state": "unreachable", "reason": "tcp_connection_refused"}
 
 
+@pytest.mark.parametrize(("reply", "state", "security"), [
+    ("030000130ed000001234000200080001000000", "reachable", "TLS"),
+    ("030000130ed000001234000200080002000000", "reachable", "CredSSP"),
+    ("030000130ed000001234000300080005000000", "unreachable", None),
+    ("030000130ed000001234000200080004000000", "unknown", None),
+    ("030000130ee000001234000200080002000000", "unknown", None),
+    ("030000130ed0000012340002000800", "unknown", None),
+    ("0300ffff", "unknown", None),
+])
+def test_rdp_negotiation_requires_a_valid_connection_confirm(monkeypatch, reply, state, security):
+    from contextlib import nullcontext
+    from io import BytesIO
+    from types import SimpleNamespace
+    from app import infrastructure_service_probes as probes
+    from app.infrastructure_map import _public_service_check
+
+    requests = []
+    connection = SimpleNamespace(sendall=requests.append, makefile=lambda mode: BytesIO(bytes.fromhex(reply)))
+    monkeypatch.setattr(probes.socket, "create_connection", lambda address, timeout: nullcontext(connection))
+    spec = {"type": "rdp_negotiation", "ip": "192.0.2.91", "port": 3389}
+    node = {"id": "rdp", "kind": "Сервис", "probeTargetIP": spec["ip"]}
+    probes.apply_service_probes([node], {"rdp": [spec]})
+    check = _public_service_check(node["serviceChecks"][0], datetime.now(timezone.utc))
+    assert (check["method"], check["port"], check["state"], check.get("rdpSecurity")) == (
+        "RDP Negotiation", 3389, state, security,
+    )
+    assert requests == [bytes.fromhex("030000130ee000000000000100080003000000")]
+
+
 @pytest.mark.parametrize(("reply", "state", "reason"), [
     ("synchronized", "reachable", None),
     ("wrong_origin", "unknown", "unexpected_response"),

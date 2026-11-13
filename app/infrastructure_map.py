@@ -638,8 +638,16 @@ def _public_service_check(check: dict, now: datetime) -> dict:
             result["reason"] = reason
     if reason == "timeout" and result["method"] in ("HTTP", "HTTPS", "DNS", "SMB2", "PostgreSQL SSLRequest", "TCP"):
         result["reason"] = reason
-    if reason == "tcp_connection_refused" and result["method"] == "TCP" and result["state"] == "unreachable":
+    if reason == "tcp_connection_refused" and result["method"] in ("TCP", "RDP Negotiation") and result["state"] == "unreachable":
         result["reason"] = reason
+    if result["method"] == "RDP Negotiation":
+        security, failure = check.get("rdpSecurity"), check.get("rdpFailureCode")
+        if result["state"] == "unknown" and reason in ("timeout", "network_error", "unexpected_response", "probe_configuration"):
+            result["reason"] = reason
+        if result["state"] == "reachable" and security in ("TLS", "CredSSP"):
+            result["rdpSecurity"] = security
+        if result["state"] == "unreachable" and reason == "rdp_negotiation_rejected" and type(failure) is int and 1 <= failure <= 7:
+            result.update(reason=reason, rdpFailureCode=failure)
     if result["method"] == "NTP (UDP)" and reason in (
         "ntp_unsynchronized", "timeout", "unexpected_response", "transport_error", "probe_configuration",
     ):
@@ -2059,7 +2067,8 @@ def _attachment_probe_location(check: dict) -> dict:
     return {"target": check["target"], "port": check["port"], "method": check["method"],
             "checkedAt": check["checkedAt"], "state": check["state"],
             **({"path": check["path"]} if check.get("path") else {}),
-            **{key: check[key] for key in ("reason", "roundTripMs", "httpStatus", "responseCode", "rtspStatus", "dns")
+            **{key: check[key] for key in ("reason", "roundTripMs", "httpStatus", "responseCode", "rtspStatus", "dns",
+                                           "rdpSecurity", "rdpFailureCode")
                if key in check}}
 
 
@@ -2368,6 +2377,10 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime) -> dict:
                 codes = probe.setdefault("responseCodes", [])
                 if code not in codes:
                     codes.append(code)
+            if security := check.get("rdpSecurity"):
+                modes = probe.setdefault("rdpSecurityModes", [])
+                if security not in modes:
+                    modes.append(security)
         return {**_attachment_node(node), "basis": sorted(bases),
                 **({"probeEndpoints": [probes[entry] for entry in sorted(probes)]} if probes else {})}
 

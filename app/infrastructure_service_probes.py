@@ -39,7 +39,7 @@ IPMI_PORT = 623
 RMCP_ASF_HEADER = bytes.fromhex("0600ff06000011be")
 PROBE_METHODS = {
     "http": "HTTP", "https": "HTTPS", "dns": "DNS", "ldap": "LDAP", "ldaps": "LDAPS RootDSE", "smb": "SMB2",
-    "tcp_connect": "TCP", "ntp": "NTP (UDP)", "winrm": "WinRM HTTP",
+    "tcp_connect": "TCP", "ntp": "NTP (UDP)", "winrm": "WinRM HTTP", "rdp_negotiation": "RDP Negotiation",
     "smb_mount": "SMB Mount", "zabbix_api": "Zabbix API", "postgresql": "PostgreSQL SSLRequest",
     "openvpn_management": "OpenVPN Management", "openvpn_tunnel": "OpenVPN TUN",
     "sip_options": "SIP OPTIONS (UDP)", "icmp": "ICMP", "vlan_transit": "ICMP · VLAN",
@@ -1582,6 +1582,42 @@ def _ntp(spec: dict) -> dict:
     return {"state": "reachable"}
 
 
+def _rdp_negotiation(spec: dict) -> dict:
+    port = spec.get("port")
+    try:
+        ip = str(ipaddress.ip_address(spec["ip"]))
+    except (KeyError, ValueError):
+        return {"state": "unknown", "reason": "probe_configuration"}
+    if type(port) is not int or not 1 <= port <= 65535:
+        return {"state": "unknown", "reason": "probe_configuration"}
+    # X.224 Connection Request with TLS and CredSSP; close after the server's selection.
+    request = bytes.fromhex("03000013 0ee00000000000 0100080003000000")
+    unexpected = {"state": "unknown", "reason": "unexpected_response"}
+    try:
+        with socket.create_connection((ip, port), timeout=TIMEOUT) as connection:
+            connection.sendall(request)
+            with connection.makefile("rb") as stream:
+                if stream.read(4) != b"\x03\x00\x00\x13":
+                    return unexpected
+                confirm = stream.read(15)
+    except ConnectionRefusedError:
+        return {"state": "unreachable", "reason": "tcp_connection_refused"}
+    except TimeoutError:
+        return {"state": "unknown", "reason": "timeout"}
+    except OSError:
+        return {"state": "unknown", "reason": "network_error"}
+    if len(confirm) != 15 or confirm[:4] != b"\x0e\xd0\x00\x00" or confirm[6] != 0:
+        return unexpected
+    kind, flags, length, value = struct.unpack("<BBHI", confirm[7:])
+    if length != 8:
+        return unexpected
+    if kind == 2 and value in (1, 2):
+        return {"state": "reachable", "rdpSecurity": "TLS" if value == 1 else "CredSSP"}
+    if kind == 3 and flags == 0 and 1 <= value <= 7:
+        return {"state": "unreachable", "reason": "rdp_negotiation_rejected", "rdpFailureCode": value}
+    return unexpected
+
+
 def _tcp_connect(spec: dict) -> dict:
     try:
         address = str(ipaddress.ip_address(spec["ip"]))
@@ -1705,6 +1741,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 details = _ssh_identification(spec)
             elif protocol == "tcp_connect":
                 details = _tcp_connect(spec)
+            elif protocol == "rdp_negotiation":
+                details = _rdp_negotiation(spec)
             elif protocol == "ntp":
                 details = _ntp(spec)
             elif protocol == "winrm":
@@ -1743,7 +1781,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 ),
                 "target": spec.get("ip") if not skip_reason and (
                     protocol in {"icmp", "vlan_transit", "sip_options", "ipmi_lan", "rtsp_options", "ssh_identification", "ftp_features",
-                                 "zabbix_api", "postgresql", "dns", "ldap", "ldaps", "smb", "tls_certificate", "tcp_connect", "ntp", "winrm"}
+                                 "zabbix_api", "postgresql", "dns", "ldap", "ldaps", "smb", "tls_certificate", "tcp_connect",
+                                 "ntp", "winrm", "rdp_negotiation"}
                     or protocol in DEPENDENCY_PROTOCOLS or "probeTargetIP" in node
                     or (protocol in {"http", "https"} and spec.get("report_target") is True
                         and details.get("reason") != "http_configuration")

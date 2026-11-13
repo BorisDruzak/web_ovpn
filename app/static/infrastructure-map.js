@@ -788,7 +788,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const responseFrom = responder && `Ответ от ${responder.address}:${responder.port}`;
         const code = probe.httpStatus ? `HTTP ${probe.httpStatus}` : probe.responseCode ? `SIP ${probe.responseCode}` :
           probe.rtspStatus ? `RTSP ${probe.rtspStatus}` : '';
-        readings.add([probe.path, question, outcome, code, responseFrom, rtt,
+        const rdp = probe.rdpSecurity ?? (probe.rdpFailureCode && `Код отказа RDP ${probe.rdpFailureCode}`);
+        readings.add([probe.path, question, outcome, code, rdp, responseFrom, rtt,
           probe.state && formatTime(probe.checkedAt)].filter(Boolean).join(' · '));
       }
       for (const reading of readings) {
@@ -1580,6 +1581,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         winrm_auth_required: 'WinRM запросил аутентификацию',
         http_connection_refused: 'Отклонено TCP-соединение', http_connection_reset: 'Сброшено TCP-соединение',
         tcp_connection_refused: 'Отклонено TCP-соединение',
+        rdp_negotiation_rejected: 'Сервер отклонил согласование RDP',
         ntp_unsynchronized: 'Сервер NTP не предоставил синхронизированное время',
         rtsp_connection_refused: 'Отклонено TCP-соединение', rtsp_auth_required: 'Требуется авторизация',
         http_configuration: 'Ошибка настройки проверки',
@@ -1975,6 +1977,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
               [probe.method, probe.localListener ? '' : probe.transport].filter(Boolean).join(' '),
               `${address}${probe.port ? ':' + probe.port : ''}${probe.path ?? ''}`, ...states,
               probe.responseCodes?.length && `Ответ ${probe.responseCodes.join(', ')}`,
+              probe.rdpSecurityModes?.join(', '),
               probe.dns && `${probe.dns.record} ${probe.dns.name}`,
             ].filter(Boolean).join(' · ')));
           }
