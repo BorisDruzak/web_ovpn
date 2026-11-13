@@ -2877,7 +2877,9 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime, *, endpoint_
                 if certificate not in certificates:
                     certificates.append(certificate)
         observer_issues = [check for check in node["checks"] if check.get("required") and check["status"] != "ok"]
+        dependencies = node["serviceAvailability"]
         return {**_attachment_node(node), "basis": sorted(bases),
+                **({"dependencies": dependencies} if any(dependencies.values()) else {}),
                 **({"observerIssues": observer_issues[:6], "observerIssueTotal": len(observer_issues)}
                    if observer_issues else {}),
                 **({"backupChecks": backup_checks} if backup_checks else {}),

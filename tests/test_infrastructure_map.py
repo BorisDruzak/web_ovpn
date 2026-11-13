@@ -7632,6 +7632,9 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
         checks=[{"name": "c_disk_free", "status": "critical", "observed": 4.53, "expected": 15},
                 {"name": "iis_active", "status": "ok"}],
     )
+    raw["nodes"].append({"id": "backup", "name": "Backup", "kind": "Сервис",
+                         "reachability": {"state": "unreachable", "source": "UI_VPN", "checkedAt": stamp}})
+    raw["links"].append({"a": "directum", "b": "backup", "kind": "Зависимость сервиса", "confirmed": True})
     assert len(read()["servicePaths"]) == 2
     browser = client.get(browser_endpoint).json()["infrastructure"]
     assert browser["servicePaths"] == {"directum": [service_path, {**service_path, "port": 3268}]}
@@ -7642,6 +7645,9 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     assert (issue["name"], issue["status"], issue["observed"], issue["unit"]) == (
         "c_disk_free", "critical", 4.53, "percent",
     )
+    assert switch_ports[0]["services"][0]["dependencies"] == {
+        "unavailable": ["backup"], "degraded": [], "unknown": [],
+    }
     assert [(probe["target"], probe["port"]) for probe in switch_ports[0]["services"][0]["probeEndpoints"]] == [
         ("192.0.2.11", 389), ("192.0.2.11", 3268),
     ]
