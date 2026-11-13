@@ -3918,6 +3918,16 @@ def test_shared_lldp_ports_publish_paths_and_require_live_port_and_unique_chassi
     assert fdb_only["portB"] == "" and fdb_only["inventoryPeerPorts"] == inventory_peer_ports
     candidate, = fdb_only["unconfirmedLldpCandidates"]
     assert (candidate["portId"], candidate["chassisId"], candidate["checkedAt"]) == ("bridge/ether3", first, at)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw_declaration = next(link for link in raw["links"] if link["b"] == "one")
+    raw_declaration["confirmed"] = False
+    raw_declaration["portEvidence"] = [report for report in raw_declaration["portEvidence"] if report["source"] == "GitHub"]
+    raw["links"].extend(combined["links"][-2:])
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    browser = load_infrastructure_map(path, now, include_guest_attachments=True)
+    browser_row = next(row for row in browser["pendingPortPairs"] if row["b"] == "one")
+    assert browser_row["unconfirmedLldpCandidates"] == [candidate]
+    assert browser_row["portB"] == "" and browser["currentPortPairTotal"] == 0
     combined_row = next(row for row in combined_audit["pending"] if row["b"] == "two")
     assert [reading["source"] for reading in combined_row["observedPaths"]] == ["netctl FDB", "LLDP · общий порт"]
     assert combined_row["lldpPeers"] == rows_by_peer["two"]["lldpPeers"]
