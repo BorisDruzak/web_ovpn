@@ -335,10 +335,10 @@
 | Карточка | Путь | `content_type` | `body_contains` |
 | --- | --- | --- | --- |
 | `pbs-web` | `/js/proxmox-backup-gui.js` | `application/javascript` | `pbs_documentation_index` |
-| `pbs-web` | `/extjs/ext-all.js` | `application/javascript` | `Ext.util` |
-| `pbs-web` | `/widgettoolkit/proxmoxlib.js` | `application/javascript` | `Proxmox.Utils` |
 | `vipnet-coordinator-web` | `/localizer.js` | `application/x-javascript` | `function getCookieParam` |
 | `pbs-ipmi-web`, `pve3-ipmi-web` | `/js/utils.js` | `text/javascript` | `ReadCookie("language")` |
+
+Для библиотек страницы входа PBS создайте карточку `asset_services.pbs-web-libraries` с `asset: pbs` и `used_by: ["pbs-web"]`. Обе HTTPS-проверки в `service_probes.pbs-web-libraries` используют IP, порт и отпечаток TLS карточки PBS Web. Запрос `/extjs/ext-all.js` проверяет `Ext.util`, а `/widgettoolkit/proxmoxlib.js` — `Proxmox.Utils`. Оба ответа должны иметь тип `application/javascript`.
 
 У `pve1-management`, `pve2-management` и `pve3-management` запрос списка областей входа проверяется отдельно на каждом узле по HTTPS/8006 с теми же `tls_server_name` и `tls_ca_file`, что у веб-панели. Для `pve2-redfish`, `yadro-vegman-redfish`, `pbs-ipmi-web`, `pve3-ipmi-web` и `ucm6302-web` добавьте `type: tls_certificate` с `component: true` и уже проверенным отпечатком веб-службы. Истёкший сертификат даёт сбой обязательной проверки, и отвечающая веб-служба отображается жёлтой. [Документация Proxmox по областям входа](https://github.com/proxmox/pve-docs/blob/master/pveum.adoc)
 
