@@ -13,7 +13,7 @@ PROBE_STATUSES = {"reachable", "unreachable", "timeout", "unavailable", "failed"
 
 def _read_ipsec(source: str) -> dict:
     try:
-        result = run_netctl(["ipsec", "status", "--allow-source-errors", f"--source={source}"], timeout=12)
+        result = run_netctl(["ipsec", "status", "--allow-source-errors", f"--source={source}"], timeout=20)
     except NetctlError as exc:
         return {"reason": "collector_timeout" if isinstance(exc.__cause__, TimeoutExpired) else "collector_failed"}
     except (OSError, UnicodeError):

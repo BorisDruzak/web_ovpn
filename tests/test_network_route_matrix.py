@@ -250,8 +250,9 @@ def test_ipsec_observation_failure_is_separate_from_ping_status(monkeypatch, fai
     def netctl(args, **kwargs):
         if args[:2] == ["path", "probe"]:
             return {"probe": {"status": "timeout"}}
+        assert kwargs["timeout"] == 20
         if failure == "collector_timeout":
-            raise NetctlError("netctl timeout", stdout="internal output") from TimeoutExpired(args, 12)
+            raise NetctlError("netctl timeout", stdout="internal output") from TimeoutExpired(args, 20)
         return {"sources": [{"source": "archive-router", "status": "error", "errors": [{
             "message": "internal output", "reason": failure,
         }]}]}
