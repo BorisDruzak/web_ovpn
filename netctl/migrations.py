@@ -2161,6 +2161,16 @@ def _migration_30(conn: sqlite3.Connection) -> None:
         conn.execute(f"ALTER TABLE router_interface_counter_samples ADD COLUMN {column} TEXT")
 
 
+def _migration_31(conn: sqlite3.Connection) -> None:
+    # Foreign-key checks on expired runs need indexed lookups in their history tables.
+    for table, column in (
+        ("switch_link_events", "correlation_run_id"),
+        ("asset_attachment_events", "correlation_run_id"),
+        ("availability_result_events", "run_id"),
+    ):
+        conn.execute(f"CREATE INDEX {table}_{column}_idx ON {table}({column})")
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1),
     (2, _migration_2),
@@ -2192,6 +2202,7 @@ MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (28, _migration_28),
     (29, _migration_29),
     (30, _migration_30),
+    (31, _migration_31),
 )
 
 

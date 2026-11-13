@@ -10,6 +10,16 @@ CUTOFF = "2026-06-26T00:00:00Z"
 NEW = "2026-07-01T00:00:00Z"
 
 
+@pytest.mark.parametrize("parent,child", [
+    ("network_correlation_runs", "switch_link_events"),
+    ("network_correlation_runs", "asset_attachment_events"),
+    ("availability_runs", "availability_result_events"),
+])
+def test_retention_parent_delete_uses_child_index(conn, parent, child):
+    details = [row[3] for row in conn.execute(f"EXPLAIN QUERY PLAN DELETE FROM {parent} WHERE id=?", (1,))]
+    assert any(detail.startswith(f"SEARCH {child} ") for detail in details), details
+
+
 @pytest.fixture
 def conn(tmp_path):
     from netctl.db import connect
