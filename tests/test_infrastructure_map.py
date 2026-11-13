@@ -5607,7 +5607,13 @@ def test_management_path_includes_both_ports_only_for_unique_current_cable(tmp_p
     address = "192.0.2.14"
     nodes = [
         {"id": "upstream", "name": "Upstream", "kind": "Коммутатор",
-         "ports": [{"name": "gigabitEthernet 1/0/31", "state": "up", "checkedAt": at}]},
+         "ports": [{"name": "gigabitEthernet 1/0/31", "state": "up", "checkedAt": at, "lldpNeighborCount": 2,
+                    "lldpNeighbors": [
+                        {"chassisId": "02:00:00:00:00:14", "inventoryDeviceId": "host",
+                         "portId": "bond0", "portIdSubtype": "interface_name"},
+                        {"chassisId": "02:00:00:00:00:15", "inventoryDeviceId": "other",
+                         "portId": "eth1", "portIdSubtype": "interface_name"},
+                    ]}]},
         {"id": "host", "name": "Host", "kind": "Коммутатор"},
         {"id": "other", "name": "Other switch", "kind": "Коммутатор"},
         {"id": "web", "name": "Web", "kind": "Сервис", "serviceChecks": [
@@ -5637,6 +5643,11 @@ def test_management_path_includes_both_ports_only_for_unique_current_cable(tmp_p
         return service["switchAttachment"]
 
     direct = cable("host", "LLDP · двустороннее")
+    path = read()
+    assert path["lldpPeers"] == [{"localPort": "gigabitEthernet 1/0/31", "checkedAt": at,
+                                  "chassisId": "02:00:00:00:00:14", "portId": "bond0",
+                                  "portIdSubtype": "interface_name"}]
+    assert "physicalPair" not in path
     assert read(direct)["physicalPair"] == {"hostId": "host", "hostPort": "Gi1/0/47", "switchPort": "Gi1/0/31",
                                             "source": "LLDP · двустороннее", "checkedAt": at}
     assert "physicalPair" not in read(cable("host", "GitHub"))
@@ -5644,6 +5655,8 @@ def test_management_path_includes_both_ports_only_for_unique_current_cable(tmp_p
     assert "physicalPair" not in read(cable("host", "LLDP · двустороннее", at=(now - timedelta(hours=1)).isoformat()))
     nodes[1]["ports"] = [{"name": "Gi1/0/47", "state": "down", "checkedAt": at}]
     assert "physicalPair" not in read(direct)
+    nodes[0]["ports"][0]["lldpNeighbors"][0]["chassisId"] = "02:00:00:00:00:16"
+    assert "lldpPeers" not in read()
 
 
 def test_hypervisor_fdb_path_reports_management_interface_without_claiming_direct_cable(tmp_path):

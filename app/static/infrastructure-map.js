@@ -1088,12 +1088,16 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       }
       const attachment = path.routerAttachment ?? path.switchAttachment;
       if (attachment) {
-        const {routerId, switchId, port, source, checkedAt, physicalPair, archivedPeer} = attachment;
+        const {routerId, switchId, port, source, checkedAt, physicalPair, archivedPeer, lldpPeers = []} = attachment;
         const deviceId = routerId ?? switchId;
         const device = byId.get(deviceId)?.name ?? deviceId;
         const evidence = switchId ? 'ARP + FDB коммутатора' : source;
         row.append(make('small', [evidence, formatTime(checkedAt)].join(' · ')),
           switchPortButton(deviceId, device, port));
+        for (const peer of lldpPeers) {
+          const label = formatLldpPortId(peer.portId, peer.portIdSubtype);
+          row.append(make('small', `Объявление LLDP · ${label} · ${formatTime(peer.checkedAt)}`));
+        }
         if (archivedPeer) {
           const {nodeId, port: peerPort, checkedAt: peerAt, inventorySources} = archivedPeer;
           const peer = byId.get(nodeId)?.name ?? nodeId;

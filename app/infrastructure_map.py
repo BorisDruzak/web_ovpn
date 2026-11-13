@@ -2471,6 +2471,11 @@ def _observed_management_ports(links: list[dict], nodes: dict) -> dict:
                 attachment = {id_key: device, "port": port, "source": report["source"], "checkedAt": report["at"]}
                 if field == "routerAttachment" and not report["b"] and (archived := _archived_router_peer(edge)):
                     attachment["archivedPeer"] = archived
+                if field == "switchAttachment":
+                    peers = [peer for peer in report.get("lldpPeers", {}).get(side, [])
+                             if peer.get("chassisId") == endpoint["mac"] and peer.get("portId")]
+                    if peers:
+                        attachment["lldpPeers"] = peers
                 pair = physical.get(key)
                 if field == "switchAttachment" and pair and pair["hostId"] == host:
                     attachment["physicalPair"] = pair
