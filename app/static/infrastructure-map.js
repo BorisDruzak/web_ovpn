@@ -1176,6 +1176,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           formatTime(checkedAt)].join(' · ')));
       }
       if (!iface.switchObservations.length) row.append(make('small', 'Порт коммутатора не подтверждён'));
+      if (iface.ambiguousSwitchPorts?.length) {
+        row.append(make('small', 'MAC гостя виден на нескольких портах. Порт адаптера не определён однозначно.'));
+      }
       for (const observation of iface.switchObservations) {
         const {basis, physicalPair, switch: target, switchPort, checkedAt, vlanMemberships} = observation;
         const targetPort = physicalPair?.switchPort ?? switchPort;

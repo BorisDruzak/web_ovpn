@@ -2055,6 +2055,11 @@ def _guest_attachments(nodes: dict, links: list[dict], guest_ids: list[str], now
                         if vlans := _attachment_vlan_memberships(interface, match, ports, now):
                             observation["vlanMemberships"] = vlans
                 interface["switchObservations"].append(observation)
+            mac_ports = {(row["switch"]["id"], port_label_key(row["switchPort"])): row["switchPort"]
+                         for row in interface["switchObservations"] if row["basis"] == "guest_mac"}
+            if len(mac_ports) > 1:
+                interface["ambiguousSwitchPorts"] = [{"switchId": switch, "port": label}
+                                                     for (switch, _), label in sorted(mac_ports.items())]
     return guests
 
 
@@ -2603,7 +2608,7 @@ def summarize_guest_attachment_audit(graph: dict) -> dict:
     }
     guest_counts = dict.fromkeys(("running", "stopped", "prelaunch", "paused", "unknown"), 0)
     interface_counts = dict.fromkeys((*evidence_order.values(), "local_neighbor_with_physical_pair",
-                                      "local_neighbor", "unconfirmed", "inactive"), 0)
+                                      "local_neighbor", "ambiguous_switch_port", "unconfirmed", "inactive"), 0)
     gaps = []
     for attachment in guests.values():
         power = attachment["power"]
@@ -2614,6 +2619,8 @@ def summarize_guest_attachment_audit(graph: dict) -> dict:
         for interface in attachment["interfaces"]:
             if inactive or interface["linkDisabled"]:
                 state = "inactive"
+            elif "ambiguousSwitchPorts" in interface:
+                state = "ambiguous_switch_port"
             else:
                 evidence = {(row["basis"], "physicalPair" in row) for row in interface["switchObservations"]}
                 state = next((label for key, label in evidence_order.items() if key in evidence), "unconfirmed")
@@ -2625,6 +2632,8 @@ def summarize_guest_attachment_audit(graph: dict) -> dict:
             interface_counts[state] += 1
             if state not in {"guest_mac_with_physical_pair", "local_neighbor_with_physical_pair", "inactive"}:
                 incomplete.append({"guestPort": interface["guestPort"], "bridge": interface["bridge"], "state": state})
+                if state == "ambiguous_switch_port":
+                    incomplete[-1]["switchPorts"] = interface["ambiguousSwitchPorts"]
                 if "arpDiagnostic" in interface:
                     incomplete[-1]["arpDiagnostic"] = interface["arpDiagnostic"]
         if not inactive and (incomplete or not attachment["interfaces"]):
