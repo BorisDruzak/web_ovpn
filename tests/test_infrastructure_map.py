@@ -8891,6 +8891,16 @@ def test_service_audit_shares_map_status_and_reports_required_check_gaps(tmp_pat
     assert with_dependency["dependencies"] == [
         {"id": "vipnet", "name": "ViPNet", "kind": "Сервис", "mapStatus": "unknown"},
     ]
+    from app.infrastructure_map import summarize_services
+
+    dependency_graph = client.get(url, headers=headers).json()["infrastructure"]
+    filtered, = summarize_services(dependency_graph, service_ids={"svc"})["serviceAudit"]["services"]
+    assert filtered["dependencyIssueTotal"] == 1
+    dependency, = filtered["dependencyIssues"]
+    assert (dependency["id"], dependency["name"], dependency["status"], dependency["issueTotal"]) == (
+        "vipnet", "ViPNet", "unknown", 1,
+    )
+    assert dependency["issue"]["reason"] == "icmp_no_echo_reply"
     reverse = client.get(url + "?view=attachment&node_id=vipnet", headers=headers).json()["infrastructure"]["attachment"]
     assert reverse["dependencies"] == []
     snapshot_with_dependency["links"] = snapshot_with_dependency["links"][:1]

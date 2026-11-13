@@ -3737,12 +3737,11 @@ def summarize_services(graph: dict, *, host_id: str | None = None, service_ids: 
     priority = {"critical": 0, "warn": 1, "unknown": 2, "ok": 3}
     counts = dict.fromkeys(priority, 0)
     services = []
+    service_rows = {}
     for node in nodes.values():
-        if (node["kind"] != "Сервис" or (service_ids is not None and node["id"] not in service_ids)
-                or (host_id is not None and host_id not in hosts.get(node["id"], ()))):
+        if node["kind"] != "Сервис":
             continue
         state = node["mapStatus"]
-        counts[state] += 1
         checks = [
             {"check": check["name"], "label": check.get("label", check["name"]),
              "required": check.get("required") is True,
@@ -3768,7 +3767,7 @@ def summarize_services(graph: dict, *, host_id: str | None = None, service_ids: 
         totals = Counter(check["status"] for check in checks if check["required"])
         issues = sorted((check for check in checks if check["status"] != "ok"),
                         key=lambda check: (not check["required"], priority[check["status"]]))
-        services.append({
+        row = {
             "id": node["id"], "name": node["name"], "status": state, "reachability": node["reachability"],
             **({"probeTransition": node["probeTransition"]} if "probeTransition" in node else {}),
             "hosts": sorted(hosts.get(node["id"], ())), "dependencies": node["serviceAvailability"],
@@ -3776,7 +3775,12 @@ def summarize_services(graph: dict, *, host_id: str | None = None, service_ids: 
                                "unconfirmed": totals["unknown"]},
             "issueTotal": len(issues), "issues": issues[:6],
             **({"backupScope": node["backupScope"]} if "backupScope" in node else {}),
-        })
+        }
+        service_rows[node["id"]] = row
+        if ((service_ids is None or node["id"] in service_ids)
+                and (host_id is None or host_id in hosts.get(node["id"], ()))):
+            counts[state] += 1
+            services.append(row)
     services.sort(key=lambda node: (priority[node["status"]], node["name"].casefold(), node["id"]))
     recent_transitions = [
         {**{key: row[key] for key in ("id", "name", "status", "hosts")}, **row["probeTransition"]}
@@ -3786,7 +3790,14 @@ def summarize_services(graph: dict, *, host_id: str | None = None, service_ids: 
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
     end = offset + 128
     page = services[offset:end]
-    guest_ids = sorted({host for row in page if row["status"] != "ok" or row["issues"]
+    dependency_ids_by_service = {
+        row["id"]: [key for group in ("unavailable", "degraded", "unknown")
+                    for key in row["dependencies"][group] if key in service_rows]
+        for row in page
+    }
+    path_rows = {row["id"]: row for row in page}
+    path_rows.update((key, service_rows[key]) for keys in dependency_ids_by_service.values() for key in keys[:8])
+    guest_ids = sorted({host for row in path_rows.values() if row["status"] != "ok" or row["issues"]
                         for host in row["hosts"] if nodes[host]["guest"]})
     guests = {}
     if guest_ids:
@@ -3806,12 +3817,11 @@ def summarize_services(graph: dict, *, host_id: str | None = None, service_ids: 
                 paths = [path for host in row["hosts"] for path in uplinks.get(host, ())]
                 if paths:
                     row.update(guestUplinkTotal=len(paths), guestUplinks=paths[:8])
-    if any(row["issues"] and len(row["hosts"]) == 1 for row in page):
+    path_candidates = [row for row in path_rows.values() if row["issues"] and len(row["hosts"]) == 1]
+    if path_candidates:
         management = _management_port_paths(nodes, graph["links"])
         observed_ports = _observed_management_ports(graph["links"], nodes)
-        for row in page:
-            if not row["issues"] or len(row["hosts"]) != 1:
-                continue
+        for row in path_candidates:
             host, = row["hosts"]
             service = nodes[row["id"]]
             paths = _management_service_paths(service, host, management, observed_ports, nodes)
@@ -3837,6 +3847,16 @@ def summarize_services(graph: dict, *, host_id: str | None = None, service_ids: 
                     issue["portObservation"] = {"nodeId": node_id, "port": port, "source": evidence["source"],
                                                 "checkedAt": evidence["checkedAt"]}
                     break
+    for row in page:
+        dependency_ids = dependency_ids_by_service[row["id"]]
+        if dependency_ids:
+            dependencies = [service_rows[key] for key in dependency_ids[:8]]
+            row["dependencyIssueTotal"] = len(dependency_ids)
+            row["dependencyIssues"] = [
+                {**{key: dependency[key] for key in ("id", "name", "status", "issueTotal")},
+                 **({"issue": dependency["issues"][0]} if dependency["issues"] else {})}
+                for dependency in dependencies
+            ]
     return {**metadata, "serviceAudit": {
         "total": len(services), "counts": counts, "offset": offset,
         "recentTransitionTotal": len(recent_transitions), "recentTransitions": recent_transitions[:16],
