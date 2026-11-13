@@ -4741,7 +4741,14 @@ def test_running_vm_is_unreachable_when_every_configured_adapter_is_disconnected
     assert load()["mapStatus"] == "unknown"
     del config["net1"]
     del config["directNetworkOnly"]
-    assert load()["mapStatus"] == "unknown"
+    assert load()["reachability"]["source"] == ""
+    config["networkConfigRead"] = True
+    node = load()
+    assert node["mapStatus"] == "unknown"
+    assert node["reachability"] == {
+        "state": "unknown", "source": "Proxmox", "method": "Адаптеры Proxmox отключены",
+        "checkedAt": now.isoformat(), "stale": False,
+    }
     config["directNetworkOnly"] = True
     assert load(now + timedelta(hours=1))["mapStatus"] == "unknown"
     config.clear()

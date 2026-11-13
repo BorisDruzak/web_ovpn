@@ -2594,10 +2594,14 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                             or datetime.fromisoformat(checked["checkedAt"]) >= datetime.fromisoformat(observation["checkedAt"])):
                         observation = checked
                         item["properties"]["IP проверки по ARP"] = address
-                if (guest.get("type") == "qemu" and config.get("directNetworkOnly") is True
-                        and interfaces and configured_nics == interfaces.keys()
-                        and all(disabled for _, _, disabled, _ in interfaces.values())):
-                    observation = _observation("unreachable", "Proxmox", "Все адаптеры ВМ отключены", pve_at)
+                all_adapters_disabled = bool(interfaces) and configured_nics == interfaces.keys() and all(
+                    disabled for _, _, disabled, _ in interfaces.values()
+                )
+                if all_adapters_disabled:
+                    if guest.get("type") == "qemu" and config.get("directNetworkOnly") is True:
+                        observation = _observation("unreachable", "Proxmox", "Все адаптеры ВМ отключены", pve_at)
+                    elif not observation and config.get("networkConfigRead") is True:
+                        observation = _observation("unknown", "Proxmox", "Адаптеры Proxmox отключены", pve_at)
                 if not observation and config.get("networkConfigRead") is True and not configured_nics:
                     observation = _observation("unknown", "Proxmox", "Адаптеры Proxmox не заданы", pve_at)
                 if observation:
