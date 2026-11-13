@@ -135,6 +135,8 @@
               'unreliable_counters': 'счётчики этой версии прошивки недостоверны'
             }.get(broadcast.status, 'нет данных') }}
             {% if broadcast.status == 'recent' %} · портов {{ broadcast.sampled_ports }}{% endif %}
+            {% if broadcast.reason == 'missing_discontinuity_marker' %}<br>Нет маркера сброса счётчика{% endif %}
+            {% if broadcast.reason == 'no_valid_intervals' %}<br>Нет пригодных интервалов между опросами{% endif %}
             {% endif %}
           </td>
           <td>

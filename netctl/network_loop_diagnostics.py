@@ -193,6 +193,12 @@ def _broadcast_evidence(
         sampled_ports=len({row["port_key"] for _, row in samples}),
         valid_intervals=len(intervals),
     )
+    if not intervals:
+        coverage["reason"] = (
+            "missing_discontinuity_marker"
+            if all(row["counter_discontinuity_ticks"] is None for _, row in samples)
+            else "no_valid_intervals"
+        )
     for finding in findings:
         started = _timestamp(finding["first_observed_at"])
         ended = _timestamp(finding["last_observed_at"])

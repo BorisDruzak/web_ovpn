@@ -151,6 +151,19 @@ def test_broadcast_invalid_intervals_never_produce_rates(database, at, in_packet
     assert switch["coverage"]["broadcast"]["valid_intervals"] == 0
 
 
+def test_broadcast_explains_missing_discontinuity_marker(database):
+    conn, _ = database
+    add_source(conn, 1, "switch")
+    add_broadcast_sample(conn, PORT_A, "2026-11-12T12:05:00Z", 1000, 0, discontinuity=None)
+    add_broadcast_sample(conn, PORT_A, "2026-11-12T12:10:00Z", 4000, 0, uptime=30100, discontinuity=None)
+
+    [switch] = read(conn)["sources"]
+
+    assert switch["coverage"]["broadcast"]["status"] == "insufficient"
+    assert switch["coverage"]["broadcast"]["reason"] == "missing_discontinuity_marker"
+    assert switch["coverage"]["broadcast"]["valid_intervals"] == 0
+
+
 def test_broadcast_rates_alone_do_not_form_a_loop_finding(database):
     conn, _ = database
     add_source(conn, 1, "switch")
