@@ -402,7 +402,7 @@ def verify_speed(script: Path, selections: list[list[str]], max_age: timedelta) 
     return [speed_report(history["runs"], api["runs"], *selection, now, max_age) for selection in selections]
 
 
-def verify(script: Path, max_age: timedelta) -> dict:
+def verify(script: Path, max_age: timedelta, route_profiles: list[str] | None = None) -> dict:
     spec = bridge.api_request("GET", "/openapi.json")
     paths = spec["paths"]
     for suffix in ("checks", "route-runs", "interfaces", "runs", "loops", "captures", "captures/{capture_id}"):
@@ -426,6 +426,11 @@ def verify(script: Path, max_age: timedelta) -> dict:
         raise ValueError("Diagnostic checks missing")
     profiles = catalog["profiles"]
     scheduled = {profile["id"]: profile["probes"] for profile in profiles["routes"] if profile["scheduled"]}
+    if route_profiles:
+        unknown = sorted(set(route_profiles) - scheduled.keys())
+        if unknown:
+            return {"contracts": "ok", "error": "unknown_scheduled_route_profiles", "profiles": unknown}
+        scheduled = {name: scheduled[name] for name in dict.fromkeys(route_profiles)}
     if not scheduled:
         raise ValueError("No scheduled route profiles")
 
@@ -476,6 +481,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mcp-script", type=Path, default=MCP_SCRIPT)
     parser.add_argument("--max-age-minutes", type=int, default=10)
+    parser.add_argument("--route-profile", action="append", help="verify only the selected scheduled route profiles")
     parser.add_argument("--require-reachable", action="store_true")
     parser.add_argument(
         "--require-fresh-push-receipts", action="store_true",
@@ -527,9 +533,12 @@ def main() -> int:
     if any(check not in {"iperf3", "https_speed"} for check, _, _ in args.speed or ()):
         parser.error("--speed CHECK must be iperf3 or https_speed")
     try:
-        report = verify(args.mcp_script, timedelta(minutes=args.max_age_minutes))
+        report = verify(args.mcp_script, timedelta(minutes=args.max_age_minutes), args.route_profile)
     except (OSError, LookupError, RuntimeError, TypeError, ValueError, subprocess.SubprocessError):
         print(json.dumps({"contracts": "failed", "error": "diagnostics_verification_failed"}))
+        return 1
+    if report.get("error") == "unknown_scheduled_route_profiles":
+        print(json.dumps(report, ensure_ascii=False, indent=2))
         return 1
     routes = report["routes"].values()
     configured_hops = [

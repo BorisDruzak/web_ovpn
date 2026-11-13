@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 import json
+from pathlib import Path
 import struct
 import subprocess
 import sys
@@ -8,6 +9,83 @@ import pytest
 
 from deploy import verify_network_diagnostics as verifier
 from deploy.verify_network_diagnostics import route_report
+
+
+@pytest.mark.parametrize("selected,expected,status", [
+    ([], ["archive", "vlan50"], 2),
+    (["vlan50", "vlan50"], ["vlan50"], 0),
+    (["archive", "vlan50"], ["archive", "vlan50"], 2),
+    (["manual-only"], [], 1),
+])
+def test_verify_route_profile_selection(monkeypatch, capsys, selected, expected, status):
+    argv = ["verifier", "--require-reachable"]
+    for profile in selected:
+        argv.extend(("--route-profile", profile))
+    monkeypatch.setattr(sys, "argv", argv)
+    now = datetime.now(UTC).isoformat()
+    profiles = {
+        "routes": [
+            {"id": name, "scheduled": scheduled, "probes": [{"id": "ping", "config_digest": "digest"}]}
+            for name, scheduled in (("archive", True), ("vlan50", True), ("manual-only", False))
+        ],
+        "throughput": [], "https_speed": [], "capture": [],
+    }
+    catalog = {"profiles": profiles, "checks": [{"check": name} for name in verifier.CHECKS]}
+    histories = {}
+    for name, reachability in (("archive", "unreachable"), ("vlan50", "reachable")):
+        histories[name] = {"runs": [{
+            "id": 1, "trigger": "scheduled", "checked_at": now, "status": reachability,
+            "result": {"probes": [{"id": "ping", "status": reachability, "config_digest": "digest"}]},
+        }]}
+    loops = {"result": {"status": "insufficient_data", "since": now, "until": now, "sources": [], "truncated": False}}
+    api_reads, mcp_reads = [], []
+
+    def api_request(method, path):
+        if path == "/openapi.json":
+            paths = {f"{verifier.API}/{suffix}": {"get": {}} for suffix in (
+                "checks", "route-runs", "interfaces", "runs", "loops", "captures", "captures/{capture_id}",
+            )}
+            paths[f"{verifier.API}/checks"]["post"] = {"requestBody": {"content": {"application/json": {
+                "schema": {"discriminator": {"mapping": dict.fromkeys(verifier.CHECKS)}},
+            }}}}
+            return {"paths": paths}
+        if path == f"{verifier.API}/checks":
+            return {"data": catalog}
+        if path == f"{verifier.API}/loops":
+            return {"data": loops}
+        profile = path.split("profile=", 1)[1].split("&", 1)[0]
+        api_reads.append(profile)
+        return {"data": histories[profile]}
+
+    def mcp_requests(script: Path, requests):
+        replies = []
+        for method, params in requests:
+            if method == "tools/list":
+                replies.append({"tools": [{"name": name, "inputSchema": {"properties": {
+                    "check": {"enum": list(verifier.CHECKS)},
+                }}} for name in verifier.MCP_TOOLS]})
+            elif params["name"] == "openvpn_network_diagnostic_checks":
+                replies.append(catalog)
+            elif params["name"] == "openvpn_network_loop_diagnostics":
+                replies.append(loops)
+            else:
+                profile = params["arguments"]["profile"]
+                mcp_reads.append(profile)
+                replies.append(histories[profile])
+        return replies
+
+    monkeypatch.setattr(verifier.bridge, "api_request", api_request)
+    monkeypatch.setattr(verifier, "mcp_requests", mcp_requests)
+    monkeypatch.setattr(verifier, "mcp_data", lambda reply: reply)
+    assert verifier.main() == status
+    report = json.loads(capsys.readouterr().out)
+    assert api_reads == mcp_reads == expected
+    if status == 1:
+        assert report["error"] == "unknown_scheduled_route_profiles"
+        assert report["profiles"] == ["manual-only"]
+    else:
+        assert list(report["routes"]) == expected
+        assert report["loop_diagnostics"]["api_matches"]
 
 
 def test_route_report_uses_fresh_scheduled_run_and_preserves_failed_probe():
