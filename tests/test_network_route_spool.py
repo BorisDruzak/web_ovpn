@@ -25,6 +25,44 @@ def test_receiver_loads_routes_even_with_newer_speed_fields(tmp_path, monkeypatc
     assert network_probe_profiles.load_probe_profiles(routes_only=True).routes[PROFILE] == push_profile
 
 
+def test_map_uses_fresh_windows_dns_receipts_for_both_transports(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from app import infrastructure_endpoint_ports as ports, network_route_spool as spool
+    from app.infrastructure_map import load_infrastructure_map
+
+    probes = [{"id": transport, "push_origin": ORIGIN, "target": "192.0.2.1", "protocol": "dns",
+               "source_address": "192.0.2.20", "expected_kernel_interface": "ifindex-10", "expected_path": "VLAN",
+               "dns_name": "example.test.", "dns_transport": transport, "expected_dns_answers": ["192.0.2.80"]}
+              for transport in ("udp", "tcp")]
+    profile = RouteProfile.model_validate({"label": "Windows", "probes": probes})
+    monkeypatch.setattr(ports, "load_probe_profiles", lambda **_: SimpleNamespace(routes={PROFILE: profile}))
+    monkeypatch.setattr(spool, "SPOOL_PATH", tmp_path)
+    monkeypatch.setattr(spool, "utcnow", lambda: NOW)
+    (tmp_path / ORIGIN).mkdir()
+    data = {}
+    for probe in profile.probes:
+        envelope = json.loads(receipt(probe))["probes"][probe.id]
+        envelope["result"]["evidence"] = {"duration_ms": 5, "dns_rcode": "NOERROR", "dns_answers_match": True,
+                                          "dns_transport": probe.id.upper()}
+        data[probe.id] = envelope
+    spool.store_receipt(ORIGIN, PROFILE, profile, json.dumps({"measured_at": NOW.isoformat(), "probes": data}).encode(), now=NOW)
+    node = {"id": "dns", "name": "DNS", "kind": "Сервис", "probeTargetIP": "192.0.2.1"}
+    station = {"id": "pc", "name": "Windows", "kind": "Рабочая станция"}
+    graph = {"schema": 1, "snapshotAt": NOW.isoformat(), "nodes": [node, station], "links": []}
+    ports.collect_endpoint_dns(graph, {"dns": {"origin": ORIGIN, "profile": PROFILE,
+                                               "station": "pc", "probes": ["udp", "tcp"]}}, NOW)
+    path = tmp_path / "map.json"
+    path.write_text(json.dumps(graph), encoding="utf-8")
+    public = load_infrastructure_map(path, NOW)
+    dns = next(node for node in public["nodes"] if node["id"] == "dns")
+    assert dns["mapStatus"] == "ok"
+    assert {c["dns"]["transport"] for c in dns["serviceChecks"]} == {"UDP", "TCP"}
+    assert all(c["checkedAt"] == NOW.isoformat() and c["dns"]["answersMatch"] is True for c in dns["serviceChecks"])
+    assert any(link["kind"] == "Источник проверки" for link in public["links"])
+    expired = next(node for node in load_infrastructure_map(path, NOW + timedelta(minutes=4))["nodes"] if node["id"] == "dns")
+    assert expired["mapStatus"] == "unknown"
+
+
 @pytest.fixture
 def push_profile():
     return RouteProfile.model_validate({"label": "Windows", "probes": [{

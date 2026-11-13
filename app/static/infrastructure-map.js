@@ -2040,6 +2040,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const responder = check.dns?.unexpectedResponder;
         const srvRecords = check.dns?.srvRecords?.map(record => `${record.target}:${record.port}`).join(', ');
         const dns = [check.dns?.rcode, check.dns?.transport, check.dns?.addresses?.join(', '), srvRecords,
+          check.dns?.answersMatch === true && 'записи совпали с ожидаемыми',
           responder && `Ответ от ${responder.address} · порт ${responder.port}`,
           responder?.rcode, responder?.addresses?.join(', '),
           responder?.matchesExpectedAddresses === true && 'записи совпали с ожидаемыми']
