@@ -588,15 +588,25 @@ def _infrastructure_address_observations(nodes: list[dict[str, Any]], query: str
     mac = query.replace(":", "").replace("-", "") if re.fullmatch(
         r"(?:[a-f0-9]{12}|(?:[a-f0-9]{2}:){5}[a-f0-9]{2}|(?:[a-f0-9]{2}-){5}[a-f0-9]{2})", query
     ) else None
+    node_names = {node["id"]: node["name"] for node in nodes}
     observations = {}
     for node in nodes:
-        for device in node.get("downstream", {}).get("devices", []):
+        downstream = node.get("downstream", {})
+        upstream_id = downstream.get("upstreamId")
+        upstream_port = downstream.get("port")
+        upstream = {}
+        if upstream_id in node_names and upstream_port:
+            upstream["upstreamObservation"] = {
+                "nodeId": upstream_id, "nodeName": node_names[upstream_id], "portName": upstream_port,
+                "basis": downstream.get("basis"), "checkedAt": downstream.get("checkedAt"),
+            }
+        for device in downstream.get("devices", []):
             if device.get("ip") != query and not (mac and device["mac"].replace(":", "") == mac):
                 continue
             port = device.get("switchPort", {}).get("name")
             key = node["id"], port, device["mac"], device.get("ip")
             observations.setdefault(key, {
-                "nodeId": node["id"], "nodeName": node["name"], "portName": port, **device,
+                "nodeId": node["id"], "nodeName": node["name"], "portName": port, **device, **upstream,
             })
     return {"portObservations": list(observations.values())[:12], "portObservationTotal": len(observations)}
 

@@ -2898,23 +2898,30 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       ? value.toLowerCase().replace(/[:-]/g, '') : null;
     const mac = macKey(term);
     const observations = new Map();
+    const uplinks = new Map();
+    function addObservation(results, observer, port, label) {
+      const key = JSON.stringify([observer.id, port?.name]);
+      if (results.has(key)) return;
+      const result = make('button', label);
+      result.type = 'button';
+      result.addEventListener('click', () => {
+        select(observer.id);
+        if (port && selected === observer.id) selectPort(observer.id, port.name);
+      });
+      results.set(key, result);
+    }
     for (const observer of data.nodes) {
       for (const device of observer.downstream?.devices ?? []) {
         if (device.ip !== term && (!mac || macKey(device.mac) !== mac)) continue;
         const port = device.switchPort && observer.ports.find(item => portKeys(item).includes(portKey(device.switchPort.name)));
-        const key = JSON.stringify([observer.id, port?.name]);
-        if (observations.has(key)) continue;
-        const result = make('button', [observer.name, port?.name].filter(Boolean).join(' · '));
-        result.type = 'button';
-        result.addEventListener('click', () => {
-          select(observer.id);
-          if (port && selected === observer.id) selectPort(observer.id, port.name);
-        });
-        observations.set(key, result);
+        addObservation(observations, observer, port, [observer.name, port?.name].filter(Boolean).join(' · '));
+        const upstream = byId.get(observer.downstream.upstreamId);
+        const uplink = upstream?.ports.find(item => portKeys(item).includes(portKey(observer.downstream.port)));
+        if (uplink) addObservation(uplinks, upstream, uplink, `Аплинк · ${upstream.name} · ${uplink.name}`);
       }
     }
     if (observations.size) {
-      feedback.replaceChildren(make('span', 'Наблюдения по MAC-таблице '), ...observations.values());
+      feedback.replaceChildren(make('span', 'Наблюдения по MAC-таблице '), ...observations.values(), ...uplinks.values());
       return;
     }
     const node = exact.find(value => value.name.toLocaleLowerCase('ru-RU') === term) ?? exact[0] ?? matches[0];

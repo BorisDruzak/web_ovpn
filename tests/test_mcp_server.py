@@ -620,6 +620,12 @@ def test_mcp_infrastructure_search_returns_bounded_matches_and_stable_ids(monkey
     device = {"ip": "192.0.2.42", "mac": "00:12:34:56:78:9a",
               "switchPort": {"name": "Ge2", "checkedAt": "2026-11-11T12:00:00Z"}}
     nodes.append({"id": "poe", "name": "PoE", "downstream": {"devices": [device, device]}})
+    indirect = {"ip": "192.0.2.43", "mac": "00:12:34:56:78:9b"}
+    nodes.append({"id": "core", "name": "Core"})
+    nodes[-2]["downstream"].update(
+        upstreamId="core", port="Slot0/51", basis="lldp", checkedAt=device["switchPort"]["checkedAt"],
+        devices=[device, device, indirect],
+    )
     graph = {"snapshotAt": "2026-11-11T12:00:00Z", "availability": "ready", "git": "abcdef",
              "nodes": nodes, "links": []}
     requests = []
@@ -645,7 +651,13 @@ def test_mcp_infrastructure_search_returns_bounded_matches_and_stable_ids(monkey
     for address in ("192.0.2.42", "00:12:34:56:78:9A", "00123456789a"):
         result = search(address)
         assert result["portObservationTotal"] == 1
-        assert result["portObservations"] == [{"nodeId": "poe", "nodeName": "PoE", "portName": "Ge2", **device}]
+        assert result["portObservations"][0]["portName"] == "Ge2"
+    indirect_observation, = search("192.0.2.43")["portObservations"]
+    assert indirect_observation["portName"] is None
+    assert indirect_observation["upstreamObservation"] == {
+        "nodeId": "core", "nodeName": "Core", "portName": "Slot0/51", "basis": "lldp",
+        "checkedAt": device["switchPort"]["checkedAt"],
+    }
     assert not search("192.0.2.4").get("portObservations")
     assert set(requests) == {("GET", "/api/v1/network/infrastructure")}
     requests.clear()
