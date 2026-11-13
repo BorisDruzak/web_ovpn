@@ -7865,6 +7865,12 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     assert uplink["interfaces"] == [
         {"guest": guest["guest"], "guestPort": "net0", "bridge": "vmbr1", "basis": "guest_mac"},
     ]
+    switch = client.get(url + "&node_id=snr", headers=headers).json()["infrastructure"]["attachment"]
+    assert switch["confirmedUplinkTotal"] == 1
+    assert switch["confirmedUplinks"] == [uplink]
+    topology = client.get("/api/v1/network/infrastructure?view=topology&node_id=snr&port_name=ge12",
+                          headers=headers).json()["infrastructure"]["topologyAudit"]
+    assert topology["confirmedUplinkTotal"] == 0
 
     def read_hypervisor():
         response = client.get(url + "&node_id=pve", headers=headers)

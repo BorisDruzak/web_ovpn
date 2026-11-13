@@ -1657,6 +1657,22 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       if (servicePaths) guestAttachment.open = false;
       propertiesSection.append(guestAttachment);
     }
+    if (node.kind === 'Коммутатор' && !chosenPort) {
+      const uplinks = (data.confirmedUplinks ?? []).filter(row => row.switch.id === node.id);
+      if (uplinks.length) {
+        const panel = make('details', null, 'map-port-panel');
+        panel.append(make('summary', `Аплинки запущенных ВМ · ${uplinks.length}`));
+        const list = make('ul', null, 'map-detail-list');
+        for (const {hypervisor, hostPort, switchPort, guestTotal, interfaceTotal, checkedAt} of uplinks) {
+          const row = make('li');
+          row.append(switchPortButton(node.id, node.name, switchPort),
+            make('small', `${hypervisor.name} ${hostPort} · ВМ: ${guestTotal} · адаптеров: ${interfaceTotal} · ${formatTime(checkedAt)}`));
+          list.append(row);
+        }
+        panel.append(list);
+        propertiesSection.append(panel);
+      }
+    }
     if (resourceHost.resources) {
       const {cpuRatio, logicalCpus, memoryUsedBytes, memoryTotalBytes, rootUsedBytes, rootTotalBytes,
         uptimeSeconds, checkedAt} = resourceHost.resources;

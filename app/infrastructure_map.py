@@ -2159,10 +2159,12 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
             or report["id"] == node_id and not port_name
         )]
         attached_guests = []
+        uplinks = {}
         if node and node["kind"] == NETWORK_KINDS[0]:
             guests = _guest_attachments(nodes, graph["links"], [key for key, item in nodes.items() if item["guest"]])
             attached_guests = [row for row in _guest_switch_attachments(guests).get(node_id, [])
                                if not port_name or port_label_key(row["switchPort"]) in keys]
+            uplinks = _confirmed_guest_uplinks(guests, switch_id=node_id, port_keys=keys if port_name else None)
         scoped_nodes = {node_id: {**node, "ports": ports}} if node else {}
         return {**metadata, "topologyAudit": {
             "node": _attachment_node(node) if node else None, "portName": port_name, "ports": ports,
@@ -2180,6 +2182,7 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
             "servicePorts": [row for row in graph.get("servicePorts", {}).get(node_id, [])
                              if not port_name or port_label_key(row["port"]) in keys],
             "guestAttachmentTotal": len(attached_guests), "guestAttachments": attached_guests[:128],
+            **uplinks,
             "sharedPorts": [row for row in shared_ports if row["switchId"] == node_id
                             and (not port_name or port_label_key(row["port"]) in keys)][:64],
             "lacpPartnerInterfaceGapTotal": len(partner_gaps), "lacpPartnerInterfaceGaps": partner_gaps[:64],
@@ -3127,6 +3130,8 @@ def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
     elif anchor and anchor["kind"] in NETWORK_KINDS[:2]:
         attachments = _map_attachments(nodes, links, datetime.now(timezone.utc))
         detail["servicePorts"] = graph.get("servicePorts", attachments["servicePorts"]).get(node_id, [])
+        if anchor["kind"] == NETWORK_KINDS[0]:
+            detail.update(_confirmed_guest_uplinks(attachments["guestAttachments"], switch_id=node_id))
         if paths := attachments["servicePaths"].get(node_id):
             detail["servicePaths"] = paths
     elif anchor and not anchor["guest"]:
@@ -3225,13 +3230,18 @@ def summarize_guest_attachment_audit(graph: dict) -> dict:
                                             "runningWithoutNetwork": running_without_network[:64]}}
 
 
-def _confirmed_guest_uplinks(guests: dict) -> dict:
+def _confirmed_guest_uplinks(guests: dict, *, switch_id: str | None = None, port_keys: set[str] | None = None) -> dict:
     running = {key: guest for key, guest in guests.items() if guest["power"] == "running"}
     uplink_groups = defaultdict(list)
-    for switch_id, attachments in _guest_switch_attachments(running).items():
+    for device_id, attachments in _guest_switch_attachments(running).items():
+        if switch_id is not None and device_id != switch_id:
+            continue
         for row in attachments:
             pair = row["physicalPair"]
-            key = (switch_id, port_label_key(pair["switchPort"]), row["hypervisor"]["id"],
+            port = port_label_key(pair["switchPort"])
+            if port_keys is not None and port not in port_keys:
+                continue
+            key = (device_id, port, row["hypervisor"]["id"],
                    port_label_key(pair["hostPort"]))
             uplink_groups[key].append(row)
     confirmed_uplinks = []
@@ -4009,6 +4019,7 @@ def load_infrastructure_map(
         lacp_gaps = _lacp_partner_interface_gaps(nodes)
         attachments.update(
             guestSwitchAttachments=_guest_switch_attachments(attachments["guestAttachments"]),
+            **_confirmed_guest_uplinks(attachments["guestAttachments"]),
             inventoryPairs=inventory_pairs,
             currentPortPairTotal=len(current_pairs),
             currentPortPairs=current_pairs[:64],
