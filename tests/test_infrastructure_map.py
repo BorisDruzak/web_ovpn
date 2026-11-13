@@ -8632,6 +8632,16 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     ]
     certificate_path, = read()["servicePaths"]
     assert certificate_path["tlsExpiresAt"] == expires and certificate_path["tlsVersion"] == "TLSv1.3"
+    raw["nodes"][0]["serviceChecks"].append({**raw["nodes"][0]["serviceChecks"][0], "target": "192.0.2.90"})
+    read()
+    issues = {issue.get("target"): issue for issue in service_audit_row()["issues"]}
+    assert issues["192.0.2.11"]["portObservation"] == {
+        "nodeId": "snr", "port": "xe3", "source": "netctl FDB + Proxmox",
+        "checkedAt": certificate_path["physicalPair"]["checkedAt"],
+    }
+    assert "portObservation" not in issues["192.0.2.90"]
+    raw["nodes"][0]["serviceChecks"].pop()
+    read()
     browser = client.get(browser_endpoint).json()["infrastructure"]
     certificate, = browser["servicePorts"]["snr"][0]["services"][0]["probeEndpoints"]
     assert certificate["tlsCertificates"] == [{"expiresAt": expires, "version": "TLSv1.3"}]

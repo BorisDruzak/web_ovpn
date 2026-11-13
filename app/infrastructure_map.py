@@ -3786,8 +3786,9 @@ def summarize_services(graph: dict, *, host_id: str | None = None, service_ids: 
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
     end = offset + 128
     page = services[offset:end]
-    guest_ids = sorted({host for row in page if row["status"] != "ok"
+    guest_ids = sorted({host for row in page if row["status"] != "ok" or row["issues"]
                         for host in row["hosts"] if nodes[host]["guest"]})
+    guests = {}
     if guest_ids:
         guests = _guest_attachments(nodes, graph["links"], guest_ids)
         running = {key: guest for key, guest in guests.items() if guest["power"] == "running"}
@@ -3812,12 +3813,16 @@ def summarize_services(graph: dict, *, host_id: str | None = None, service_ids: 
             if not row["issues"] or len(row["hosts"]) != 1:
                 continue
             host, = row["hosts"]
-            paths = _management_service_paths(nodes[row["id"]], host, management, observed_ports, nodes)
+            service = nodes[row["id"]]
+            paths = _management_service_paths(service, host, management, observed_ports, nodes)
+            if host in guests:
+                paths.extend(_service_attachment_paths(service, {host: guests[host]}))
             for issue in row["issues"]:
                 if issue["source"] not in ("UI_VPN", "Network Observer"):
                     continue
                 for path in paths:
-                    if (issue.get("target") != path["target"] or issue.get("port") != path["port"]
+                    if (issue["source"] != path.get("source", "UI_VPN")
+                            or issue.get("target") != path["target"] or issue.get("port") != path["port"]
                             or issue["check"] != path["method"] or issue.get("checkedAt") != path["checkedAt"]
                             or issue.get("path") != path.get("path") or issue.get("dns") != path.get("dns")):
                         continue
