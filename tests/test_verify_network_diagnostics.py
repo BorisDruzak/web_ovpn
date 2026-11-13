@@ -248,6 +248,38 @@ def test_route_report_checks_configured_gateway(observed, confirmed):
     assert not route_report([run], now, timedelta(minutes=10), **inputs)["profile_matches"]
 
 
+@pytest.mark.parametrize("ages,confirmed", [
+    ([30, 30], True), ([30, 31], False), ([181, 181], False), ([None, None], False), ([-31, -31], False),
+])
+def test_route_report_checks_shared_remote_measurement(ages, confirmed):
+    now = datetime(2026, 11, 13, 2, 15, tzinfo=UTC)
+    ids = ("dns", "http")
+    probes = []
+    for probe_id, age in zip(ids, ages, strict=True):
+        stamp = (now - timedelta(seconds=age)).isoformat() if age is not None else None
+        probes.append({"id": probe_id, "origin": "windows", "status": "reachable",
+                       "checked_at": stamp, "evidence": {"origin_measured_at": stamp}})
+    row = {"id": 7, "trigger": "scheduled", "checked_at": now.isoformat(), "status": "reachable",
+           "result": {"probes": probes}}
+    report = route_report(
+        [row], now + timedelta(minutes=4), timedelta(minutes=10), api_runs=[row],
+        expected_hops=dict.fromkeys(ids), expected_push_origins=dict.fromkeys(ids, "windows"),
+    )
+    assert report["fresh"] and report["api_matches"]
+    assert report["push_origins"]["windows"]["confirmed"] is confirmed
+
+
+@pytest.mark.parametrize("receipts,code", [({}, 1), ({"windows": {"confirmed": False}}, 2),
+                                           ({"windows": {"confirmed": True}}, 0)])
+def test_require_fresh_push_receipts(monkeypatch, receipts, code):
+    monkeypatch.setattr(sys, "argv", ["verifier", "--require-fresh-push-receipts"])
+    monkeypatch.setattr(verifier, "verify", lambda *_: {"routes": {
+        "vlan": {"fresh": True, "profile_matches": True, "api_matches": True,
+                 "probes": [], "push_origins": receipts},
+    }})
+    assert verifier.main() == code
+
+
 def test_loop_report_preserves_per_source_coverage_without_copying_findings():
     coverage = {
         "fdb": {"status": "recent", "truncated": False},

@@ -7,18 +7,17 @@ import json
 import os
 import sys
 import tempfile
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
 
 from .network_probe_profiles import RouteProbe, RouteProfile, load_probe_profiles
 from .network_route_local import probe_local_route
+from .network_route_receipt_timing import CLOCK_TOLERANCE, MAX_AGE
 from .network_route_remote import _result, _sanitize_reply, _valid_id
 
 SPOOL_PATH = Path("/var/lib/openvpn-route-probes")
 MAX_RECEIPT_BYTES = 32_768
-MAX_AGE = timedelta(minutes=3)
-CLOCK_TOLERANCE = timedelta(seconds=30)
 
 
 def utcnow() -> datetime:

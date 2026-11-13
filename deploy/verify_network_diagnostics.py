@@ -15,6 +15,7 @@ from urllib.parse import urlencode
 from uuid import UUID
 
 from app.network_capture import CAPTURE_MAX_KIB, CAPTURE_MAX_PACKETS, _pcap_packet_count
+from app.network_route_receipt_timing import CLOCK_TOLERANCE, MAX_AGE as PUSH_RECEIPT_MAX_AGE
 from mcp import openvpn_mcp_server as bridge
 
 
@@ -48,6 +49,7 @@ def route_report(
     expected_gateways: dict[str, str] | None = None,
     expected_ipsec: set[str] | None = None,
     expected_digests: dict[str, str] | None = None,
+    expected_push_origins: dict[str, str] | None = None,
 ) -> dict:
     row = next((run for run in runs if run["trigger"] == "scheduled"), None)
     if row is None:
@@ -117,6 +119,33 @@ def route_report(
     reported_gateways = {
         probe["id"]: probe["expected_kernel_gateway"] for probe in probes if "expected_kernel_gateway" in probe
     }
+    by_id = {probe["id"]: probe for probe in row["result"]["probes"]}
+    origin_probes: dict[str, list[str]] = {}
+    for probe_id, origin in (expected_push_origins or {}).items():
+        origin_probes.setdefault(origin, []).append(probe_id)
+    push_origins = {}
+    for origin, probe_ids in origin_probes.items():
+        timestamps = set()
+        valid = True
+        for probe_id in probe_ids:
+            probe = by_id.get(probe_id, {})
+            evidence = probe.get("evidence", {})
+            stamp = evidence.get("origin_measured_at")
+            try:
+                measured = datetime.fromisoformat(stamp)
+                age = checked_at - measured
+            except (ValueError, TypeError):
+                valid = False
+                continue
+            timestamps.add(measured)
+            valid = valid and (
+                probe.get("origin") == origin and probe.get("checked_at") == stamp
+                and -CLOCK_TOLERANCE <= age <= PUSH_RECEIPT_MAX_AGE
+                and evidence.get("reason") not in {"origin_receipt_stale", "origin_receipt_invalid", "profile_mismatch"}
+            )
+        shared = next(iter(timestamps)) if len(timestamps) == 1 else None
+        push_origins[origin] = {"probes": probe_ids, "measured_at": shared.isoformat() if shared else None,
+                                "confirmed": valid and shared is not None}
     return {
         "status": row["status"],
         "run_id": row["id"],
@@ -132,6 +161,7 @@ def route_report(
             and (expected_digests is None or all(probe["configuration_matches"] for probe in probes))
         ),
         "probes": probes,
+        "push_origins": push_origins,
     }
 
 
@@ -368,6 +398,7 @@ def verify(script: Path, max_age: timedelta) -> dict:
             },
             expected_ipsec={probe["id"] for probe in probes if probe.get("ipsec")},
             expected_digests={probe["id"]: probe["config_digest"] for probe in probes},
+            expected_push_origins={probe["id"]: probe["push_origin"] for probe in probes if probe.get("push_origin")},
         )
     return {
         "contracts": "ok",
@@ -382,6 +413,10 @@ def main() -> int:
     parser.add_argument("--mcp-script", type=Path, default=MCP_SCRIPT)
     parser.add_argument("--max-age-minutes", type=int, default=10)
     parser.add_argument("--require-reachable", action="store_true")
+    parser.add_argument(
+        "--require-fresh-push-receipts", action="store_true",
+        help="require one fresh shared receipt per configured push origin in each scheduled run",
+    )
     parser.add_argument(
         "--require-ipsec", action="store_true",
         help="require an established IPsec policy with Phase 2 and a reachable target for each IPsec probe",
@@ -495,6 +530,12 @@ def main() -> int:
         return 1
     if any(not (route["fresh"] and route["profile_matches"] and route["api_matches"]) for route in routes):
         return 1
+    if args.require_fresh_push_receipts:
+        receipts = [receipt for route in routes for receipt in route.get("push_origins", {}).values()]
+        if not receipts:
+            return 1
+        if not all(receipt["confirmed"] for receipt in receipts):
+            return 2
     if (args.require_expected_first_hop and not configured_hops) or (args.require_dns_transport and not dns_probes):
         return 1
     if args.require_expected_kernel_interface and not interface_probes:
