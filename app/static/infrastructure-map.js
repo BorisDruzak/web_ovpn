@@ -22,7 +22,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const color = node.mapStatus ?? 'unknown';
     let label = availabilityStates[color];
     if (node.reachability?.state === 'stopped') {
-      label = node.kind === 'Сервис' ? 'Недоступен, ВМ выключена' : 'Выключен';
+      label = node.kind === 'Сервис'
+        ? (node.reachability.source === 'Redfish' ? 'Недоступен, сервер выключен' : 'Недоступен, ВМ выключена')
+        : 'Выключен';
     }
     if (color === 'unknown' && node.reachability?.state === 'reachable') {
       label = 'Доступен, есть проверки без подтверждения';

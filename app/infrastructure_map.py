@@ -1339,10 +1339,21 @@ def _attach_backup_scope(nodes: dict) -> None:
 def _map_statuses(nodes: dict, links: list[dict]) -> None:
     services = {key: set() for key in nodes}
     consumers = {key: set() for key in nodes}
+    placements = defaultdict(set)
     for edge in links:
         if edge["confirmed"] and edge["kind"] in SERVICE_LINKS and nodes[edge["b"]]["kind"] == "Сервис":
             services[edge["a"]].add(edge["b"])
             consumers[edge["b"]].add(edge["a"])
+            if _is_service_attachment(edge) and nodes[edge["a"]]["kind"] != "Сервис":
+                placements[edge["b"]].add(edge["a"])
+
+    for service_id, hosts in placements.items():
+        service = nodes[service_id]
+        if len(hosts) == 1 and service["reachability"]["state"] == "unknown":
+            host_id, = hosts
+            reachability = nodes[host_id]["reachability"]
+            if reachability["source"] == "Redfish" and reachability["state"] == "stopped":
+                service["reachability"] = dict(reachability)
 
     local_issues = {}
     check_state = {"reachable": "ok", "unreachable": "critical"}
@@ -2811,6 +2822,7 @@ def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
     detail = {}
     if anchor and anchor["kind"] == "Сервис":
         detail["serviceChecks"] = anchor["serviceChecks"]
+        detail["reachability"] = anchor["reachability"]
     if anchor and anchor["kind"] == "Сервис" and len(guest_ids) <= 12:
         detail["servicePaths"] = _service_attachment_paths(anchor, guests)
         if len(targets) == 1 and len(host_ids) == 1:

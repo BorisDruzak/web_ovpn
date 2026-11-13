@@ -7,6 +7,38 @@ import pytest
 from test_context_api import make_client
 
 
+@pytest.mark.parametrize(("placement", "other_host", "service_state", "age", "expected"), [
+    (True, False, "unknown", 0, "stopped"),
+    (False, False, "unknown", 0, "unknown"),
+    (True, True, "unknown", 0, "unknown"),
+    (True, False, "reachable", 0, "reachable"),
+    (True, False, "unknown", 6, "unknown"),
+])
+def test_service_status_uses_fresh_redfish_power_of_its_only_host(placement, other_host, service_state, age, expected):
+    from app.infrastructure_map import _map_statuses, _public_node, summarize_guest_attachment
+
+    now = datetime.now(timezone.utc)
+    rows = [
+        {"id": "host", "kind": "Сервер", "hardwarePower": {
+            "state": "Off", "controllerId": "bmc", "checkedAt": (now - timedelta(minutes=age)).isoformat()}},
+        {"id": "other", "kind": "Сервер"},
+        {"id": "web", "kind": "Сервис", "reachability": {
+            "state": service_state, "source": "UI_VPN", "method": "HTTP", "checkedAt": now.isoformat()}},
+    ]
+    links = [{"a": "host", "b": "web", "kind": "Размещение", "confirmed": placement, "portEvidence": []}]
+    if other_host:
+        links.append({**links[0], "a": "other"})
+    nodes = {row["id"]: _public_node(row, now) for row in rows}
+    _map_statuses(nodes, links)
+    service = nodes["web"]
+    assert service["reachability"]["state"] == expected
+    if expected == "stopped":
+        assert service["mapStatus"] == "critical"
+        assert service["reachability"] == nodes["host"]["reachability"]
+        result = summarize_guest_attachment({"nodes": list(nodes.values()), "links": links}, "web")
+        assert result["attachment"]["reachability"] == service["reachability"]
+
+
 @pytest.mark.parametrize(("power", "network", "expected"), [
     ("Off", "unknown", "stopped"),
     ("Off", "reachable", "reachable"),
