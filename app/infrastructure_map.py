@@ -2698,6 +2698,40 @@ def summarize_services(graph: dict, *, host_id: str | None = None, offset: int =
     }}
 
 
+def _agent_ipv4_comparison(network: dict, attachment: dict) -> dict:
+    observed = defaultdict(list)
+    for guest in attachment["guests"]:
+        if guest["placement"] != "confirmed":
+            continue
+        for interface in guest["interfaces"]:
+            if interface["linkDisabled"]:
+                continue
+            for row in interface.get("ipv4Observations", []):
+                observed[row["address"]].append((guest, interface, row))
+    if not observed:
+        return {}
+    reported = {address for interface in network["interfaces"] for address in interface["ipv4"]}
+    matched = sorted(observed.keys() & reported)
+    paths = []
+    for address in matched:
+        candidates = observed[address]
+        if len(candidates) != 1:
+            continue
+        (guest, interface, row), = candidates
+        ports = [port for port in interface["switchObservations"] if port["basis"] == "guest_mac"]
+        if len(ports) != 1:
+            continue
+        port, = ports
+        if "physicalPair" not in port:
+            continue
+        paths.append({"address": address, "guestPort": interface["guestPort"], "bridge": interface["bridge"],
+                      "hypervisorId": guest["hypervisor"]["id"], "addressCheckedAt": row["checkedAt"],
+                      "switchId": port["switch"]["id"], "switchCheckedAt": port["checkedAt"],
+                      "physicalPair": port["physicalPair"]})
+    return {"matched": matched, "endpointOnly": sorted(reported - observed.keys()),
+            "observedOnly": sorted(observed.keys() - reported), **({"matchedPaths": paths} if paths else {})}
+
+
 def load_infrastructure_agent_audit(path: Path, *, node_id: str | None = None) -> dict:
     adapter = None
     identities = None
@@ -2727,13 +2761,8 @@ def load_infrastructure_agent_audit(path: Path, *, node_id: str | None = None) -
             network = entry.get("network")
             if not network or network["stale"] or not network["interfaces"]:
                 continue
-            observed = {row["address"] for guest in attachment["guests"] if guest["placement"] == "confirmed"
-                        for interface in guest["interfaces"] for row in interface.get("ipv4Observations", [])}
-            if observed:
-                reported = {address for interface in network["interfaces"] for address in interface["ipv4"]}
-                entry["ipv4Comparison"] = {"matched": sorted(observed & reported),
-                                           "endpointOnly": sorted(reported - observed),
-                                           "observedOnly": sorted(observed - reported)}
+            if comparison := _agent_ipv4_comparison(network, attachment):
+                entry["ipv4Comparison"] = comparison
     return result
 
 

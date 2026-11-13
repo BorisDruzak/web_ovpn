@@ -7553,6 +7553,7 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
          "sources": [{"name": "Proxmox", "status": "ok", "at": at, "label": "Запущена"}]},
     ])
     host = {"id": "pve", "name": "Proxmox", "kind": "Гипервизор"}
+    switch = {"id": "switch", "name": "Switch", "kind": "Коммутатор"}
     service = {"id": "web", "name": "Web", "kind": "Сервис",
                "serviceChecks": [{"method": "HTTP", "source": "UI_VPN", "state": "reachable",
                                   "required": True, "checkedAt": at, "port": 443}]}
@@ -7560,12 +7561,15 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
                  "portEvidence": [{"a": "vmbr0", "b": "net0", "source": "Proxmox · конфигурация ВМ",
                                    "at": at, "confirmed": True,
                                    "virtual": {"bridgeActive": True, "linkDisabled": False, "uplinks": ["eth0"],
+                                               "switchPorts": [{"id": "switch", "port": "ge3", "at": at}],
                                                "ipv4Observations": [
                                                    {"address": ip, "source": "UI_VPN", "method": "ARP", "checkedAt": at}
                                                    for ip in ("192.0.2.10", "192.0.2.11")
                                                ]}}]}
-    links = [placement, {"a": "vm:1", "b": "web", "kind": "Цель проверки", "confirmed": True}]
-    path.write_text(json.dumps({"schema": 1, "snapshotAt": at, "nodes": [*guests, host, service],
+    links = [placement, {"a": "vm:1", "b": "web", "kind": "Цель проверки", "confirmed": True},
+             {"a": "pve", "b": "switch", "kind": "Сетевое соединение", "confirmed": True, "portEvidence": [
+                 {"a": "eth0", "b": "ge3", "source": "LLDP UI_VPN", "at": at, "confirmed": True}]}]
+    path.write_text(json.dumps({"schema": 1, "snapshotAt": at, "nodes": [*guests, host, switch, service],
                                 "links": links}), encoding="utf-8")
 
     class Adapter:
@@ -7663,6 +7667,9 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
     network = {"checkedAt": at, "stale": False, "interfaces": [{"name": "Ethernet 2", "ipv4": ["192.0.2.10", "192.0.2.12"]}]}
     assert context["agentAudit"]["guests"][0].pop("ipv4Comparison") == {
         "matched": ["192.0.2.10"], "endpointOnly": ["192.0.2.12"], "observedOnly": ["192.0.2.11"],
+        "matchedPaths": [{"address": "192.0.2.10", "guestPort": "net0", "bridge": "vmbr0", "hypervisorId": "pve",
+                          "addressCheckedAt": at, "switchId": "switch", "switchCheckedAt": at,
+                          "physicalPair": {"hostPort": "eth0", "switchPort": "ge3", "source": "LLDP UI_VPN", "checkedAt": at}}],
     }
     assert detail == {**matched, "operatingSystem": system, "network": network, "health": {"checkedAt": at, "uptimeSeconds": 7200,
                                              "memoryAvailableBytes": 2**31, "loadAverage1m": 0.0, "services": [
@@ -7729,6 +7736,25 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
     assert unavailable["agentAudit"] == {"sourceState": "unavailable"}
     assert unavailable["attachment"] == context["attachment"]
     assert unavailable["serviceAudit"] == context["serviceAudit"]
+
+
+def test_agent_address_comparison_omits_path_for_ambiguous_network_observations():
+    from app.infrastructure_map import _agent_ipv4_comparison
+
+    address = "192.0.2.10"
+    network = {"interfaces": [{"ipv4": [address]}]}
+    interface = {"guestPort": "net0", "bridge": "vmbr0", "linkDisabled": False,
+                 "ipv4Observations": [{"address": address}], "switchObservations": [
+                     {"basis": "guest_mac", "physicalPair": {"switchPort": "ge3"}},
+                     {"basis": "guest_mac"},
+                 ]}
+    interfaces = [interface]
+    attachment = {"guests": [{"placement": "confirmed", "interfaces": interfaces}]}
+    expected = {"matched": [address], "endpointOnly": [], "observedOnly": []}
+    assert _agent_ipv4_comparison(network, attachment) == expected
+    interface["switchObservations"].pop()
+    interfaces.append({**interface, "guestPort": "net1"})
+    assert _agent_ipv4_comparison(network, attachment) == expected
 
 
 def test_agent_audit_selects_only_current_registration_among_long_offline_duplicates(tmp_path):
