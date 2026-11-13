@@ -1993,6 +1993,12 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
 
         current = [row for row in current_pairs if matches(row)]
         gaps = [row for row in pending if matches(row)]
+        stp_related_gaps = [row for row in pending if not matches(row) and (
+            any(matches(pair) for pair in row.get("stpBridgeConnections", []))
+            or any(observation["switchId"] == node_id
+                   and (not port_name or port_label_key(observation["port"]) in keys)
+                   for observation in row.get("stpBridgeMacObservations", []))
+        )]
         port_alerts = [row for row in alerts if matches(row)]
         partner_gaps = [row for row in lacp_gaps if (
             row["switchId"] == node_id and (not port_name or any(
@@ -2014,6 +2020,7 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
             "currentPairTotal": len(current), "currentPairs": current[:64],
             "inventoryPairs": [row for row in inventory_pairs if matches(row)][:64],
             "pendingTotal": len(gaps), "pending": gaps[:64],
+            "stpRelatedPendingTotal": len(stp_related_gaps), "stpRelatedPending": stp_related_gaps[:64],
             "portAlertTotal": len(port_alerts), "portAlerts": port_alerts[:64],
             "vlanAudits": [row for row in vlan_audits if matches(row)][:64],
             "lacpHealth": aggregates[:64],
