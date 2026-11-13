@@ -2015,6 +2015,7 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
             guests = _guest_attachments(nodes, graph["links"], [key for key, item in nodes.items() if item["guest"]])
             attached_guests = [row for row in _guest_switch_attachments(guests).get(node_id, [])
                                if not port_name or port_label_key(row["switchPort"]) in keys]
+        scoped_nodes = {node_id: {**node, "ports": ports}} if node else {}
         return {**metadata, "topologyAudit": {
             "node": _attachment_node(node) if node else None, "portName": port_name, "ports": ports,
             "currentPairTotal": len(current), "currentPairs": current[:64],
@@ -2022,6 +2023,8 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
             "pendingTotal": len(gaps), "pending": gaps[:64],
             "stpRelatedPendingTotal": len(stp_related_gaps), "stpRelatedPending": stp_related_gaps[:64],
             "portAlertTotal": len(port_alerts), "portAlerts": port_alerts[:64],
+            "portCounterAudit": _summarize_port_counters(scoped_nodes),
+            "portRxSilenceAudit": _summarize_port_rx_silence(scoped_nodes),
             "vlanAudits": [row for row in vlan_audits if matches(row)][:64],
             "lacpHealth": aggregates[:64],
             "servicePorts": [row for row in graph.get("servicePorts", {}).get(node_id, [])

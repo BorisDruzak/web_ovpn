@@ -5078,6 +5078,10 @@ def test_switch_port_telemetry_requires_matching_current_collection(tmp_path):
         graph = load_infrastructure_map(path, when)
         audit = summarize_topology(graph)["topologyAudit"]["portCounterAudit"]
         assert graph["portCounterAudit"] == audit
+        assert summarize_topology(graph, node_id="sw", port_name="port7")["topologyAudit"]["portCounterAudit"] == audit
+        assert summarize_topology(graph, node_id="sw", port_name="port8")["topologyAudit"]["portCounterAudit"] == {
+            "measuredPorts": 0, "affectedPorts": 0, "ports": [],
+        }
         return graph["nodes"][0]["ports"][0], audit
 
     port, audit = read()
@@ -5172,6 +5176,8 @@ def test_switch_rx_silence_requires_continuous_64_bit_samples_on_the_current_por
     audit = graph()["portRxSilenceAudit"]
     assert audit == {"total": 1, "ports": [{"deviceId": "sw", "deviceName": "SNR", "port": "xe1", "rxSilence": silence}]}
     assert summarize_topology(graph())["topologyAudit"]["portRxSilenceAudit"] == audit
+    assert summarize_topology(graph(), node_id="sw")["topologyAudit"]["portRxSilenceAudit"] == audit
+    assert summarize_topology(graph(), node_id="pbs")["topologyAudit"]["portRxSilenceAudit"] == {"total": 0, "ports": []}
     later = now + timedelta(seconds=1)
     raw_port["linkCheck"] = {"state": "down", "checkedAt": later.isoformat()}
     port = graph(later)["nodes"][0]["ports"][0]
