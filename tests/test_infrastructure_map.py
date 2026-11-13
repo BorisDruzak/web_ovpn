@@ -2506,7 +2506,7 @@ def test_css_access_link_reports_live_mac_only_on_declared_port(monkeypatch, tmp
     import asyncio
 
     from app import infrastructure_collect as collector
-    from app.infrastructure_map import load_infrastructure_map, summarize_topology
+    from app.infrastructure_map import load_infrastructure_map, summarize_guest_attachment, summarize_topology
 
     class Transport:
         async def __aenter__(self):
@@ -2557,12 +2557,16 @@ def test_css_access_link_reports_live_mac_only_on_declared_port(monkeypatch, tmp
     assert audit["currentPairTotal"] == 0
     browser = load_infrastructure_map(path, collected, include_guest_attachments=True)
     assert browser["inventoryPairs"] == [pair]
+    attachment = summarize_guest_attachment(graph, "pc")["attachment"]["physicalHosts"][0]
+    peer_port = attachment["connections"][0]["ports"][0]["portStates"]["peer"]
     if learned_port == 7:
         assert port["endpointMac"] == {"deviceId": "pc", "mac": mac, "checkedAt": port["checkedAt"]}
         assert pair["endpointMacObservations"] == {"a": port["endpointMac"]}
+        assert peer_port["endpointMac"] == port["endpointMac"]
     else:
         assert "endpointMac" not in port
         assert "endpointMacObservations" not in pair
+        assert "endpointMac" not in peer_port
     expired = load_infrastructure_map(path, collected + timedelta(minutes=6))
     assert all("endpointMac" not in port for node in expired["nodes"] for port in node["ports"])
     assert "endpointMacObservations" not in summarize_topology(expired)["topologyAudit"]["inventoryPairs"][0]

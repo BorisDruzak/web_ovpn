@@ -2219,7 +2219,7 @@ def _physical_attachments(nodes: dict, links: list[dict], host_ids: list[str]) -
                     reading["portStates"] = {
                         sides[side]: {key: state[key] for key in ("name", "state", "speedBps", "checkedAt",
                                                                 "stale", "source", "configuredLabel", "linkMode", "rxSilence",
-                                                                "transceiver", "lldpPort")
+                                                                "transceiver", "lldpPort", "endpointMac")
                                       if key in state}
                         for side, state in port_states.items()
                     }
