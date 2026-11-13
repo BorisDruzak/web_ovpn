@@ -2528,11 +2528,24 @@ def _service_attachment_paths(service: dict, guests: dict, client_attachments: d
 
     paths = []
     for check in _attachment_service_checks(service):
-        windows = check["source"] == WINDOWS_PROBE_SOURCE and check["method"] == "HTTP" and check.get("supplemental")
+        windows_dns = check["source"] == WINDOWS_PROBE_SOURCE and check["method"] == "DNS" and check.get("required")
+        windows = windows_dns or (check["source"] == WINDOWS_PROBE_SOURCE and check["method"] == "HTTP"
+                                  and check.get("supplemental"))
         if (not (check["source"] == "UI_VPN" or windows) or not check["checkedAt"]
                 or check["stale"] or check.get("skipped") or (windows and check["state"] == "unknown")):
             continue
         target = check.get("target")
+        client = (client_attachments or {}).get(check["checkedAt"]) if windows else None
+        path = _attachment_probe_location(check)
+        if windows:
+            path["source"] = WINDOWS_PROBE_SOURCE
+            if check.get("via"):
+                path["via"] = check["via"]
+        if client:
+            path["clientAttachment"] = client
+        client_only = windows_dns and target and client is not None
+        if client_only:
+            paths.append(path)
         vlan = check.get("vlanTransit")
         gateway = None
         if vlan:
@@ -2567,18 +2580,17 @@ def _service_attachment_paths(service: dict, guests: dict, client_attachments: d
         if len(observations) != 1:
             continue
         observation, = observations
-        client = (client_attachments or {}).get(check["checkedAt"]) if windows else None
-        paths.append({**_attachment_probe_location(check), "addressCheckedAt": address_at,
+        path.update({"addressCheckedAt": address_at,
                       "guestId": guest["guest"]["id"], "guestPort": adapter["guestPort"], "bridge": adapter["bridge"],
                       "hypervisorId": guest["hypervisor"]["id"], "switchId": observation["switch"]["id"],
                       "physicalPair": observation["physicalPair"],
-                      **({"source": WINDOWS_PROBE_SOURCE, **({"via": check["via"]} if check.get("via") else {})} if windows else {}),
-                      **({"clientAttachment": client} if client else {}),
                       **({"destinationVlan": observation["vlanMemberships"]}
                          if gateway is None and vlan is None and "vlanMemberships" in observation else {}),
                       **({"localListener": True} if check.get("localListener") else {}),
                       **({"localNeighbor": adapter["localNeighbor"]} if vlan else {}),
                       **({"gateway": gateway} if gateway else {})})
+        if not client_only:
+            paths.append(path)
     return paths
 
 
@@ -2873,6 +2885,8 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime, *, endpoint_
                 for port in [attachment["aggregate"], *(member["name"] for member in attachment["members"])]:
                     record(switch, port, service, "host_lacp")
                     path_checks[switch, port_label_key(port), service].add(check_key(path))
+                continue
+            if "physicalPair" not in path:
                 continue
             if path.get("management"):
                 basis = "host_management"

@@ -7691,6 +7691,12 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     assert windows["destinationVlan"] == match["vlanMemberships"]
     assert windows["clientAttachment"] == {"stationId": "pc", "stationPort": "Ethernet", "switchId": "snr",
                                             "switchPort": "ge20", "source": "SNMP + Windows", "checkedAt": stamp}
+    raw["nodes"][0]["serviceChecks"].append({**check, "source": WINDOWS_PROBE_SOURCE, "method": "DNS",
+                                            "target": "192.0.2.53", "port": 53, "required": True})
+    dns = next(path for path in read()["servicePaths"] if path["method"] == "DNS")
+    assert dns["clientAttachment"] == windows["clientAttachment"]
+    assert "physicalPair" not in dns and "destinationVlan" not in dns
+    raw["nodes"][0]["serviceChecks"].pop()
     evidence = raw["links"].pop()["portEvidence"][0]
     older = (datetime.fromisoformat(stamp) - timedelta(seconds=1)).isoformat()
     evidence.update(at=older, windowsAdapter={"ifIndex": 10, "checkedAt": older, "switchCheckedAt": stamp})

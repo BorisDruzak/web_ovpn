@@ -1246,6 +1246,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         list.append(row);
         continue;
       }
+      if (!path.physicalPair) {
+        list.append(row);
+        continue;
+      }
       const {hostPort, switchPort} = path.physicalPair;
       const guest = byId.get(path.guestId)?.name ?? path.guestId;
       const host = byId.get(path.hypervisorId)?.name ?? path.hypervisorId;
