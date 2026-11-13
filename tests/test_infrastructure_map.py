@@ -8917,6 +8917,21 @@ def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_pa
         "portA": "ge15", "portB": "", "source": "netctl FDB", "checkedAt": now,
         "learnedEndpoint": {"switchId": "snr", "deviceId": "recorder", "mac": "02:00:00:00:00:15"},
     }]
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    port = raw["nodes"][0]["ports"][1]
+    port.pop("lldpNeighbors")
+    port.pop("lldpNeighborCount")
+    port["lldpPort"] = {"admin": "tx_rx", "checkedAt": now, "rxFrames": 0, "txFrames": 21,
+                        "delta": {"startedAt": (datetime.fromisoformat(now) - timedelta(seconds=90)).isoformat(),
+                                  "rxFrames": 0, "txFrames": 3}}
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    result = client.get(scope + "snr&port_name=ge15", headers=headers).json()["infrastructure"]["topologyAudit"]
+    assert result["confirmationGapCounts"]["no_lldp_rx"] == 1
+    assert result["pending"][0]["lldpNoRxSides"] == ["a"]
+    port["lldpPort"]["admin"] = "tx_only"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    result = client.get(scope + "snr&port_name=ge15", headers=headers).json()["infrastructure"]["topologyAudit"]
+    assert "no_lldp_rx" not in result["confirmationGapCounts"]
 
 
 def test_reciprocal_mac_path_shows_fresh_stp_evidence_without_confirming_cable(tmp_path):

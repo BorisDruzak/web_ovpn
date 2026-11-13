@@ -2273,6 +2273,15 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
         if logical_interfaces:
             row["logicalPeerInterfaces"] = logical_interfaces
             gaps.append("logical_lldp_interface")
+        silent_sides = []
+        for side, port in ports.items():
+            lldp = port.get("lldpPort", {})
+            if (port["state"] == "up" and lldp.get("admin") in {"rx_only", "tx_rx"}
+                    and lldp.get("delta", {}).get("rxFrames") == 0):
+                silent_sides.append(side)
+        if silent_sides:
+            row["lldpNoRxSides"] = sorted(silent_sides)
+            gaps.append("no_lldp_rx")
         if row.get("archivedPortSides"):
             gaps.append("archived_port")
         if row.get("sharedPort"):
@@ -4428,7 +4437,7 @@ def load_infrastructure_map(
                                              "inventoryPeerPorts", "lldpPeers", "unconfirmedLldpCandidates", "multiMacPortSides",
                                              "stpBridgeConnections", "stpBridgeMacObservations", "arpDiagnostics",
                                              "trafficComparison", "stoppedEndpoints", "conflictingPortSides",
-                                             "logicalPeerInterfaces") if key in row}}
+                                             "logicalPeerInterfaces", "lldpNoRxSides") if key in row}}
                 for row in pending[:64]
             ],
             lacpPartnerInterfaceGapTotal=len(lacp_gaps),

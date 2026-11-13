@@ -315,7 +315,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       portObservations = {}, stpPaths = [], stpBridgeConnections = [], stpBridgeMacObservations = [], lldpPeers = {},
       archivedPortAt = {}, inventorySources = [], inventoryPeerPorts = [], arpDiagnostics = {}, observedPaths = [],
       multiMacPortSides = [], unconfirmedLldpCandidates = [], confirmationGaps = [], trafficComparison, linkHealth,
-      stoppedEndpoints = {}, logicalPeerInterfaces = {}}) {
+      stoppedEndpoints = {}, logicalPeerInterfaces = {}, lldpNoRxSides = []}) {
     const item = make('li');
     const provenance = key => archivedPortSides.includes(key) ? ' (по архиву)' :
       inventoryPortSides.includes(key) ? ' (по инвентарю)' : '';
@@ -422,7 +422,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         }
       }
       if (port.lldpPort?.delta) {
-        item.append(make('small', `${label} · ${formatLldpDelta(port.lldpPort.delta)} · ${formatTime(port.lldpPort.checkedAt)}`));
+        const receive = lldpNoRxSides.includes(side) ? ' · Приём LLDP включён' : '';
+        item.append(make('small', `${label} · ${formatLldpDelta(port.lldpPort.delta)}${receive} · ${formatTime(port.lldpPort.checkedAt)}`));
       }
     }
     return item;
