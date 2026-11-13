@@ -162,6 +162,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     }
     return row;
   }
+  function formatLinkCheck(check) {
+    const states = {reachable: 'Отвечает', unreachable: 'Недоступен', unknown: 'Нет подтверждения'};
+    return [check.method, states[check.state], check.source, formatTime(check.checkedAt)].filter(Boolean).join(' · ');
+  }
   function renderConfirmedPortPairs() {
     const panel = root.querySelector('#map-confirmed-port-pairs');
     const {currentPortPairTotal = 0, currentPortPairs = []} = data;
@@ -1072,7 +1076,16 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const panel = make('details', null, 'map-port-panel');
     panel.dataset.section = pending ? 'service-host-pending-port-pairs' : 'service-host-port-pairs';
     const list = make('ul', null, 'map-detail-list');
-    list.append(...pairs.map(pending ? pendingPortPairRow : confirmedPortPairRow));
+    for (const pair of pairs) {
+      const row = pending ? pendingPortPairRow(pair) : confirmedPortPairRow(pair);
+      if (!pending && host.kind === 'Точка доступа') {
+        const [switchId, switchPort] = pair.a === host.id ? [pair.b, pair.portB] : [pair.a, pair.portA];
+        const port = data.servicePorts?.[switchId]?.find(item => portKey(item.port) === portKey(switchPort));
+        const neighbor = port?.services.find(item => item.id === host.id && item.basis.includes('lldp_peer'));
+        for (const check of neighbor?.linkChecks ?? []) row.append(make('small', formatLinkCheck(check)));
+      }
+      list.append(row);
+    }
     panel.append(make('summary', pending ? 'Пары портов устройства без подтверждения' : 'Подтверждённые порты устройства'), list);
     return panel;
   }
@@ -2090,9 +2103,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
             row.append(make('small', `Копии ВМ · прошли: ${passed} · сбои: ${failed} · без подтверждения: ${unconfirmed}`));
           }
           for (const check of service.linkChecks ?? []) {
-            const state = {reachable: 'Отвечает', unreachable: 'Недоступен', unknown: 'Нет подтверждения'};
-            row.append(make('small', [check.method, state[check.state], check.source, formatTime(check.checkedAt)]
-              .filter(Boolean).join(' · ')));
+            row.append(make('small', formatLinkCheck(check)));
           }
           for (const probe of service.probeEndpoints ?? []) {
             const address = probe.target.includes(':') ? `[${probe.target}]` : probe.target;

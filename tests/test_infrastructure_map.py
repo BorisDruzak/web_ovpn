@@ -6649,7 +6649,7 @@ def test_infrastructure_map_serves_only_public_snapshot(tmp_path, monkeypatch):
 
 
 def test_port_includes_fresh_layer2_check_for_current_lldp_neighbor(tmp_path):
-    from app.infrastructure_map import load_infrastructure_map
+    from app.infrastructure_map import load_infrastructure_map, summarize_guest_attachment
 
     now = datetime.now(timezone.utc)
     stamp = now.isoformat()
@@ -6662,21 +6662,34 @@ def test_port_includes_fresh_layer2_check_for_current_lldp_neighbor(tmp_path):
                   "portEvidence": [evidence]}]}
     path = tmp_path / "map.json"
 
-    def read_ports():
+    def read_graph():
         path.write_text(json.dumps(raw), encoding="utf-8")
-        return load_infrastructure_map(path, now, include_service_ports=True)["servicePorts"]
+        return load_infrastructure_map(path, now, include_service_ports=True)
+
+    def read_ports():
+        return read_graph()["servicePorts"]
+
+    def read_connection_ports(node_id):
+        attachment = summarize_guest_attachment(read_graph(), node_id)["attachment"]
+        return attachment["physicalHosts"][0]["connections"][0]["ports"]
 
     port, = read_ports()["sw"]
     neighbor, = port["services"]
     assert port["port"] == "ge3" and neighbor["id"] == "ap"
     assert neighbor["basis"] == ["lldp_peer"] and neighbor["linkChecks"] == [check]
+    ap_port, = read_connection_ports("ap")
+    switch_port, = read_connection_ports("sw")
+    expected = [{"nodeId": "ap", **check}]
+    assert ap_port["linkChecks"] == switch_port["linkChecks"] == expected
     evidence["b"] = ""
     assert read_ports() == {}
     evidence["b"] = "ether1"
     check["checkedAt"] = (now - timedelta(hours=1)).isoformat()
     assert read_ports() == {}
+    assert "linkChecks" not in read_connection_ports("ap")[0]
     evidence["at"], check["checkedAt"] = check["checkedAt"], stamp
     assert read_ports() == {}
+    assert "linkChecks" not in read_connection_ports("ap")[0]
 
 
 def test_attachment_view_includes_physical_service_hosts_and_distinguishes_port_evidence(tmp_path, monkeypatch):

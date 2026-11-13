@@ -2037,6 +2037,20 @@ def _guest_attachments(nodes: dict, links: list[dict], guest_ids: list[str], now
     return guests
 
 
+def _node_link_checks(node: dict) -> list[dict]:
+    methods = {"Точка доступа": "MAC ping · L2", "Рабочая станция": "Агент на связи"}
+    return [{field: check[field] for field in ("method", "source", "state", "checkedAt")}
+            for check in node["serviceChecks"] if check["method"] == methods.get(node["kind"])
+            and (check["method"] != "Агент на связи" or check["source"] == "Endpoint Platform")
+            and check["checkedAt"] and not check["stale"]]
+
+
+def _is_current_access_point_pair(switch: dict, device: dict, report: dict, switch_side: str, device_side: str) -> bool:
+    return (switch["kind"] == NETWORK_KINDS[0] and device["kind"] == "Точка доступа"
+            and report.get("pairEvidence") == "current" and report["source"] == "LLDP UI_VPN"
+            and bool(report[switch_side] and report[device_side]))
+
+
 def _physical_attachments(nodes: dict, links: list[dict], host_ids: list[str]) -> list[dict]:
     if not host_ids:
         return []
@@ -2074,6 +2088,13 @@ def _physical_attachments(nodes: dict, links: list[dict], host_ids: list[str]) -
                     }
                 if lldp_peers := report.get("lldpPeers"):
                     reading["lldpPeers"] = {sides[side]: value for side, value in lldp_peers.items()}
+                if direct and edge["confirmed"]:
+                    for switch_side, device_side in ((host_side, peer_side), (peer_side, host_side)):
+                        device = nodes[edge[device_side]]
+                        if (_is_current_access_point_pair(nodes[edge[switch_side]], device, report, switch_side, device_side)
+                                and (checks := _node_link_checks(device))):
+                            reading["linkChecks"] = [{"nodeId": device["id"], **check} for check in checks]
+                            break
                 if lacp := report.get("lacp"):
                     reading["lacp"] = {"side": sides[lacp["side"]],
                                        **{key: lacp[key] for key in ("aggregate", "member", "partnerPort", "polledAt",
@@ -2358,14 +2379,7 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime, *, endpoint_
     port_services = defaultdict(lambda: defaultdict(lambda: defaultdict(set)))
     port_names = {}
     path_checks = defaultdict(set)
-    link_methods = {"Точка доступа": ("MAC ping · L2",), "Рабочая станция": ("Агент на связи",)}
-    link_checks = {
-        key: [{field: check[field] for field in ("method", "source", "state", "checkedAt")}
-              for check in node["serviceChecks"] if check["method"] in link_methods[node["kind"]]
-              and (check["method"] != "Агент на связи" or check["source"] == "Endpoint Platform")
-              and check["checkedAt"] and not check["stale"]]
-        for key, node in nodes.items() if node["kind"] in link_methods
-    }
+    link_checks = {key: checks for key, node in nodes.items() if (checks := _node_link_checks(node))}
 
     def check_key(check):
         dns = check.get("dns", {})
@@ -2385,8 +2399,7 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime, *, endpoint_
             if nodes[switch]["kind"] != NETWORK_KINDS[0] or not link_checks.get(device):
                 continue
             for report in edge["portEvidence"]:
-                if (report.get("pairEvidence") == "current" and report["source"] == "LLDP UI_VPN"
-                        and nodes[device]["kind"] == "Точка доступа" and report[side] and report[peer]):
+                if _is_current_access_point_pair(nodes[switch], nodes[device], report, side, peer):
                     record(switch, report[side], device, "lldp_peer")
                 if report.get("pairEvidence") not in ("current", "verified_inventory") or not endpoint_keys:
                     continue
