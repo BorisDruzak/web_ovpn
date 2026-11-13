@@ -7576,6 +7576,24 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     assert uplink["interfaces"] == [
         {"guest": guest["guest"], "guestPort": "net0", "bridge": "vmbr1", "basis": "guest_mac"},
     ]
+
+    def read_hypervisor():
+        response = client.get(url + "&node_id=pve", headers=headers)
+        assert response.status_code == 200
+        return response.json()["infrastructure"]["attachment"]
+
+    hypervisor = read_hypervisor()
+    assert hypervisor["guestTotal"] == hypervisor["physicalHostTotal"] == 1
+    assert hypervisor["guests"] == [guest]
+    assert hypervisor["confirmedUplinkTotal"] == 1
+    assert hypervisor["confirmedUplinks"] == [uplink]
+    raw["nodes"].append({"id": "pve2", "name": "pve2", "kind": "Гипервизор"})
+    raw["links"].append({**raw["links"][1], "a": "pve2", "portEvidence": []})
+    read()
+    hypervisor = read_hypervisor()
+    assert hypervisor["guestTotal"] == hypervisor["confirmedUplinkTotal"] == 0
+    raw["links"].pop()
+    raw["nodes"].pop()
     virtual = raw["links"][1]["portEvidence"][0]["virtual"]
     virtual["switchPorts"].append({"id": "snr", "port": "ge12", "at": stamp, "vlan": 1})
     read()

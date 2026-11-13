@@ -2867,9 +2867,18 @@ def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
         targets.add(node_id)
     guest_ids = {key for key in targets if nodes[key]["guest"]}
     host_ids = sorted(key for key in targets if key not in guest_ids and nodes[key]["kind"] not in ("Сервис", CLUSTER_KIND))
-    guests = _guest_attachments(nodes, links, sorted(guest_ids)[:12])
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
     detail = {}
+    if anchor and anchor["kind"] == "Гипервизор":
+        candidates = {edge["b"] for edge in links if edge["a"] == node_id
+                      and edge["confirmed"] and edge["kind"] == "Размещение ВМ" and nodes[edge["b"]]["guest"]}
+        hosted = {key: guest for key, guest in _guest_attachments(nodes, links, sorted(candidates)).items()
+                  if guest["placement"] == "confirmed" and guest["hypervisor"]["id"] == node_id}
+        guest_ids = set(hosted)
+        guests = dict(list(hosted.items())[:12])
+        detail.update(_confirmed_guest_uplinks(hosted))
+    else:
+        guests = _guest_attachments(nodes, links, sorted(guest_ids)[:12])
     if anchor:
         detail["checks"] = anchor["checks"]
         detail["serviceChecks"] = anchor["serviceChecks"]
@@ -2984,6 +2993,15 @@ def summarize_guest_attachment_audit(graph: dict) -> dict:
 
     gaps.sort(key=lambda gap: (gap["power"] != "running", gap["guest"]["id"]))
     running_without_network.sort(key=lambda row: (row["guest"]["vmid"], row["guest"]["id"]))
+    metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
+    return {**metadata, "attachmentAudit": {"guestCounts": guest_counts, "interfaceCounts": interface_counts,
+                                            "gapTotal": len(gaps), "gaps": gaps[:64],
+                                            **_confirmed_guest_uplinks(guests),
+                                            "runningWithoutNetworkTotal": len(running_without_network),
+                                            "runningWithoutNetwork": running_without_network[:64]}}
+
+
+def _confirmed_guest_uplinks(guests: dict) -> dict:
     running = {key: guest for key, guest in guests.items() if guest["power"] == "running"}
     uplink_groups = defaultdict(list)
     for switch_id, attachments in _guest_switch_attachments(running).items():
@@ -3004,13 +3022,7 @@ def summarize_guest_attachment_audit(graph: dict) -> dict:
             "interfaceTotal": len(interfaces),
             "interfaces": [interfaces[key] for key in sorted(interfaces)[:64]],
         })
-    metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
-    return {**metadata, "attachmentAudit": {"guestCounts": guest_counts, "interfaceCounts": interface_counts,
-                                            "gapTotal": len(gaps), "gaps": gaps[:64],
-                                            "confirmedUplinkTotal": len(confirmed_uplinks),
-                                            "confirmedUplinks": confirmed_uplinks[:64],
-                                            "runningWithoutNetworkTotal": len(running_without_network),
-                                            "runningWithoutNetwork": running_without_network[:64]}}
+    return {"confirmedUplinkTotal": len(confirmed_uplinks), "confirmedUplinks": confirmed_uplinks[:64]}
 
 
 def summarize_services(graph: dict, *, host_id: str | None = None, offset: int = 0) -> dict:
