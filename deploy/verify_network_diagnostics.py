@@ -35,6 +35,7 @@ ROUTE_EVIDENCE_FIELDS = {
     "gateway_link": ("status", "state", "rate", "full_duplex", "auto_negotiation"),
     "gateway_source": ("status", "dhcp", "dhcp_address", "dhcp_gateway"),
     "gateway_arp": ("status", "state", "resolved"),
+    "linux_neighbor": ("address", "interface", "state"),
     "ipsec": ("status", "reason", "phase2_count", "local_sa_address_status"),
 }
 INTERFACE_COUNTERS = ("in_errors_delta", "out_errors_delta", "in_discards_delta", "out_discards_delta")

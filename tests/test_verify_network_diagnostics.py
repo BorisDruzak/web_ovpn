@@ -116,6 +116,12 @@ def test_route_report_keeps_wan_and_ipsec_failure_evidence():
                 "ignored": "raw probe output",
             },
         }, {
+            "id": "alt-vlan", "status": "timeout", "evidence": {
+                "reason": "icmp_no_echo_reply",
+                "linux_neighbor": {"address": "192.0.2.1", "interface": "eth0.20",
+                                   "state": "incomplete", "ignored": "raw probe output"},
+            },
+        }, {
             "id": "tunnel", "status": "unreachable", "ipsec": {
                 "status": "inactive", "local_sa_address_status": "missing",
                 "phase2_count": 0, "local_subnet": "192.0.2.0/24",
@@ -128,15 +134,18 @@ def test_route_report_keeps_wan_and_ipsec_failure_evidence():
     }
     report = route_report(
         [run], now, timedelta(minutes=10), api_runs=[run],
-        expected_hops={"gateway": None, "tunnel": None, "remote": None},
+        expected_hops={"gateway": None, "alt-vlan": None, "tunnel": None, "remote": None},
         expected_ipsec={"tunnel", "remote"},
     )
-    gateway, tunnel, remote = report["probes"]
+    gateway, alt, tunnel, remote = report["probes"]
     assert gateway["reason"] == "icmp_unreachable"
     assert gateway["gateway_link"] == {"status": "observed", "state": "up"}
     assert gateway["gateway_source"] == {"status": "missing", "dhcp": "searching"}
     assert gateway["gateway_arp"] == {"status": "observed", "state": "failed", "resolved": False}
     assert "ignored" not in gateway
+    assert alt["linux_neighbor"] == {
+        "address": "192.0.2.1", "interface": "eth0.20", "state": "incomplete",
+    }
     assert tunnel["ipsec"] == {"status": "inactive", "phase2_count": 0, "local_sa_address_status": "missing"}
     assert remote["ipsec"] == {"status": "unavailable", "reason": "collector_timeout"}
     assert report["profile_matches"]
@@ -144,7 +153,8 @@ def test_route_report_keeps_wan_and_ipsec_failure_evidence():
     assert remote["ipsec_policy_confirmed"] is False
     changed = route_report(
         [run], now, timedelta(minutes=10), api_runs=[run],
-        expected_hops={"gateway": None, "tunnel": None, "remote": None}, expected_ipsec={"tunnel"},
+        expected_hops={"gateway": None, "alt-vlan": None, "tunnel": None, "remote": None},
+        expected_ipsec={"tunnel"},
     )
     assert not changed["profile_matches"]
 
