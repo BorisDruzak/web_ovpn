@@ -1856,6 +1856,10 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
     counts, inventory_pairs, alerts, pending, current_pairs = _topology_port_pairs(nodes, graph["links"])
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
     lacp_gaps = _lacp_partner_interface_gaps(nodes)
+    vlan_audits = [
+        {"a": link["a"], "b": link["b"], "portA": report["a"], "portB": report["b"], "vlans": report["vlanAudit"]}
+        for link in graph["links"] for report in link["portEvidence"] if report.get("vlanAudit")
+    ]
     if node_id is not None:
         node = nodes.get(node_id)
         keys = {port_label_key(port_name)} if port_name else set()
@@ -1886,16 +1890,13 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
             "inventoryPairs": [row for row in inventory_pairs if matches(row)][:64],
             "pendingTotal": len(gaps), "pending": gaps[:64],
             "portAlertTotal": len(port_alerts), "portAlerts": port_alerts[:64],
+            "vlanAudits": [row for row in vlan_audits if matches(row)][:64],
             "lacpPartnerInterfaceGapTotal": len(partner_gaps), "lacpPartnerInterfaceGaps": partner_gaps[:64],
         }}
     stp = [{"id": node["id"], "name": node["name"], **node["stpRootPath"]}
            for node in nodes.values() if "stpRootPath" in node]
     roots = [{"id": node["id"], "name": node["name"], **node["stpRoot"]}
              for node in nodes.values() if "stpRoot" in node]
-    vlan_audits = [
-        {"a": link["a"], "b": link["b"], "portA": report["a"], "portB": report["b"], "vlans": report["vlanAudit"]}
-        for link in graph["links"] for report in link["portEvidence"] if report.get("vlanAudit")
-    ]
     lacp = [{"id": node["id"], "name": node["name"], **report}
             for node in nodes.values() for report in node.get("lacpHealth", [])]
     downstream = [{"id": node["id"], "name": node["name"], **node["downstream"]}

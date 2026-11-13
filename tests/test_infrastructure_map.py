@@ -3028,6 +3028,10 @@ def test_vlan_audit_keeps_port_configuration_and_learned_mac_evidence_distinct(t
         path.write_text(json.dumps(snapshot), encoding="utf-8")
         graph = load_infrastructure_map(path, now)
         audit, = summarize_topology(graph)["topologyAudit"]["vlanAudits"]
+        for node_id, port_name in (("a", "GE23"), ("b", "gigabitEthernet 1/0/47"), ("b", None)):
+            scoped = summarize_topology(graph, node_id=node_id, port_name=port_name)["topologyAudit"]
+            assert scoped["vlanAudits"] == [audit]
+        assert summarize_topology(graph, node_id="a", port_name="ge24")["topologyAudit"]["vlanAudits"] == []
         return audit["vlans"]
 
     native, tagged = read()
