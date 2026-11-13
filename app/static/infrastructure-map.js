@@ -155,12 +155,15 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     row.append(make('small', formatPortCounterChanges(errors.telemetry)));
     if (errors.rxErrorCounters) appendRxErrorCounters(row, errors.rxErrorCounters);
     if (errors.history) {
-      const history = make('a', 'История порта за 24 часа');
-      history.href = '/network/interfaces?' + new URLSearchParams(errors.history) + '#interface-history-chart';
       const line = make('small');
-      line.append(history);
+      line.append(portHistoryLink(errors.history, 'История порта за 24 часа'));
       row.append(line);
     }
+  }
+  function portHistoryLink(history, label) {
+    const link = make('a', label);
+    link.href = '/network/interfaces?' + new URLSearchParams(history) + '#interface-history-chart';
+    return link;
   }
   function renderPortCounterSummary() {
     const panel = root.querySelector('#map-port-counters');
@@ -236,7 +239,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const time = health.checkedAt ? ' · ' + formatTime(health.checkedAt) : '';
     row.append(make('small', prefix + label + time));
   }
-  function confirmedPortPairRow({a, b, nameA, nameB, portA, portB, evidence, portStates = {}, linkHealth}) {
+  function confirmedPortPairRow({a, b, nameA, nameB, portA, portB, evidence, portStates = {}, portHistory = {}, linkHealth}) {
     const row = make('li');
     row.append(portPairEndpoint(a, nameA, portA), ' ↔ ', portPairEndpoint(b, nameB, portB));
     const missingPorts = [];
@@ -254,6 +257,12 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       const label = side === 'a' ? portA : portB;
       row.append(make('small', [`${name} ${label}`, portLabels[port.state], formatPortSpeed(port.speedBps),
         port.source, formatTime(port.speedCheckedAt ?? port.checkedAt)].filter(Boolean).join(' · ')));
+    }
+    for (const [side, history] of Object.entries(portHistory)) {
+      const endpoint = side === 'a' ? `${nameA} ${portA}` : `${nameB} ${portB}`;
+      const line = make('small');
+      line.append(portHistoryLink(history, `История порта ${endpoint}`));
+      row.append(line);
     }
     for (const {source, checkedAt, expiresAt, windowsAdapter} of evidence) {
       const expiry = expiresAt ? ` · актуально до ${formatTime(expiresAt)}` : '';

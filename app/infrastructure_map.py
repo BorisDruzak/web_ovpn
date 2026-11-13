@@ -1246,8 +1246,15 @@ def _public_node(row: dict, now: datetime) -> dict:
     for port, alias in zip(ports, physical_aliases):
         if alias and port_label_key(alias) != port_label_key(port["name"]) and label_counts[port_label_key(alias)] == 1:
             port["aliases"] = [alias]
+    history_source = properties.get("Источник сбора", "")
     for port, raw_port in zip(ports, port_rows):
         _apply_port_link_check(port, raw_port, now)
+        key = _text(raw_port.get("key"))
+        if (row.get("kind") == NETWORK_KINDS[0] and not port["stale"]
+                and label_counts[port_label_key(port["name"])] == 1
+                and re.fullmatch(r"[A-Za-z0-9._-]{1,128}", history_source)
+                and re.fullmatch(r"(?:ifindex|physical):[1-9][0-9]{0,9}", key)):
+            port["history"] = {"source": history_source, "interface": key}
     observer = next((source for source in sources if source["name"] == "Server Observer"), None)
     aliases = row.get("aliases")
     resources = {}
@@ -1916,6 +1923,8 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
     port_names = {node_id: {port_label_key(port["name"]) for port in node["ports"]} for node_id, node in nodes.items()}
     canonical_ports = {(node["id"], port_label_key(port["name"])): port["name"]
                        for node in nodes.values() for port in node["ports"]}
+    histories = {(node["id"], port_label_key(port["name"])): port["history"]
+                 for node in nodes.values() for port in node["ports"] if "history" in port}
     unnamed = {"", "-", "unknown", "неизвестно"}
 
     def port_key(node_id, label):
@@ -2191,6 +2200,13 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
     device_names = Counter(node["name"].casefold() for node in nodes.values())
     verified_pairs = []
     for _, (pair, sources) in sorted(current_pairs.items()):
+        history = {}
+        for side, label in (("a", "portA"), ("b", "portB")):
+            device = pair[side]
+            if reading := histories.get((device, port_key(device, pair[label]))):
+                history[side] = reading
+        if history:
+            pair["portHistory"] = history
         ports = pair.get("portStates", {})
         health = _compare_link_ports(ports) or _link_ports_down(ports) or {"state": "unconfirmed"}
         verified_pairs.append({**pair, "linkHealth": health,
@@ -3109,7 +3125,7 @@ def _observed_management_ports(links: list[dict], nodes: dict) -> dict:
     return {key: next(iter(ports.values())) for key, ports in candidates.items() if len(ports) == 1}
 
 
-def _attach_management_ports(nodes: dict, links: list[dict], switch_history: dict) -> None:
+def _attach_management_ports(nodes: dict, links: list[dict]) -> None:
     paths = defaultdict(list)
     for (host, address), path in sorted(_observed_management_ports(links, nodes).items()):
         if attachment := path.get("routerAttachment"):
@@ -3144,11 +3160,8 @@ def _attach_management_ports(nodes: dict, links: list[dict], switch_history: dic
             node["managementPortErrors"] = {**location, "telemetry": telemetry}
             if counters := attachment.get("rxErrorCounters"):
                 node["managementPortErrors"]["rxErrorCounters"] = counters
-            source = nodes[switch]["properties"].get("Источник сбора", "")
-            keys = switch_history.get(switch, {}).get(ports[0]["name"], [])
-            if (re.fullmatch(r"[A-Za-z0-9._-]{1,128}", source)
-                    and len(keys) == 1 and re.fullmatch(r"(?:ifindex|physical):[1-9][0-9]{0,9}", keys[0])):
-                node["managementPortErrors"]["history"] = {"source": source, "interface": keys[0]}
+            if history := ports[0].get("history"):
+                node["managementPortErrors"]["history"] = history
 
 
 def _management_service_paths(service: dict, host: str, management: dict, observed_ports: dict,
@@ -4121,7 +4134,6 @@ def load_infrastructure_map(
     agent_enrollments = {}
     hypervisor_evidence = {}
     lacp_expectations = {}
-    switch_history = {}
     for row in _rows(raw.get("nodes"), 600):
         node = _public_node(row, now)
         if node["id"] and node["name"] and node["id"] not in nodes:
@@ -4129,12 +4141,6 @@ def load_infrastructure_map(
             if expected := _rows(row.get("lacpExpectations"), 8):
                 lacp_expectations[node["id"]] = expected
             port_rows = _rows(row.get("ports"), 500)
-            if node["kind"] == NETWORK_KINDS[0]:
-                keys_by_name = defaultdict(list)
-                for port in port_rows:
-                    if observation_is_fresh(port.get("checkedAt"), now):
-                        keys_by_name[_text(port.get("name"), 64)].append(_text(port.get("key")))
-                switch_history[node["id"]] = keys_by_name
             if node["kind"] in (*NETWORK_KINDS[:2], "Гипервизор", "Контроллер управления"):
                 port_states[node["id"]] = index_port_states(port_rows, now)
             elif node["kind"] == "Рабочая станция":
@@ -4379,7 +4385,7 @@ def load_infrastructure_map(
     _attach_guest_observer_measurements(nodes, links)
     _attach_acti_backup_job(nodes, links)
     _attach_backup_scope(nodes)
-    _attach_management_ports(nodes, links, switch_history)
+    _attach_management_ports(nodes, links)
     _map_statuses(nodes, links)
     lacp_services = defaultdict(set)
     for edge in links:

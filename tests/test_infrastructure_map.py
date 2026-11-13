@@ -3669,11 +3669,11 @@ def test_topology_port_alerts_require_confirmed_pairs_and_fresh_states(tmp_path)
     stamp = now.isoformat()
     old = (now - timedelta(minutes=26)).isoformat()
     a = {"id": "a", "name": "Switch A", "kind": "Коммутатор", "ports": [
-        {"name": "ge1", "state": "up", "speedBps": 10**9, "checkedAt": stamp},
-    ]}
+        {"name": "ge1", "key": "ifindex:5001", "state": "up", "speedBps": 10**9, "checkedAt": stamp},
+    ], "properties": {"Источник сбора": "snr-test"}}
     b = {"id": "b", "name": "Switch B", "kind": "Коммутатор", "ports": [
-        {"name": "ge2", "state": "up", "speedBps": 10**8, "checkedAt": stamp},
-    ]}
+        {"name": "ge2", "key": "physical:2", "state": "up", "speedBps": 10**8, "checkedAt": stamp},
+    ], "properties": {"Источник сбора": "peer-test"}}
     inventory = {"a": "ge1", "b": "ge2", "source": "GitHub", "confirmed": True}
     observed = {**inventory, "source": "LLDP · двустороннее", "at": stamp}
     edge = {"a": "a", "b": "b", "kind": "Сетевое соединение", "confirmed": True,
@@ -3695,6 +3695,13 @@ def test_topology_port_alerts_require_confirmed_pairs_and_fresh_states(tmp_path)
         assert scoped["portAlerts"] == audit["portAlerts"]
         if edge["kind"] == "Сетевое соединение" and observed["confirmed"] and b["ports"][0]["checkedAt"] == stamp:
             pair, = scoped["currentPairs"]
+            assert pair["portHistory"] == {
+                side: {"source": source, "interface": key}
+                for side, node, source, key in (
+                    ("a", a, "snr-test", "ifindex:5001"),
+                    ("b", b, "peer-test", "physical:2"),
+                ) if node["ports"][0]["checkedAt"] == stamp
+            }
             browser = load_infrastructure_map(path, now, include_guest_attachments=True)
             assert browser["currentPortPairs"] == scoped["currentPairs"]
             expected_state = alerts[0]["state"] if alerts else "both_up"
