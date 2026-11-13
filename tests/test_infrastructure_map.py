@@ -6705,6 +6705,11 @@ def test_attachment_view_includes_physical_service_hosts_and_distinguishes_port_
     assert pending["observedPaths"] == []
     assert pending["lldpPeers"] == {"a": [logical_peer]}
     assert pending["portObservations"]["a"]["speedBps"] == 10**10
+    pairs = client.get("/api/v1/network/infrastructure?include_port_pairs=true", headers=headers)
+    assert pairs.status_code == 200
+    pair_graph = pairs.json()["infrastructure"]
+    assert pair_graph["pendingPortPairs"] == [pending]
+    assert any(row["portA"] == "ge1" and row["portB"] == "eth0" for row in pair_graph["currentPortPairs"])
     assert read("server")["physicalHosts"] == [host]
     switch_attachment = read("sw")
     switch, = switch_attachment["physicalHosts"]

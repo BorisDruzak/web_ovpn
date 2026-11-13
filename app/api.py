@@ -1056,6 +1056,7 @@ def api_network_infrastructure(
     view: Literal["topology", "agents", "services", "attachment"] | None = None,
     node_id: str | None = Query(default=None, min_length=1, max_length=160),
     include_service_ports: bool = False,
+    include_port_pairs: bool = False,
     actor: str = Depends(require_api_actor),
     db: Session = Depends(get_db),
 ):
@@ -1067,7 +1068,7 @@ def api_network_infrastructure(
     else:
         graph = load_infrastructure_map(path, db=db, include_service_ports=(
             view is None and include_service_ports or view == "attachment" and node_id is not None
-        ))
+        ), include_port_pairs=view is None and include_port_pairs)
         if view == "services":
             graph = summarize_services(graph)
         elif view == "topology":

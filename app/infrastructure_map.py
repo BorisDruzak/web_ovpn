@@ -2827,6 +2827,7 @@ def load_infrastructure_map(
     path: Path, now: datetime | None = None, *, db: Session | None = None,
     agent_identities: list[dict] | None = None, include_guest_attachments: bool = False,
     include_service_ports: bool = False,
+    include_port_pairs: bool = False,
     load_agent_presence: Callable[[], list[dict]] | None = None,
     load_agent_profiles: Callable[[UUID, tuple[str, ...]], dict] | None = None,
     agent_node_id: str | None = None,
@@ -2836,6 +2837,7 @@ def load_infrastructure_map(
         "availability": "missing", "snapshotAt": None, "nodes": [], "links": [],
         "clusterId": "", "nodeOrder": [], "overviewGuests": [], "switchKinds": list(NETWORK_KINDS), "git": "",
         **({"servicePorts": {}} if include_service_ports else {}),
+        **({"currentPortPairs": [], "pendingPortPairs": []} if include_port_pairs else {}),
         **({"guestAttachments": {}, "servicePaths": {}, "servicePorts": {},
             "currentPortPairTotal": 0, "currentPortPairs": [],
             "pendingPortPairTotal": 0, "pendingPortPairs": [],
@@ -3149,6 +3151,9 @@ def load_infrastructure_map(
         )
     elif include_service_ports:
         attachments["servicePorts"] = _map_attachments(nodes, links, now, endpoint_keys=endpoint_keys)["servicePorts"]
+    if include_port_pairs:
+        _, _, _, pending, current_pairs = _topology_port_pairs(nodes, links)
+        attachments.update(currentPortPairs=current_pairs, pendingPortPairs=pending)
     return {
         **empty, "availability": "stale" if now - stamp > MAX_AGE else "ready",
         "snapshotAt": stamp.isoformat(), "nodes": list(nodes.values()), "links": links,

@@ -580,6 +580,7 @@ def _port_key(name: str) -> str:
 
 def _infrastructure_port(graph: dict, node: dict | None, port_name: str) -> dict:
     result = {"portName": port_name.strip(), "ports": [], "links": [], "guestObservations": [], "servicePorts": []}
+    result.update(currentPortPairs=[], pendingPortPairs=[])
     if node is None:
         return result
     node_id = node["id"]
@@ -592,6 +593,11 @@ def _infrastructure_port(graph: dict, node: dict | None, port_name: str) -> dict
             port_keys.update(keys)
     result["servicePorts"] = [row for row in graph.get("servicePorts", {}).get(node_id, [])
                               if _port_key(row["port"]) in port_keys]
+    for field in ("currentPortPairs", "pendingPortPairs"):
+        result[field] = [pair for pair in graph.get(field, []) if any(
+            pair[side] == node_id and _port_key(pair[port_field]) in port_keys
+            for side, port_field in (("a", "portA"), ("b", "portB"))
+        )]
     physical_host_port = next((port for port in result["ports"]
                                if port.get("source") == "Proxmox" and port.get("stale") is False), None)
     by_id = {item["id"]: item for item in graph["nodes"]}
@@ -660,7 +666,7 @@ def _infrastructure_snapshot(node_id: str | None, query: str | None, port_name: 
         raise ValueError("port_name requires node_id and must be a non-empty string of at most 64 characters")
     path = "/api/v1/network/infrastructure"
     if port_name is not None:
-        path += "?include_service_ports=true"
+        path += "?include_service_ports=true&include_port_pairs=true"
     response = api_request("GET", path)
     graph = response.get("infrastructure")
     if not isinstance(graph, dict) or (node_id is None and query is None):
