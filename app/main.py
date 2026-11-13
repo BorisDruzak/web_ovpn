@@ -50,7 +50,9 @@ from .network_checks import (
     interface_history_args, list_network_check_runs, run_audited_network_check,
 )
 from .network_probe_profiles import PROFILE_ID_PATTERN, probe_catalog
-from .network_route_history import MAX_ROUTE_RUN_LIST, annotate_route_run_configurations, list_route_runs, route_history_window
+from .network_route_history import (
+    MAX_ROUTE_RUN_LIST, annotate_route_run_configurations, list_route_runs, route_history_window, scheduled_route_overview,
+)
 from .endpoint_agent_network import (
     attach_endpoint_agent_statuses,
     endpoint_agent_refresh_status,
@@ -2598,6 +2600,7 @@ def render_network_checks(request: Request, db: Session, *, result=None, values=
         "result": result,
         "runs": list_network_check_runs(db, user.username, 12) if user else [],
         "route_runs": route_runs,
+        "route_overview": scheduled_route_overview(db, catalog["routes"]) if user else [],
         "route_history": history,
         "route_history_profiles": history_profiles,
         "route_history_error": history_error,

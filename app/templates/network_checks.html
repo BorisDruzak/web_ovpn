@@ -200,6 +200,27 @@
   {% endif %}
 </section>
 {% endif %}
+{% if route_overview %}
+<section id="route-overview" class="card" aria-labelledby="route-overview-title">
+  <h2 id="route-overview-title">Плановые проверки маршрутов</h2>
+  <ul>
+    {% for profile in route_overview %}
+    <li>
+      <a href="/network/diagnostics?profile={{ profile.id | urlencode }}#route-history">{{ profile.label }}</a>
+      {% if profile.run %}
+      · {{ route_status(profile.run.status, profile.run.result.probes, status_labels) }}
+      · <time datetime="{{ profile.run.checked_at }}">{{ profile.run.checked_at }}</time>
+      {% if not profile.fresh %} · Устарело{% endif %}
+      {% if profile.run.configuration_status == 'changed' %} · Конфигурация изменилась
+      {% elif profile.run.configuration_status == 'unconfirmed' %} · Конфигурация не подтверждена{% endif %}
+      {% else %}
+      · Нет плановых запусков
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
 {% if can_run %}
 {% include "_network_route_matrix.html" %}
 {% include "_network_probe_forms.html" %}

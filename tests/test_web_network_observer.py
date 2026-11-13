@@ -2500,6 +2500,52 @@ def test_route_history_filters_by_profile_and_time_in_api_and_ui(tmp_path, monke
     assert client.get(ui, params={**params, "until": params["since"]}).status_code == 422
 
 
+def test_network_diagnostics_shows_latest_scheduled_result_per_profile(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, monkeypatch)
+    from app import main
+    from app.db import get_sessionmaker
+    from app.network_route_history import persist_route_run
+
+    catalog = {
+        "routes": [
+            {"id": key, "label": label, "scheduled": scheduled, "probes": [{"id": "ping", "config_digest": "current"}]}
+            for key, label, scheduled in (
+                ("main", "Центральный MikroTik", True), ("archive", "Архив", True),
+                ("missing", "Новый профиль", True), ("manual", "Только вручную", False),
+            )
+        ],
+        "throughput": [], "https_speed": [], "capture": [],
+    }
+    monkeypatch.setattr(main, "probe_catalog", lambda: catalog)
+    now = datetime.now(timezone.utc)
+    with get_sessionmaker()() as db:
+        for owner, profile, age, status, digest in (
+            ("schedule:", "archive", 15, "timeout", "old"),
+            ("schedule:", "main", 2, "reachable", "current"),
+            ("user:admin", "main", 1, "timeout", "current"),
+        ):
+            persist_route_run(db, owner=owner, result={
+                "check": "route_availability", "target": profile, "status": status,
+                "checked_at": (now - timedelta(minutes=age)).isoformat(),
+                "result": {"label": "Запуск", "probes": [
+                    {"id": "ping", "status": status, "config_digest": digest, "evidence": {}},
+                ]},
+            })
+        db.commit()
+
+    login(client)
+    page = client.get("/network/diagnostics")
+    assert page.status_code == 200
+    summary = page.text.split('id="route-overview"', 1)[1].split("</section>", 1)[0]
+    assert "Центральный MikroTik" in summary and "Цель ответила" in summary
+    central = summary.split("Центральный MikroTik", 1)[1].split("</li>", 1)[0]
+    assert "Цель ответила" in central and "Устарело" not in central
+    assert "Архив" in summary and "Устарело" in summary and "Конфигурация изменилась" in summary
+    assert "Новый профиль" in summary and "Нет плановых запусков" in summary
+    assert "Только вручную" not in summary
+    assert "/network/diagnostics?profile=archive#route-history" in summary
+
+
 def test_route_history_marks_changed_configuration(tmp_path, monkeypatch):
     client, headers = make_client(tmp_path, monkeypatch)
     from app import api, main

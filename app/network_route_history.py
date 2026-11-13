@@ -17,6 +17,7 @@ from .network_route_matrix import PROBE_STATUSES, run_route_matrix
 
 
 ROUTE_RUN_RETENTION = timedelta(days=14)
+ROUTE_RUN_FRESHNESS = timedelta(minutes=10)
 MAX_ROUTE_RUN_LIST = 100
 SCHEDULE_OWNER = "schedule:"
 _SCHEDULE_ACTION = "network-check-route-availability"
@@ -158,6 +159,22 @@ def annotate_route_run_configurations(runs: list[dict], catalog: list[dict]) -> 
     }
     for run in runs:
         run["configuration_status"] = _route_run_configuration_status(run, current_digests.get(run["target"]))
+
+
+def scheduled_route_overview(db: Session, catalog: list[dict]) -> list[dict]:
+    now = utcnow()
+    overview = []
+    for profile in catalog:
+        if not profile.get("scheduled"):
+            continue
+        latest = list_route_runs(db, owner=SCHEDULE_OWNER, profile=profile["id"], limit=1)
+        annotate_route_run_configurations(latest, [profile])
+        run = latest[0] if latest else None
+        overview.append({
+            "id": profile["id"], "label": profile["label"], "run": run,
+            "fresh": run is not None and timedelta(0) <= now - datetime.fromisoformat(run["checked_at"]) <= ROUTE_RUN_FRESHNESS,
+        })
+    return overview
 
 
 def run_scheduled_route_probes(db: Session, *, now: datetime | None = None) -> int:
