@@ -3549,6 +3549,8 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
         browser = load_infrastructure_map(path, stamp, include_guest_attachments=True)
         assert browser["lacpPartnerInterfaceGapTotal"] == audit["lacpPartnerInterfaceGapTotal"]
         assert browser["lacpPartnerInterfaceGaps"] == audit["lacpPartnerInterfaceGaps"]
+        port_graph = load_infrastructure_map(path, stamp, include_port_pairs=True)
+        assert port_graph["lacpPartnerInterfaceGaps"] == audit["lacpPartnerInterfaceGaps"]
         return audit["lacpPartnerInterfaceGaps"]
 
     assert lacp_gaps() == [{"id": "pbs", "name": "PBS", "switchId": "snr", "aggregate": "po1",

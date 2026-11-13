@@ -580,7 +580,7 @@ def _port_key(name: str) -> str:
 
 def _infrastructure_port(graph: dict, node: dict | None, port_name: str) -> dict:
     result = {"portName": port_name.strip(), "ports": [], "links": [], "guestObservations": [], "servicePorts": []}
-    result.update(currentPortPairs=[], inventoryPairs=[], pendingPortPairs=[])
+    result.update(currentPortPairs=[], inventoryPairs=[], pendingPortPairs=[], lacpPartnerInterfaceGaps=[])
     if node is None:
         return result
     node_id = node["id"]
@@ -598,6 +598,11 @@ def _infrastructure_port(graph: dict, node: dict | None, port_name: str) -> dict
             pair[side] == node_id and _port_key(pair[port_field]) in port_keys
             for side, port_field in (("a", "portA"), ("b", "portB"))
         )]
+    result["lacpPartnerInterfaceGaps"] = [
+        gap for gap in graph.get("lacpPartnerInterfaceGaps", [])
+        if gap["switchId"] == node_id
+        and (_port_key(gap["switchPort"]) in port_keys or _port_key(gap["aggregate"]) in port_keys)
+    ]
     physical_host_port = next((port for port in result["ports"]
                                if port.get("source") == "Proxmox" and port.get("stale") is False), None)
     by_id = {item["id"]: item for item in graph["nodes"]}
