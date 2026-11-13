@@ -24,6 +24,8 @@ SITES = (
     "https://pgs.gosuslugi.ru/",
     PGS_LOGIN,
     "https://digital.gov74.ru/",
+    "https://gisogd.gov74.ru/",
+    "https://mon-pmo.gov74.ru/",
     "https://e.mail.ru/inbox",
     "https://app.workspace.vk.ru/mail",
     "https://nspd.gov.ru/map?thematic=PKK&coordinate_x=7804891.637510094&coordinate_y=8181287.398947453&zoom=5&baseLayerId=235",
