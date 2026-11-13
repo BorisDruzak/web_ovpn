@@ -25,6 +25,10 @@
     Нет данных о WAN{% if observation.expected_interface %} · ожидался {{ observation.expected_interface }}{% endif %}
   {%- endif -%}
 {%- endmacro %}
+{% macro wan_gateway_result(gateway, labels) -%}
+  {{ gateway.interface }} · {{ gateway.target }} · {{ labels.get(gateway.status, gateway.status) }}
+  {%- if gateway.gateway_source is defined and gateway.gateway_source.dhcp is defined %} · DHCP {{ gateway.gateway_source.dhcp }}{% endif %}
+{%- endmacro %}
 {% block title %}Сетевые проверки{% endblock %}
 {% block page_title %}Сетевые проверки{% endblock %}
 {% block content %}
@@ -106,6 +110,9 @@
     {% endif %}
     {% if result.result.wan_observation is defined %}
     <dt>Интерфейс по адресу NAT</dt><dd>{{ wan_result(result.result.wan_observation) }}</dd>
+    {% endif %}
+    {% if result.result.gateway_check is defined %}
+    <dt>Шлюз WAN</dt><dd>{{ wan_gateway_result(result.result.gateway_check, status_labels) }}</dd>
     {% endif %}
     {% if result.result.mbps is defined %}
     <dt>Скорость за полный HTTPS-запрос</dt><dd>{{ '%.2f' | format(result.result.mbps) }} Мбит/с</dd>
@@ -315,6 +322,9 @@
             {% endif %}
             {% if run.result is defined and run.result.wan_observation is defined %}
             <br>{{ wan_result(run.result.wan_observation) }}
+            {% endif %}
+            {% if run.result is defined and run.result.gateway_check is defined %}
+            <br>{{ wan_gateway_result(run.result.gateway_check, status_labels) }}
             {% endif %}
           </td>
           <td>{{ 'Разные результаты' if run.check == 'route_availability' and run.status == 'partial' else status_labels.get(run.status, run.status) }}</td>

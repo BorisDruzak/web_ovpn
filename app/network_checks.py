@@ -134,6 +134,7 @@ CHECK_STATUS_LABELS = {
     "measured": "Замер пропускной способности завершён",
     "wan_mismatch": "Замер прошёл через другой WAN",
     "wan_unconfirmed": "Интерфейс WAN для замера не подтверждён",
+    "wan_gateway_unavailable": "Шлюз WAN не подтвердил доступность",
     "captured": "Захват сохранён",
     "empty_capture": "Захват завершён без совпавших пакетов",
     "busy": "Проверка занята. Повторите позже",
@@ -336,7 +337,8 @@ def _capture_check(check: CaptureCheck, owner: str | None) -> dict:
 
 
 def _https_speed_check(check: HttpsSpeedCheck) -> dict:
-    profile = load_probe_profiles().https_speed.get(check.profile)
+    profiles = load_probe_profiles()
+    profile = profiles.https_speed.get(check.profile)
     if profile is None:
         return {"status": "not_found", "result": {}}
     if not _throughput_lock.acquire(blocking=False):
@@ -349,6 +351,25 @@ def _https_speed_check(check: HttpsSpeedCheck) -> dict:
         }
         if route["status"] != "route_found":
             return {"status": route["status"], "result": result}
+        if gateway := profile.gateway_check:
+            probe = next(probe for probe in profiles.routes[gateway.profile].probes if probe.id == gateway.probe)
+            try:
+                measurement = run_netctl([
+                    "path", "probe", f"--profile={gateway.profile}", f"--probe={gateway.probe}",
+                    f"--expected-config={probe.config_digest()}",
+                ], timeout=22).get("probe") or {}
+            except (NetctlError, OSError, UnicodeError):
+                measurement = {}
+            evidence = measurement.get("evidence", {})
+            result["gateway_check"] = {
+                "profile": gateway.profile, "probe": gateway.probe,
+                "interface": probe.interface, "target": probe.target,
+                "status": measurement.get("status", "unavailable"),
+                "reason": measurement.get("reason"),
+                **{key: evidence[key] for key in ("gateway_link", "gateway_source", "gateway_arp") if key in evidence},
+            }
+            if result["gateway_check"]["status"] != "reachable":
+                return {"status": "wan_gateway_unavailable", "result": result}
         size = profile.upload_bytes if check.direction == "send" else profile.download_bytes
         reading = run_https_speed(profile.peer, check.direction, size)
         status = reading["status"]
@@ -431,10 +452,12 @@ def run_audited_network_check(db: Session, request: Request, actor: str, check: 
     if isinstance(check, RouteAvailabilityCheck) and result["result"].get("probes"):
         persist_route_run(db, owner=owner, result=result)
     message = result["target"]
-    if isinstance(check, HttpsSpeedCheck) and result["status"] in _HTTPS_MEASUREMENT_STATUSES:
-        details = {key: result["result"][key] for key in ("mbps", "transferred_bytes", "duration_seconds")}
-        if "wan_observation" in result["result"]:
-            details["wan_observation"] = result["result"]["wan_observation"]
+    if isinstance(check, HttpsSpeedCheck) and (
+        result["status"] in _HTTPS_MEASUREMENT_STATUSES or "gateway_check" in result["result"]
+    ):
+        details = {key: result["result"][key] for key in (
+            "mbps", "transferred_bytes", "duration_seconds", "wan_observation", "gateway_check",
+        ) if key in result["result"]}
         message = json.dumps({"target": result["target"], "result": details}, ensure_ascii=False)
     if isinstance(check, IperfCheck) and result["status"] == "measured":
         reading = result["result"]
@@ -476,7 +499,7 @@ def list_network_check_runs(db: Session, actor: str, limit: int) -> list[dict]:
             "checked_at": row.ts.replace(tzinfo=row.ts.tzinfo or UTC).isoformat(),
             "request_id": row.request_id,
         }
-        if (check == "https_speed" and row.result in _HTTPS_MEASUREMENT_STATUSES) or (
+        if (check == "https_speed" and row.message.startswith("{")) or (
             check == "iperf3" and row.result == "measured"
         ):
             try:

@@ -2747,6 +2747,62 @@ def test_https_speed_uses_profile_and_records_result_in_api_and_ui(
     assert calls == [(peer, "receive", 1_000_000), (peer, "send", 500_000)]
 
 
+@pytest.mark.parametrize("gateway_status", ["unreachable", "reachable"])
+def test_https_speed_waits_for_configured_wan_gateway(tmp_path, monkeypatch, gateway_status):
+    client, headers = make_client(tmp_path, monkeypatch)
+    from app import network_checks, network_probe_profiles
+
+    profiles = network_probe_profiles.ProbeProfiles.model_validate({
+        "routes": {"wan": {"label": "WAN", "probes": [{
+            "id": "gateway", "expected_path": "WAN 2", "protocol": "icmp", "target": "192.0.2.1",
+            "router_source": "router", "source_address": "192.0.2.2", "interface": "wan2",
+            "observe_neighbor": True,
+        }]}},
+        "https_speed": {"wan2": {
+            "label": "WAN 2", "peer": "162.159.140.220", "download_bytes": 100_000,
+            "upload_bytes": 100_000, "router_source": "router", "source_address": "192.0.2.10",
+            "expected_wan_interface": "wan2", "gateway_check": {"profile": "wan", "probe": "gateway"},
+        }},
+    })
+    monkeypatch.setattr(network_checks, "load_probe_profiles", lambda: profiles)
+    monkeypatch.setattr(network_checks, "lookup_linux_route", lambda *a, **kw: {"status": "route_found", "result": {}})
+    calls = []
+
+    def netctl(args, **kwargs):
+        if args[1] == "probe":
+            assert args[2:4] == ["--profile=wan", "--probe=gateway"]
+            return {"probe": {
+                "status": gateway_status, "reason": "no_icmp_reply",
+                "evidence": {"gateway_source": {"status": "missing", "dhcp": "searching"}},
+            }}
+        return {"egress": {"status": "confirmed", "nat_interface": "wan1"}}
+
+    def measure(*args):
+        calls.append(args)
+        return {"status": "measured", "result": {
+            "mbps": 8.0, "duration_seconds": 0.1, "transferred_bytes": 100_000,
+            "source_address": "192.0.2.10", "source_port": 42013,
+        }}
+
+    monkeypatch.setattr(network_checks, "run_netctl", netctl)
+    monkeypatch.setattr(network_checks, "run_https_speed", measure)
+    payload = {"check": "https_speed", "profile": "wan2", "direction": "receive"}
+    base = "/api/v1/network/diagnostics"
+    row = client.post(f"{base}/checks", headers=headers, json=payload).json()["data"]
+    assert row["status"] == ("wan_mismatch" if gateway_status == "reachable" else "wan_gateway_unavailable")
+    assert row["result"]["gateway_check"]["status"] == gateway_status
+    assert len(calls) == int(gateway_status == "reachable")
+    history = client.get(f"{base}/runs", headers=headers).json()["data"]["runs"][0]
+    assert history["result"]["gateway_check"] == row["result"]["gateway_check"]
+    if gateway_status == "unreachable":
+        assert "mbps" not in history["result"]
+        csrf = login(client)
+        page = client.post("/network/diagnostics/checks", data={"csrf_token": csrf, **payload})
+        assert "Шлюз WAN не подтвердил доступность" in page.text
+        assert "DHCP searching" in page.text
+        assert calls == []
+
+
 def test_network_probe_catalog_run_and_download_permissions(tmp_path, monkeypatch):
     client, headers = make_client(tmp_path, monkeypatch)
     from app import network_capture_store, network_checks, network_probe_profiles

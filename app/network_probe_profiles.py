@@ -55,6 +55,13 @@ class ThroughputProfile(ProbeProfile):
         return self
 
 
+class WanGatewayCheck(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    profile: ProfileId
+    probe: ProfileId
+
+
 class HttpsSpeedProfile(ProbeProfile):
     port: Literal[443] = 443
     download_bytes: int = Field(ge=MIN_BYTES, le=MAX_DOWNLOAD_BYTES)
@@ -62,6 +69,7 @@ class HttpsSpeedProfile(ProbeProfile):
     router_source: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
     source_address: str | None = None
     expected_wan_interface: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_][A-Za-z0-9_.:@-]{0,31}$")
+    gateway_check: WanGatewayCheck | None = None
 
     @field_validator("peer")
     @classmethod
@@ -74,6 +82,8 @@ class HttpsSpeedProfile(ProbeProfile):
             raise ValueError("router_source and source_address are required together")
         if self.expected_wan_interface and not self.router_source:
             raise ValueError("expected WAN interface requires RouterOS observation")
+        if self.gateway_check and not self.expected_wan_interface:
+            raise ValueError("gateway check requires an expected WAN interface")
         if self.source_address is not None:
             address = ipaddress.IPv4Address(self.source_address)
             if address.is_unspecified or address.is_multicast:
@@ -81,7 +91,7 @@ class HttpsSpeedProfile(ProbeProfile):
         return self
 
     def config_digest(self) -> str:
-        exclude = {"expected_wan_interface"} if self.expected_wan_interface is None else set()
+        exclude = {field for field in ("expected_wan_interface", "gateway_check") if getattr(self, field) is None}
         return hashlib.sha256(self.model_dump_json(exclude=exclude).encode()).hexdigest()
 
 
@@ -230,6 +240,19 @@ class ProbeProfiles(BaseModel):
     https_speed: dict[ProfileId, HttpsSpeedProfile] = Field(default_factory=dict, max_length=8)
     capture: dict[ProfileId, CaptureProfile] = Field(default_factory=dict, max_length=32)
     routes: dict[ProfileId, RouteProfile] = Field(default_factory=dict, max_length=16)
+
+    @model_validator(mode="after")
+    def validate_speed_gateways(self):
+        for speed in self.https_speed.values():
+            if check := speed.gateway_check:
+                route = self.routes.get(check.profile)
+                probe = next((probe for probe in route.probes if probe.id == check.probe), None) if route else None
+                if (
+                    probe is None or not probe.observe_neighbor or not probe.source_address
+                    or probe.router_source != speed.router_source or probe.interface != speed.expected_wan_interface
+                ):
+                    raise ValueError("gateway check must reference a RouterOS gateway probe on the expected WAN")
+        return self
 
     @model_validator(mode="after")
     def limit_scheduled_profiles(self):
