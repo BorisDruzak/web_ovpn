@@ -1512,6 +1512,51 @@ def test_asset_https_probe_validates_certificate_before_sending_request(monkeypa
     assert node["serviceChecks"][-1]["httpStatus"] == 200
 
 
+def test_pinned_https_probe_checks_redfish_authentication_challenge(monkeypatch):
+    from hashlib import sha256
+    from types import SimpleNamespace
+
+    from app.infrastructure_service_probes import _http_probe
+
+    cert = b"redfish-certificate"
+    challenge = 'Basic realm="AMI_Redfish_Server", X-Auth-Token realm="AMI_Redfish_Server"'
+    requests = []
+
+    class Connection:
+        sock = SimpleNamespace(getpeercert=lambda **_: cert)
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def connect(self):
+            pass
+
+        def request(self, method, path, headers):
+            assert "Authorization" not in headers
+            requests.append((method, path))
+
+        def getresponse(self):
+            return SimpleNamespace(status=401, getheaders=lambda: [("WWW-Authenticate", challenge)])
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("app.infrastructure_service_probes.http.client.HTTPSConnection", Connection)
+    spec = {"type": "https", "ip": "192.0.2.5", "port": 443, "path": "/redfish/v1/Systems",
+            "tls_sha256": sha256(cert).hexdigest(), "basic_auth_realm": "AMI_Redfish_Server"}
+    assert _http_probe({**spec, "tls_sha256": "0" * 64})["reason"] == "http_certificate_pin"
+    assert requests == []
+    assert _http_probe(spec) == {"state": "reachable", "httpStatus": 401}
+    assert requests == [("GET", "/redfish/v1/Systems")]
+    challenge = "Basic"
+    assert _http_probe({**spec, "basic_auth_realm": ""}) == {"state": "reachable", "httpStatus": 401}
+    assert _http_probe(spec)["reason"] == "http_payload_mismatch"
+    challenge = 'Digest realm="AMI_Redfish_Server"'
+    assert _http_probe(spec)["reason"] == "http_payload_mismatch"
+    assert _http_probe({**spec, "basic_auth_realm": ""})["reason"] == "http_payload_mismatch"
+    assert _http_probe({**spec, "tls_sha256": None})["reason"] == "http_configuration"
+
+
 def test_zabbix_version_checks_matching_json_rpc_response():
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from threading import Thread

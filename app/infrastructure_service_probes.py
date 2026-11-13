@@ -135,8 +135,9 @@ def _http(ip: str, port: int, spec: dict) -> dict:
     if type(allow_gzip) is not bool:
         raise ValueError("allow_gzip requires a boolean")
     if basic_auth_realm is not None:
-        if (not tls or not spec.get("tls_server_name") or not isinstance(basic_auth_realm, str)
-                or not re.fullmatch(r"[A-Za-z0-9 _.-]{1,80}", basic_auth_realm)
+        if (not tls or not (spec.get("tls_server_name") or spec.get("tls_sha256"))
+                or not isinstance(basic_auth_realm, str)
+                or not re.fullmatch(r"[A-Za-z0-9 _.-]{0,80}", basic_auth_realm)
                 or any(value is not None for value in (body_expected, body_marker, content_type, json_fields, json_unavailable))):
             raise ValueError("invalid HTTPS Basic authentication challenge contract")
     elif (not all(isinstance(value, (str, type(None))) for value in (body_expected, body_marker, content_type))
@@ -212,8 +213,9 @@ def _http(ip: str, port: int, spec: dict) -> dict:
             if response.status != 401:
                 return {**observed, "state": "unknown", "reason": "http_status"}
             challenges = [value.strip() for name, value in response.getheaders() if name.lower() == "www-authenticate"]
-            expected = rf'(?i:Basic realm)="{re.escape(basic_auth_realm)}"'
-            if any(re.fullmatch(expected, value) for value in challenges):
+            expected = (rf'(?i:Basic[ \t]+realm)[ \t]*=[ \t]*"{re.escape(basic_auth_realm)}"[ \t]*(?:,|$)'
+                        if basic_auth_realm else r"(?i:Basic)$")
+            if any(re.match(expected, value) for value in challenges):
                 return {**observed, "state": "reachable"}
             return {**observed, "state": "unknown", "reason": "http_payload_mismatch"}
         if response.status != 200:
