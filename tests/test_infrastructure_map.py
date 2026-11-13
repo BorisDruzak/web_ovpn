@@ -3851,7 +3851,8 @@ def test_proxmox_management_port_joins_unique_fdb_and_active_bridge(tmp_path):
         {"id": "pve3", "name": "pve3", "kind": "hypervisor", "management_ip": address},
         {"id": "sw", "name": "SNR", "kind": "switch", "management_ip": "192.0.2.254"},
     ], "links": [{"endpoint_a": {"device": "sw", "interface": "ge11"},
-                  "endpoint_b": {"device": "pve3", "interface": "data_1g"}, "relation": "connected_to"}]}
+                  "endpoint_b": {"device": "pve3", "interface": "enp2s0f0"}, "relation": "connected_to",
+                  "state": {"verified": True}, "vlans": {"untagged": [1], "tagged": [20]}}]}
     source = {"id": 1, "name": "snr", "host": "192.0.2.254", "driver": "snmp_switch"}
     attachment = {"mac": mac, "source_id": 1, "port_key": "ge11", "vlan_id": 1, "observed_at": at}
     network = {"sources": [source], "attachments": [attachment],
@@ -3871,6 +3872,11 @@ def test_proxmox_management_port_joins_unique_fdb_and_active_bridge(tmp_path):
     assert link["confirmed"]
     assert any(p["confirmed"] and p["a"] == "ge11" and p["b"] == "enp2s0f0" for p in link["portEvidence"])
     assert [row["managementAddress"] for row in link["portEvidence"] if "managementAddress" in row] == [address]
+    audit, = [row["vlanAudit"] for row in link["portEvidence"] if "vlanAudit" in row]
+    assert audit[0]["managementObservation"] == {"address": address, "switchSide": "a", "checkedAt": at}
+    assert audit[0]["state"] == "unconfirmed" and "managementObservation" not in audit[1]
+    aged, = load(now + timedelta(minutes=11))
+    assert all("managementObservation" not in vlan for row in aged["portEvidence"] for vlan in row.get("vlanAudit", []))
     snapshot = json.loads(path.read_text(encoding="utf-8"))
     snapshot["nodes"].append({"id": "management", "name": "Management", "kind": "Сервис", "serviceChecks": [
         {"source": "UI_VPN", "method": "HTTPS", "target": address, "port": 8006, "checkedAt": at, "state": "reachable"},
@@ -3891,10 +3897,10 @@ def test_proxmox_management_port_joins_unique_fdb_and_active_bridge(tmp_path):
     assert "management" not in graph["servicePaths"]
     assert not load(now + timedelta(hours=1))[0]["confirmed"]
     network["attachments"].append({**attachment, "port_key": "ge12"})
-    assert not any(p["b"] == "enp2s0f0" for link in load() for p in link["portEvidence"])
+    assert not any("managementAddress" in p for link in load() for p in link["portEvidence"])
     network["attachments"].pop()
     network["arp"].clear()
-    assert not any(p["b"] == "enp2s0f0" for link in load() for p in link["portEvidence"])
+    assert not any("managementAddress" in p for link in load() for p in link["portEvidence"])
 
 
 def test_lldp_management_address_requires_matching_inventory_and_host_mac(monkeypatch):

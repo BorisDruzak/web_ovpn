@@ -3339,11 +3339,29 @@ def load_infrastructure_map(
                 confirmed = confirmed and observation_is_fresh(row["observedAt"], now)
             alerts = []
             if confirmed and edge["kind"] == "Сетевое соединение":
+                management_vlans = defaultdict(dict)
                 for report in evidence:
                     if report["confirmed"]:
                         comparison = _compare_link_ports(report.get("portStates", {}))
                         if comparison:
                             report["portComparison"] = comparison
+                    if (report.get("pairEvidence") == "current" and (address := report.get("managementAddress"))
+                            and (vlan := report.get("vlan"))
+                            and observation_is_fresh(report["at"], now, max_age=VLAN_AUDIT_MAX_AGE)
+                            and not any(port["state"] in {"down", "disabled"} for port in report.get("portStates", {}).values())):
+                        pair = tuple(port_label_key(report[side]) for side in ("a", "b"))
+                        previous = management_vlans[pair, vlan].get(address, "")
+                        management_vlans[pair, vlan][address] = max(previous, report["at"])
+                if management_vlans:
+                    switch_side = "a" if nodes[edge["a"]]["kind"] == NETWORK_KINDS[0] else "b"
+                    for report in evidence:
+                        pair = tuple(port_label_key(report[side]) for side in ("a", "b"))
+                        for vlan in report.get("vlanAudit", []):
+                            observations = management_vlans.get((pair, vlan["id"]), {})
+                            if len(observations) == 1:
+                                (address, checked_at), = observations.items()
+                                vlan["managementObservation"] = {"address": address, "switchSide": switch_side,
+                                                                 "checkedAt": checked_at}
                 alerts = _link_port_alerts(evidence)
             links.append({**edge, "confirmed": confirmed, "portEvidence": evidence,
                           **({"portAlerts": alerts} if alerts else {})})

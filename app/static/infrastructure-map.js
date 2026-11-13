@@ -2075,6 +2075,11 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
                 const learned = port.learnedMacCount ? ` · изучено MAC ${port.learnedMacCount} · ${formatTime(port.fdbCheckedAt)}` : '';
                 row.append(make('small', `${byId.get(edge[side]).name} ${evidence[side]} · ${membership}${learned}`));
               }
+              if (vlan.managementObservation) {
+                const {address, switchSide, checkedAt} = vlan.managementObservation;
+                const name = byId.get(edge[switchSide]).name;
+                row.append(make('small', `MAC адреса управления ${address} виден на ${name} ${evidence[switchSide]} · ${formatTime(checkedAt)}`));
+              }
               vlans.append(row);
             }
             audit.append(make('summary', 'Сверка VLAN'), vlans);
