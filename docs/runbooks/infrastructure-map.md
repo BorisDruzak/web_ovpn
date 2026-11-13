@@ -240,6 +240,8 @@
 
 Тем же способом проверяются Zabbix (108), Verce (114), Storage Console (120), vk-bot (125), nextclaude (211) и ONLYOFFICE (212). В карточке ВМ доступность SSH и проверки приложений показаны отдельно. Проверка `verce-ssh` относится к доступу на ВМ, а `gitnexus-health` показывает результат HTTP-запроса к API GitNexus.
 
+У `helpdesk-production-health` и `helpdesk-staging-health` основной запрос проверяет `/api/health`. Обязательный компонент `/app/login` требует HTTP 200, `content_type: text/html` и `body_contains: '<div id="root"></div>'`. Используйте адрес, имя TLS и доверенный CA основной проверки. Результат показывает выдачу HTML приложения до входа.
+
 «Панель VK» на ВМ 125 проверяет анонимный ответ `/api/session` и обязательные ресурсы `/`, `/app.js` и `/style.css`. Для ресурсов проверяются HTTP 200, MIME-тип и характерный фрагмент содержимого. Состояние учётных записей VK и фонового worker требует собственных наблюдений.
 
 Проверки SSH также включены для Dopamine (101), deb-postgres (102), test-helpdesk (113), DEV-SONAR (117), DEV-SENTRY (118) и тестовых ALT ВМ 121 и 133. Для ВМ 121 и 133 адреса добавлены после сверки ARP с MAC включённого адаптера Proxmox.
