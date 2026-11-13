@@ -7,7 +7,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$python = Join-Path $Runtime 'python.exe'
+$python = Join-Path $Runtime 'Scripts\python.exe'
 $ssh = Join-Path $env:SystemRoot 'System32\OpenSSH\ssh.exe'
 $key = Join-Path $Runtime 'receiver.key'
 $knownHosts = Join-Path $Runtime 'known_hosts'

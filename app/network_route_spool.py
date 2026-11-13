@@ -15,7 +15,7 @@ from .network_probe_profiles import RouteProbe, RouteProfile, load_probe_profile
 from .network_route_local import probe_local_route
 from .network_route_remote import _result, _sanitize_reply, _valid_id
 
-SPOOL_PATH = Path("/var/lib/openvpn-web/route-probe-receipts")
+SPOOL_PATH = Path("/var/lib/openvpn-route-probes")
 MAX_RECEIPT_BYTES = 32_768
 MAX_AGE = timedelta(minutes=3)
 CLOCK_TOLERANCE = timedelta(seconds=30)
