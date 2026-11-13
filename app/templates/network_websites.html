@@ -43,6 +43,7 @@
           <td><a href="{{ site.url }}">{% if '/DigitalgovTorkndProd1Auth/protocol/openid-connect/auth' in site.url %}ПГС · вход (auth.pgs.gosuslugi.ru){% else %}{{ site.url }}{% endif %}</a></td>
           <td>{{ labels.get(site.status, site.status) }}{% if site.http_status %} · HTTP {{ site.http_status }}{% endif %}
             {% if site.failure_stage %}<br>Сбой на этапе {{ stages.get(site.failure_stage, site.failure_stage) }}{% endif %}
+            {% if site.tls == 'verified' and site.http_status == 403 %}<br>HTTPS-соединение установлено, получен отказ HTTP{% endif %}
             {% if site.tcp_ms is defined and site.tcp_ms is not none %}<br>TCP {{ site.tcp_ms }} мс{% endif %}
             {% if site.tls_ms is defined and site.tls_ms is not none %} · TLS {{ site.tls_ms }} мс{% endif %}
             {% if site.total_ms is not none and site.total_ms is defined %}<br>{{ site.total_ms }} мс{% endif %}
@@ -64,6 +65,7 @@
             {% endif %}
           </td>
           <td>{% if site.source_address %}Источник {{ site.source_address }}<br>{% endif %}
+            {% if site.route and site.route.result.dev %}Интерфейс {{ site.route.result.dev }}<br>{% endif %}
             {% if site.route and site.route.result.gateway %}Шлюз {{ site.route.result.gateway }}<br>{% endif %}
             {% if site.ping %}
               {% if site.ping.sent is defined %}Пинг {{ site.ping.received }}/{{ site.ping.sent }} · потери {{ site.ping.loss_percent }}%

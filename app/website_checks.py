@@ -18,6 +18,7 @@ from .website_receipts import MAX_AGE as WINDOWS_MAX_AGE, WINDOWS_SITES, WINDOWS
 
 PGS_LOGIN = "https://auth.pgs.gosuslugi.ru/auth/realms/DigitalgovTorkndProd1Auth/protocol/openid-connect/auth"
 MON_PMO = "https://mon-pmo.gov74.ru/"
+MONITOR_USER_AGENT_HOSTS = {"mon-pmo.gov74.ru", "digital.gov74.ru"}
 SITES = (
     "https://www.gosuslugi.ru/",
     "https://frgu3.gosuslugi.ru/",
@@ -114,7 +115,7 @@ def fetch(url: str, address) -> tuple[dict, bytes, int]:
     host = parts.hostname
     port = 443 if parts.scheme == "https" else 80
     ip = f"[{address}]" if address.version == 6 else str(address)
-    user_agent = ["--user-agent", "UI-VPN-Monitor/1.0"] if host == urlsplit(MON_PMO).hostname else []
+    user_agent = ["--user-agent", "UI-VPN-Monitor/1.0"] if host in MONITOR_USER_AGENT_HOSTS else []
     tls_args = []
     env = None
     if parts.scheme == "https":
