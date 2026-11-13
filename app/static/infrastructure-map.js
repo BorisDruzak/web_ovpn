@@ -1562,6 +1562,19 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const columns = make('div', null, 'map-detail-columns');
     const propertiesSection = make('section');
     propertiesSection.append(make('h3', 'Доступность'), properties);
+    for (const {address, routerId, port, source, checkedAt, portLink, archivedPeer} of node.managementRouterPaths ?? []) {
+      const router = byId.get(routerId);
+      if (!router) continue;
+      const link = make('a', `${router.name} · ${port}`);
+      link.href = '?' + new URLSearchParams({node: routerId, port});
+      const row = make('dd');
+      row.append(link, make('small', [source, formatPortSpeed(portLink?.speedBps), formatTime(checkedAt)].filter(Boolean).join(' · ')));
+      if (archivedPeer) {
+        row.append(make('small', `Порт узла по архиву · ${archivedPeer.port} · ${formatTime(archivedPeer.checkedAt)}`));
+        appendInventorySources(row, archivedPeer.inventorySources);
+      }
+      properties.append(make('dt', `Путь до ${address}`), row);
+    }
     if (node.managementSwitchPort) {
       const {switchId, port, checkedAt, portLink, physicalPair} = node.managementSwitchPort;
       const upstream = byId.get(switchId);

@@ -3018,9 +3018,13 @@ def _observed_management_ports(links: list[dict], nodes: dict) -> dict:
     return {key: next(iter(ports.values())) for key, ports in candidates.items() if len(ports) == 1}
 
 
-def _attach_management_switch_ports(nodes: dict, links: list[dict]) -> None:
+def _attach_management_ports(nodes: dict, links: list[dict]) -> None:
     paths = defaultdict(list)
-    for (host, _), path in _observed_management_ports(links, nodes).items():
+    for (host, address), path in sorted(_observed_management_ports(links, nodes).items()):
+        if attachment := path.get("routerAttachment"):
+            router_paths = nodes[host].setdefault("managementRouterPaths", [])
+            if len(router_paths) < 16:
+                router_paths.append({"address": address, **attachment})
         if attachment := path.get("switchAttachment"):
             paths[host].append(attachment)
     for host, attachments in paths.items():
@@ -3351,6 +3355,8 @@ def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
         detail["checks"] = anchor["checks"]
         detail["serviceChecks"] = anchor["serviceChecks"]
         detail["reachability"] = anchor["reachability"]
+        if "managementRouterPaths" in anchor:
+            detail["managementRouterPaths"] = anchor["managementRouterPaths"]
     if anchor and anchor["kind"] == "Сервис":
         dependency_ids = sorted({edge["b"] for edge in links
                                  if edge["a"] == node_id and edge["confirmed"]
@@ -4244,7 +4250,7 @@ def load_infrastructure_map(
     _attach_guest_observer_measurements(nodes, links)
     _attach_acti_backup_job(nodes, links)
     _attach_backup_scope(nodes)
-    _attach_management_switch_ports(nodes, links)
+    _attach_management_ports(nodes, links)
     _map_statuses(nodes, links)
     cluster_id = _text(raw.get("clusterId"))
     _attach_storage_assignments(nodes, links, cluster_id)

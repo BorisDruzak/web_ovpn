@@ -6512,6 +6512,10 @@ def test_transit_peer_management_port_requires_fresh_arp_fdb_and_active_ethernet
                             "archivedPeer": {"nodeId": "coordinator", "port": "eth0", "checkedAt": inventory_stamp,
                                              "inventorySources": sources}}}
     reverse, = summarize_guest_attachment(public, "rb")["attachment"]["servicePorts"]
+    coordinator = next(node for node in public["nodes"] if node["id"] == "coordinator")
+    assert coordinator["managementRouterPaths"] == [{"address": address, **service_path["routerAttachment"]}]
+    attachment = summarize_guest_attachment(public, "coordinator")["attachment"]
+    assert attachment["managementRouterPaths"] == coordinator["managementRouterPaths"]
     endpoint, = reverse["services"][0]["probeEndpoints"]
     assert reverse["port"] == "ether7" and endpoint["target"] == address
     raw = json.loads(path.read_text(encoding="utf-8"))
