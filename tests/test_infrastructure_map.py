@@ -7468,7 +7468,11 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
     placement = {"a": "pve", "b": "vm:1", "kind": "Размещение ВМ", "confirmed": True,
                  "portEvidence": [{"a": "vmbr0", "b": "net0", "source": "Proxmox · конфигурация ВМ",
                                    "at": at, "confirmed": True,
-                                   "virtual": {"bridgeActive": True, "linkDisabled": False, "uplinks": ["eth0"]}}]}
+                                   "virtual": {"bridgeActive": True, "linkDisabled": False, "uplinks": ["eth0"],
+                                               "ipv4Observations": [
+                                                   {"address": ip, "source": "UI_VPN", "method": "ARP", "checkedAt": at}
+                                                   for ip in ("192.0.2.10", "192.0.2.11")
+                                               ]}}]}
     links = [placement, {"a": "vm:1", "b": "web", "kind": "Цель проверки", "confirmed": True}]
     path.write_text(json.dumps({"schema": 1, "snapshotAt": at, "nodes": [*guests, host, service],
                                 "links": links}), encoding="utf-8")
@@ -7497,7 +7501,7 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
             if tuple(profiles) == ("network_v1",):
                 return {"network_v1": {"profile": "network_v1", "collected_at": self.network_at,
                                        "sections": {"interfaces": [
-                                           {"name": "Ethernet 2", "addresses": ["192.0.2.10/24", "192.0.2.10",
+                                           {"name": "Ethernet 2", "addresses": ["192.0.2.10/24", "192.0.2.10", "192.0.2.12",
                                                                                "127.0.0.1", "169.254.1.2", "invalid"]},
                                            {"name": "lo", "addresses": ["127.0.0.1/8", "::1"]},
                                        ]}}}
@@ -7561,7 +7565,10 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
     assert web["id"] == "web" and web["requiredChecks"] == {"passed": 1, "failed": 0, "unconfirmed": 0}
     system = {"collectedAt": at, "platform": "linux", "name": "Ubuntu", "version": "24.04",
               "architecture": "x86_64"}
-    network = {"checkedAt": at, "stale": False, "interfaces": [{"name": "Ethernet 2", "ipv4": ["192.0.2.10"]}]}
+    network = {"checkedAt": at, "stale": False, "interfaces": [{"name": "Ethernet 2", "ipv4": ["192.0.2.10", "192.0.2.12"]}]}
+    assert context["agentAudit"]["guests"][0].pop("ipv4Comparison") == {
+        "matched": ["192.0.2.10"], "endpointOnly": ["192.0.2.12"], "observedOnly": ["192.0.2.11"],
+    }
     assert detail == {**matched, "operatingSystem": system, "network": network, "health": {"checkedAt": at, "uptimeSeconds": 7200,
                                              "memoryAvailableBytes": 2**31, "loadAverage1m": 0.0, "services": [
                                                  {"name": "sshd", "status": "active"},
@@ -7603,7 +7610,9 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
     assert all(key not in response.text for key in keys)
     assert "nodes" not in response.json()["infrastructure"]
     response = client.get(browser_url + "?node_id=vm:1")
-    assert response.json()["infrastructure"]["agentAudit"]["guests"] == [detail]
+    browser_detail, = response.json()["infrastructure"]["agentAudit"]["guests"]
+    assert browser_detail.pop("ipv4Comparison")["matched"] == ["192.0.2.10"]
+    assert browser_detail == detail
     Adapter.unavailable = True
     assert client.get(browser_url).json()["infrastructure"]["agentAudit"] == {"sourceState": "unavailable"}
     selected = client.get("/api/v1/network/infrastructure?view=agents&node_id=vm:1", headers=headers)

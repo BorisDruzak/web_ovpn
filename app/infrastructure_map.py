@@ -2649,8 +2649,20 @@ def load_infrastructure_agent_audit(path: Path, *, node_id: str | None = None) -
     result = {**{key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph},
               "agentAudit": graph.get("agentAudit", {"sourceState": "unavailable"})}
     if node_id is not None and any(node["id"] == node_id and node["guest"] for node in graph["nodes"]):
-        result["attachment"] = summarize_guest_attachment(graph, node_id)["attachment"]
+        attachment = summarize_guest_attachment(graph, node_id)["attachment"]
+        result["attachment"] = attachment
         result["serviceAudit"] = summarize_services(graph, host_id=node_id)["serviceAudit"]
+        for entry in result["agentAudit"].get("guests", []):
+            network = entry.get("network")
+            if not network or network["stale"]:
+                continue
+            observed = {row["address"] for guest in attachment["guests"] if guest["placement"] == "confirmed"
+                        for interface in guest["interfaces"] for row in interface.get("ipv4Observations", [])}
+            if observed:
+                reported = {address for interface in network["interfaces"] for address in interface["ipv4"]}
+                entry["ipv4Comparison"] = {"matched": sorted(observed & reported),
+                                           "endpointOnly": sorted(reported - observed),
+                                           "observedOnly": sorted(observed - reported)}
     return result
 
 

@@ -765,6 +765,13 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       for (const {name, ipv4} of network.interfaces) {
         row.append(make('small', name + ' · ' + ipv4.join(', ')));
       }
+      const comparison = entry.ipv4Comparison;
+      if (comparison) {
+        for (const [key, title] of [['matched', 'Совпали с наблюдением сети'], ['endpointOnly', 'Видны только в Endpoint'],
+                                    ['observedOnly', 'Видны только в наблюдении сети']]) {
+          if (comparison[key].length) row.append(make('small', title + ' · ' + comparison[key].join(', ')));
+        }
+      }
       label.append(row);
     }
     const profileLabels = {health_v1: 'Состояние', network_v1: 'Сеть', inventory_v1: 'Инвентарь'};
