@@ -2125,7 +2125,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             port, observed = evidence
             item["probeTargetIP"] = spec["peer"]
             edge(router, asset, "Транзитный сегмент", "MikroTik · ARP",
-                 details=f"{segment['local_address']} ↔ {spec['peer']}", ports=(port, ""), at=observed)
+                 details=f"{segment['local_address']} ↔ {spec['peer']}", ports=(port, ""), at=observed,
+                 management_address=spec["peer"])
             if archived := _inventory_ipv4_interface(devices[asset], spec["peer"], now):
                 edge(router, asset, "Транзитный сегмент", "GitHub", False, ports=("", archived[0]), at=archived[1])
         bridge = spec.get("lan_bridge")

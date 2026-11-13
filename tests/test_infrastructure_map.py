@@ -4906,8 +4906,9 @@ def test_routeros_ping_uses_one_packet_and_rejects_injected_addresses(monkeypatc
     assert calls == ["/ping address=192.0.2.30 src-address=198.51.100.1 count=1"]
 
 
-def test_transit_port_requires_direct_route_running_ethernet_and_neighbor_arp():
+def test_transit_port_requires_direct_route_running_ethernet_and_neighbor_arp(tmp_path):
     from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map, summarize_guest_attachment
 
     now = datetime.now(timezone.utc)
     at = now.isoformat()
@@ -4921,7 +4922,8 @@ def test_transit_port_requires_direct_route_running_ethernet_and_neighbor_arp():
     binding = {"transit_links": {"transit": {"asset": "coordinator", "source": "main",
                                               "peer": "192.0.2.2", "label": "Transit"}}}
     network = {
-        "sources": [{"id": 1, "name": "main", "driver": "mikrotik_api", "driver_options": {"intent_stable_id": "rb"}}],
+        "sources": [{"id": 1, "name": "main", "driver": "mikrotik_api", "enabled": 1,
+                     "driver_options": {"intent_stable_id": "rb"}}],
         "routes": [{"source": "main", "dst_address": "192.0.2.0/30", "gateway": "ether8", "immediate_gateway": "ether8",
                     "routing_table": "main", "active": 1, "disabled": 0, "dynamic": 1, "route_type": "unicast", "last_seen_at": at}],
         "router_interfaces": [{"source": "main", "name": "ether8", "type": "ether", "running": 1, "disabled": 0, "last_seen_at": at}],
@@ -4939,6 +4941,25 @@ def test_transit_port_requires_direct_route_running_ethernet_and_neighbor_arp():
     assert link["confirmed"] and link["portEvidence"][0]["a"] == "ether8"
     assert link["portEvidence"][0]["b"] == ""
     assert link["portEvidence"][1] == {"a": "", "b": "eth2", "source": "GitHub", "at": inventory_stamp, "confirmed": False}
+
+    def attachment(node_id, at=now):
+        graph = build_graph(context, network, {}, {}, binding, now)
+        transit = next(n for n in graph["nodes"] if n["id"] == "transit:transit")
+        transit["serviceChecks"] = [{"source": "UI_VPN", "method": "ICMP", "state": "reachable",
+                                     "target": "192.0.2.2", "checkedAt": now.isoformat()}]
+        snapshot = tmp_path / "transit.json"
+        snapshot.write_text(json.dumps(graph), encoding="utf-8")
+        public = load_infrastructure_map(snapshot, at, include_guest_attachments=True)
+        return summarize_guest_attachment(public, node_id)["attachment"]
+
+    path, = attachment("transit:transit")["servicePaths"]
+    assert path["routerAttachment"] == {"routerId": "rb", "port": "ether8", "source": "MikroTik · ARP", "checkedAt": at}
+    port, = attachment("rb")["servicePorts"]
+    row, = port["services"]
+    assert port["port"] == "ether8" and row["basis"] == ["router_arp"]
+    assert row["probeEndpoints"] == [{"target": "192.0.2.2", "port": None, "method": "ICMP",
+                                      "passed": 1, "failed": 0, "unconfirmed": 0}]
+    assert not attachment("transit:transit", now + timedelta(hours=1))["servicePaths"]
     network["arp"][0]["interface"] = "bridge1"
     assert build()[0]["probeTargetIP"] is None and build()[1] == []
     network["arp"][0]["interface"] = "ether8"

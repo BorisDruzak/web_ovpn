@@ -1920,7 +1920,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const services = make('ul', null, 'map-detail-list');
         const bases = {host_mac: 'MAC устройства', host_lacp: 'LACP хоста', host_management: 'Интерфейс управления',
           guest_gateway: 'Вход через шлюз', guest_local_udp: 'Привязка к интерфейсу ВМ',
-          router_mac: 'ARP и FDB маршрутизатора', switch_mac: 'Адрес проверен по ARP и FDB'};
+          router_arp: 'Подключённый маршрут и ARP', router_mac: 'ARP и FDB маршрутизатора',
+          switch_mac: 'Адрес проверен по ARP и FDB'};
         for (const service of serviceGroup.services) {
           const row = make('li');
           const open = make('button', service.name);
@@ -1938,7 +1939,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
                 probe.unconfirmed && `без подтверждения: ${probe.unconfirmed}`];
             row.append(make('small', [
               [probe.method, probe.localListener ? '' : probe.transport].filter(Boolean).join(' '),
-              `${address}:${probe.port}${probe.path ?? ''}`, ...states,
+              `${address}${probe.port ? ':' + probe.port : ''}${probe.path ?? ''}`, ...states,
             ].filter(Boolean).join(' · ')));
           }
           services.append(row);

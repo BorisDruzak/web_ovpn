@@ -2183,13 +2183,13 @@ def _observed_management_ports(links: list[dict]) -> dict:
     candidates = defaultdict(dict)
     physical = _current_physical_port_pairs(links)
     for edge in links:
-        if edge["kind"] != "Путь по MAC-таблице" or not edge["confirmed"]:
+        if edge["kind"] not in {"Путь по MAC-таблице", "Транзитный сегмент"} or not edge["confirmed"]:
             continue
         for report in edge["portEvidence"]:
             address = report.get("managementAddress")
             if not report["confirmed"] or not address:
                 continue
-            if report["source"] == "MikroTik · ARP + FDB":
+            if report["source"] in {"MikroTik · ARP", "MikroTik · ARP + FDB"}:
                 side, field, id_key = "a", "routerAttachment", "routerId"
             elif (endpoint := report.get("learnedEndpoint")) and report["source"] == "netctl FDB":
                 side = "a" if edge["a"] == endpoint["switchId"] else "b"
@@ -2220,10 +2220,19 @@ def _management_service_paths(service: dict, host: str, management: dict, observ
             switch, pair = matched
             paths.append({**_attachment_probe_location(check), "addressCheckedAt": pair["checkedAt"],
                           "management": True, "hypervisorId": host, "switchId": switch, "physicalPair": pair})
-        elif check["port"] is not None and (attachment := observed_ports.get((host, check["target"]))):
+        elif attachment := observed_ports.get((host, check["target"])):
             observation, = attachment.values()
-            paths.append({**_attachment_probe_location(check), "addressCheckedAt": observation["checkedAt"], **attachment})
+            if check["port"] is not None or (check["method"] == "ICMP" and observation["source"] == "MikroTik · ARP"):
+                paths.append({**_attachment_probe_location(check), "addressCheckedAt": observation["checkedAt"], **attachment})
     return paths
+
+
+def _transit_service_paths(service: dict, hosts: set, observed_ports: dict) -> list[dict]:
+    if len(hosts) != 2 or not service["id"].startswith("transit:"):
+        return []
+    return [path for host in sorted(hosts) for path in _management_service_paths(service, host, {}, observed_ports)
+            if (router := path.get("routerAttachment")) and router["source"] == "MikroTik · ARP"
+            and router["routerId"] in hosts - {host}]
 
 
 def _physical_service_port_evidence(nodes: dict, links: list[dict]) -> dict:
@@ -2269,6 +2278,8 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime) -> dict:
             host, = hosts
             if paths := _management_service_paths(nodes[service], host, management, observed_ports):
                 service_paths[service] = paths
+        elif paths := _transit_service_paths(nodes[service], hosts, observed_ports):
+            service_paths[service] = paths
     port_services = defaultdict(lambda: defaultdict(lambda: defaultdict(set)))
     port_names = {}
     path_checks = defaultdict(set)
@@ -2285,7 +2296,7 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime) -> dict:
         for path in paths:
             if attachment := path.get("routerAttachment"):
                 router, port = attachment["routerId"], attachment["port"]
-                record(router, port, service, "router_mac")
+                record(router, port, service, "router_arp" if attachment["source"] == "MikroTik · ARP" else "router_mac")
                 path_checks[router, port_label_key(port), service].add(check_key(path))
                 continue
             if attachment := path.get("switchAttachment"):
@@ -2319,11 +2330,12 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime) -> dict:
         for check in _attachment_service_checks(node):
             target, number, method, path, checked_at = check_key(check)
             local = check.get("localListener") is True
-            if (not target or number is None or not method or not checked_at or check["stale"] or check.get("skipped")
+            if (not target or (number is None and not (method == "ICMP" and "router_arp" in bases))
+                    or not method or not checked_at or check["stale"] or check.get("skipped")
                     or check["source"] != "UI_VPN" or not ((physical and not local) or check_key(check) in selected)):
                 continue
             transport = "UDP" if local else check.get("dns", {}).get("transport", "")
-            probe = probes.setdefault((target, number, method, transport, path), {
+            probe = probes.setdefault((target, number or 0, method, transport, path), {
                 "target": target, "port": number, "method": method,
                 **({"path": path} if path else {}),
                 **({"transport": transport} if transport else {}),
@@ -2364,6 +2376,8 @@ def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
             detail["servicePaths"].extend(_management_service_paths(
                 anchor, host_ids[0], _management_port_paths(nodes, links), _observed_management_ports(links),
             ))
+        elif len(targets) == len(host_ids) == 2:
+            detail["servicePaths"].extend(_transit_service_paths(anchor, targets, _observed_management_ports(links)))
     elif anchor and anchor["kind"] in NETWORK_KINDS[:2]:
         attachments = _map_attachments(nodes, links, datetime.now(timezone.utc))
         detail["servicePorts"] = attachments["servicePorts"].get(node_id, [])
@@ -2856,7 +2870,8 @@ def load_infrastructure_map(
                     address = _network_address(report.get("managementAddress"))
                     if address and ":" not in address and "/" not in address:
                         evidence[-1]["managementAddress"] = address
-                if (source == "MikroTik · ARP + FDB" and observed_attachment and edge["kind"] == "Путь по MAC-таблице"
+                if ((source, edge["kind"]) in {("MikroTik · ARP + FDB", "Путь по MAC-таблице"),
+                                              ("MikroTik · ARP", "Транзитный сегмент")} and observed_attachment
                         and nodes[edge["a"]]["kind"] == NETWORK_KINDS[1] and evidence[-1]["a"] and not evidence[-1]["b"]):
                     address = _network_address(report.get("managementAddress"))
                     if address and ":" not in address and "/" not in address:
