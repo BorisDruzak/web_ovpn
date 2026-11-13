@@ -1309,6 +1309,12 @@ def _public_node(row: dict, now: datetime) -> dict:
         last_reset = _time(power.get("lastResetAt"))
         if last_reset and last_reset <= _time(power["checkedAt"]):
             hardware_power["lastResetAt"] = last_reset.isoformat()
+        for key in ("health", "healthRollup"):
+            if power.get(key) in ("OK", "Warning", "Critical"):
+                hardware_power[key] = power[key]
+        memory = power.get("totalSystemMemoryGiB")
+        if type(memory) in (int, float) and 0 < memory <= 1_048_576:
+            hardware_power["totalSystemMemoryGiB"] = memory
         if power["state"] == "Off" and reachability["state"] != "reachable":
             reachability = {"state": "stopped", "source": "Redfish", "method": "Состояние питания",
                             "checkedAt": hardware_power["checkedAt"], "stale": False}
@@ -1421,6 +1427,8 @@ def _map_statuses(nodes: dict, links: list[dict]) -> None:
                       for check in node["serviceChecks"] if check.get("required"))
         if any(disk["smartState"] == "critical" for disk in node.get("hardwareDisks", {}).get("disks", [])):
             checks.append("critical")
+        if any(node.get("hardwarePower", {}).get(key) in ("Warning", "Critical") for key in ("health", "healthRollup")):
+            checks.append("warn")
         if any(pool["health"] in ZFS_PROBLEM_STATES for pool in node.get("zfsPools", {}).get("pools", [])):
             checks.append("warn")
         if any(pool["capacityStatus"] == "warn" for pool in node.get("lvmThinPools", {}).get("pools", [])):

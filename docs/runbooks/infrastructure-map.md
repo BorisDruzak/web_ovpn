@@ -64,6 +64,8 @@
 
 Если контроллер передаёт `PowerRestorePolicy` и `LastResetTime`, карточка и `hardwarePower` в API/MCP показывают действие после возврата электропитания (`restorePolicy`) и время последнего сброса системы (`lastResetAt`). Эти поля читаются вместе с состоянием питания из ресурса ComputerSystem и исчезают по истечении срока этого наблюдения. [Схема Redfish ComputerSystem](https://redfish.dmtf.org/schemas/v1/ComputerSystem.v1_22_0.json)
 
+Из того же ответа карта берёт `Status.Health`, `Status.HealthRollup` и `MemorySummary.TotalSystemMemoryGiB`, если контроллер их передал. Оценка `Warning` или `Critical` отображает доступный сервер жёлтым. Состояние питания и доступность ОС продолжают проверяться отдельно. [Модель данных Redfish](https://redfish.dmtf.org/schemas/v1/DSP0268_2025.3.html)
+
 В `view=attachment` для сервера поле `physicalHosts[].managementControllers[].services` содержит до 12 служб BMC с их статусом и проверками, а `serviceTotal` — полное число служб. Поле `confirmed` у контроллера показывает, подтверждена ли его принадлежность серверу. Проверки IPMI и Redfish относятся к контроллеру.
 
 В `vlanAudits[].vlans[].managementObservation` доступен IPv4 управления Proxmox, чей MAC виден в этом VLAN на указанном порту коммутатора. Требуются свежие ARP, FDB и наблюдение аплинка Proxmox. Режим тегирования проверяется отдельно с обеих сторон.

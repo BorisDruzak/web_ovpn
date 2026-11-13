@@ -43,11 +43,12 @@ def test_service_status_uses_fresh_redfish_power_of_its_only_host(placement, oth
     ("Off", "unknown", "stopped"),
     ("Off", "reachable", "reachable"),
     ("On", "unknown", "unknown"),
+    ("On", "reachable", "reachable"),
     (None, "unknown", "unknown"),
 ])
 def test_redfish_power_does_not_equate_power_on_with_os_availability(monkeypatch, power, network, expected):
     from app import infrastructure_redfish as redfish
-    from app.infrastructure_map import _public_node
+    from app.infrastructure_map import _map_statuses, _public_node
 
     now = datetime.now(timezone.utc)
     stamp = now.isoformat()
@@ -61,6 +62,8 @@ def test_redfish_power_does_not_equate_power_on_with_os_availability(monkeypatch
     reset = (now - timedelta(days=7)).isoformat()
     monkeypatch.setattr(redfish, "_read_resource", lambda *_: {
         "PowerState": power, "PowerRestorePolicy": "AlwaysOff", "LastResetTime": reset,
+        "Status": {"Health": "OK", "HealthRollup": "Warning"},
+        "MemorySummary": {"TotalSystemMemoryGiB": 64},
     })
     redfish.collect_redfish_power(graph, spec, None, now)
     node = _public_node(host, datetime.now(timezone.utc))
@@ -69,9 +72,17 @@ def test_redfish_power_does_not_equate_power_on_with_os_availability(monkeypatch
     if power:
         assert node["hardwarePower"]["restorePolicy"] == "AlwaysOff"
         assert node["hardwarePower"]["lastResetAt"] == reset
-        host["hardwarePower"].update(restorePolicy="invalid", lastResetAt=(now + timedelta(days=1)).isoformat())
+        assert node["hardwarePower"]["health"] == "OK"
+        assert node["hardwarePower"]["healthRollup"] == "Warning"
+        assert node["hardwarePower"]["totalSystemMemoryGiB"] == 64
+        if power == "On" and network == "reachable":
+            _map_statuses({node["id"]: node}, [])
+            assert node["mapStatus"] == "warn"
+        host["hardwarePower"].update(restorePolicy="invalid", lastResetAt=(now + timedelta(days=1)).isoformat(),
+                                     health="invalid", healthRollup=None, totalSystemMemoryGiB=True)
         public = _public_node(host, datetime.now(timezone.utc))["hardwarePower"]
         assert "restorePolicy" not in public and "lastResetAt" not in public
+        assert not {"health", "healthRollup", "totalSystemMemoryGiB"} & public.keys()
     expired = _public_node(host, now + timedelta(minutes=6))
     assert "hardwarePower" not in expired and expired["reachability"]["state"] != "stopped"
     graph["links"][0]["confirmed"] = False

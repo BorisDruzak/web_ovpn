@@ -56,7 +56,12 @@ def _read_power(spec: dict, credential: Path | None) -> dict:
     power = system.get("PowerState")
     if power not in ("On", "Off", "PoweringOn", "PoweringOff"):
         return {}
-    return {"state": power, "restorePolicy": system.get("PowerRestorePolicy"), "lastResetAt": system.get("LastResetTime")}
+    result = {"state": power, "restorePolicy": system.get("PowerRestorePolicy"), "lastResetAt": system.get("LastResetTime")}
+    if isinstance(status := system.get("Status"), dict):
+        result.update(health=status.get("Health"), healthRollup=status.get("HealthRollup"))
+    if isinstance(memory := system.get("MemorySummary"), dict):
+        result["totalSystemMemoryGiB"] = memory.get("TotalSystemMemoryGiB")
+    return result
 
 
 def _confirm_management_pair(graph, nodes, controller_id, spec, credential, now):
