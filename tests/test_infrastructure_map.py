@@ -640,11 +640,13 @@ def test_cluster_health_distinguishes_quorum_members_and_api(tmp_path):
     path = tmp_path / "infrastructure.json"
     cluster = {"type": "cluster", "name": "example", "quorate": 1, "nodes": 2}
     members = [{"type": "node", "name": "pve1", "online": 1}, {"type": "node", "name": "pve2", "online": 1}]
+    capacity = {}
 
     def read(when=now):
         pve = {"at": now.isoformat(), "cluster": [cluster, *members],
                "guests": [{"node": "pve1", "vmid": 103, "status": "stopped", "type": "qemu"}],
-               "nodes": [{"node": "pve1", "status": "online"}, {"node": "pve2", "status": "online"}]}
+               "nodes": [{"node": "pve1", "status": "online"}, {"node": "pve2", "status": "online"}],
+               **({"nodeStatus": capacity} if capacity else {})}
         graph = build_graph({}, {}, {}, pve, {}, now)
         path.write_text(json.dumps(graph), encoding="utf-8")
         return next(node for node in load_infrastructure_map(path, when)["nodes"] if node["id"] == "proxmox:cluster")
@@ -660,6 +662,14 @@ def test_cluster_health_distinguishes_quorum_members_and_api(tmp_path):
     assert attachment["guestTotal"] == 1
     assert attachment["guests"][0]["hypervisor"]["id"] == "pve1"
     assert [host["host"]["id"] for host in attachment["physicalHosts"]] == ["pve1", "pve2"]
+    sample = {"checkedAt": now.isoformat(), "rootfs": {"avail": 500, "total": 1000},
+              "swap": {"used": 0, "total": 0}, "memory": {"free": 100, "total": 1000}}
+    capacity.update(pve1=sample, pve2={**sample, "endpointMemory": {"availableBytes": 50, "checkedAt": now.isoformat()}})
+    degraded = read()
+    assert degraded["mapStatus"] == "warn" and degraded["reachability"]["state"] == "reachable"
+    assert degraded["clusterMemberHealth"]["warn"] == ["pve2"]
+    assert all(check["state"] == "reachable" for check in degraded["serviceChecks"])
+    capacity.clear()
     cluster["quorate"] = 0
     no_quorum = read()
     assert no_quorum["reachability"]["state"] == "reachable"

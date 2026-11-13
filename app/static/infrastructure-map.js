@@ -2158,6 +2158,21 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       }
       propertiesSection.append(make('h3', 'Проверки'), list);
     }
+    if (node.clusterMemberHealth) {
+      const list = make('ul', null, 'map-detail-list');
+      for (const [state, label] of [['critical', 'Недоступен'], ['warn', 'Есть предупреждения'],
+                                    ['unknown', 'Нет подтверждения'], ['ok', 'В норме']]) {
+        for (const member of node.clusterMemberHealth[state] ?? []) {
+          const row = make('li');
+          const open = make('button', byId.get(member)?.name ?? member);
+          open.type = 'button';
+          open.addEventListener('click', () => select(member));
+          row.append(open, make('small', label));
+          list.append(row);
+        }
+      }
+      propertiesSection.append(make('h3', 'Состояние гипервизоров'), list);
+    }
     for (const [key, title] of [['unavailable', 'Недоступные сервисы'], ['degraded', 'Сервисы со сбоями проверок'],
                                 ['unknown', 'Сервисы без подтверждения']]) {
       const ids = node.serviceAvailability?.[key] ?? [];
