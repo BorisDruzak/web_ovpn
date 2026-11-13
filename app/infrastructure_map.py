@@ -2282,16 +2282,27 @@ def _summarize_shared_ports(pending: list[dict]) -> list[dict]:
             groups[row["a"], port_label_key(row["portA"])].append(row)
     result = []
     for (switch_id, _), rows in sorted(groups.items()):
-        peers = sorted({row["b"] for row in rows})
-        lldp_peers = sorted({row["b"] for row in rows if any(
-            path["source"] == SHARED_LLDP_SOURCE for path in row["observedPaths"]
-        )})
-        fdb_peers = sorted({row["b"] for row in rows if any(
-            path["source"] == "netctl FDB" and path.get("learnedEndpoint", {}).get("deviceId") == row["b"]
-            for path in row["observedPaths"]
-        )})
+        observations = {}
+        for row in rows:
+            peer = row["b"]
+            observation = observations.setdefault(peer, {"id": peer, "name": row["nameB"]})
+            readings = {
+                "fdbCheckedAt": (path["checkedAt"] for path in row["observedPaths"]
+                                 if path["source"] == "netctl FDB"
+                                 and path.get("learnedEndpoint", {}).get("deviceId") == peer),
+                "lldpCheckedAt": (path["checkedAt"] for path in row["observedPaths"]
+                                  if path["source"] == SHARED_LLDP_SOURCE),
+                "lldpCandidateCheckedAt": (candidate["checkedAt"] for candidate in row.get("unconfirmedLldpCandidates", [])),
+            }
+            for key, stamps in readings.items():
+                if latest := max((stamp for stamp in stamps if stamp), default=""):
+                    observation[key] = max(latest, observation.get(key, ""))
+        peers = sorted(observations)
+        lldp_peers = [peer for peer in peers if "lldpCheckedAt" in observations[peer]]
+        fdb_peers = [peer for peer in peers if "fdbCheckedAt" in observations[peer]]
         result.append({"switchId": switch_id, "port": rows[0]["portA"], "peerTotal": len(peers),
-                       "peerIds": peers[:64], "liveLldpPeerIds": lldp_peers[:64], "liveFdbPeerIds": fdb_peers[:64]})
+                       "peerIds": peers[:64], "liveLldpPeerIds": lldp_peers[:64], "liveFdbPeerIds": fdb_peers[:64],
+                       "peerObservations": [observations[peer] for peer in peers[:64]]})
     return result
 
 
