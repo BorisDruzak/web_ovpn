@@ -227,7 +227,12 @@ def test_route_report_keeps_wan_and_ipsec_failure_evidence():
         }, {
             "id": "tunnel", "status": "unreachable", "ipsec": {
                 "status": "inactive", "local_sa_address_status": "missing",
-                "phase2_count": 0, "local_subnet": "192.0.2.0/24",
+                "phase2_count": 0, "local_subnet": "192.0.2.0/24", "remote_subnet": "198.51.100.0/24",
+                "peer_sa_counters": {
+                    "outgoing": {"associations": 2, "bytes": 0, "ignored": "raw output"},
+                    "incoming": {"associations": 1, "bytes": None},
+                    "unexpected": {"associations": 3, "bytes": 99},
+                },
             },
         }, {
             "id": "remote", "status": "timeout", "ipsec": {
@@ -249,7 +254,14 @@ def test_route_report_keeps_wan_and_ipsec_failure_evidence():
     assert alt["linux_neighbor"] == {
         "address": "192.0.2.1", "interface": "eth0.20", "state": "incomplete",
     }
-    assert tunnel["ipsec"] == {"status": "inactive", "phase2_count": 0, "local_sa_address_status": "missing"}
+    assert tunnel["ipsec"] == {
+        "status": "inactive", "phase2_count": 0, "local_sa_address_status": "missing",
+        "local_subnet": "192.0.2.0/24", "remote_subnet": "198.51.100.0/24",
+        "peer_sa_counters": {
+            "outgoing": {"associations": 2, "bytes": 0},
+            "incoming": {"associations": 1, "bytes": None},
+        },
+    }
     assert remote["ipsec"] == {"status": "unavailable", "reason": "collector_timeout"}
     assert report["profile_matches"]
     assert tunnel["ipsec_policy_confirmed"] is False

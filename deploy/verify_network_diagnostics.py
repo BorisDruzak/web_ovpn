@@ -37,7 +37,8 @@ ROUTE_EVIDENCE_FIELDS = {
     "gateway_source": ("status", "dhcp", "dhcp_address", "dhcp_gateway"),
     "gateway_arp": ("status", "state", "resolved"),
     "linux_neighbor": ("address", "interface", "state"),
-    "ipsec": ("status", "reason", "phase2_count", "local_sa_address_status"),
+    "ipsec": ("status", "reason", "phase2_count", "local_sa_address_status",
+              "local_subnet", "remote_subnet", "matching_policies"),
 }
 INTERFACE_COUNTERS = ("in_errors_delta", "out_errors_delta", "in_discards_delta", "out_discards_delta")
 MCP_INTERFACE_LIMIT = 300
@@ -84,6 +85,13 @@ def route_report(
             }
         if "ipsec" in summary:
             policy = summary["ipsec"]
+            counters = probe["ipsec"].get("peer_sa_counters")
+            if isinstance(counters, dict):
+                policy["peer_sa_counters"] = {
+                    direction: {field: counters[direction][field] for field in ("associations", "bytes")
+                                if field in counters[direction]}
+                    for direction in ("incoming", "outgoing") if isinstance(counters.get(direction), dict)
+                }
             phase2 = policy.get("phase2_count")
             summary["ipsec_policy_confirmed"] = (
                 policy.get("status") == "established" and type(phase2) is int and phase2 > 0
