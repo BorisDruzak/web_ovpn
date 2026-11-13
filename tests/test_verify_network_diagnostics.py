@@ -128,6 +128,29 @@ def test_route_report_uses_fresh_scheduled_run_and_preserves_failed_probe():
     assert changed["fresh"] and changed["api_matches"] and not changed["profile_matches"]
 
 
+@pytest.mark.parametrize("trace", [
+    {"status": "partial", "reason": "hop_limit", "max_hops": 3, "hops": [
+        {"ttl": 1, "address": "192.0.2.1", "status": "hop", "rtt_ms": 0.5},
+        {"ttl": 2, "address": None, "status": "no_reply", "rtt_ms": None},
+        {"ttl": 3, "address": "192.0.2.2", "status": "hop", "rtt_ms": 1.2},
+    ]},
+    {"status": "unavailable", "reason": "router_api_trace_unavailable", "max_hops": 3, "hops": []},
+])
+def test_route_report_preserves_bounded_trace_evidence(trace):
+    now = datetime.now(UTC)
+    run = {
+        "id": 1, "trigger": "scheduled", "checked_at": now.isoformat(), "status": "reachable",
+        "result": {"probes": [{"id": "wan", "status": "reachable", "evidence": {
+            "trace": {**trace, "ignored": "raw output", "hops": [
+                {**hop, "ignored": "raw row"} for hop in trace["hops"]
+            ]},
+        }}]},
+    }
+    report = route_report([run], now, timedelta(minutes=10), api_runs=[run], expected_hops={"wan": None})
+    assert report["api_matches"]
+    assert report["probes"][0]["trace"] == trace
+
+
 def test_route_report_rejects_previous_configuration_for_same_probe_id():
     now = datetime(2026, 11, 13, 2, 15, tzinfo=UTC)
     run = {

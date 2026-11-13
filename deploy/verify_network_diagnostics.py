@@ -73,6 +73,15 @@ def route_report(
             details = (probe if name == "ipsec" else evidence).get(name)
             if isinstance(details, dict):
                 summary[name] = {field: details[field] for field in fields if details.get(field) is not None}
+        trace = evidence.get("trace")
+        if isinstance(trace, dict) and isinstance(trace.get("hops"), list):
+            summary["trace"] = {
+                **{field: trace[field] for field in ("status", "reason", "max_hops") if field in trace},
+                "hops": [
+                    {field: hop[field] for field in ("ttl", "address", "status", "rtt_ms") if field in hop}
+                    for hop in trace["hops"] if isinstance(hop, dict)
+                ],
+            }
         if "ipsec" in summary:
             policy = summary["ipsec"]
             phase2 = policy.get("phase2_count")
