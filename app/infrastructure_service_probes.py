@@ -66,9 +66,9 @@ def _valid_http_hostname(value: object) -> bool:
 
 
 class _ScriptReferences(HTMLParser):
-    def __init__(self, prefix: str):
+    def __init__(self, prefix: str, directory: str):
         super().__init__()
-        self.filename = re.compile(re.escape(prefix) + r"[A-Za-z0-9_-][A-Za-z0-9._-]{0,100}\.js")
+        self.filename = re.compile(re.escape(directory + prefix) + r"[A-Za-z0-9_-][A-Za-z0-9._-]{0,100}\.js")
         self.matches = []
         self.has_base = False
 
@@ -358,17 +358,19 @@ def _http(ip: str, port: int, spec: dict, *, scripts: _ScriptReferences | None =
 def _http_script_probe(address: str, port: int, spec: dict) -> dict:
     prefix = spec["script_src_prefix"]
     path = _http_path(spec.get("path"))
+    directory = _http_path(spec["script_src_directory"]) if "script_src_directory" in spec else ""
     if (not isinstance(prefix, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,31}", prefix)
-            or not path.endswith("/") or any(part in (".", "..") for part in path.split("/"))
+            or not (directory or path).endswith("/")
+            or any(part in (".", "..") for candidate in (path, directory) for part in candidate.split("/"))
             or any(key in spec for key in ("body", "body_contains", "content_type", "json_fields",
                                            "json_unavailable", "basic_auth_realm", "digest_auth_challenge",
                                            "redfish_service_root", "oidc_rs256_jwks", "allow_gzip"))):
         raise ValueError("invalid HTTP script probe contract")
-    scripts = _ScriptReferences(prefix)
+    scripts = _ScriptReferences(prefix, directory)
     result = _http(address, port, spec, scripts=scripts)
     if result["state"] != "reachable":
         return result
-    asset_path = _http_path(path + scripts.matches[0])
+    asset_path = _http_path(scripts.matches[0] if directory else path + scripts.matches[0])
     asset = _http(address, port, {**spec, "path": asset_path}, javascript=True)
     if (asset.get("httpStatus") in (404, 410)
             or asset.get("reason") in ("http_content_type", "http_payload_mismatch")):

@@ -1384,6 +1384,20 @@ def test_http_script_probe_follows_only_the_unique_relative_build_asset(monkeypa
         assert _http_probe(spec)["state"] != "reachable"
         assert requests == ["/Client/"]
 
+    asset_status = 200
+    page = b'<script type="module" src="/assets/index-CDo-W9To.js"></script>'
+    absolute_spec = {**spec, "script_src_prefix": "index-", "script_src_directory": "/assets/"}
+    requests.clear()
+    assert _http_probe(absolute_spec)["path"] == "/assets/index-CDo-W9To.js"
+    assert requests == ["/Client/", "/assets/index-CDo-W9To.js"]
+    for ref in ("//assets/index-ab.js", "/other/index-ab.js", "/assets/../index-ab.js",
+                "/assets/index-ab.js?x=1", "/assets/index-ab.js#x"):
+        page = f'<script src="{ref}"></script>'.encode()
+        requests.clear()
+        assert _http_probe(absolute_spec)["state"] == "unreachable"
+        assert requests == ["/Client/"]
+    assert _http_probe({**absolute_spec, "script_src_directory": "/assets/../"})["reason"] == "http_configuration"
+
 
 def test_redfish_root_probe_reports_only_validated_api_version(monkeypatch):
     from app.infrastructure_service_probes import _http_probe
