@@ -501,7 +501,7 @@ def test_qemu_prelaunch_reports_guest_state_backup_lock_and_configured_bridge(tm
 
 def test_guest_network_reports_an_empty_configuration_only_after_a_successful_read(tmp_path):
     from app.infrastructure_collect import build_graph
-    from app.infrastructure_map import load_infrastructure_map
+    from app.infrastructure_map import load_infrastructure_map, summarize_guest_attachment_audit
 
     now = datetime.now(timezone.utc)
     at = now.isoformat()
@@ -516,6 +516,12 @@ def test_guest_network_reports_an_empty_configuration_only_after_a_successful_re
 
     node = read()
     assert node["guestNetwork"] == {"checkedAt": at, "configured": 0, "enabled": 0, "disabled": 0}
+    audit = summarize_guest_attachment_audit(load_infrastructure_map(path, now))["attachmentAudit"]
+    assert audit["runningWithoutNetworkTotal"] == 1
+    assert [(row["guest"]["vmid"], row["guestNetwork"]) for row in audit["runningWithoutNetwork"]] == [
+        (127, node["guestNetwork"]),
+    ]
+    assert audit["gapTotal"] == 0
     assert node["mapStatus"] == "unknown"
     assert node["reachability"]["method"] == "Адаптеры Proxmox не заданы"
     assert "guestNetwork" not in read(now + timedelta(hours=1))
@@ -527,8 +533,18 @@ def test_guest_network_reports_an_empty_configuration_only_after_a_successful_re
     node = read()
     assert node["guestNetwork"] == {"checkedAt": at, "configured": 3, "enabled": 1, "disabled": 1}
     assert node["reachability"]["method"] == ""
+    pve["configs"]["127"].pop("net0")
+    assert read()["guestNetwork"]["enabled"] == 0
+    audit = summarize_guest_attachment_audit(load_infrastructure_map(path, now))["attachmentAudit"]
+    assert audit["runningWithoutNetworkTotal"] == 0
+    pve["configs"]["127"].pop("net2")
+    assert read()["guestNetwork"]["disabled"] == 1
+    audit = summarize_guest_attachment_audit(load_infrastructure_map(path, now))["attachmentAudit"]
+    assert audit["runningWithoutNetworkTotal"] == 1
     pve["configs"]["127"] = {}
     assert "guestNetwork" not in read()
+    audit = summarize_guest_attachment_audit(load_infrastructure_map(path, now))["attachmentAudit"]
+    assert audit["runningWithoutNetworkTotal"] == 0 and audit["gapTotal"] == 1
 
 
 def test_cluster_health_distinguishes_quorum_members_and_api(tmp_path):

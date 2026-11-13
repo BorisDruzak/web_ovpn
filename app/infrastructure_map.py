@@ -2875,6 +2875,7 @@ def summarize_guest_attachment_audit(graph: dict) -> dict:
     interface_counts = dict.fromkeys((*evidence_order.values(), "local_neighbor_with_physical_pair",
                                       "local_neighbor", "ambiguous_switch_port", "unconfirmed", "inactive"), 0)
     gaps = []
+    running_without_network = []
     for attachment in guests.values():
         power = attachment["power"]
         inactive = power in {"stopped", "prelaunch", "paused"}
@@ -2901,15 +2902,24 @@ def summarize_guest_attachment_audit(graph: dict) -> dict:
                     incomplete[-1]["switchPorts"] = interface["ambiguousSwitchPorts"]
                 if "arpDiagnostic" in interface:
                     incomplete[-1]["arpDiagnostic"] = interface["arpDiagnostic"]
-        if not inactive and (incomplete or not attachment["interfaces"]):
+        network = nodes[attachment["guest"]["id"]].get("guestNetwork")
+        if (power == "running" and network and network["enabled"] == 0
+                and network["configured"] == network["disabled"]
+                and all(interface["linkDisabled"] for interface in attachment["interfaces"])):
+            running_without_network.append({"guest": attachment["guest"], "hypervisor": attachment["hypervisor"],
+                                            "guestNetwork": network})
+        elif not inactive and (incomplete or not attachment["interfaces"]):
             gaps.append({"guest": attachment["guest"], "hypervisor": attachment["hypervisor"],
                          "power": power, "placement": attachment["placement"], "interfaces": incomplete,
                          **({"networkTraffic": attachment["networkTraffic"]} if "networkTraffic" in attachment else {})})
 
     gaps.sort(key=lambda gap: (gap["power"] != "running", gap["guest"]["id"]))
+    running_without_network.sort(key=lambda row: (row["guest"]["vmid"], row["guest"]["id"]))
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
     return {**metadata, "attachmentAudit": {"guestCounts": guest_counts, "interfaceCounts": interface_counts,
-                                            "gapTotal": len(gaps), "gaps": gaps[:64]}}
+                                            "gapTotal": len(gaps), "gaps": gaps[:64],
+                                            "runningWithoutNetworkTotal": len(running_without_network),
+                                            "runningWithoutNetwork": running_without_network[:64]}}
 
 
 def summarize_services(graph: dict, *, host_id: str | None = None, offset: int = 0) -> dict:
