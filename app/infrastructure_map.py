@@ -42,6 +42,7 @@ PORT_COUNTER_KEYS = ("rxErrors", "txErrors", "rxDiscards", "txDiscards")
 GUEST_AGENT_PROFILES = ("health_v1", "network_v1", "inventory_v1")
 GUEST_AGENT_SERVICE_NAMES = ("sshd", "NetworkManager")
 GUEST_AGENT_HEALTH_MAX_AGE = timedelta(minutes=6)
+GUEST_AGENT_NETWORK_MAX_AGE = timedelta(minutes=20)
 GUEST_ENROLLMENT_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
 VLAN_AUDIT_MAX_AGE = timedelta(minutes=10)
 BRIDGE_VLAN_CONFIG_MODES = ("enabled", "disabled", "not_reported")
@@ -2700,6 +2701,35 @@ def _guest_agent_health(snapshot: object, now: datetime, *, platform: str | None
     return {"checkedAt": _time(checked_at).isoformat(), **metrics} if metrics else {}
 
 
+def _guest_agent_network(snapshot: object, now: datetime) -> dict:
+    if not isinstance(snapshot, dict) or snapshot.get("profile") != "network_v1":
+        return {}
+    checked_at = _time(snapshot.get("collected_at"))
+    sections = snapshot.get("sections")
+    if checked_at is None or checked_at > now or not isinstance(sections, dict):
+        return {}
+    interfaces = defaultdict(set)
+    for row in _rows(sections.get("interfaces"), 64):
+        name = _text(row.get("name"), 64).strip()
+        addresses = row.get("addresses")
+        if not name.isprintable() or not isinstance(addresses, list):
+            continue
+        for address in addresses[:16]:
+            if not isinstance(address, str) or len(address) > 64:
+                continue
+            try:
+                ip = ipaddress.IPv4Interface(address).ip
+            except ValueError:
+                continue
+            if not (ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified or ip.is_reserved):
+                interfaces[name].add(ip)
+    if not interfaces:
+        return {}
+    return {"checkedAt": checked_at.isoformat(), "stale": now - checked_at > GUEST_AGENT_NETWORK_MAX_AGE,
+            "interfaces": [{"name": name, "ipv4": [str(ip) for ip in sorted(addresses)]}
+                           for name, addresses in sorted(interfaces.items())]}
+
+
 def _guest_agent_os(snapshot: object, now: datetime) -> dict:
     if not isinstance(snapshot, dict) or snapshot.get("profile") != "inventory_v1":
         return {}
@@ -2846,7 +2876,7 @@ def _summarize_agent_audit(nodes: dict, keys: dict, conflicts: set[str], identit
                 if profiles:
                     entry["contextProfiles"] = profiles
                 if node_id == selected_node and entry["presence"] == "online" and load_agent_profiles is not None:
-                    wanted = ("health_v1", "inventory_v1") if reports.get("inventory_v1") else ("health_v1",)
+                    wanted = ["health_v1", *(profile for profile in ("inventory_v1", "network_v1") if reports.get(profile))]
                     for profile in wanted:
                         if profile in snapshots:
                             continue
@@ -2859,6 +2889,8 @@ def _summarize_agent_audit(nodes: dict, keys: dict, conflicts: set[str], identit
                         entry["operatingSystem"] = operating_system
                     if health := _guest_agent_health(snapshots.get("health_v1"), now, platform=operating_system.get("platform")):
                         entry["health"] = health
+                    if network := _guest_agent_network(snapshots.get("network_v1"), now):
+                        entry["network"] = network
         entries.append(entry)
     counts = Counter(row["state"] for row in guests)
     return {"sourceState": "ready", "total": len(guests), "eligible": len(guests) - counts["not_eligible"],

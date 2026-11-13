@@ -758,9 +758,19 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         label.append(units);
       }
     }
+    const network = entry?.network;
+    if (network) {
+      const row = make('div');
+      row.append(make('small', 'IPv4 по Endpoint · ' + formatTime(network.checkedAt) + (network.stale ? ' · устарело' : '')));
+      for (const {name, ipv4} of network.interfaces) {
+        row.append(make('small', name + ' · ' + ipv4.join(', ')));
+      }
+      label.append(row);
+    }
     const profileLabels = {health_v1: 'Состояние', network_v1: 'Сеть', inventory_v1: 'Инвентарь'};
+    const displayedProfiles = {inventory_v1: system?.collectedAt, network_v1: network?.checkedAt};
     for (const {profile, collectedAt} of entry?.contextProfiles ?? []) {
-      if (Object.hasOwn(profileLabels, profile) && !(profile === 'inventory_v1' && system?.collectedAt === collectedAt)) {
+      if (Object.hasOwn(profileLabels, profile) && displayedProfiles[profile] !== collectedAt) {
         const row = make('div');
         row.append(make('small', `${profileLabels[profile]} · ${formatTime(collectedAt)}`));
         label.append(row);

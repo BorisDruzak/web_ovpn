@@ -7477,6 +7477,7 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
         unavailable = False
         reads = []
         health_at = at
+        network_at = at
         platform = "linux"
         health_warnings = []
 
@@ -7493,6 +7494,13 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
 
         def read_profiles(self, device_id, profiles):
             self.reads.append((str(device_id), tuple(profiles)))
+            if tuple(profiles) == ("network_v1",):
+                return {"network_v1": {"profile": "network_v1", "collected_at": self.network_at,
+                                       "sections": {"interfaces": [
+                                           {"name": "Ethernet 2", "addresses": ["192.0.2.10/24", "192.0.2.10",
+                                                                               "127.0.0.1", "169.254.1.2", "invalid"]},
+                                           {"name": "lo", "addresses": ["127.0.0.1/8", "::1"]},
+                                       ]}}}
             if tuple(profiles) == ("inventory_v1",):
                 return {"inventory_v1": {"profile": "inventory_v1", "collected_at": at,
                          "sections": {"system": {"platform": self.platform, "os_name": "Ubuntu", "os_version": "24.04",
@@ -7553,7 +7561,8 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
     assert web["id"] == "web" and web["requiredChecks"] == {"passed": 1, "failed": 0, "unconfirmed": 0}
     system = {"collectedAt": at, "platform": "linux", "name": "Ubuntu", "version": "24.04",
               "architecture": "x86_64"}
-    assert detail == {**matched, "operatingSystem": system, "health": {"checkedAt": at, "uptimeSeconds": 7200,
+    network = {"checkedAt": at, "stale": False, "interfaces": [{"name": "Ethernet 2", "ipv4": ["192.0.2.10"]}]}
+    assert detail == {**matched, "operatingSystem": system, "network": network, "health": {"checkedAt": at, "uptimeSeconds": 7200,
                                              "memoryAvailableBytes": 2**31, "loadAverage1m": 0.0, "services": [
                                                  {"name": "sshd", "status": "active"},
                                                  {"name": "NetworkManager", "status": "inactive"},
@@ -7561,14 +7570,18 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
     assert "private-service" not in selected.text
     assert "private-hostname" not in selected.text and "private-serial" not in selected.text
     assert Adapter.reads == [("00000000-0000-4000-8000-000000000000", (profile,))
-                             for profile in ("health_v1", "inventory_v1")]
+                             for profile in ("health_v1", "inventory_v1", "network_v1")]
     selected = client.get("/api/v1/network/infrastructure?view=agents&node_id=vm:2", headers=headers)
     assert selected.json()["infrastructure"]["agentAudit"]["guests"] == [ambiguous]
-    assert len(Adapter.reads) == 2
+    assert len(Adapter.reads) == 3
     Adapter.health_at = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+    Adapter.network_at = (datetime.now(timezone.utc) - timedelta(minutes=21)).isoformat()
     stale = client.get("/api/v1/network/infrastructure?view=agents&node_id=vm:1", headers=headers)
-    assert stale.json()["infrastructure"]["agentAudit"]["guests"] == [{**matched, "operatingSystem": system}]
+    assert stale.json()["infrastructure"]["agentAudit"]["guests"] == [{
+        **matched, "operatingSystem": system, "network": {**network, "checkedAt": Adapter.network_at, "stale": True},
+    }]
     Adapter.health_at = at
+    Adapter.network_at = at
     Adapter.platform = "windows"
     windows = client.get("/api/v1/network/infrastructure?view=agents&node_id=vm:1", headers=headers).json()
     assert "loadAverage1m" not in windows["infrastructure"]["agentAudit"]["guests"][0]["health"]
