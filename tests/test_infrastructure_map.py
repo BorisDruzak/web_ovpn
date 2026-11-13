@@ -7568,11 +7568,20 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     assert audit["guestCounts"] == {"running": 1, "stopped": 0, "prelaunch": 0, "paused": 0, "unknown": 0}
     assert audit["interfaceCounts"]["guest_mac_with_physical_pair"] == 1
     assert audit["gapTotal"] == 0
+    assert audit["confirmedUplinkTotal"] == 1
+    uplink, = audit["confirmedUplinks"]
+    assert uplink["switch"]["id"] == "snr" and uplink["switchPort"] == "xe3"
+    assert uplink["hypervisor"] == guest["hypervisor"] and uplink["hostPort"] == "ens7"
+    assert uplink["guestTotal"] == uplink["interfaceTotal"] == 1
+    assert uplink["interfaces"] == [
+        {"guest": guest["guest"], "guestPort": "net0", "bridge": "vmbr1", "basis": "guest_mac"},
+    ]
     virtual = raw["links"][1]["portEvidence"][0]["virtual"]
     virtual["switchPorts"].append({"id": "snr", "port": "ge12", "at": stamp, "vlan": 1})
     read()
     ambiguous = read_audit()
     assert ambiguous["interfaceCounts"]["ambiguous_switch_port"] == 1
+    assert ambiguous["confirmedUplinkTotal"] == 0 and ambiguous["confirmedUplinks"] == []
     gap, = ambiguous["gaps"]
     assert gap["interfaces"] == [{"guestPort": "net0", "bridge": "vmbr1", "state": "ambiguous_switch_port",
                                   "switchPorts": [{"switchId": "snr", "port": "ge12"},

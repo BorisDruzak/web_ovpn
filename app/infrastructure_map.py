@@ -2984,9 +2984,31 @@ def summarize_guest_attachment_audit(graph: dict) -> dict:
 
     gaps.sort(key=lambda gap: (gap["power"] != "running", gap["guest"]["id"]))
     running_without_network.sort(key=lambda row: (row["guest"]["vmid"], row["guest"]["id"]))
+    running = {key: guest for key, guest in guests.items() if guest["power"] == "running"}
+    uplink_groups = defaultdict(list)
+    for switch_id, attachments in _guest_switch_attachments(running).items():
+        for row in attachments:
+            pair = row["physicalPair"]
+            key = (switch_id, port_label_key(pair["switchPort"]), row["hypervisor"]["id"],
+                   port_label_key(pair["hostPort"]))
+            uplink_groups[key].append(row)
+    confirmed_uplinks = []
+    for _, rows in sorted(uplink_groups.items()):
+        first = rows[0]
+        interfaces = {(row["guest"]["id"], row["guestPort"]): {
+            key: row[key] for key in ("guest", "guestPort", "bridge", "basis")
+        } for row in rows}
+        confirmed_uplinks.append({
+            "switch": first["switch"], "hypervisor": first["hypervisor"], **first["physicalPair"],
+            "guestTotal": len({guest_id for guest_id, _ in interfaces}),
+            "interfaceTotal": len(interfaces),
+            "interfaces": [interfaces[key] for key in sorted(interfaces)[:64]],
+        })
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
     return {**metadata, "attachmentAudit": {"guestCounts": guest_counts, "interfaceCounts": interface_counts,
                                             "gapTotal": len(gaps), "gaps": gaps[:64],
+                                            "confirmedUplinkTotal": len(confirmed_uplinks),
+                                            "confirmedUplinks": confirmed_uplinks[:64],
                                             "runningWithoutNetworkTotal": len(running_without_network),
                                             "runningWithoutNetwork": running_without_network[:64]}}
 
