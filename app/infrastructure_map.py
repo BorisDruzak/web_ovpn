@@ -1784,14 +1784,23 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
                 **({"portObservations": {"a": reading}} if reading else {}),
                 **({"lldpPeers": {"a": lldp_peers}} if lldp_peers else {}),
             }
+    shared_inventory = defaultdict(dict)
     for link in links:
-        if link["kind"] != SHARED_LLDP_KIND or not link["confirmed"]:
+        if link["kind"] != SHARED_LLDP_KIND:
             continue
         a, b = link["a"], link["b"]
         for report in link["portEvidence"]:
             port = report["a"]
             key = a, b, port_key(a, port)
-            if (report["source"] != SHARED_LLDP_SOURCE or not report["confirmed"] or not port or report["b"]
+            if (report["source"] == "GitHub" and not report["confirmed"]
+                    and key[2] not in unnamed and (peer_key := port_key(b, report["b"])) not in unnamed):
+                entry = shared_inventory[key].setdefault(peer_key, {"port": report["b"]})
+                sources = inventory_link_sources(entry.get("inventorySources", []) + report.get("inventorySources", []))
+                if sources:
+                    entry["inventorySources"] = sources
+                continue
+            if (not link["confirmed"] or report["source"] != SHARED_LLDP_SOURCE
+                    or not report["confirmed"] or not port or report["b"]
                     or key in known_ports):
                 continue
             observed_path = {"portA": port, "portB": "", "source": SHARED_LLDP_SOURCE, "checkedAt": report["at"]}
@@ -1813,7 +1822,9 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
                 **({"portObservations": reading} if reading else {}),
                 **({"lldpPeers": report["lldpPeers"]} if "lldpPeers" in report else {}),
             }
-    for row in discovered.values():
+    for key, row in discovered.items():
+        if declared := shared_inventory.get(key):
+            row["inventoryPeerPorts"] = [declared[peer] for peer in sorted(declared)[:8]]
         pending[row["a"], row["b"], row["portA"], ""] = row
     verified_pairs = [
         {**pair, "evidence": [{"source": source, "checkedAt": at} for source, at in sorted(sources.items())]}
@@ -3461,7 +3472,7 @@ def load_infrastructure_map(
                                                        "fdbLearned", "lldpPort") if key in port}
                      for side, port in row.get("portObservations", {}).items()
                  },
-                 **{key: row[key] for key in ("archivedPortSides", "inventoryPortSides", "lldpPeers",
+                 **{key: row[key] for key in ("archivedPortSides", "inventoryPortSides", "inventoryPeerPorts", "lldpPeers",
                                              "stpBridgeConnections", "stpBridgeMacObservations", "arpDiagnostics") if key in row}}
                 for row in pending[:64]
             ],

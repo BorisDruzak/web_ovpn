@@ -207,10 +207,29 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     more.hidden = shown >= total;
     more.textContent = `Показано ${shown} из ${total}`;
   }
+  function appendInventorySources(container, sources) {
+    if (!sources?.length) return;
+    const referenceList = make('details');
+    referenceList.append(make('summary', `Источники инвентаря (${sources.length})`));
+    for (const {path, observedOn} of sources) {
+      const line = make('small', `${observedOn} · `);
+      if (/^[0-9a-f]{40}$/.test(data.git)) {
+        const link = make('a', path.split('/').pop());
+        link.href = `https://github.com/BorisDruzak/network_configuration/blob/${data.git}/${path}`;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        line.append(link);
+      } else {
+        line.append(path);
+      }
+      referenceList.append(line);
+    }
+    container.append(referenceList);
+  }
   function pendingPortPairRow({a, b, nameA, nameB, portA, portB, observedSources = [], lldpPortIds = [],
       observedSourceTimes = {}, identifiedPeerSides = [], archivedPortSides = [], inventoryPortSides = [],
       portObservations = {}, stpPaths = [], stpBridgeConnections = [], stpBridgeMacObservations = [], lldpPeers = {},
-      arpDiagnostics = {}}) {
+      inventoryPeerPorts = [], arpDiagnostics = {}}) {
     const item = make('li');
     const provenance = key => archivedPortSides.includes(key) ? ' (по архиву)' :
       inventoryPortSides.includes(key) ? ' (по инвентарю)' : '';
@@ -230,6 +249,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     }
     if (!Object.keys(lldpPeers).length && lldpPortIds.length) {
       item.append(make('small', 'LLDP Port ID ' + lldpPortIds.join(', ')));
+    }
+    for (const {port, inventorySources} of inventoryPeerPorts) {
+      item.append(make('small', `По инвентарю · ${nameB} · ${port}`));
+      appendInventorySources(item, inventorySources);
     }
     if (identifiedPeerSides.length) {
       const observers = identifiedPeerSides.map(side => side === 'a' ? nameA : nameB);
@@ -1950,25 +1973,6 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           edge.source === 'GitHub' && reciprocalPaths.has(pairOf(edge)))
         .map(edge => [pairOf(edge), edge]));
       const portName = name => name && name.toLowerCase() !== 'unknown' ? name : 'порт неизвестен';
-      const appendInventorySources = (container, sources) => {
-        if (!sources?.length) return;
-        const referenceList = make('details');
-        referenceList.append(make('summary', `Источники инвентаря (${sources.length})`));
-        for (const {path, observedOn} of sources) {
-          const line = make('small', `${observedOn} · `);
-          if (/^[0-9a-f]{40}$/.test(data.git)) {
-            const link = make('a', path.split('/').pop());
-            link.href = `https://github.com/BorisDruzak/network_configuration/blob/${data.git}/${path}`;
-            link.target = '_blank';
-            link.rel = 'noopener noreferrer';
-            line.append(link);
-          } else {
-            line.append(path);
-          }
-          referenceList.append(line);
-        }
-        container.append(referenceList);
-      };
       for (const edge of links.slice().sort((a,b) => Number(b.confirmed)-Number(a.confirmed))) {
         const declared = inventory.get(pairOf(edge));
         if (edge === declared) continue;

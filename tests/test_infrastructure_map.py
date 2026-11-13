@@ -3297,7 +3297,8 @@ def test_shared_lldp_ports_publish_paths_and_require_live_port_and_unique_chassi
                "links": [{"relation": "connected_to", "state": {"verified": False,
                           "observed": "lldp_neighbor_on_shared_or_intermediate_l2_path"},
                           "endpoint_a": {"device": "switch", "interface": "Gi1/0/48"},
-                          "endpoint_b": {"device": "one", "interface": "bridge/ether3"}}]}
+                          "endpoint_b": {"device": "one", "interface": "bridge/ether3"},
+                          "evidence": [{"source": "docs/shared-ports.yaml", "observed_at": "2026-08-13"}]}]}
     port = {"source": "switch", "port_key": "ifindex:48", "name": "gigabitEthernet 1/0/48",
             "oper_status": "up", "last_seen_at": at, "collector_run_id": 1}
     rows = [{"source": "switch", "system_name": name, "local_port_key": "ifindex:48",
@@ -3309,10 +3310,10 @@ def test_shared_lldp_ports_publish_paths_and_require_live_port_and_unique_chassi
     rows[0]["system_description"] = "SWT-1318P Software Version V1.2.3 build 210419"
     rows[1]["system_description"] = "MikroTik RouterOS 7.19.6 (stable) cAPGi-5HaxD2HaxD"
 
-    def snapshot(when=now):
+    def snapshot(when=now, **options):
         graph = build_graph(context, network, {}, {}, {}, now)
         path.write_text(json.dumps(graph), encoding="utf-8")
-        return load_infrastructure_map(path, when)
+        return load_infrastructure_map(path, when, **options)
 
     def read(when=now):
         return {e["b"]: e for e in snapshot(when)["links"] if e["a"] == "switch"}
@@ -3336,6 +3337,13 @@ def test_shared_lldp_ports_publish_paths_and_require_live_port_and_unique_chassi
         "shared_lldp", "switch", proof["a"], "one", "",
     )
     assert row["lldpPeers"] == proof["lldpPeers"]
+    inventory_peer_ports = [{
+        "port": "bridge/ether3",
+        "inventorySources": [{"path": "docs/shared-ports.yaml", "observedOn": "2026-08-13"}],
+    }]
+    assert row["inventoryPeerPorts"] == inventory_peer_ports
+    card, = snapshot(include_guest_attachments=True)["pendingPortPairs"]
+    assert card["portB"] == "" and card["inventoryPeerPorts"] == inventory_peer_ports
     assert not any(audit["directLinks"].values())
     provenance = {"checkedAt": at, "observerId": "switch", "observerPort": "gigabitEthernet 1/0/48", "source": "LLDP"}
     swt_firmware = {**provenance, "product": "SWT-1318P", "version": "1.2.3", "build": "210419"}
@@ -3356,12 +3364,23 @@ def test_shared_lldp_ports_publish_paths_and_require_live_port_and_unique_chassi
     assert set(rows_by_peer) == {"one", "two"}
     assert rows_by_peer["two"]["lldpPeers"]["a"][0]["chassisId"] == unexpected
     assert rows_by_peer["two"]["portB"] == ""
+    assert "inventoryPeerPorts" not in rows_by_peer["two"]
     combined = snapshot()
+    declaration = next(link for link in combined["links"] if link["b"] == "one")
+    declaration["confirmed"] = False
+    declaration["portEvidence"] = [report for report in declaration["portEvidence"] if report["source"] == "GitHub"]
+    combined["links"].append({"a": "switch", "b": "one", "kind": "Путь по MAC-таблице", "confirmed": True,
+                              "portEvidence": [{"a": proof["a"], "b": "", "source": "netctl FDB", "at": at,
+                                                "confirmed": True, "learnedEndpoint": {
+                                                    "switchId": "switch", "deviceId": "one", "mac": first}}]})
     combined["links"].append({"a": "switch", "b": "two", "kind": "Путь по MAC-таблице", "confirmed": True,
                               "portEvidence": [{"a": proof["a"], "b": "", "source": "netctl FDB", "at": at,
                                                 "confirmed": True, "learnedEndpoint": {
                                                     "switchId": "switch", "deviceId": "two", "mac": unexpected}}]})
     combined_audit = summarize_topology(combined, node_id="switch", port_name="Gi1/0/48")["topologyAudit"]
+    fdb_only = next(row for row in combined_audit["pending"] if row["b"] == "one")
+    assert [reading["source"] for reading in fdb_only["observedPaths"]] == ["netctl FDB"]
+    assert fdb_only["portB"] == "" and fdb_only["inventoryPeerPorts"] == inventory_peer_ports
     combined_row = next(row for row in combined_audit["pending"] if row["b"] == "two")
     assert [reading["source"] for reading in combined_row["observedPaths"]] == ["netctl FDB", "LLDP · общий порт"]
     assert combined_row["lldpPeers"] == rows_by_peer["two"]["lldpPeers"]
