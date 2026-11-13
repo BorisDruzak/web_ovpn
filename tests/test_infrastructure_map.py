@@ -8266,6 +8266,13 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
     assert (interface["guestPort"], interface["bridge"], interface["uplinks"]) == ("net0", "vmbr0", ["eth0"])
     web, = context["serviceAudit"]["services"]
     assert web["id"] == "web" and web["requiredChecks"] == {"passed": 1, "failed": 0, "unconfirmed": 0}
+    assert context["attachment"]["serviceTotal"] == 1
+    hosted, = context["attachment"]["services"]
+    assert hosted["node"]["id"] == "web"
+    service_attachment = client.get("/api/v1/network/infrastructure?view=attachment&node_id=web",
+                                    headers=headers).json()["infrastructure"]["attachment"]
+    for field in ("checks", "serviceChecks", "servicePaths"):
+        assert hosted[field] == service_attachment[field]
     system = {"collectedAt": at, "platform": "linux", "name": "Ubuntu", "version": "24.04",
               "architecture": "x86_64"}
     network = {"checkedAt": at, "stale": False, "interfaces": [{"name": "Ethernet 2", "ipv4": ["192.0.2.10", "192.0.2.12"]}]}
@@ -8281,6 +8288,13 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
                                                  {"name": "NetworkManager", "status": "inactive"},
                                              ]}}
     snapshot = json.loads(path.read_text(encoding="utf-8"))
+    snapshot["links"].append({"a": "vm:2", "b": "web", "kind": "Цель проверки", "confirmed": True})
+    path.write_text(json.dumps(snapshot), encoding="utf-8")
+    shared = client.get("/api/v1/network/infrastructure?view=attachment&node_id=vm:1",
+                        headers=headers).json()["infrastructure"]["attachment"]
+    assert shared["serviceTotal"] == 1
+    assert shared["services"] == [{**hosted, "servicePaths": []}]
+    snapshot["links"].pop()
     snapshot["nodes"].append(ssh_service)
     snapshot["links"].append({"a": "vm:1", "b": "ssh", "kind": "Цель проверки", "confirmed": True})
     path.write_text(json.dumps(snapshot), encoding="utf-8")

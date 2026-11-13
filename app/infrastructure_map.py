@@ -2859,7 +2859,23 @@ def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
         detail["servicePorts"] = graph.get("servicePorts", attachments["servicePorts"]).get(node_id, [])
         if paths := attachments["servicePaths"].get(node_id):
             detail["servicePaths"] = paths
-    elif anchor and not anchor["guest"]:
+    elif anchor and anchor["guest"]:
+        service_hosts = defaultdict(set)
+        for edge in links:
+            if (_is_service_attachment(edge) and nodes[edge["a"]]["kind"] != "Сервис"
+                    and nodes[edge["b"]]["kind"] == "Сервис"):
+                service_hosts[edge["b"]].add(edge["a"])
+        service_ids = sorted(key for key, hosts in service_hosts.items() if node_id in hosts)
+        detail["serviceTotal"] = len(service_ids)
+        detail["services"] = []
+        for key in service_ids[:24]:
+            service = nodes[key]
+            detail["services"].append({
+                "node": _attachment_node(service), "checks": service["checks"],
+                "serviceChecks": service["serviceChecks"],
+                "servicePaths": _service_attachment_paths(service, guests) if service_hosts[key] == {node_id} else [],
+            })
+    elif anchor:
         if paths := _management_service_paths(anchor, node_id, {}, _observed_management_ports(links, nodes)):
             detail["servicePaths"] = paths
     return {**metadata, "attachment": {"node": _attachment_node(anchor) if anchor else None,
