@@ -2844,12 +2844,22 @@ def test_network_probe_catalog_run_and_download_permissions(tmp_path, monkeypatc
         "check": "pcap_capture", "profile": "lan",
     }).json()["data"]
     assert result["status"] == "empty_capture"
+    assert result["result"]["filter"] == {
+        "interface": "ens18", "peer": "192.0.2.20", "port": 5201, "protocol": "tcp",
+    }
     capture_id = result["result"]["capture_id"]
+    listed = client.get(base + "/captures", headers=headers).json()["data"]["captures"]
+    assert next(row for row in listed if row["capture_id"] == capture_id)["filter"] == result["result"]["filter"]
     service_path = base + "/captures/" + capture_id
     download = client.get(service_path, headers=headers)
     assert download.content == pcap and download.headers["content-type"] == "application/vnd.tcpdump.pcap"
-    login(client)
+    csrf = login(client)
     assert client.get("/network/diagnostics/captures/" + capture_id).status_code == 404
+    panel = client.post("/network/diagnostics/checks", data={
+        "csrf_token": csrf, "check": "pcap_capture", "profile": "lan",
+    })
+    assert "ens18 · 192.0.2.20 · TCP/5201" in panel.text
+    assert "ens18 · 192.0.2.20 · TCP/5201" in client.get("/network/diagnostics").text
     monkeypatch.setenv("OPENVPN_WEB_API_PERMISSIONS", "network:read")
     reset_settings_cache()
     assert client.get(service_path, headers=headers).status_code == 403

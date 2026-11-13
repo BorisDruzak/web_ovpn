@@ -102,6 +102,7 @@ def _capture_to_store(owner: str, profile: CaptureProfile, started: datetime) ->
         receipt = {
             "capture_id": str(capture_id),
             "label": profile.label,
+            "filter": profile.model_dump(include={"interface", "peer", "port", "protocol"}),
             "size_bytes": reading["size_bytes"],
             "packets": reading["packets"],
             "expires_at": (started + CAPTURE_TTL).isoformat(),

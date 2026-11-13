@@ -29,6 +29,9 @@
   {{ gateway.interface }} · {{ gateway.target }} · {{ labels.get(gateway.status, gateway.status) }}
   {%- if gateway.gateway_source is defined and gateway.gateway_source.dhcp is defined %} · DHCP {{ gateway.gateway_source.dhcp }}{% endif %}
 {%- endmacro %}
+{% macro capture_filter(filter) -%}
+  {{ filter.interface }} · {{ filter.peer }} · {{ filter.protocol | upper }}/{{ filter.port }}
+{%- endmacro %}
 {% block title %}Сетевые проверки{% endblock %}
 {% block page_title %}Сетевые проверки{% endblock %}
 {% block content %}
@@ -121,6 +124,7 @@
   </dl>
   {% elif result.check == 'pcap_capture' and result.result.capture_id is defined %}
   <p>Пакетов {{ result.result.packets }} · {{ result.result.size_bytes }} байт</p>
+  {% if result.result.filter is defined %}<p>{{ capture_filter(result.result.filter) }}</p>{% endif %}
   <a class="button" href="/network/diagnostics/captures/{{ result.result.capture_id }}">Скачать PCAP</a>
   {% elif result.check == 'loop_check' and result.result %}
   <p>Окно наблюдений {{ result.result.since }} — {{ result.result.until }}</p>
@@ -261,6 +265,7 @@
     <li>
       <a href="/network/diagnostics/captures/{{ capture.capture_id }}">{{ capture.label }}</a>
       · {{ capture.packets }} пакетов · доступен до {{ capture.expires_at }}
+      {% if capture.filter is defined %}<br>{{ capture_filter(capture.filter) }}{% endif %}
     </li>
     {% endfor %}
   </ul>
