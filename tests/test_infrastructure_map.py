@@ -3569,11 +3569,18 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
                                   (102, (now - timedelta(hours=1)).isoformat(), "reachable"))
     ]})
     snapshot["links"].append({"a": "pbs", "b": "proxmox-pbs-backups", "kind": "Размещение", "confirmed": True})
+    for vmid, state in ((100, "scheduled"), (101, "not_scheduled"), (102, "unknown")):
+        snapshot["nodes"].append({"id": f"vm-{vmid}", "name": f"VM {vmid}", "kind": "Виртуальная машина",
+                                  "guest": True, "vmid": vmid, "backupCoverage": {
+                                      "storage": "pbs", "state": state, "checkedAt": at,
+                                  }})
     path.write_text(json.dumps(snapshot), encoding="utf-8")
     projected = load_infrastructure_map(path, now, include_service_ports=True)["servicePorts"]["snr"]
     for port in projected:
         backup = next(service for service in port["services"] if service["id"] == "proxmox-pbs-backups")
         assert backup["backupChecks"] == {"passed": 1, "failed": 1, "unconfirmed": 1}
+        assert backup["backupScope"] == {"storage": "pbs", "total": 3, "scheduled": 1,
+                                         "notScheduled": 1, "unknown": 1}
         assert "probeEndpoints" not in backup
     network["arp"][0]["last_seen_at"] = (now - timedelta(minutes=6)).isoformat()
     assert read()[0] == "ok"

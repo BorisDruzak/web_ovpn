@@ -2451,6 +2451,7 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime, *, endpoint_
                     certificates.append(certificate)
         return {**_attachment_node(node), "basis": sorted(bases),
                 **({"backupChecks": backup_checks} if backup_checks else {}),
+                **({"backupScope": node["backupScope"]} if "backupScope" in node else {}),
                 **({"linkChecks": link_checks[key]} if bases & {"lldp_peer", "endpoint_mac"} else {}),
                 **({"probeEndpoints": [probes[entry] for entry in sorted(probes)]} if probes else {})}
 

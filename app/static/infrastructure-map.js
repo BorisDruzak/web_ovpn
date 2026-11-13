@@ -1987,6 +1987,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           row.append(open);
           const observed = (service.basis ?? []).map(basis => bases[basis]).filter(Boolean);
           if (observed.length) row.append(make('small', observed.join(' · ')));
+          if (service.backupScope) {
+            const {storage, total, scheduled, notScheduled, unknown} = service.backupScope;
+            row.append(make('small', `Расписание ${storage} · включено: ${scheduled} из ${total} · вне расписания: ${notScheduled} · без подтверждения: ${unknown}`));
+          }
           if (service.backupChecks) {
             const {passed, failed, unconfirmed} = service.backupChecks;
             row.append(make('small', `Копии ВМ · прошли: ${passed} · сбои: ${failed} · без подтверждения: ${unconfirmed}`));
