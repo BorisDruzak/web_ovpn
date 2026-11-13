@@ -3325,6 +3325,7 @@ def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
         guest_ids = set(hosted)
         guests = dict(list(hosted.items())[:12])
         detail.update(_confirmed_guest_uplinks(hosted))
+        detail.update(_running_without_network(nodes, hosted))
     else:
         guests = _guest_attachments(nodes, links, sorted(guest_ids)[:12])
     if anchor:
@@ -3388,6 +3389,22 @@ def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
                                        **detail}}
 
 
+def _has_no_guest_network(attachment: dict, network: dict) -> bool:
+    return (attachment["power"] == "running" and network["enabled"] == 0
+            and network["configured"] == network["disabled"]
+            and all(interface["linkDisabled"] for interface in attachment["interfaces"]))
+
+
+def _running_without_network(nodes: dict, guests: dict) -> dict:
+    rows = []
+    for guest_id, attachment in guests.items():
+        network = nodes[guest_id].get("guestNetwork")
+        if network and _has_no_guest_network(attachment, network):
+            rows.append({"guest": attachment["guest"], "hypervisor": attachment["hypervisor"], "guestNetwork": network})
+    rows.sort(key=lambda row: (row["guest"]["vmid"], row["guest"]["id"]))
+    return {"runningWithoutNetworkTotal": len(rows), "runningWithoutNetwork": rows[:64]}
+
+
 def summarize_guest_attachment_audit(graph: dict) -> dict:
     nodes = {node["id"]: node for node in graph["nodes"]}
     guest_ids = [node_id for node_id, node in nodes.items() if node["guest"]]
@@ -3403,7 +3420,6 @@ def summarize_guest_attachment_audit(graph: dict) -> dict:
     interface_counts = dict.fromkeys((*evidence_order.values(), "local_neighbor_with_physical_pair",
                                       "local_neighbor", "ambiguous_switch_port", "unconfirmed", "inactive"), 0)
     gaps = []
-    running_without_network = []
     for attachment in guests.values():
         power = attachment["power"]
         inactive = power in {"stopped", "prelaunch", "paused"}
@@ -3431,24 +3447,19 @@ def summarize_guest_attachment_audit(graph: dict) -> dict:
                 if "arpDiagnostic" in interface:
                     incomplete[-1]["arpDiagnostic"] = interface["arpDiagnostic"]
         network = nodes[attachment["guest"]["id"]].get("guestNetwork")
-        if (power == "running" and network and network["enabled"] == 0
-                and network["configured"] == network["disabled"]
-                and all(interface["linkDisabled"] for interface in attachment["interfaces"])):
-            running_without_network.append({"guest": attachment["guest"], "hypervisor": attachment["hypervisor"],
-                                            "guestNetwork": network})
-        elif not inactive and (incomplete or not attachment["interfaces"]):
+        if network and _has_no_guest_network(attachment, network):
+            continue
+        if not inactive and (incomplete or not attachment["interfaces"]):
             gaps.append({"guest": attachment["guest"], "hypervisor": attachment["hypervisor"],
                          "power": power, "placement": attachment["placement"], "interfaces": incomplete,
                          **({"networkTraffic": attachment["networkTraffic"]} if "networkTraffic" in attachment else {})})
 
     gaps.sort(key=lambda gap: (gap["power"] != "running", gap["guest"]["id"]))
-    running_without_network.sort(key=lambda row: (row["guest"]["vmid"], row["guest"]["id"]))
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
     return {**metadata, "attachmentAudit": {"guestCounts": guest_counts, "interfaceCounts": interface_counts,
                                             "gapTotal": len(gaps), "gaps": gaps[:64],
                                             **_confirmed_guest_uplinks(guests),
-                                            "runningWithoutNetworkTotal": len(running_without_network),
-                                            "runningWithoutNetwork": running_without_network[:64]}}
+                                            **_running_without_network(nodes, guests)}}
 
 
 def _confirmed_guest_uplinks(guests: dict, *, switch_id: str | None = None, port_keys: set[str] | None = None) -> dict:
@@ -4247,6 +4258,7 @@ def load_infrastructure_map(
         attachments.update(
             guestSwitchAttachments=_guest_switch_attachments(attachments["guestAttachments"]),
             **_confirmed_guest_uplinks(attachments["guestAttachments"]),
+            **_running_without_network(nodes, attachments["guestAttachments"]),
             inventoryPairs=inventory_pairs,
             currentPortPairTotal=len(current_pairs),
             currentPortPairs=current_pairs[:64],

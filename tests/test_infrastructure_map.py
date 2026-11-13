@@ -753,10 +753,11 @@ def test_cluster_health_distinguishes_quorum_members_and_api(tmp_path):
     cluster = {"type": "cluster", "name": "example", "quorate": 1, "nodes": 2}
     members = [{"type": "node", "name": "pve1", "online": 1}, {"type": "node", "name": "pve2", "online": 1}]
     capacity = {}
+    guest = {"node": "pve1", "vmid": 103, "status": "stopped", "type": "qemu"}
 
     def read(when=now):
         pve = {"at": now.isoformat(), "cluster": [cluster, *members],
-               "guests": [{"node": "pve1", "vmid": 103, "status": "stopped", "type": "qemu"}],
+               "guests": [guest], "configs": {"103": {"networkConfigRead": True}},
                "nodes": [{"node": "pve1", "status": "online"}, {"node": "pve2", "status": "online"}],
                **({"nodeStatus": capacity} if capacity else {})}
         graph = build_graph({}, {}, {}, pve, {}, now)
@@ -774,6 +775,15 @@ def test_cluster_health_distinguishes_quorum_members_and_api(tmp_path):
     assert attachment["guestTotal"] == 1
     assert attachment["guests"][0]["hypervisor"]["id"] == "pve1"
     assert [host["host"]["id"] for host in attachment["physicalHosts"]] == ["pve1", "pve2"]
+    assert attachment["runningWithoutNetworkTotal"] == 0
+    guest["status"] = "running"
+    read()
+    graph = load_infrastructure_map(path, now, include_guest_attachments=True)
+    attachment = summarize_guest_attachment(graph, healthy["id"])["attachment"]
+    assert graph["runningWithoutNetworkTotal"] == attachment["runningWithoutNetworkTotal"] == 1
+    assert graph["runningWithoutNetwork"] == attachment["runningWithoutNetwork"]
+    assert attachment["runningWithoutNetwork"][0]["guest"]["vmid"] == 103
+    guest["status"] = "stopped"
     sample = {"checkedAt": now.isoformat(), "rootfs": {"avail": 500, "total": 1000},
               "swap": {"used": 0, "total": 0}, "memory": {"free": 100, "total": 1000}}
     capacity.update(pve1=sample, pve2={**sample, "endpointMemory": {"availableBytes": 50, "checkedAt": now.isoformat()}})

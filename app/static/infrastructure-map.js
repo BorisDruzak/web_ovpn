@@ -2291,6 +2291,22 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       }
       propertiesSection.append(make('h3', 'Состояние гипервизоров'), list);
     }
+    if (node.id === data.clusterId && data.runningWithoutNetworkTotal) {
+      const list = make('ul', null, 'map-detail-list');
+      const panel = make('details', null, 'map-port-panel');
+      panel.dataset.section = 'guests-without-network';
+      for (const {guest, hypervisor, guestNetwork} of data.runningWithoutNetwork) {
+        const row = make('li');
+        const open = make('button', `ВМ/КТ ${guest.vmid} · ${guest.name}`);
+        open.type = 'button';
+        open.addEventListener('click', () => select(guest.id));
+        const reason = guestNetwork.configured ? 'Все адаптеры отключены' : 'Адаптеры не заданы';
+        row.append(open, make('small', [hypervisor?.name, reason, formatTime(guestNetwork.checkedAt)].filter(Boolean).join(' · ')));
+        list.append(row);
+      }
+      panel.append(make('summary', `Запущены без сети Proxmox · ${data.runningWithoutNetworkTotal}`), list);
+      propertiesSection.append(panel);
+    }
     for (const [key, title] of [['unavailable', 'Недоступные сервисы'], ['degraded', 'Сервисы со сбоями проверок'],
                                 ['unknown', 'Сервисы без подтверждения']]) {
       const ids = node.serviceAvailability?.[key] ?? [];
