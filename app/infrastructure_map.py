@@ -3851,6 +3851,7 @@ def load_infrastructure_map(
                      if reading["checkedAt"]
                  },
                  "identifiedPeerSides": row["identifiedPeerSides"],
+                 "confirmationGaps": row["confirmationGaps"],
                  "stpPaths": list({
                      path["deviceId"]: path
                      for reading in row["observedPaths"] for path in reading.get("stpPaths", [])

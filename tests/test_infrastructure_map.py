@@ -8131,6 +8131,8 @@ def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_pa
     pending, mismatch, recorder = audit["pending"]
     assert "missing_port_name" in recorder["confirmationGaps"]
     assert "no_live_peer_identity" not in recorder["confirmationGaps"]
+    browser_recorder = next(pair for pair in browser_graph["pendingPortPairs"] if pair["b"] == "recorder")
+    assert browser_recorder["confirmationGaps"] == recorder["confirmationGaps"]
     scoped = client.get("/api/v1/network/infrastructure?view=topology&node_id=snr&port_name=GE15", headers=headers)
     assert scoped.status_code == 200
     port_audit = scoped.json()["infrastructure"]["topologyAudit"]

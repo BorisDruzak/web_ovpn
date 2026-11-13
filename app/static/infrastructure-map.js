@@ -277,12 +277,22 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       observedSourceTimes = {}, identifiedPeerSides = [], archivedPortSides = [], inventoryPortSides = [],
       portObservations = {}, stpPaths = [], stpBridgeConnections = [], stpBridgeMacObservations = [], lldpPeers = {},
       archivedPortAt = {}, inventorySources = [], inventoryPeerPorts = [], arpDiagnostics = {}, observedPaths = [],
-      multiMacPortSides = [], unconfirmedLldpCandidates = []}) {
+      multiMacPortSides = [], unconfirmedLldpCandidates = [], confirmationGaps = []}) {
     const item = make('li');
     const provenance = key => archivedPortSides.includes(key) ? ' (по архиву)' :
       inventoryPortSides.includes(key) ? ' (по инвентарю)' : '';
     item.append(portPairEndpoint(a, nameA, portA), provenance('a'), ' ↔ ',
       portPairEndpoint(b, nameB, portB), provenance('b'));
+    const gapLabels = {
+      missing_port_name: 'нет имени порта на одном из концов',
+      archived_port: 'есть порт только из архива',
+      shared_switch_port: 'за портом видно несколько устройств',
+      multiple_learned_macs: 'на порту изучено несколько MAC',
+      no_live_peer_identity: 'сосед не опознан по свежим данным',
+      physical_pair_unconfirmed: 'нет свежего подтверждения прямой пары',
+    };
+    const gaps = confirmationGaps.map(gap => gapLabels[gap]).filter(Boolean);
+    if (gaps.length) item.append(make('small', gaps.join(' · ')));
     for (const [side, checkedAt] of Object.entries(archivedPortAt)) {
       if (checkedAt) item.append(make('small', `Архив · ${side === 'a' ? nameA : nameB} · ${formatTime(checkedAt)}`));
     }
