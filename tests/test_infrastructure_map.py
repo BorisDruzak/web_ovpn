@@ -9151,6 +9151,21 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
         "serviceId": "ssh", "localService": "sshd", "method": "SSH", "target": "192.0.2.10",
         "port": 22, "state": "reachable", "checkedAt": at,
     }]
+    snapshot["links"].append({"a": "web", "b": "ssh", "kind": "Зависимость сервиса", "confirmed": True})
+    snapshot["nodes"][-1]["reachability"] = {
+        "state": "unreachable", "source": "Проверка сервиса", "method": "SSH", "checkedAt": at,
+    }
+    for check in snapshot["nodes"][-1]["serviceChecks"]:
+        check.update(state="unreachable", reason="ssh_connection_refused")
+    path.write_text(json.dumps(snapshot), encoding="utf-8")
+    dependent = client.get(service_agents_url, headers=headers).json()["infrastructure"]
+    dependency, = dependent["dependencyAudit"]["services"]
+    assert dependent["dependencyAudit"]["total"] == 1
+    assert dependent["serviceAudit"]["services"][0]["dependencies"]["unavailable"] == ["ssh"]
+    assert dependency["id"] == "ssh" and dependency["status"] == "critical"
+    assert dependency["issues"][0]["reason"] == "ssh_connection_refused"
+    assert len(Adapter.reads) == 3 and Adapter.reads.pop() == Adapter.reads[0]
+    snapshot["links"].pop()
     snapshot["nodes"].pop()
     snapshot["links"].pop()
     path.write_text(json.dumps(snapshot), encoding="utf-8")

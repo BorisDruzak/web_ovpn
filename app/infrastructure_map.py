@@ -3536,7 +3536,7 @@ def _confirmed_guest_uplinks(guests: dict, *, switch_id: str | None = None, port
     return {"confirmedUplinkTotal": len(confirmed_uplinks), "confirmedUplinks": confirmed_uplinks[:64]}
 
 
-def summarize_services(graph: dict, *, host_id: str | None = None, service_id: str | None = None,
+def summarize_services(graph: dict, *, host_id: str | None = None, service_ids: set[str] | None = None,
                        offset: int = 0) -> dict:
     nodes = {node["id"]: node for node in graph["nodes"]}
     hosts = {}
@@ -3549,7 +3549,7 @@ def summarize_services(graph: dict, *, host_id: str | None = None, service_id: s
     counts = dict.fromkeys(priority, 0)
     services = []
     for node in nodes.values():
-        if (node["kind"] != "Сервис" or (service_id is not None and node["id"] != service_id)
+        if (node["kind"] != "Сервис" or (service_ids is not None and node["id"] not in service_ids)
                 or (host_id is not None and host_id not in hosts.get(node["id"], ()))):
             continue
         state = node["mapStatus"]
@@ -3668,7 +3668,11 @@ def load_infrastructure_agent_audit(path: Path, *, node_id: str | None = None) -
         attachment = summarize_guest_attachment(graph, node_id)["attachment"]
         result["attachment"] = attachment
         if node["kind"] == "Сервис":
-            result["serviceAudit"] = summarize_services(graph, service_id=node_id)["serviceAudit"]
+            result["serviceAudit"] = summarize_services(graph, service_ids={node_id})["serviceAudit"]
+            dependency_ids = {edge["b"] for edge in graph["links"] if edge["a"] == node_id
+                              and edge["confirmed"] and edge["kind"] in SERVICE_LINKS}
+            if dependency_ids:
+                result["dependencyAudit"] = summarize_services(graph, service_ids=dependency_ids)["serviceAudit"]
         else:
             result["serviceAudit"] = summarize_services(graph, host_id=node_id)["serviceAudit"]
         for entry in result["agentAudit"].get("guests", []):
