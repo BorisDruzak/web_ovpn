@@ -3785,10 +3785,38 @@ def summarize_services(graph: dict, *, host_id: str | None = None, service_ids: 
     recent_transitions.sort(key=lambda row: row["checkedAt"], reverse=True)
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
     end = offset + 128
+    page = services[offset:end]
+    if any(row["issues"] and len(row["hosts"]) == 1 for row in page):
+        management = _management_port_paths(nodes, graph["links"])
+        observed_ports = _observed_management_ports(graph["links"], nodes)
+        for row in page:
+            if not row["issues"] or len(row["hosts"]) != 1:
+                continue
+            host, = row["hosts"]
+            paths = _management_service_paths(nodes[row["id"]], host, management, observed_ports, nodes)
+            for issue in row["issues"]:
+                if issue["source"] not in ("UI_VPN", "Network Observer"):
+                    continue
+                for path in paths:
+                    if (issue.get("target") != path["target"] or issue.get("port") != path["port"]
+                            or issue["check"] != path["method"] or issue.get("checkedAt") != path["checkedAt"]
+                            or issue.get("path") != path.get("path") or issue.get("dns") != path.get("dns")):
+                        continue
+                    if router := path.get("routerAttachment"):
+                        node_id, port, evidence = router["routerId"], router["port"], router
+                    elif switch := path.get("switchAttachment"):
+                        node_id, port, evidence = switch["switchId"], switch["port"], switch
+                    elif pair := path.get("physicalPair"):
+                        node_id, port, evidence = path["switchId"], pair["switchPort"], pair
+                    else:
+                        continue
+                    issue["portObservation"] = {"nodeId": node_id, "port": port, "source": evidence["source"],
+                                                "checkedAt": evidence["checkedAt"]}
+                    break
     return {**metadata, "serviceAudit": {
         "total": len(services), "counts": counts, "offset": offset,
         "recentTransitionTotal": len(recent_transitions), "recentTransitions": recent_transitions[:16],
-        "nextOffset": end if end < len(services) else None, "services": services[offset:end],
+        "nextOffset": end if end < len(services) else None, "services": page,
     }}
 
 

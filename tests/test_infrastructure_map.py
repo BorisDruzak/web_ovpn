@@ -6659,7 +6659,7 @@ def test_hypervisor_fdb_path_reports_management_interface_without_claiming_direc
 
 def test_transit_peer_management_port_requires_fresh_arp_fdb_and_active_ethernet(tmp_path):
     from app.infrastructure_collect import build_graph
-    from app.infrastructure_map import load_infrastructure_map, summarize_guest_attachment, summarize_topology
+    from app.infrastructure_map import load_infrastructure_map, summarize_guest_attachment, summarize_services, summarize_topology
 
     now = datetime.now(timezone.utc)
     at = now.isoformat()
@@ -6744,6 +6744,14 @@ def test_transit_peer_management_port_requires_fresh_arp_fdb_and_active_ethernet
                             "portLink": {"state": "up", "speedBps": None, "checkedAt": at, "source": "RouterOS"},
                             "archivedPeer": {"nodeId": "coordinator", "port": "eth0", "checkedAt": inventory_stamp,
                                              "inventorySources": sources}}}
+    web = next(node for node in public["nodes"] if node["id"] == "coordinator-web")
+    for check in web["serviceChecks"]:
+        check.update(state="unreachable", required=True)
+    issues = summarize_services(public, service_ids={"coordinator-web"})["serviceAudit"]["services"][0]["issues"]
+    assert issues[0]["portObservation"] == {
+        "nodeId": "rb", "port": "ether7", "source": "MikroTik · ARP + FDB", "checkedAt": at,
+    }
+    assert "portObservation" not in issues[1]
     reverse, = summarize_guest_attachment(public, "rb")["attachment"]["servicePorts"]
     coordinator = next(node for node in public["nodes"] if node["id"] == "coordinator")
     assert coordinator["managementRouterPaths"] == [{"address": address, **service_path["routerAttachment"]}]
