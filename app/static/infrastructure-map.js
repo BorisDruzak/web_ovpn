@@ -956,10 +956,16 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       no_enabled_network_adapter: 'Нет включённого сетевого адаптера',
       no_unique_network_identity: 'Нет однозначного MAC для сопоставления',
       management_mac_unconfirmed: 'MAC адреса управления Proxmox не подтверждён',
+      endpoint_reports_offline: 'Endpoint сообщает, что агент вне сети',
+      endpoint_presence_missing: 'Endpoint не передал состояние связи',
+      endpoint_last_seen_missing: 'Время последней связи не подтверждено',
+      endpoint_last_seen_stale: 'Время последней связи устарело',
+      endpoint_network_baseline_missing: 'Время инвентаризации сети не подтверждено',
+      endpoint_network_baseline_stale: 'Данные инвентаризации сети устарели',
     };
     label.textContent = entry?.presence === 'online'
       ? 'На связи · ' + formatTime(entry.lastSeenAt)
-      : reasons[entry?.reason] ?? (entry?.state === 'matched' ? 'Связь не подтверждена' : 'Привязка не подтверждена');
+      : reasons[entry?.reason ?? entry?.presenceReason] ?? (entry?.state === 'matched' ? 'Связь не подтверждена' : 'Привязка не подтверждена');
     const identitySourceLabels = {
       verified_enrollment: 'Регистрация сверена на ВМ',
       active_mac_registration: 'Одна активная регистрация с этим MAC',

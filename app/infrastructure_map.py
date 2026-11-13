@@ -3954,16 +3954,24 @@ def _guest_agent_os(snapshot: object, now: datetime) -> dict:
     return {"collectedAt": collected_at.isoformat(), "platform": platform, **fields}
 
 
-def _guest_agent_online_at(identity: dict, now: datetime, *, verified_enrollment: bool = False) -> datetime | None:
+def _guest_agent_presence(identity: dict, now: datetime, *, verified_enrollment: bool = False) -> tuple[datetime | None, str]:
     from .inventory.endpoint import CANDIDATE_MAX_AGE, STATE_MAX_AGE
 
+    online = identity.get("online")
+    if online is not True:
+        return None, "endpoint_reports_offline" if online is False else "endpoint_presence_missing"
     last_seen = _time(identity.get("last_seen_at"))
-    if identity.get("online") is not True or last_seen is None or not timedelta(0) <= now - last_seen <= STATE_MAX_AGE:
-        return None
-    baseline = _time(identity.get("baseline_collected_at"))
-    if verified_enrollment or baseline is not None and timedelta(0) <= now - baseline <= CANDIDATE_MAX_AGE:
-        return last_seen
-    return None
+    if last_seen is None or last_seen > now:
+        return None, "endpoint_last_seen_missing"
+    if now - last_seen > STATE_MAX_AGE:
+        return None, "endpoint_last_seen_stale"
+    if not verified_enrollment:
+        baseline = _time(identity.get("baseline_collected_at"))
+        if baseline is None or baseline > now:
+            return None, "endpoint_network_baseline_missing"
+        if now - baseline > CANDIDATE_MAX_AGE:
+            return None, "endpoint_network_baseline_stale"
+    return last_seen, ""
 
 
 def _summarize_agent_audit(nodes: dict, keys: dict, conflicts: set[str], identities: list[dict], now: datetime,
@@ -4019,7 +4027,7 @@ def _summarize_agent_audit(nodes: dict, keys: dict, conflicts: set[str], identit
         enrollment = enrollments.get(node_id)
         same_mac = len(candidates) > 1 and any(candidates <= by_mac[key] for key in keys.get(node_id, ()))
         if (enrollment in candidates and candidates - {enrollment} <= historical and same_mac
-                and _guest_agent_online_at(verified.get(enrollment, {}), now, verified_enrollment=True) is not None):
+                and _guest_agent_presence(verified.get(enrollment, {}), now, verified_enrollment=True)[0] is not None):
             candidates = {enrollment}
         if node_id in conflicts:
             entry["reason"] = "duplicate_guest_mac"
@@ -4036,7 +4044,7 @@ def _summarize_agent_audit(nodes: dict, keys: dict, conflicts: set[str], identit
                     entries.append({**entry, "reason": "multiple_registrations"})
                     continue
                 active_id, = current
-                if _guest_agent_online_at(by_id[active_id], now) is None or not same_mac:
+                if _guest_agent_presence(by_id[active_id], now)[0] is None or not same_mac:
                     entries.append({**entry, "reason": "multiple_registrations"})
                     continue
                 candidates = current
@@ -4054,10 +4062,12 @@ def _summarize_agent_audit(nodes: dict, keys: dict, conflicts: set[str], identit
                 elif active_mac_registration:
                     entry["identitySource"] = "active_mac_registration"
                 presence = verified[identity_id] if explicit else identity
-                last_seen = _guest_agent_online_at(presence, now, verified_enrollment=explicit)
+                last_seen, presence_reason = _guest_agent_presence(presence, now, verified_enrollment=explicit)
                 entry["presence"] = "online" if last_seen is not None else "unconfirmed"
                 if last_seen is not None:
                     entry["lastSeenAt"] = last_seen.isoformat()
+                else:
+                    entry["presenceReason"] = presence_reason
                 profile_rows = _rows(identity.get("profiles"), 5)
                 snapshots = {}
                 if (explicit and identity_id not in by_id and load_agent_profiles is not None

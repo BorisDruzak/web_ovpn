@@ -9731,6 +9731,37 @@ def test_missing_infrastructure_snapshot_has_explicit_empty_state(tmp_path, monk
     assert response.json()["infrastructure"]["availability"] == "missing"
 
 
+def test_agent_audit_explains_unconfirmed_presence_even_with_recent_health(tmp_path):
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    path = tmp_path / "map.json"
+    key = "mac-020000000001"
+    path.write_text(json.dumps({"schema": 1, "snapshotAt": at, "nodes": [
+        {"id": "vm:1", "name": "VM 1", "guest": True, "vmid": 1, "kind": "Виртуальная машина",
+         "agentMatchKeys": [key], "sources": [{"name": "Proxmox", "status": "ok", "at": at, "label": "Запущена"}]}
+    ]}), encoding="utf-8")
+    identity = {"id": "registered", "baseline_mac_keys": [key], "online": True,
+                "last_seen_at": at, "baseline_collected_at": at,
+                "profiles": [{"profile": "health_v1", "collected_at": at}]}
+    stale = (now - timedelta(days=2)).isoformat()
+    for changes, reason in (
+        ({"online": False}, "endpoint_reports_offline"),
+        ({"online": None}, "endpoint_presence_missing"),
+        ({"last_seen_at": stale}, "endpoint_last_seen_stale"),
+        ({"last_seen_at": None}, "endpoint_last_seen_missing"),
+        ({"baseline_collected_at": stale}, "endpoint_network_baseline_stale"),
+        ({"baseline_collected_at": None}, "endpoint_network_baseline_missing"),
+    ):
+        audit = load_infrastructure_map(path, now, agent_identities=[{**identity, **changes}])["agentAudit"]
+        entry, = audit["guests"]
+        assert (entry["state"], entry["presence"], entry["presenceReason"], entry["healthProfileState"]) == (
+            "matched", "unconfirmed", reason, "fresh",
+        )
+        assert "lastSeenAt" not in entry and "health" not in entry
+
+
 def test_browser_can_refresh_snapshot_only_with_a_web_session(tmp_path, monkeypatch):
     path = tmp_path / "map.json"
     monkeypatch.setenv("INFRASTRUCTURE_MAP_SNAPSHOT_PATH", str(path))
