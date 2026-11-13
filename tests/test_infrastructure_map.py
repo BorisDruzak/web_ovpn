@@ -166,7 +166,7 @@ def test_redfish_service_reports_authenticated_system_read(monkeypatch, valid_sy
         assert check["state"] == state
 
 
-@pytest.mark.parametrize("failure", [None, "mac", "stale", "shared", "speed"])
+@pytest.mark.parametrize("failure", [None, "mac", "stale", "shared", "speed", "down", "disabled", "address"])
 def test_redfish_management_pair_requires_matching_current_switch_evidence(tmp_path, monkeypatch, failure):
     from app import infrastructure_redfish as redfish
     from app.infrastructure_map import load_infrastructure_map, summarize_topology
@@ -176,8 +176,10 @@ def test_redfish_management_pair_requires_matching_current_switch_evidence(tmp_p
     observed = (now - timedelta(minutes=11)).isoformat() if failure == "stale" else stamp
     ip, mac = "192.0.2.31", "02:00:00:00:00:31"
     path = "/redfish/v1/Managers/bmc/EthernetInterfaces/eth0"
-    interface = {"Id": "eth0", "InterfaceEnabled": True, "LinkStatus": "LinkUp", "MACAddress": mac,
-                 "SpeedMbps": 100 if failure == "speed" else 1000, "IPv4Addresses": [{"Address": ip}]}
+    interface = {"Id": "eth0", "InterfaceEnabled": failure != "disabled",
+                 "LinkStatus": "LinkDown" if failure == "down" else "LinkUp", "MACAddress": mac,
+                 "SpeedMbps": 100 if failure == "speed" else 1000,
+                 "IPv4Addresses": [{"Address": "192.0.2.32" if failure == "address" else ip}]}
     monkeypatch.setattr(redfish, "_read_resource", lambda _, __, resource: interface if resource == path else {"PowerState": "Off"})
     graph = {"schema": 1, "snapshotAt": stamp, "nodes": [
         {"id": "bmc", "name": "BMC", "kind": "Контроллер управления", "probeTargetIP": ip, "probeTargetIdentityAt": stamp},
@@ -198,9 +200,13 @@ def test_redfish_management_pair_requires_matching_current_switch_evidence(tmp_p
          "portEvidence": [{"a": "ge13", "b": "eth0", "source": "GitHub", "confirmed": True}]},
     ]}
     redfish.collect_redfish_power(graph, {"bmc": {"ip": ip, "interface_path": path}}, None, now)
+    local_at = graph["nodes"][0].get("ports", [{}])[0].get("checkedAt")
+    if local_at:
+        assert now <= datetime.fromisoformat(local_at) <= datetime.now(timezone.utc)
+    read_at = datetime.now(timezone.utc)
     snapshot = tmp_path / "map.json"
     snapshot.write_text(json.dumps(graph), encoding="utf-8")
-    for when, current in ((now, int(failure is None)), (now + timedelta(minutes=11), 0)):
+    for when, current in ((read_at, int(failure is None)), (read_at + timedelta(minutes=11), 0)):
         view = load_infrastructure_map(snapshot, when)
         controller = next(node for node in view["nodes"] if node["id"] == "bmc")
         audit = summarize_topology(view)["topologyAudit"]
@@ -209,11 +215,20 @@ def test_redfish_management_pair_requires_matching_current_switch_evidence(tmp_p
         if current:
             assert audit["currentPairs"][0]["evidence"][0]["expiresAt"] == (now + timedelta(minutes=10)).isoformat()
             assert audit["currentPairs"][0]["portStates"]["b"] == {
-                "state": "up", "speedBps": 10**9, "checkedAt": stamp, "source": "Redfish",
+                "state": "up", "speedBps": 10**9, "checkedAt": local_at, "source": "Redfish",
             }
-            assert controller["ports"][0]["name"] == "eth0"
+        if failure == "address":
+            assert controller["ports"] == []
+        elif when == read_at:
+            port, = controller["ports"]
+            expected_state = failure if failure in ("down", "disabled") else "up"
+            assert (port["name"], port["state"], port["source"], port["checkedAt"]) == (
+                "eth0", expected_state, "Redfish", local_at,
+            )
+            assert port["speedBps"] == (interface["SpeedMbps"] * 10**6 if expected_state == "up" else None)
         else:
-            assert all(port["state"] == "unknown" for port in controller["ports"])
+            port, = controller["ports"]
+            assert port["state"] == "unknown" and port["speedBps"] is None
 
 
 @pytest.mark.parametrize(("status", "headers", "state", "reason"), [

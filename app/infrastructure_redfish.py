@@ -75,10 +75,21 @@ def _confirm_management_pair(graph, nodes, controller_id, spec, credential, now)
     mac = str(reading.get("MACAddress", "")).lower()
     addresses = reading.get("IPv4Addresses")
     speed = reading.get("SpeedMbps")
-    if (reading.get("Id") != name or reading.get("LinkStatus") != "LinkUp"
-            or reading.get("InterfaceEnabled") is not True or not re.fullmatch(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}", mac)
-            or type(speed) is not int or not 1 <= speed <= 1_000_000 or not isinstance(addresses, list)
+    enabled = reading.get("InterfaceEnabled")
+    if (reading.get("Id") != name or type(enabled) is not bool
+            or not re.fullmatch(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}", mac) or not isinstance(addresses, list)
             or not any(isinstance(row, dict) and row.get("Address") == spec["ip"] for row in addresses)):
+        return
+    link_status = reading.get("LinkStatus")
+    state = "disabled" if not enabled else {
+        "LinkUp": "up", "LinkDown": "down", "NoLink": "down",
+    }.get(link_status if isinstance(link_status, str) else "", "unknown")
+    speed_bps = speed * 1_000_000 if state == "up" and type(speed) is int and 1 <= speed <= 1_000_000 else None
+    checked_at = datetime.now(timezone.utc).isoformat()
+    nodes[controller_id].setdefault("ports", []).append({
+        "name": name, "state": state, "speedBps": speed_bps, "checkedAt": checked_at, "source": "Redfish",
+    })
+    if speed_bps is None:
         return
     matches = {}
     for edge in graph["links"]:
@@ -104,10 +115,9 @@ def _confirm_management_pair(graph, nodes, controller_id, spec, credential, now)
             or learned.get("checkedAt") != port.get("checkedAt")
             or not observation_is_fresh(learned.get("checkedAt"), now, max_age=REDFISH_PAIR_MAX_AGE)
             or abs(datetime.fromisoformat(observed) - datetime.fromisoformat(learned["checkedAt"])).total_seconds() > 30
-            or port.get("speedBps") != speed * 1_000_000):
+            or port.get("speedBps") != speed_bps):
         return
     confirmed_at = min(datetime.fromisoformat(observed), datetime.fromisoformat(learned["checkedAt"])).isoformat()
-    confirmed = False
     for edge in graph["links"]:
         if edge["kind"] != "Сетевое соединение" or not edge["confirmed"] or {edge["a"], edge["b"]} != {switch, controller_id}:
             continue
@@ -118,11 +128,6 @@ def _confirm_management_pair(graph, nodes, controller_id, spec, credential, now)
                for row in evidence):
             evidence.append({"a": a, "b": b, "source": REDFISH_PAIR_SOURCE, "confirmed": True,
                              "at": confirmed_at})
-            confirmed = True
-    if confirmed:
-        nodes[controller_id].setdefault("ports", []).append({
-            "name": name, "state": "up", "speedBps": speed * 1_000_000, "checkedAt": confirmed_at, "source": "Redfish",
-        })
 
 
 def collect_redfish_power(graph: dict, specs: dict, credentials: Path | None, now: datetime) -> None:
