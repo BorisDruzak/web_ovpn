@@ -1057,14 +1057,17 @@ def api_network_dashboard(actor: str = Depends(require_api_actor)):
 def api_network_infrastructure(
     view: Literal["topology", "agents", "services", "attachment"] | None = None,
     node_id: str | None = Query(default=None, min_length=1, max_length=160),
+    port_name: str | None = Query(default=None, min_length=1, max_length=64),
     service_offset: int | None = Query(default=None, ge=0, le=600),
     include_service_ports: bool = False,
     include_port_pairs: bool = False,
     actor: str = Depends(require_api_actor),
     db: Session = Depends(get_db),
 ):
-    if view not in ("attachment", "agents") and node_id is not None:
-        raise HTTPException(status_code=422, detail="node_id is supported only for view=attachment or view=agents")
+    if view not in ("attachment", "agents", "topology") and node_id is not None:
+        raise HTTPException(status_code=422, detail="node_id requires view=attachment, agents or topology")
+    if port_name is not None and (view != "topology" or node_id is None or not port_name.strip()):
+        raise HTTPException(status_code=422, detail="port_name requires view=topology and node_id")
     if service_offset is not None and view != "services":
         raise HTTPException(status_code=422, detail="service_offset is supported only for view=services")
     path = get_settings().infrastructure_map_snapshot_path
@@ -1077,7 +1080,7 @@ def api_network_infrastructure(
         if view == "services":
             graph = summarize_services(graph, offset=service_offset or 0)
         elif view == "topology":
-            graph = summarize_topology(graph)
+            graph = summarize_topology(graph, node_id=node_id, port_name=port_name.strip() if port_name else None)
         elif view == "attachment":
             graph = (summarize_guest_attachment_audit(graph) if node_id is None
                      else summarize_guest_attachment(graph, node_id))

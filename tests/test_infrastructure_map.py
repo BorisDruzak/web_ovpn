@@ -7461,6 +7461,16 @@ def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_pa
     assert browser_graph["currentPortPairs"] == audit["currentPairs"]
     assert audit["pendingTotal"] == 3
     pending, mismatch, recorder = audit["pending"]
+    scoped = client.get("/api/v1/network/infrastructure?view=topology&node_id=snr&port_name=GE15", headers=headers)
+    assert scoped.status_code == 200
+    port_audit = scoped.json()["infrastructure"]["topologyAudit"]
+    assert port_audit["pending"] == [recorder]
+    assert port_audit["pendingTotal"] == 1 and port_audit["currentPairTotal"] == 0
+    assert port_audit["ports"][0]["name"] == "ge15"
+    scope = "/api/v1/network/infrastructure?view=topology&node_id="
+    assert client.get(scope + "missing", headers=headers).json()["infrastructure"]["topologyAudit"]["node"] is None
+    assert client.get(scope + "pve&port_name=ens7f1", headers=headers).json()["infrastructure"]["topologyAudit"]["currentPairs"] == audit["currentPairs"]
+    assert client.get("/api/v1/network/infrastructure?view=topology&port_name=ge15", headers=headers).status_code == 422
     assert (pending["a"], pending["b"], pending["portA"], pending["portB"]) == ("snr", "pve", "ge12", "management_1g")
     observed, = pending["observedPaths"]
     assert (observed["portA"], observed["portB"]) == ("ge12", "enp134s0")

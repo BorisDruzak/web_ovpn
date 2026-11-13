@@ -54,6 +54,8 @@ Do not paste employee search results, credentials or full logs into unrelated di
 
 ## Network checks
 
+- `openvpn_network_infrastructure` with `view=topology`, `node_id` and `port_name` returns the selected port and its confirmed, inventory and pending pairs, including evidence for pending pairs.
+
 - `openvpn_network_diagnostic_checks` lists the registered checks.
 - `openvpn_network_run_check` runs `linux_route`, `asset_route`, `trace_route` or `source_test`. The trace uses a monitored IPv4 target. Report the selected point of observation and distinguish a kernel route lookup, a calculated RouterOS path and observed traceroute hops.
 - `openvpn_network_check_runs` lists recent runs for the authenticated actor.

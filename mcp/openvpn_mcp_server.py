@@ -176,7 +176,7 @@ TOOLS: dict[str, dict[str, Any]] = {
     "openvpn_network_dashboard": tool_schema("Show network observer dashboard summary and source health."),
     "openvpn_network_infrastructure": tool_schema(
         "Read the map. Use view=services for service checks (pass nextOffset as service_offset for more), "
-        "view=topology for port confirmation gaps, "
+        "view=topology for port confirmation gaps (optionally with node_id and port_name), "
         "view=agents for Proxmox agent matches (node_id for guest health), "
         "view=attachment for VM-to-switch coverage (node_id for VM, host, or service paths), "
         "Use query to search, node_id to inspect links and port pairs, or add port_name for port-specific evidence.",
@@ -674,23 +674,28 @@ def _infrastructure_snapshot(node_id: str | None, query: str | None, port_name: 
         raise ValueError("node_id must be a non-empty string of at most 160 characters")
     if service_offset is not None and (view != "services" or type(service_offset) is not int or not 0 <= service_offset <= 600):
         raise ValueError("service_offset requires view=services and must be an integer from 0 to 600")
+    if port_name is not None and (node_id is None or not isinstance(port_name, str)
+                                  or not port_name.strip() or len(port_name) > 64):
+        raise ValueError("port_name requires node_id and must be a non-empty string of at most 64 characters")
+    if view == "topology":
+        if query is not None:
+            raise ValueError("view=topology cannot be combined with query")
+        return api_request("GET", _query_path("/api/v1/network/infrastructure",
+                                             [("view", view), ("node_id", node_id), ("port_name", port_name)]))
     if view in ("attachment", "agents"):
         if query is not None or port_name is not None:
             raise ValueError(f"view={view} cannot be combined with query or port_name")
         return api_request("GET", _query_path("/api/v1/network/infrastructure",
                                              [("view", view), ("node_id", node_id)]))
     if view is not None:
-        if view not in ("topology", "services") or any(value is not None for value in (node_id, query, port_name)):
-            raise ValueError("view must be topology or services and cannot be combined with node_id, query, or port_name")
+        if view != "services" or any(value is not None for value in (node_id, query, port_name)):
+            raise ValueError("view=services cannot be combined with node_id, query, or port_name")
         return api_request("GET", _query_path("/api/v1/network/infrastructure",
                                              [("view", view), ("service_offset", service_offset)]))
     if node_id is not None and query is not None:
         raise ValueError("pass either node_id or query")
     if query is not None and (not isinstance(query, str) or not query.strip() or len(query) > 160):
         raise ValueError("query must be a non-empty string of at most 160 characters")
-    if port_name is not None and (node_id is None or not isinstance(port_name, str)
-                                  or not port_name.strip() or len(port_name) > 64):
-        raise ValueError("port_name requires node_id and must be a non-empty string of at most 64 characters")
     path = "/api/v1/network/infrastructure"
     if port_name is not None:
         path += "?include_service_ports=true&include_port_pairs=true"

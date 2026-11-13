@@ -1851,10 +1851,34 @@ def _lacp_partner_interface_gaps(nodes: dict) -> list[dict]:
     ]
 
 
-def summarize_topology(graph: dict) -> dict:
+def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: str | None = None) -> dict:
     nodes = {node["id"]: node for node in graph["nodes"]}
     counts, inventory_pairs, alerts, pending, current_pairs = _topology_port_pairs(nodes, graph["links"])
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
+    if node_id is not None:
+        node = nodes.get(node_id)
+        keys = {port_label_key(port_name)} if port_name else set()
+        ports = []
+        for port in node["ports"] if node else []:
+            aliases = {port_label_key(label) for label in (port["name"], *port.get("aliases", []))}
+            if not port_name or keys & aliases:
+                ports.append(port)
+                keys.update(aliases)
+
+        def matches(pair):
+            return node is not None and any(
+                pair[side] == node_id and (not port_name or port_label_key(pair[field]) in keys)
+                for side, field in (("a", "portA"), ("b", "portB"))
+            )
+
+        current = [row for row in current_pairs if matches(row)]
+        gaps = [row for row in pending if matches(row)]
+        return {**metadata, "topologyAudit": {
+            "node": _attachment_node(node) if node else None, "portName": port_name, "ports": ports,
+            "currentPairTotal": len(current), "currentPairs": current[:64],
+            "inventoryPairs": [row for row in inventory_pairs if matches(row)][:64],
+            "pendingTotal": len(gaps), "pending": gaps[:64],
+        }}
     stp = [{"id": node["id"], "name": node["name"], **node["stpRootPath"]}
            for node in nodes.values() if "stpRootPath" in node]
     roots = [{"id": node["id"], "name": node["name"], **node["stpRoot"]}

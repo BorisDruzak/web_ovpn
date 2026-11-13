@@ -561,6 +561,7 @@ def test_mcp_infrastructure_returns_one_node_and_its_linked_peers(monkeypatch):
 
     def audit_api(method, path):
         assert method == "GET" and path in ("/api/v1/network/infrastructure?view=topology",
+                                            "/api/v1/network/infrastructure?view=topology&node_id=sw&port_name=ge15",
                                             "/api/v1/network/infrastructure?view=agents",
                                             "/api/v1/network/infrastructure?view=agents&node_id=vm%3A103",
                                             "/api/v1/network/infrastructure?view=services",
@@ -589,7 +590,10 @@ def test_mcp_infrastructure_returns_one_node_and_its_linked_peers(monkeypatch):
         with pytest.raises(ValueError):
             server.call_tool("openvpn_network_infrastructure", {"view": "attachment", "query": "Directum"})
         with pytest.raises(ValueError):
-            server.call_tool("openvpn_network_infrastructure", {"view": "topology", "node_id": "vm:103"})
+            server.call_tool("openvpn_network_infrastructure", {"view": "topology", "port_name": "ge15"})
+        assert server.call_tool("openvpn_network_infrastructure", {
+            "view": "topology", "node_id": "sw", "port_name": "ge15",
+        })["infrastructure"] == summary
     scoped = server.call_tool("openvpn_network_infrastructure", {"node_id": "vm:103"})["infrastructure"]
     assert scoped["node"] == graph["nodes"][0]
     assert scoped["neighbors"] == [graph["nodes"][1]]
