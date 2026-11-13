@@ -1791,13 +1791,29 @@ def _summarize_port_counters(nodes: dict) -> dict:
     return {"measuredPorts": measured, "affectedPorts": len(affected), "ports": affected[:64]}
 
 
-def _summarize_port_rx_silence(nodes: dict) -> dict:
+def _summarize_port_rx_silence(nodes: dict, pending: list[dict]) -> dict:
     ports = [
         {"deviceId": node["id"], "deviceName": node["name"], "port": port["name"], "rxSilence": port["rxSilence"],
          **({"configuredLabel": port["configuredLabel"]} if "configuredLabel" in port else {})}
         for node in nodes.values() if node["kind"] == NETWORK_KINDS[0]
         for port in node["ports"] if "rxSilence" in port
     ]
+    if ports:
+        peers_by_port = defaultdict(dict)
+        for pair in pending:
+            for side, remote in (("A", "B"), ("B", "A")):
+                port = pair[f"port{side}"]
+                if port:
+                    peer = {"id": pair[remote.lower()], "name": pair[f"name{remote}"], "port": pair[f"port{remote}"]}
+                    peers_by_port[pair[side.lower()], port_label_key(port)][peer["id"], peer["port"]] = peer
+        for row in ports:
+            node = nodes[row["deviceId"]]
+            port = next(port for port in node["ports"] if port["name"] == row["port"])
+            peers = {}
+            for name in (port["name"], *port.get("aliases", [])):
+                peers.update(peers_by_port.get((node["id"], port_label_key(name)), {}))
+            if peers:
+                row["pendingPeers"] = [peers[key] for key in sorted(peers)[:8]]
     ports.sort(key=lambda row: (-row["rxSilence"]["txBytes"], row["deviceId"], row["port"]))
     return {"total": len(ports), "ports": ports[:64]}
 
@@ -2343,7 +2359,7 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
             "stpRelatedPendingTotal": len(stp_related_gaps), "stpRelatedPending": stp_related_gaps[:64],
             "portAlertTotal": len(port_alerts), "portAlerts": port_alerts[:64],
             "portCounterAudit": _summarize_port_counters(scoped_nodes),
-            "portRxSilenceAudit": _summarize_port_rx_silence(scoped_nodes),
+            "portRxSilenceAudit": _summarize_port_rx_silence(scoped_nodes, pending),
             "vlanAudits": [row for row in vlan_audits if matches(row)][:64],
             "lacpHealth": aggregates[:64],
             "servicePorts": [row for row in graph.get("servicePorts", {}).get(node_id, [])
@@ -2375,7 +2391,7 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
                                         "inventoryOnlyPairTotal": len(inventory_only), "inventoryOnlyPairs": inventory_only[:64],
                                         "portAlertTotal": len(alerts), "portAlerts": alerts[:64],
                                         "portCounterAudit": graph.get("portCounterAudit") or _summarize_port_counters(nodes),
-                                        "portRxSilenceAudit": graph.get("portRxSilenceAudit") or _summarize_port_rx_silence(nodes),
+                                        "portRxSilenceAudit": graph.get("portRxSilenceAudit") or _summarize_port_rx_silence(nodes, pending),
                                         "stpRootPaths": stp, "stpRoots": roots, "vlanAudits": vlan_audits[:64],
                                         "lacpHealth": lacp[:64],
                                         "lacpPartnerInterfaceGapTotal": len(lacp_gaps),
@@ -4254,9 +4270,12 @@ def load_infrastructure_map(
         except EndpointPlatformServiceError:
             pass
     attachments = {}
+    topology_pairs = _topology_port_pairs(nodes, links) if (include_guest_attachments or include_port_pairs or any(
+        "rxSilence" in port for node in nodes.values() for port in node["ports"]
+    )) else None
     if include_guest_attachments:
         attachments = _map_attachments(nodes, links, now, endpoint_keys=endpoint_keys)
-        _, inventory_pairs, _, pending, current_pairs = _topology_port_pairs(nodes, links)
+        _, inventory_pairs, _, pending, current_pairs = topology_pairs
         lacp_gaps = _lacp_partner_interface_gaps(nodes)
         attachments.update(
             guestSwitchAttachments=_guest_switch_attachments(attachments["guestAttachments"]),
@@ -4308,14 +4327,14 @@ def load_infrastructure_map(
         if include_port_pairs:
             attachments["guestSwitchAttachments"] = _guest_switch_attachments(mapped["guestAttachments"])
     if include_port_pairs:
-        _, inventory_pairs, _, pending, current_pairs = _topology_port_pairs(nodes, links)
+        _, inventory_pairs, _, pending, current_pairs = topology_pairs
         attachments.update(currentPortPairs=current_pairs, inventoryPairs=inventory_pairs, pendingPortPairs=pending,
                            lacpPartnerInterfaceGaps=_lacp_partner_interface_gaps(nodes))
     return {
         **empty, "availability": "stale" if now - stamp > MAX_AGE else "ready",
         "snapshotAt": stamp.isoformat(), "nodes": list(nodes.values()), "links": links,
         "portCounterAudit": _summarize_port_counters(nodes),
-        "portRxSilenceAudit": _summarize_port_rx_silence(nodes),
+        "portRxSilenceAudit": _summarize_port_rx_silence(nodes, topology_pairs[3] if topology_pairs else []),
         "clusterId": cluster_id, "nodeOrder": node_ids("nodeOrder"),
         "overviewGuests": node_ids("overviewGuests"),
         "git": revision if re.fullmatch(r"[0-9a-f]{40}", revision) else "",

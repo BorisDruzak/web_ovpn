@@ -179,11 +179,20 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const {total = 0, ports = []} = data.portRxSilenceAudit ?? {};
     panel.hidden = !total;
     summary.textContent = `Порты с передачей и без приёма · ${total}`;
-    list.replaceChildren(...ports.map(({deviceId, deviceName, port, configuredLabel, rxSilence}) => {
+    list.replaceChildren(...ports.map(({deviceId, deviceName, port, configuredLabel, rxSilence, pendingPeers = []}) => {
       const row = make('li');
       const link = make('a', [deviceName, port, configuredLabel?.text].filter(Boolean).join(' · '));
       link.href = '?' + new URLSearchParams({node: deviceId, port});
       row.append(link, make('small', formatRxSilence(rxSilence)));
+      for (const peer of pendingPeers) {
+        const detail = make('small', 'Неподтверждённая пара · ');
+        const destination = make('a', [peer.name, peer.port].filter(Boolean).join(' · '));
+        const params = new URLSearchParams({node: peer.id});
+        if (peer.port) params.set('port', peer.port);
+        destination.href = '?' + params;
+        detail.append(destination);
+        row.append(detail);
+      }
       return row;
     }));
     more.hidden = ports.length >= total;

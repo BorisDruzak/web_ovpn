@@ -5501,10 +5501,14 @@ def test_switch_rx_silence_requires_continuous_64_bit_samples_on_the_current_por
     assert report["portStates"]["peer"]["telemetry"] == raw_port["telemetry"]
     assert report["portStates"]["peer"]["rxSilence"] == silence
     audit = graph()["portRxSilenceAudit"]
-    assert audit == {"total": 1, "ports": [{"deviceId": "sw", "deviceName": "SNR", "port": "xe1", "rxSilence": silence}]}
+    assert audit == {"total": 1, "ports": [{"deviceId": "sw", "deviceName": "SNR", "port": "xe1", "rxSilence": silence,
+                                          "pendingPeers": [{"id": "pbs", "name": "PBS", "port": ""}]}]}
     assert summarize_topology(graph())["topologyAudit"]["portRxSilenceAudit"] == audit
     assert summarize_topology(graph(), node_id="sw")["topologyAudit"]["portRxSilenceAudit"] == audit
+    assert summarize_topology(graph(), node_id="sw", port_name="XE1")["topologyAudit"]["portRxSilenceAudit"] == audit
     assert summarize_topology(graph(), node_id="pbs")["topologyAudit"]["portRxSilenceAudit"] == {"total": 0, "ports": []}
+    raw["links"][0]["portEvidence"][0]["a"] = "xe2"
+    assert "pendingPeers" not in graph()["portRxSilenceAudit"]["ports"][0]
     later = now + timedelta(seconds=1)
     raw_port["linkCheck"] = {"state": "down", "checkedAt": later.isoformat()}
     port = graph(later)["nodes"][0]["ports"][0]
