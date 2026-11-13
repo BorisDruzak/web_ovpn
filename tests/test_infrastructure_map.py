@@ -7067,7 +7067,7 @@ def test_reciprocal_mac_path_shows_fresh_stp_evidence_without_confirming_cable(t
         path.write_text(json.dumps({"schema": 1, "snapshotAt": stamp, "links": edges, "nodes": [switch,
                                     {"id": "tp", "name": "TP", "kind": "Коммутатор"},
                                     {"id": "root", "name": "Root", "kind": "Маршрутизатор"}]}), encoding="utf-8")
-        return load_infrastructure_map(path, at)
+        return load_infrastructure_map(path, at, include_guest_attachments=True)
 
     graph = read()
     direct, learned = graph["links"]
@@ -7077,6 +7077,8 @@ def test_reciprocal_mac_path_shows_fresh_stp_evidence_without_confirming_cable(t
     assert proof["stpPaths"] == [{**stp, "deviceId": "css"}]
     pending, = summarize_topology(graph)["topologyAudit"]["pending"]
     assert pending["observedPaths"][0]["stpPaths"] == proof["stpPaths"]
+    assert graph["pendingPortPairs"][0]["stpPaths"] == proof["stpPaths"]
+    assert read(now + timedelta(minutes=6))["pendingPortPairs"][0]["stpPaths"] == []
     assert "stpPaths" not in read(now + timedelta(minutes=6))["links"][1]["portEvidence"][0]
     observed["a"] = "Port14"
     assert "stpPaths" not in read()["links"][1]["portEvidence"][0]

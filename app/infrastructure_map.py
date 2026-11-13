@@ -3024,6 +3024,10 @@ def load_infrastructure_map(
                      if reading["checkedAt"]
                  },
                  "identifiedPeerSides": row["identifiedPeerSides"],
+                 "stpPaths": list({
+                     path["deviceId"]: path
+                     for reading in row["observedPaths"] for path in reading.get("stpPaths", [])
+                 }.values()),
                  "lldpPortIds": sorted({peer["portId"] for peers in row.get("lldpPeers", {}).values()
                                         for peer in peers if peer.get("portId")}),
                  "portObservations": {

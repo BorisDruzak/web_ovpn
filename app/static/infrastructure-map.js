@@ -164,7 +164,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     if (lacpPartnerInterfaceGapTotal) summary.append(' · Интерфейсы LACP · ' + lacpPartnerInterfaceGapTotal);
     const pending = pendingPortPairs.map(({a, b, nameA, nameB, portA, portB, observedSources = [], lldpPortIds = [],
       observedSourceTimes = {}, identifiedPeerSides = [], archivedPortSides = [], inventoryPortSides = [],
-      portObservations = {}}) => {
+      portObservations = {}, stpPaths = []}) => {
       const item = make('li');
       const provenance = key => archivedPortSides.includes(key) ? ' (по архиву)' :
         inventoryPortSides.includes(key) ? ' (по инвентарю)' : '';
@@ -180,6 +180,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const observers = identifiedPeerSides.map(side => side === 'a' ? nameA : nameB);
         item.append(make('small', 'Сосед опознан со стороны ' + observers.join(', ')));
       }
+      for (const path of stpPaths) item.append(make('small', stpPathLabel(path)));
       for (const port of Object.values(portObservations)) {
         const reading = [port.name, portLabels[port.state], formatPortSpeed(port.speedBps), formatTime(port.checkedAt)];
         if (port.rxSilence) reading.push(formatRxSilence(port.rxSilence));
@@ -198,6 +199,12 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const shown = pending.length + lacp.length;
     more.hidden = shown >= total;
     more.textContent = `Показано ${shown} из ${total}`;
+  }
+  function stpPathLabel({deviceId, localPort, bridgeDeviceId, designatedBridgeMac, designatedPortId,
+    designatedPortName, checkedAt}) {
+    const bridge = byId.get(bridgeDeviceId)?.name ?? designatedBridgeMac;
+    const remote = designatedPortName ? `${bridge} ${designatedPortName}` : bridge;
+    return `STP · ${byId.get(deviceId)?.name ?? deviceId} ${localPort} → ${remote} · ${designatedPortId} · ${formatTime(checkedAt)}`;
   }
   function renderSnapshotHeader() {
     source.replaceChildren();
@@ -1791,12 +1798,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
             li.append(make('small', 'MAC ' + mac + ' изучен на ' + byId.get(switchId).name + ' ' + switchPort));
           }
           appendInventorySources(li, evidence.inventorySources);
-          for (const {deviceId, localPort, bridgeDeviceId, designatedBridgeMac, designatedPortId,
-            designatedPortName, checkedAt} of evidence.stpPaths ?? []) {
-            const bridge = byId.get(bridgeDeviceId)?.name ?? designatedBridgeMac;
-            const remote = designatedPortName ? `${bridge} ${designatedPortName}` : bridge;
-            li.append(make('small', `STP · ${byId.get(deviceId).name} ${localPort} → ${remote} · ${designatedPortId} · ${formatTime(checkedAt)}`));
-          }
+          for (const path of evidence.stpPaths ?? []) li.append(make('small', stpPathLabel(path)));
           for (const side of ['a', 'b']) {
             const port = evidence.portStates?.[side];
             const key = side + ':' + port?.name;
