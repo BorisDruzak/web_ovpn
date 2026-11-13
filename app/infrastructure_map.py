@@ -1428,9 +1428,13 @@ def _map_statuses(nodes: dict, links: list[dict]) -> None:
         service = nodes[service_id]
         if len(hosts) == 1 and service["reachability"]["state"] == "unknown":
             host_id, = hosts
-            reachability = nodes[host_id]["reachability"]
-            if reachability["source"] == "Redfish" and reachability["state"] == "stopped":
-                service["reachability"] = dict(reachability)
+            host = nodes[host_id]
+            reachability = host["reachability"]
+            if (reachability["source"] == "Redfish" and reachability["state"] == "stopped"
+                    and (power := host.get("hardwarePower"))):
+                service["reachability"] = {
+                    **reachability, "stoppedBy": {"hostId": host_id, "controllerId": power["controllerId"]},
+                }
 
     local_issues = {}
     check_state = {"reachable": "ok", "unreachable": "critical"}

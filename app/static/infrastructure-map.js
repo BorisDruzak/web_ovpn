@@ -1504,6 +1504,18 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     for (const [name,value] of Object.entries(items)) {
       if (value) properties.append(make('dt',name), make('dd',value));
     }
+    if (observation.stoppedBy) {
+      for (const [label, id] of [['Выключенный сервер', observation.stoppedBy.hostId],
+        ['Контроллер Redfish', observation.stoppedBy.controllerId]]) {
+        const target = byId.get(id);
+        if (!target) continue;
+        const link = make('a', target.name);
+        link.href = '?' + new URLSearchParams({node: id});
+        const value = make('dd');
+        value.append(link);
+        properties.append(make('dt', label), value);
+      }
+    }
     if ((node.guest || node.kind === 'Гипервизор') && observation.state !== 'stopped') {
       const agent = make('dd', 'Проверяется…');
       agent.dataset.agentStatus = node.id;

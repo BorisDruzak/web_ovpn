@@ -34,9 +34,13 @@ def test_service_status_uses_fresh_redfish_power_of_its_only_host(placement, oth
     assert service["reachability"]["state"] == expected
     if expected == "stopped":
         assert service["mapStatus"] == "critical"
-        assert service["reachability"] == nodes["host"]["reachability"]
+        assert service["reachability"] == {
+            **nodes["host"]["reachability"], "stoppedBy": {"hostId": "host", "controllerId": "bmc"},
+        }
         result = summarize_guest_attachment({"nodes": list(nodes.values()), "links": links}, "web")
         assert result["attachment"]["reachability"] == service["reachability"]
+    else:
+        assert "stoppedBy" not in service["reachability"]
 
 
 @pytest.mark.parametrize(("power", "network", "expected"), [
