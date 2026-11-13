@@ -3,6 +3,8 @@ import json
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+import pytest
+
 from app import network_capture_store, network_probe_profiles
 
 
@@ -41,6 +43,48 @@ def test_throughput_profile_uses_kernel_route_and_pinned_stream(monkeypatch):
     assert result["status"] == "measured"
     assert result["result"]["kernel_route"]["result"]["dev"] == "tun0"
     assert result["result"]["connection"]["source_address"] == "192.0.2.4"
+
+
+@pytest.mark.parametrize("observation,expected", [
+    ({"status": "confirmed", "nat_interface": "wan1"}, "measured"),
+    ({"status": "confirmed", "nat_interface": "wan2"}, "wan_mismatch"),
+    ({"status": "unconfirmed", "reason": "no_unique_connection"}, "wan_unconfirmed"),
+    (None, "wan_unconfirmed"),
+])
+def test_iperf_wan_observation_uses_the_data_stream_port(monkeypatch, observation, expected):
+    from app import network_checks
+
+    profiles = network_probe_profiles.ProbeProfiles.model_validate({"throughput": {"wan": {
+        "label": "WAN", "peer": "192.0.2.12", "port": 5201, "duration_seconds": 5,
+        "bitrate_mbps": 5, "source_address": "192.0.2.4",
+        "router_source": "central", "expected_wan_interface": "wan1",
+    }}})
+    monkeypatch.setattr(network_checks, "load_probe_profiles", lambda: profiles)
+    monkeypatch.setattr(network_checks, "lookup_linux_route", lambda *a, **kw: {
+        "status": "route_found", "result": {"dev": "ens18"},
+    })
+    monkeypatch.setattr(network_checks, "run_throughput", lambda *a, **kw: {
+        "status": "ok", "result": {"sender_mbps": 5, "receiver_mbps": 4.9},
+        "connection": {"source_address": "192.0.2.4", "peer_address": "192.0.2.12",
+                       "peer_port": 5201, **({"source_port": 42013} if observation else {})},
+    })
+
+    def observe(args, **kwargs):
+        assert observation is not None
+        assert args == ["path", "iperf-egress", "--profile=wan", "--source-port=42013",
+                        f"--expected-config={profiles.throughput['wan'].config_digest()}"]
+        return {"egress": observation}
+
+    monkeypatch.setattr(network_checks, "run_netctl", observe)
+    result = network_checks.execute_network_check(
+        network_checks.IperfCheck(check="iperf3", profile="wan", direction="receive"),
+    )
+    assert result["status"] == expected
+    assert result["result"]["receiver_mbps"] == 4.9
+    assert result["result"]["wan_observation"] == {
+        "source": "central", "expected_interface": "wan1",
+        **(observation or {"status": "unconfirmed", "reason": "missing_stream_port"}),
+    }
 
 
 def test_profile_catalog_exposes_ids_and_limits(tmp_path, monkeypatch):

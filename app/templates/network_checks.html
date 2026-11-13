@@ -16,6 +16,7 @@
   {%- elif observation.status == 'unconfirmed' -%}
     {%- set reason = {
       'source_mismatch': 'исходный адрес отличается от профиля',
+      'missing_stream_port': 'iperf3 не вернул исходный порт потока данных',
       'no_unique_connection': 'соединение не найдено или неоднозначно',
       'no_nat_reply': 'нет подтверждения src-NAT или ответного трафика',
       'no_unique_nat_interface': 'интерфейс по адресу NAT не определён однозначно'
@@ -98,6 +99,9 @@
     {% endif %}
     {% if result.result.connection is defined %}
     <dt>Соединение iperf3</dt><dd>{{ result.result.connection.source_address }} ↔ {{ result.result.connection.peer_address }} · TCP {{ result.result.connection.peer_port }}</dd>
+    {% endif %}
+    {% if result.result.wan_observation is defined %}
+    <dt>Интерфейс по адресу NAT</dt><dd>{{ wan_result(result.result.wan_observation) }}</dd>
     {% endif %}
     <dt>Профиль замера</dt><dd>{{ result.result.duration_seconds }} с · цель {{ result.result.bitrate_mbps }} Мбит/с</dd>
   </dl>

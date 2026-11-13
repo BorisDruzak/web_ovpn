@@ -1,4 +1,4 @@
-"""Read-only RouterOS evidence for a single completed HTTPS flow."""
+"""Read-only RouterOS evidence for a single completed TCP flow."""
 
 import ipaddress
 import re
@@ -13,7 +13,7 @@ def _matches(row: dict, field: str, address: str, port: int) -> bool:
 
 
 def observe_https_egress(
-    driver: MikroTikApiDriver, local: str, source_port: int, peer: str
+    driver: MikroTikApiDriver, local: str, source_port: int, peer: str, peer_port: int = 443
 ) -> dict:
     command = [
         "/ip/firewall/connection/print",
@@ -30,7 +30,7 @@ def observe_https_egress(
                     row for row in api.call([*command, *query])
                     if row.get("protocol") == "tcp"
                     and _matches(row, "src", local, source_port)
-                    and _matches(row, "dst", peer, 443)
+                    and _matches(row, "dst", peer, peer_port)
                 ]
                 if matches:
                     break

@@ -324,6 +324,18 @@ def _iperf_check(check: IperfCheck) -> dict:
         result.update(reading.get("result") or {})
         if "connection" in reading:
             result["connection"] = reading["connection"]
+        if profile.router_source and status == "measured":
+            observation = {"status": "unconfirmed", "reason": "missing_stream_port"}
+            source_port = reading.get("connection", {}).get("source_port")
+            if source_port is not None:
+                try:
+                    observation = run_netctl([
+                        "path", "iperf-egress", f"--profile={check.profile}", f"--source-port={source_port}",
+                        f"--expected-config={profile.config_digest()}",
+                    ], timeout=6).get("egress") or {"status": "unavailable"}
+                except (NetctlError, OSError, UnicodeError):
+                    observation = {"status": "unavailable"}
+            status = _record_wan_observation(result, profile.router_source, profile.expected_wan_interface, observation)
         return {"status": status, "result": result}
     finally:
         _throughput_lock.release()
@@ -334,6 +346,18 @@ def _capture_check(check: CaptureCheck, owner: str | None) -> dict:
     if profile is None or owner is None:
         return {"status": "not_found", "result": {}}
     return create_capture(owner, profile)
+
+
+def _record_wan_observation(result: dict, source: str, expected: str | None, observation: dict) -> str:
+    result["wan_observation"] = {"source": source, **observation}
+    if expected:
+        result["wan_observation"]["expected_interface"] = expected
+        observed = observation.get("nat_interface")
+        if observation.get("status") != "confirmed" or not observed:
+            return "wan_unconfirmed"
+        if observed != expected:
+            return "wan_mismatch"
+    return "measured"
 
 
 def _https_speed_check(check: HttpsSpeedCheck) -> dict:
@@ -385,14 +409,7 @@ def _https_speed_check(check: HttpsSpeedCheck) -> dict:
                     ], timeout=6).get("egress") or {"status": "unavailable"}
                 except (NetctlError, OSError, UnicodeError):
                     observation = {"status": "unavailable"}
-            result["wan_observation"] = {"source": profile.router_source, **observation}
-            if expected := profile.expected_wan_interface:
-                result["wan_observation"]["expected_interface"] = expected
-                observed = observation.get("nat_interface")
-                if observation["status"] != "confirmed" or not observed:
-                    status = "wan_unconfirmed"
-                elif observed != expected:
-                    status = "wan_mismatch"
+            status = _record_wan_observation(result, profile.router_source, profile.expected_wan_interface, observation)
         return {"status": status, "result": result}
     finally:
         _throughput_lock.release()
@@ -459,11 +476,12 @@ def run_audited_network_check(db: Session, request: Request, actor: str, check: 
             "mbps", "transferred_bytes", "duration_seconds", "wan_observation", "gateway_check",
         ) if key in result["result"]}
         message = json.dumps({"target": result["target"], "result": details}, ensure_ascii=False)
-    if isinstance(check, IperfCheck) and result["status"] == "measured":
+    if isinstance(check, IperfCheck) and result["status"] in _HTTPS_MEASUREMENT_STATUSES:
         reading = result["result"]
         details = {
             key: reading[key] for key in (
                 "sender_mbps", "receiver_mbps", "retransmits", "bitrate_mbps", "preconnect_retries", "connection",
+                "wan_observation",
             ) if key in reading
         }
         route = reading.get("kernel_route", {}).get("result", {})
@@ -499,9 +517,7 @@ def list_network_check_runs(db: Session, actor: str, limit: int) -> list[dict]:
             "checked_at": row.ts.replace(tzinfo=row.ts.tzinfo or UTC).isoformat(),
             "request_id": row.request_id,
         }
-        if (check == "https_speed" and row.message.startswith("{")) or (
-            check == "iperf3" and row.result == "measured"
-        ):
+        if check in {"https_speed", "iperf3"} and row.message.startswith("{"):
             try:
                 details = json.loads(row.message)
                 run.update(target=details["target"], result=details["result"])

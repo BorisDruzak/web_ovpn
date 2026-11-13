@@ -43,6 +43,8 @@ class ThroughputProfile(ProbeProfile):
     bitrate_mbps: int = Field(ge=1, le=50)
     source_address: str | None = None
     bind_interface: str | None = None
+    router_source: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+    expected_wan_interface: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_][A-Za-z0-9_.:@-]{0,31}$")
 
     @model_validator(mode="after")
     def validate_binding(self):
@@ -52,7 +54,14 @@ class ThroughputProfile(ProbeProfile):
                 bitrate_mbps=self.bitrate_mbps, source_address=self.source_address,
                 bind_interface=self.bind_interface,
             )
+        if self.expected_wan_interface and not self.router_source:
+            raise ValueError("expected WAN interface requires RouterOS observation")
+        if self.router_source and (not self.source_address or ipaddress.ip_address(self.source_address).version != 4):
+            raise ValueError("RouterOS observation requires a bound IPv4 source")
         return self
+
+    def config_digest(self) -> str:
+        return hashlib.sha256(self.model_dump_json(exclude_none=True).encode()).hexdigest()
 
 
 class WanGatewayCheck(BaseModel):

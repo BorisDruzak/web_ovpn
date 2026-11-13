@@ -216,6 +216,7 @@ def test_reports_confirmed_socket_endpoints_for_source_bound_traffic(
             "source_address": source,
             "peer_address": peer,
             "peer_port": 5201,
+            "source_port": 49152,
         },
     }
 

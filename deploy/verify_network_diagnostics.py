@@ -343,7 +343,13 @@ def speed_report(
             speed_fields = ("mbps",)
         else:
             connection = result.get("connection") or {}
-            observed = (result.get("kernel_route") or {}).get("dev") if connection.get("peer_address") else None
+            observation = result.get("wan_observation")
+            observed = None
+            if connection.get("peer_address"):
+                if observation is None:
+                    observed = (result.get("kernel_route") or {}).get("dev")
+                elif observation.get("status") == "confirmed":
+                    observed = observation.get("nat_interface")
             speed_fields = ("sender_mbps", "receiver_mbps")
         speeds = {field: result.get(field) for field in speed_fields}
         checked_at = datetime.fromisoformat(row["checked_at"])

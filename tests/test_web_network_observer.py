@@ -2867,21 +2867,26 @@ def test_network_probe_catalog_run_and_download_permissions(tmp_path, monkeypatc
     assert client.get(service_path, headers=headers).status_code == 403
 
 
-def test_iperf_history_keeps_measurement_and_route(tmp_path, monkeypatch):
+@pytest.mark.parametrize("wan", [False, True])
+def test_iperf_history_keeps_measurement_and_route(tmp_path, monkeypatch, wan):
     client, headers = make_client(tmp_path, monkeypatch)
     from app import network_checks, network_probe_profiles
 
     profiles = network_probe_profiles.ProbeProfiles.model_validate({
         "throughput": {"lan": {"label": "LAN", "peer": "192.0.2.20", "port": 5201,
                                "duration_seconds": 4, "bitrate_mbps": 5,
-                               "source_address": "192.0.2.10", "bind_interface": "ens18"}},
+                               "source_address": "192.0.2.10", "bind_interface": "ens18",
+                               **({"router_source": "central", "expected_wan_interface": "wan1"} if wan else {})}},
     })
     monkeypatch.setattr(network_checks, "load_probe_profiles", lambda: profiles)
     monkeypatch.setattr(network_checks, "lookup_linux_route", lambda *args, **kwargs: {
         "status": "route_found", "result": {"dev": "ens18", "gateway": "192.0.2.1"},
     })
     measurement = {"sender_mbps": 5.0, "receiver_mbps": 4.8, "retransmits": 0}
-    connection = {"source_address": "192.0.2.10", "peer_address": "192.0.2.20", "peer_port": 5201}
+    connection = {"source_address": "192.0.2.10", "peer_address": "192.0.2.20",
+                  "peer_port": 5201, "source_port": 42013}
+    observed = {"status": "confirmed", "nat_interface": "wan2"}
+    monkeypatch.setattr(network_checks, "run_netctl", lambda *args, **kwargs: {"egress": observed})
     monkeypatch.setattr(network_checks, "run_throughput", lambda *args, **kwargs: {
         "status": "ok", "result": measurement, "connection": connection,
     })
@@ -2890,10 +2895,12 @@ def test_iperf_history_keeps_measurement_and_route(tmp_path, monkeypatch):
     measured = client.post(endpoint + "/checks", headers=headers, json=payload).json()["data"]
     history = client.get(endpoint + "/runs", headers=headers).json()["data"]["runs"]
     record = next(row for row in history if row["check"] == "iperf3")
+    assert measured["status"] == record["status"] == ("wan_mismatch" if wan else "measured")
     assert record["target"] == measured["target"]
     assert record["result"] == {
         **measurement, "bitrate_mbps": 5, "connection": connection,
         "kernel_route": {"dev": "ens18", "gateway": "192.0.2.1"},
+        **({"wan_observation": {"source": "central", "expected_interface": "wan1", **observed}} if wan else {}),
     }
 
     csrf = login(client)
@@ -2902,6 +2909,8 @@ def test_iperf_history_keeps_measurement_and_route(tmp_path, monkeypatch):
     assert "Отправитель / получатель 5.00 / 4.80 Мбит/с" in page.text
     assert "Повторные передачи TCP 0" in page.text
     assert "Выбор ядра ens18 · 192.0.2.1" in page.text
+    if wan:
+        assert "Ожидался wan1 · наблюдался wan2" in page.text
 
 
 def test_loop_evidence_shared_by_api_and_panel(tmp_path, monkeypatch):

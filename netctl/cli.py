@@ -1068,7 +1068,7 @@ def cmd_context_view(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
 def cmd_path(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     if args.path_command == "probe":
         return cmd_path_probe(args)
-    if args.path_command == "https-egress":
+    if args.path_command in {"https-egress", "iperf-egress"}:
         return cmd_https_egress(args)
     try:
         destination = str(ipaddress.ip_address(args.destination))
@@ -1126,11 +1126,13 @@ def cmd_https_egress(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     from .drivers.mikrotik_api import MikroTikApiDriver
     from .https_egress import observe_https_egress
 
-    profile = load_probe_profiles().https_speed.get(args.profile)
+    profiles = load_probe_profiles()
+    is_iperf = args.path_command == "iperf-egress"
+    profile = (profiles.throughput if is_iperf else profiles.https_speed).get(args.profile)
     if not profile or not profile.router_source or not profile.source_address:
-        return 1, err("HTTPS egress observation not configured")
+        return 1, err("TCP egress observation not configured")
     if not 1 <= args.source_port <= 65535 or profile.config_digest() != args.expected_config:
-        return 1, err("HTTPS egress observation parameters do not match")
+        return 1, err("TCP egress observation parameters do not match")
     conn = connect_read_only(args.db)
     try:
         source = get_source(conn, profile.router_source)
@@ -1140,7 +1142,8 @@ def cmd_https_egress(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         return 0, ok(egress={"status": "unavailable"})
     try:
         driver = MikroTikApiDriver(source, load_secrets())
-        result = observe_https_egress(driver, profile.source_address, args.source_port, profile.peer)
+        port = {"peer_port": profile.port} if is_iperf else {}
+        result = observe_https_egress(driver, profile.source_address, args.source_port, profile.peer, **port)
     except (OSError, ValueError):
         result = {"status": "unavailable"}
     return 0, ok(egress=result)
@@ -1961,10 +1964,11 @@ def build_parser() -> argparse.ArgumentParser:
     path_probe.add_argument("--profile", required=True)
     path_probe.add_argument("--probe", required=True)
     path_probe.add_argument("--expected-config", required=True)
-    path_egress = path_sub.add_parser("https-egress")
-    path_egress.add_argument("--profile", required=True)
-    path_egress.add_argument("--source-port", required=True, type=int)
-    path_egress.add_argument("--expected-config", required=True)
+    for command in ("https-egress", "iperf-egress"):
+        path_egress = path_sub.add_parser(command)
+        path_egress.add_argument("--profile", required=True)
+        path_egress.add_argument("--source-port", required=True, type=int)
+        path_egress.add_argument("--expected-config", required=True)
     path_explain = path_sub.add_parser("explain")
     path_explain.add_argument("--asset-key", required=True)
     path_explain.add_argument("--destination", required=True)

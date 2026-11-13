@@ -439,6 +439,10 @@ def test_interface_report_distinguishes_zero_from_missing_and_rejects_drift():
     ("https_speed", {"wan_observation": {"status": "confirmed", "nat_interface": "wan2"}}, "wan1", False),
     ("iperf3", {"kernel_route": {"dev": "ens18"}, "connection": {"peer_address": "192.0.2.1"}}, "ens18", True),
     ("iperf3", {"kernel_route": {"dev": "ens18"}}, "ens18", False),
+    ("iperf3", {"kernel_route": {"dev": "ens18"}, "connection": {"peer_address": "192.0.2.1"},
+                "wan_observation": {"status": "confirmed", "nat_interface": "wan1"}}, "wan1", True),
+    ("iperf3", {"kernel_route": {"dev": "ens18"}, "connection": {"peer_address": "192.0.2.1"},
+                "wan_observation": {"status": "unconfirmed"}}, "ens18", False),
 ])
 def test_speed_report_requires_measured_directions_and_path(check, path, expected, confirmed):
     now = datetime(2026, 11, 13, 2, 15, tzinfo=UTC)

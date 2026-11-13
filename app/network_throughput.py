@@ -92,7 +92,13 @@ def _confirmed_connection(
         or remote_port != port
     ):
         raise ValueError("iperf3 data stream does not match the configured endpoints")
-    return {"source_address": source_address, "peer_address": peer, "peer_port": port}
+    connection = {"source_address": source_address, "peer_address": peer, "peer_port": port}
+    if "local_port" in stream:
+        local_port = stream["local_port"]
+        if type(local_port) is not int or not 1 <= local_port <= 65535:
+            raise ValueError("Invalid iperf3 data stream source port")
+        connection["source_port"] = local_port
+    return connection
 
 
 def _connection_refused_before_transfer(completed: subprocess.CompletedProcess) -> bool:
