@@ -95,23 +95,40 @@ def _read_openvpn_sessions() -> list[dict] | None:
     return sessions
 
 
-def _openvpn_session(probe: RouteProbe, sessions: list[dict] | None) -> str:
+def _openvpn_session(probe: RouteProbe, sessions: list[dict] | None) -> tuple[str, dict | None]:
     if sessions is None:
-        return "unavailable"
+        return "unavailable", None
     tunnel_address = probe.source_address if probe.agent_origin else probe.target
     matches = [row for row in sessions if row["virtual_address"] == tunnel_address]
     if len(matches) == 1 and matches[0]["common_name"] == probe.openvpn_client:
-        return "connected"
+        return "connected", matches[0]
     if matches or any(row["common_name"] == probe.openvpn_client for row in sessions):
-        return "address_mismatch"
-    return "not_connected"
+        return "address_mismatch", None
+    return "not_connected", None
+
+
+def _openvpn_peer_scope(endpoint: object) -> str:
+    if not isinstance(endpoint, str):
+        return "unknown"
+    host, separator, port = endpoint.rpartition(":")
+    if not separator or not port.isascii() or not port.isdecimal() or len(port) > 5 or not 1 <= int(port) <= 65535:
+        return "unknown"
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    try:
+        peer = ipaddress.ip_address(host)
+    except ValueError:
+        return "unknown"
+    if peer.is_unspecified or peer.is_multicast:
+        return "unknown"
+    return "public" if peer.is_global else "non_public"
 
 
 def _run_probe(
     profile_id: str, probe: RouteProbe, sessions: list[dict] | None, pushed: dict[str, dict],
 ) -> dict:
     config_digest = probe.config_digest()
-    session = _openvpn_session(probe, sessions) if probe.openvpn_client else None
+    session, live_client = _openvpn_session(probe, sessions) if probe.openvpn_client else (None, None)
     try:
         if session is not None and session != "connected":
             measurement = {"status": "unavailable" if session == "unavailable" else "not_connected"}
@@ -135,6 +152,8 @@ def _run_probe(
     evidence = measurement.get("evidence", {})
     if session is not None:
         evidence = {**evidence, "openvpn_session": session}
+    if live_client is not None:
+        evidence["openvpn_peer_scope"] = _openvpn_peer_scope(live_client.get("real_address"))
     observed_path = measurement.get("observed_path")
     if not observed_path:
         path_status = "unconfirmed"

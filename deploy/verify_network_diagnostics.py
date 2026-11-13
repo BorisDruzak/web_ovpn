@@ -134,6 +134,8 @@ def route_report(
         session = evidence.get("openvpn_session")
         if session is not None:
             summary["openvpn_session"] = session
+        if evidence.get("openvpn_peer_scope") in ("public", "non_public", "unknown"):
+            summary["openvpn_peer_scope"] = evidence["openvpn_peer_scope"]
         route = probe.get("kernel_route") or {}
         if probe["id"] in expected_http and route:
             summary["kernel_route_status"] = route.get("status", "not_run")

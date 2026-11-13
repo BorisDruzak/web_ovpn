@@ -135,10 +135,14 @@ def test_openvpn_probe_requires_the_expected_live_session(monkeypatch, connectio
     assert result["result"]["probes"][0]["evidence"]["openvpn_session"] == session
 
 
-@pytest.mark.parametrize("address, expected", [
-    ("192.0.2.20", "reachable"), ("192.0.2.21", "not_connected"),
+@pytest.mark.parametrize("address, real_address, expected, peer_scope", [
+    ("192.0.2.20", "192.168.1.2:12345", "reachable", "non_public"),
+    ("192.0.2.20", "8.8.8.8:12345", "reachable", "public"),
+    ("192.0.2.20", "[2001:4860:4860::8888]:12345", "reachable", "public"),
+    ("192.0.2.20", "invalid", "reachable", "unknown"),
+    ("192.0.2.21", "192.168.1.2:12345", "not_connected", None),
 ])
-def test_openvpn_client_origin_checks_session_source_before_remote_dns(monkeypatch, address, expected):
+def test_openvpn_client_origin_checks_session_source_before_remote_dns(monkeypatch, address, real_address, expected, peer_scope):
     from app import network_route_matrix, network_route_remote
 
     profile = network_probe_profiles.RouteProfile.model_validate({"label": "VPN client", "probes": [{
@@ -147,7 +151,7 @@ def test_openvpn_client_origin_checks_session_source_before_remote_dns(monkeypat
         "source_address": "192.0.2.20", "openvpn_client": "client", "expected_kernel_interface": "tun0",
     }]})
     monkeypatch.setattr(network_route_matrix, "_read_openvpn_sessions", lambda: [
-        {"common_name": "client", "virtual_address": address},
+        {"common_name": "client", "virtual_address": address, "real_address": real_address},
     ])
     calls = []
 
@@ -160,6 +164,8 @@ def test_openvpn_client_origin_checks_session_source_before_remote_dns(monkeypat
     row, = network_route_matrix.run_route_matrix("tunnel", profile)["result"]["probes"]
     assert row["status"] == expected
     assert row["origin"] == "client-host" and row["openvpn_client"] == "client"
+    assert row["evidence"].get("openvpn_peer_scope") == peer_scope
+    assert "real_address" not in repr(row) and real_address not in repr(row)
     assert calls == ([("client-host", "tunnel", "dns")] if expected == "reachable" else [])
 
 

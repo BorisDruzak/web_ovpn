@@ -20,6 +20,9 @@
             'address_mismatch': 'имя или адрес сессии не совпадает',
             'unavailable': 'состояние сессии недоступно'
           }.get(row.evidence.openvpn_session) }}
+          {% if row.evidence.openvpn_peer_scope is defined %}
+          <br>{{ {'public': 'Публичный адрес клиента', 'non_public': 'Непубличный адрес клиента'}.get(row.evidence.openvpn_peer_scope, 'Тип адреса клиента неизвестен') }}
+          {% endif %}
           {% endif %}
           {% if row.evidence.packet_loss_pct is defined %}<br>Потери {{ row.evidence.packet_loss_pct }}%{% endif %}
           {% if row.evidence.rtt_ms is defined and row.evidence.rtt_ms.avg is defined %}<br>RTT {{ row.evidence.rtt_ms.avg }} мс{% endif %}
