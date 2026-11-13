@@ -1513,7 +1513,7 @@ def test_malformed_service_probe_config_cannot_leave_observer_green():
     from app.infrastructure_map import _map_statuses, _public_node
     from app.infrastructure_service_probes import apply_service_probes
 
-    for invalid in ([], {}, [None], [{}] * 5, [{"type": "typo"}]):
+    for invalid in ([], {}, [None], [{"type": "dns"}] * 9, [{"type": "typo"}]):
         node = {"id": "service", "kind": "Сервис", "reachability": {
             "state": "reachable", "source": "Server Observer", "method": "HTTPS",
             "checkedAt": datetime.now(timezone.utc).isoformat(),
@@ -1523,6 +1523,34 @@ def test_malformed_service_probe_config_cannot_leave_observer_green():
         _map_statuses({"service": public}, [])
         assert public["mapStatus"] == "unknown"
         assert public["serviceChecks"][0]["reason"] == "probe_configuration"
+
+
+def test_service_probe_list_keeps_all_dns_components(monkeypatch):
+    from app import infrastructure_service_probes as probes
+    from app.infrastructure_map import _map_statuses, _public_node
+
+    node = {"id": "dns", "kind": "Сервис"}
+    specs = [
+        {"type": "dns", "ip": "192.0.2.53", "port": 53, "record": "A", "name": name,
+         "transport": transport, "component": name != "primary.example."}
+        for name in ("primary.example.", "secondary.example.", "replica.example.")
+        for transport in ("udp", "tcp")
+    ]
+    calls = []
+
+    def read(spec):
+        calls.append((spec["name"], spec["transport"]))
+        state = "unreachable" if spec is specs[-1] else "reachable"
+        return {"state": state}
+
+    monkeypatch.setattr(probes, "_dns", read)
+    probes.apply_service_probes([node], {"dns": specs})
+    assert calls == [(spec["name"], spec["transport"]) for spec in specs]
+    public = _public_node(node, datetime.now(timezone.utc))
+    _map_statuses({"dns": public}, [])
+    assert len(public["serviceChecks"]) == 6
+    assert all(check["required"] for check in public["serviceChecks"])
+    assert public["mapStatus"] == "warn"
 
 
 @pytest.mark.parametrize("correct_reply", [False, True])

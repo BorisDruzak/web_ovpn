@@ -37,6 +37,7 @@ HTTP_BODY_LIMIT = 32 * 1024
 SIP_OPTIONS_WAIT = (0.5, 1.0, 1.5)
 IPMI_PORT = 623
 RMCP_ASF_HEADER = bytes.fromhex("0600ff06000011be")
+MAX_CONFIGURED_SERVICE_PROBES = 8
 PROBE_METHODS = {
     "http": "HTTP", "https": "HTTPS", "dns": "DNS", "ldap": "LDAP", "ldaps": "LDAPS RootDSE", "smb": "SMB2",
     "tcp_connect": "TCP", "ntp": "NTP (UDP)", "winrm": "WinRM HTTP", "rdp_negotiation": "RDP Negotiation",
@@ -1812,7 +1813,7 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
     def check(target):
         node, specs = target
         service = node["kind"] == "Сервис"
-        if (not isinstance(specs, list) or not 1 <= len(specs) <= 4
+        if (not isinstance(specs, list) or not 1 <= len(specs) <= MAX_CONFIGURED_SERVICE_PROBES
                 or any(not isinstance(spec, dict) or not isinstance(spec.get("type"), str)
                        or spec["type"] not in PROBE_METHODS for spec in specs)):
             node.setdefault("serviceChecks", []).append({
