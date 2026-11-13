@@ -954,6 +954,9 @@ def _public_service_check(check: dict, now: datetime) -> dict:
                       "tls_certificate_verification_failed", "tls_connection_refused",
                       "timeout", "transport_error"}:
             result["reason"] = reason
+        if (check.get("required") is True and result["state"] == "reachable" and not result["stale"]
+                and expires is not None and timedelta(0) <= expires - now <= timedelta(days=30)):
+            result["reason"] = "tls_certificate_expiring"
     if result["method"] == "LDAPS RootDSE" and reason in {
         "probe_configuration", "ldaps_response_unconfirmed", "ldaps_naming_context_mismatch",
         "ldaps_tls_certificate", "ldaps_connection_refused", "ldaps_transport_unconfirmed",
@@ -1447,6 +1450,12 @@ def _attach_backup_scope(nodes: dict) -> None:
     service["backupScope"] = {"storage": storage, **scope(guests), "running": scope(running), "runningGaps": gaps[:64]}
 
 
+def _service_check_status(check: dict) -> str:
+    if check.get("reason") == "tls_certificate_expiring":
+        return "warn"
+    return {"reachable": "ok", "unreachable": "critical"}.get(check["state"], "unknown")
+
+
 def _map_statuses(nodes: dict, links: list[dict]) -> None:
     services = {key: set() for key in nodes}
     consumers = {key: set() for key in nodes}
@@ -1478,8 +1487,7 @@ def _map_statuses(nodes: dict, links: list[dict]) -> None:
     check_state = {"reachable": "ok", "unreachable": "critical"}
     for key, node in nodes.items():
         checks = [check["status"] for check in node["checks"] if check.get("required")]
-        checks.extend(check_state.get(check["state"], "unknown")
-                      for check in node["serviceChecks"] if check.get("required"))
+        checks.extend(_service_check_status(check) for check in node["serviceChecks"] if check.get("required"))
         if any(disk["smartState"] == "critical" for disk in node.get("hardwareDisks", {}).get("disks", [])):
             checks.append("critical")
         if any(node.get("hardwarePower", {}).get(key) in ("Warning", "Critical") for key in ("health", "healthRollup")):
@@ -3482,7 +3490,6 @@ def summarize_services(graph: dict, *, host_id: str | None = None, offset: int =
             hosts.setdefault(link["b"], set()).add(link["a"])
 
     priority = {"critical": 0, "warn": 1, "unknown": 2, "ok": 3}
-    check_status = {"reachable": "ok", "unreachable": "critical"}
     counts = dict.fromkeys(priority, 0)
     services = []
     for node in nodes.values():
@@ -3500,7 +3507,7 @@ def summarize_services(graph: dict, *, host_id: str | None = None, offset: int =
             for check in node["checks"] if check.get("required") or check["status"] in ("critical", "warn")
         ]
         checks.extend(
-            {"check": check["method"], "status": check_status.get(check["state"], "unknown"),
+            {"check": check["method"], "status": _service_check_status(check),
              "required": check.get("required") is True,
              **{key: check[key] for key in ("source", "checkedAt", "stale", "reason", "path", "port", "target",
                                             "pppoe", "rtspStatus", "ftpReply", "tlsExpiresAt", "tlsVersion",

@@ -7094,6 +7094,31 @@ def test_pinned_tls_certificate_distinguishes_expiry_from_changed_identity(monke
     assert "tlsExpiresAt" not in changed
 
 
+@pytest.mark.parametrize(("days", "required", "age_minutes", "expected"), [
+    (30, True, 0, "warn"), (31, True, 0, "ok"),
+    (1, False, 0, "ok"), (1, True, 10, "unknown"),
+])
+def test_service_warns_before_required_tls_certificate_expires(days, required, age_minutes, expected):
+    from app.infrastructure_map import _map_statuses, _public_node, summarize_services
+
+    now = datetime.now(timezone.utc)
+    check = {"method": "Сертификат TLS", "source": "UI_VPN", "state": "reachable", "required": required,
+             "checkedAt": (now - timedelta(minutes=age_minutes)).isoformat(),
+             "tlsExpiresAt": (now + timedelta(days=days)).isoformat(), "port": 443}
+    raw = {"id": "https", "name": "HTTPS", "kind": "Сервис", "serviceChecks": [check],
+           "reachability": {"method": "HTTPS", "source": "Network Observer", "state": "reachable",
+                            "checkedAt": now.isoformat()}}
+    node = _public_node(raw, now)
+    _map_statuses({node["id"]: node}, [])
+    service, = summarize_services({"nodes": [node], "links": []})["serviceAudit"]["services"]
+    assert service["status"] == node["mapStatus"] == expected
+    assert node["reachability"]["state"] == "reachable"
+    if expected == "warn":
+        assert node["serviceChecks"][0]["state"] == "reachable"
+        assert service["issues"][0]["reason"] == "tls_certificate_expiring"
+        assert service["issues"][0]["tlsExpiresAt"] == check["tlsExpiresAt"]
+
+
 def test_tls_certificate_verifies_name_and_chain_for_configured_address(monkeypatch, tmp_path):
     from unittest.mock import MagicMock
 

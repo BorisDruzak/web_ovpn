@@ -1126,6 +1126,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     ftp_invalid_reply: 'Неполный или некорректный ответ FTP',
     tls_certificate_pin: 'Отпечаток сертификата изменился',
     tls_certificate_expired: 'Срок действия сертификата истёк',
+    tls_certificate_expiring: 'Срок действия сертификата истекает в ближайшие 30 дней',
     tls_certificate_not_yet_valid: 'Сертификат ещё не вступил в силу',
     tls_certificate_unconfirmed: 'Сертификат TLS не подтверждён',
     tls_certificate_verification_failed: 'Сертификат TLS не прошёл проверку имени или цепочки доверия',

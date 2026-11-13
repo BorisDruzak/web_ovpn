@@ -432,6 +432,8 @@
 
 У `pve1-management`, `pve2-management` и `pve3-management` запрос списка областей входа проверяется отдельно на каждом узле по HTTPS/8006 с теми же `tls_server_name` и `tls_ca_file`, что у веб-панели. Для `pve2-redfish`, `yadro-vegman-redfish`, `pbs-ipmi-web`, `pve3-ipmi-web` и `ucm6302-web` добавьте `type: tls_certificate` с `component: true` и уже проверенным отпечатком веб-службы. Истёкший сертификат даёт сбой обязательной проверки, и отвечающая веб-служба отображается жёлтой. [Документация Proxmox по областям входа](https://github.com/proxmox/pve-docs/blob/master/pveum.adoc)
 
+Свежая обязательная проверка сертификата TLS предупреждает за 30 дней до окончания срока. Сервис остаётся доступным, а его карточка становится жёлтой и показывает дату окончания. MCP `view=services` возвращает причину `tls_certificate_expiring` и время `tlsExpiresAt`.
+
 В `ucm6302-web` добавьте обязательный компонент `type: https` с `component: true`, `path: /SIPml-api.js`, `content_type: text/javascript` и `body_contains: var __b_release_mode`. Используйте тот же IP, порт 8089 и отпечаток TLS, что у проверки страницы `/`. Компонент проверяет выдачу скрипта, на который ссылается веб-панель. Ответ SIP OPTIONS по UDP/5060 проверяет отдельная карточка `ucm6302-pbx-sip`.
 
 В `ucm6302-pbx-sip` параметр `transport: tcp` у `type: sip_options` включает проверку ответа SIP по TCP/5060. Используйте тот же `route_via`, что у UDP. TCP остаётся дополнительной проверкой, пока UDP задан как обязательный транспорт. Оба результата отображаются отдельно. [RFC 3261, формат сообщений SIP](https://datatracker.ietf.org/doc/html/rfc3261#section-18.3)
