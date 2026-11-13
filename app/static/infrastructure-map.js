@@ -1507,6 +1507,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         http_bad_response: 'Ответ HTTP неполный или некорректный',
         http_connection_refused: 'Отклонено TCP-соединение', http_connection_reset: 'Сброшено TCP-соединение',
         tcp_connection_refused: 'Отклонено TCP-соединение',
+        ntp_unsynchronized: 'Сервер NTP не предоставил синхронизированное время',
         rtsp_connection_refused: 'Отклонено TCP-соединение', rtsp_auth_required: 'Требуется авторизация',
         http_configuration: 'Ошибка настройки проверки',
         probe_configuration: 'Некорректный список проверок',

@@ -39,7 +39,7 @@ IPMI_PORT = 623
 RMCP_ASF_HEADER = bytes.fromhex("0600ff06000011be")
 PROBE_METHODS = {
     "http": "HTTP", "https": "HTTPS", "dns": "DNS", "ldap": "LDAP", "ldaps": "LDAPS RootDSE", "smb": "SMB2",
-    "tcp_connect": "TCP",
+    "tcp_connect": "TCP", "ntp": "NTP (UDP)",
     "smb_mount": "SMB Mount", "zabbix_api": "Zabbix API", "postgresql": "PostgreSQL SSLRequest",
     "openvpn_management": "OpenVPN Management", "openvpn_tunnel": "OpenVPN TUN",
     "sip_options": "SIP OPTIONS (UDP)", "icmp": "ICMP", "vlan_transit": "ICMP · VLAN",
@@ -1507,6 +1507,40 @@ def _dependency_protocol_probe(spec: dict) -> dict:
         return {"state": "unknown"}
 
 
+def _ntp(spec: dict) -> dict:
+    try:
+        address = ipaddress.ip_address(spec.get("ip"))
+    except ValueError:
+        return {"state": "unknown", "reason": "probe_configuration"}
+    if type(spec.get("port")) is not int or spec["port"] != 123:
+        return {"state": "unknown", "reason": "probe_configuration"}
+
+    request = bytearray(48)
+    request[0] = 0x23  # NTPv4 client mode
+    seconds, fraction = divmod(time() + 2_208_988_800, 1)
+    struct.pack_into("!II", request, 40, int(seconds) & 0xFFFFFFFF, int(fraction * 2**32))
+    family = socket.AF_INET if address.version == 4 else socket.AF_INET6
+    try:
+        with socket.socket(family, socket.SOCK_DGRAM) as connection:
+            connection.settimeout(TIMEOUT)
+            connection.connect((str(address), 123))
+            connection.send(request)
+            response = connection.recv(512)
+    except TimeoutError:
+        return {"state": "unknown", "reason": "timeout"}
+    except OSError:
+        return {"state": "unknown", "reason": "transport_error"}
+
+    if (len(response) < 48 or response[0] & 7 != 4 or (response[0] >> 3) & 7 not in (3, 4)
+            or response[24:32] != request[40:48]):
+        return {"state": "unknown", "reason": "unexpected_response"}
+    if response[0] >> 6 == 3 or not 1 <= response[1] <= 15:
+        return {"state": "unreachable", "reason": "ntp_unsynchronized"}
+    if not any(response[32:40]) or not any(response[40:48]):
+        return {"state": "unknown", "reason": "unexpected_response"}
+    return {"state": "reachable"}
+
+
 def _tcp_connect(spec: dict) -> dict:
     try:
         address = str(ipaddress.ip_address(spec["ip"]))
@@ -1630,6 +1664,8 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 details = _ssh_identification(spec)
             elif protocol == "tcp_connect":
                 details = _tcp_connect(spec)
+            elif protocol == "ntp":
+                details = _ntp(spec)
             elif protocol == "dns":
                 details = _dns(spec)
             elif protocol == "icmp":
@@ -1662,7 +1698,7 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 "path": spec.get("path") if protocol in {"http", "https", "zabbix_api", "rtsp_options"} else None,
                 "target": spec.get("ip") if not skip_reason and (
                     protocol in {"icmp", "vlan_transit", "sip_options", "ipmi_lan", "rtsp_options", "ssh_identification", "ftp_features",
-                                 "zabbix_api", "postgresql", "dns", "ldap", "ldaps", "smb", "tls_certificate", "tcp_connect"}
+                                 "zabbix_api", "postgresql", "dns", "ldap", "ldaps", "smb", "tls_certificate", "tcp_connect", "ntp"}
                     or protocol in DEPENDENCY_PROTOCOLS or "probeTargetIP" in node
                     or (protocol in {"http", "https"} and spec.get("report_target") is True
                         and details.get("reason") != "http_configuration")

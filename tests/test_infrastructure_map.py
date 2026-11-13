@@ -37,6 +37,57 @@ def test_tcp_connect_probe_reports_transport_without_sending_data(monkeypatch):
     assert probes._tcp_connect(spec) == {"state": "unreachable", "reason": "tcp_connection_refused"}
 
 
+@pytest.mark.parametrize(("reply", "state", "reason"), [
+    ("synchronized", "reachable", None),
+    ("wrong_origin", "unknown", "unexpected_response"),
+    ("short", "unknown", "unexpected_response"),
+    ("wrong_mode", "unknown", "unexpected_response"),
+    ("zero_time", "unknown", "unexpected_response"),
+    ("unsynchronized", "unreachable", "ntp_unsynchronized"),
+    ("stratum_zero", "unreachable", "ntp_unsynchronized"),
+    ("timeout", "unknown", "timeout"),
+])
+def test_ntp_probe_requires_a_synchronized_reply_to_its_request(monkeypatch, reply, state, reason):
+    from contextlib import nullcontext
+    from app import infrastructure_service_probes as probes
+
+    class Datagram:
+        def settimeout(self, value):
+            assert value == probes.TIMEOUT
+
+        def connect(self, address):
+            assert address == ("192.0.2.91", 123)
+
+        def send(self, request):
+            assert len(request) == 48 and request[0] == 0x23
+            assert any(request[40:48])
+            self.request = request
+
+        def recv(self, size):
+            if reply == "timeout":
+                raise TimeoutError
+            packet = bytearray(48)
+            packet[0] = {"unsynchronized": 0xE4, "wrong_mode": 0x23}.get(reply, 0x24)
+            packet[1] = 0 if reply == "stratum_zero" else 2
+            if reply != "wrong_origin":
+                packet[24:32] = self.request[40:48]
+            if reply != "zero_time":
+                packet[32:48] = self.request[40:48] * 2
+            return bytes(packet[:10] if reply == "short" else packet)
+
+    monkeypatch.setattr(probes.socket, "socket", lambda *args: nullcontext(Datagram()))
+    spec = {"type": "ntp", "ip": "192.0.2.91", "port": 123}
+    node = {"id": "time-service", "kind": "Сервис", "probeTargetIP": spec["ip"]}
+    probes.apply_service_probes([node], {node["id"]: [spec]})
+    check, = node["serviceChecks"]
+    assert (check["method"], check["state"], check["target"], check["port"], check.get("reason")) == (
+        "NTP (UDP)", state, spec["ip"], 123, reason)
+    from app.infrastructure_map import _public_service_check
+
+    public = _public_service_check(check, datetime.now(timezone.utc))
+    assert (public["state"], public["port"], public.get("reason")) == (state, 123, reason)
+
+
 def test_service_probe_transition_tracks_confirmed_recovery(tmp_path):
     from app.infrastructure_collect import _add_service_probe_transitions
     from app.infrastructure_map import load_infrastructure_map, summarize_services

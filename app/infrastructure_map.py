@@ -640,6 +640,10 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         result["reason"] = reason
     if reason == "tcp_connection_refused" and result["method"] == "TCP" and result["state"] == "unreachable":
         result["reason"] = reason
+    if result["method"] == "NTP (UDP)" and reason in (
+        "ntp_unsynchronized", "timeout", "unexpected_response", "transport_error", "probe_configuration",
+    ):
+        result["reason"] = reason
     if check.get("supplemental") is True:
         result["supplemental"] = True
     elif check.get("required") is True:
