@@ -61,6 +61,18 @@ def test_map_uses_fresh_windows_dns_receipts_for_both_transports(tmp_path, monke
     assert any(link["kind"] == "Источник проверки" for link in public["links"])
     expired = next(node for node in load_infrastructure_map(path, NOW + timedelta(minutes=4))["nodes"] if node["id"] == "dns")
     assert expired["mapStatus"] == "unknown"
+    for envelope in data.values():
+        envelope["result"]["kernel_route"]["result"].pop("gateway")
+    now = NOW + timedelta(seconds=1)
+    adapter = {"name": "Ethernet", "mac": "02:00:00:00:00:10", "index": 10,
+               "address": "192.0.2.20", "status": "Up", "neighbors": {"192.0.2.1": "02:00:00:00:00:01"}}
+    spool.store_receipt(ORIGIN, PROFILE, profile, json.dumps({"measured_at": now.isoformat(), "probes": data,
+                                                             "adapter": adapter}).encode(), now=now)
+    monkeypatch.setattr(spool, "utcnow", lambda: now)
+    bindings = {"endpoint_dns": {"dns": {"origin": ORIGIN, "profile": PROFILE, "probes": ["udp", "tcp"],
+                                        "neighbor_address": "192.0.2.1"}}}
+    assert ports.read_windows_dns_neighbors(bindings, now) == {"192.0.2.1": ("02:00:00:00:00:01", now.isoformat())}
+    assert not ports.read_windows_dns_neighbors(bindings, now + timedelta(minutes=4))
 
 
 @pytest.fixture
@@ -174,6 +186,13 @@ def test_adapter_receipt_requires_matching_route_and_fresh_measurement(tmp_path,
     spool.store_receipt(ORIGIN, PROFILE, push_profile, json.dumps(data).encode(), now=NOW)
     assert spool.read_adapter_observation(ORIGIN, PROFILE, push_profile, NOW) == {**adapter, "checkedAt": NOW.isoformat()}
     assert spool.read_adapter_observation(ORIGIN, PROFILE, push_profile, NOW + timedelta(minutes=4)) == {}
+    adapter["neighbors"] = {"192.0.2.1": "02:00:00:00:00:01", "192.0.2.99": "02:00:00:00:00:02"}
+    data["measured_at"] = (NOW + timedelta(milliseconds=500)).isoformat()
+    now = NOW + timedelta(milliseconds=500)
+    spool.store_receipt(ORIGIN, PROFILE, push_profile, json.dumps(data).encode(), now=now)
+    assert spool.read_adapter_observation(ORIGIN, PROFILE, push_profile, now)["neighbors"] == {
+        "192.0.2.1": "02:00:00:00:00:01",
+    }
     data["measured_at"] = (NOW + timedelta(seconds=1)).isoformat()
     adapter["index"] = 11
     spool.store_receipt(ORIGIN, PROFILE, push_profile, json.dumps(data).encode(), now=NOW + timedelta(seconds=1))

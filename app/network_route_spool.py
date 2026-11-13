@@ -79,6 +79,22 @@ def _measurement(envelope: dict, probe: RouteProbe) -> dict:
     return sanitized
 
 
+def _adapter_neighbors(results: dict, address: str, index: int) -> set[str]:
+    targets = set()
+    for envelope in results.values():
+        result = envelope["result"]
+        fields = result.get("kernel_route", {}).get("result", {})
+        if (result["status"] != "reachable" or fields.get("from", fields.get("prefsrc")) != address
+                or fields.get("dev") != f"ifindex-{index}"):
+            continue
+        target = fields.get("gateway", fields.get("dst"))
+        try:
+            targets.add(str(ipaddress.IPv4Address(target)))
+        except ValueError:
+            continue
+    return targets
+
+
 def _adapter_observation(value: object, results: dict) -> dict:
     if not isinstance(value, dict):
         return {}
@@ -96,7 +112,13 @@ def _adapter_observation(value: object, results: dict) -> dict:
         result = envelope["result"]
         fields = result.get("kernel_route", {}).get("result", {})
         if result["status"] == "reachable" and fields.get("from", fields.get("prefsrc")) == address and fields.get("dev") == f"ifindex-{index}":
-            return {"name": name, "mac": mac, "index": index, "address": address, "status": "Up"}
+            raw = value.get("neighbors")
+            neighbors = {ip: raw[ip] for ip in sorted(_adapter_neighbors(results, address, index))[:16]
+                         if isinstance(raw, dict) and isinstance(raw.get(ip), str)
+                         and re.fullmatch(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}", raw[ip])
+                         and raw[ip] != "00:00:00:00:00:00" and not int(raw[ip][:2], 16) & 1}
+            return {"name": name, "mac": mac, "index": index, "address": address, "status": "Up",
+                    **({"neighbors": neighbors} if neighbors else {})}
     return {}
 
 
@@ -114,16 +136,26 @@ def _windows_adapter(results: dict) -> dict:
     ((address, index),) = endpoints
     command = ("[Console]::OutputEncoding = [Text.UTF8Encoding]::new(); "
                f"Get-NetAdapter -Physical | Where-Object ifIndex -eq {index} | "
-               "Select-Object Name,MacAddress,Status | ConvertTo-Json -Compress")
+               "Select-Object Name,MacAddress,Status,@{n='Neighbors';e={@("
+               f"Get-NetNeighbor -AddressFamily IPv4 -InterfaceIndex {index} -State Reachable | "
+               "Select-Object -First 128 IPAddress,LinkLayerAddress)}} | ConvertTo-Json -Compress -Depth 4")
     executable = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
     try:
         response = subprocess.run([str(executable), "-NoProfile", "-NonInteractive", "-Command", command],
                                   capture_output=True, timeout=3, check=True)
-        row = json.loads(response.stdout.decode("utf-8-sig")) if len(response.stdout) <= 4096 else None
+        row = json.loads(response.stdout.decode("utf-8-sig")) if len(response.stdout) <= 16384 else None
         if not isinstance(row, dict):
             return {}
+        neighbors = {}
+        peers = row.get("Neighbors")
+        if isinstance(peers, dict):
+            peers = [peers]
+        for peer in peers if isinstance(peers, list) else []:
+            if isinstance(peer, dict) and isinstance(peer.get("IPAddress"), str):
+                neighbors[peer["IPAddress"]] = str(peer.get("LinkLayerAddress")).lower().replace("-", ":")
         return _adapter_observation({"name": row.get("Name"), "mac": str(row.get("MacAddress")).lower().replace("-", ":"),
-                                     "status": row.get("Status"), "address": address, "index": index}, results)
+                                     "status": row.get("Status"), "address": address, "index": index,
+                                     "neighbors": neighbors}, results)
     except (OSError, subprocess.SubprocessError, ValueError, RecursionError):
         return {}
 

@@ -2165,7 +2165,8 @@ def _guest_ipv4_observations(value: object, now: datetime) -> list[dict]:
     observations = []
     for row in _rows(value, 8):
         address = row.get("address")
-        if not isinstance(address, str) or not observation_is_fresh(row.get("checkedAt"), now):
+        max_age = ROUTE_RECEIPT_MAX_AGE if row.get("source") == "Windows" and row.get("method") == "ARP · DNS" else MAX_AGE
+        if not isinstance(address, str) or not observation_is_fresh(row.get("checkedAt"), now, max_age=max_age):
             continue
         try:
             address = str(ipaddress.IPv4Address(address))

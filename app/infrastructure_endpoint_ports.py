@@ -23,6 +23,34 @@ def _link_probe_source(graph, station_id, service_id):
                            "confirmed": True})
 
 
+def read_windows_dns_neighbors(bindings: dict, now: datetime) -> dict:
+    configured = bindings.get("endpoint_dns", {})
+    if not configured:
+        return {}
+    profiles = load_probe_profiles(routes_only=True).routes
+    observations = {}
+    for spec in configured.values():
+        if not isinstance(spec, dict) or not isinstance(selected := spec.get("probes"), list):
+            continue
+        profile_id, origin, target = (spec.get(key) for key in ("profile", "origin", "neighbor_address"))
+        if not all(isinstance(value, str) for value in (profile_id, origin, target)) or profile_id not in profiles:
+            continue
+        profile = profiles[profile_id]
+        probes = [probe for probe in profile.probes if probe.id in selected and probe.push_origin == origin
+                  and probe.target == target and probe.protocol == "dns" and not probe.expected_kernel_gateway]
+        if not probes:
+            continue
+        adapter = read_adapter_observation(origin, profile_id, profile, now)
+        if not (mac := adapter.get("neighbors", {}).get(target)):
+            continue
+        results = read_measurements(profile_id, profile)
+        if any((result := results.get(probe.id, {})).get("status") == "reachable"
+               and result.get("measured_at") == adapter["checkedAt"] and _verified_route(result, probe, now)
+               and not result["kernel_route"]["result"].get("gateway") for probe in probes):
+            observations.setdefault(target, {})[mac] = adapter["checkedAt"]
+    return {address: next(iter(peers.items())) for address, peers in observations.items() if len(peers) == 1}
+
+
 def collect_endpoint_http(graph: dict, bindings: dict, now: datetime) -> None:
     profiles = load_probe_profiles(routes_only=True).routes
     nodes = {node["id"]: node for node in graph["nodes"]}

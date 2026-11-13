@@ -16,7 +16,7 @@ import sys
 import tempfile
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from time import monotonic, sleep
@@ -62,7 +62,7 @@ from .infrastructure_map import (
 )
 from .infrastructure_port_ssh import collect_proxmox_port_states
 from .infrastructure_redfish import collect_redfish_power
-from .infrastructure_endpoint_ports import collect_endpoint_dns, collect_endpoint_http, confirm_endpoint_ports
+from .infrastructure_endpoint_ports import collect_endpoint_dns, collect_endpoint_http, confirm_endpoint_ports, read_windows_dns_neighbors
 from .infrastructure_service_probes import _local_arp_diagnostic, _rtsp_options, apply_service_probes, probe_icmp
 from .netctl_client import NetctlError, run_netctl
 from .server_health_view import build_server_health_view
@@ -2700,6 +2700,14 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                             ipv4_observations[local["address"]] = {
                                 key: local[key] for key in ("address", "checkedAt", "source", "method")
                             }
+                        if active == 1:
+                            for address, (peer_mac, stamp) in network.get("windows_dns_neighbors", {}).items():
+                                if (peer_mac == mac and observation_is_fresh(stamp, now, max_age=timedelta(minutes=3))
+                                        and fresh_macs_by_ip.get(address, {mac}) == {mac}
+                                        and (address not in arp_mappings or arp_mappings[address][0] == mac)
+                                        and address not in ipv4_observations):
+                                    ipv4_observations[address] = {"address": address, "checkedAt": stamp,
+                                                                  "source": "Windows", "method": "ARP · DNS"}
                 uplink = observed_bridge.get("bridge_ports")
                 if (host in online_hypervisors and active == 1 and observation_is_fresh(pve_at, now)
                         and uplink in pve.get("activePorts", {}).get(host, [])):
@@ -3745,6 +3753,7 @@ def main() -> int:
         start_stage("build graph")
         network["guest_local_ipv4"] = _collect_local_guest_ipv4(bindings)
         now = datetime.now(timezone.utc)
+        network["windows_dns_neighbors"] = read_windows_dns_neighbors(bindings, now)
         server = build_server_health_view(args.server_health, now)
         if server.get("freshness") in ("missing", "invalid") or server.get("collector", {}).get("status") == "error":
             collection_issues.append("server_observer_unavailable")
