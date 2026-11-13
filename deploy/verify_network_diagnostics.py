@@ -7,6 +7,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from io import BytesIO
+from math import isfinite
 from pathlib import Path
 import subprocess
 import sys
@@ -252,6 +253,49 @@ def verify_interfaces(script: Path, selections: list[list[str]], max_age: timede
     return reports
 
 
+def speed_report(
+    runs: list[dict], api_runs: list[dict], check: str, profile: str, expected_interface: str,
+    now: datetime, max_age: timedelta,
+) -> dict:
+    directions = {}
+    for direction in ("receive", "send"):
+        target = f"{profile} · {direction}"
+        row = next((run for run in runs if run["check"] == check and run["target"] == target
+                    and run["status"] not in {"rate_limited", "busy"}), None)
+        if row is None:
+            directions[direction] = {"status": "missing", "confirmed": False}
+            continue
+        result = row.get("result") or {}
+        if check == "https_speed":
+            observation = result.get("wan_observation") or {}
+            observed = observation.get("nat_interface") if observation.get("status") == "confirmed" else None
+            speed_fields = ("mbps",)
+        else:
+            connection = result.get("connection") or {}
+            observed = (result.get("kernel_route") or {}).get("dev") if connection.get("peer_address") else None
+            speed_fields = ("sender_mbps", "receiver_mbps")
+        speeds = {field: result.get(field) for field in speed_fields}
+        checked_at = datetime.fromisoformat(row["checked_at"])
+        fresh = timedelta(0) <= now - checked_at <= max_age
+        api_matches = row in api_runs
+        directions[direction] = {
+            "status": row["status"], "checked_at": row["checked_at"], "fresh": fresh,
+            "api_matches": api_matches, "observed_interface": observed, **speeds,
+            "confirmed": (
+                fresh and api_matches and row["status"] == "measured" and observed == expected_interface
+                and all(type(value) in (int, float) and isfinite(value) and value > 0 for value in speeds.values())
+            ),
+        }
+    return {"check": check, "profile": profile, "expected_interface": expected_interface, "directions": directions}
+
+
+def verify_speed(script: Path, selections: list[list[str]], max_age: timedelta) -> list[dict]:
+    history = mcp_data(mcp_requests(script, [mcp_call("openvpn_network_check_runs", {"limit": 100})])[0])
+    api = bridge.api_request("GET", f"{API}/runs?limit=100")["data"]
+    now = datetime.now(UTC)
+    return [speed_report(history["runs"], api["runs"], *selection, now, max_age) for selection in selections]
+
+
 def verify(script: Path, max_age: timedelta) -> dict:
     spec = bridge.api_request("GET", "/openapi.json")
     paths = spec["paths"]
@@ -330,12 +374,18 @@ def main() -> int:
     )
     parser.add_argument("--capture-id", type=UUID, help="verify a nonempty PCAP owned by the current actor")
     parser.add_argument(
+        "--speed", action="append", nargs=3, metavar=("CHECK", "PROFILE", "INTERFACE"),
+        help="verify both directions of a saved iperf3 or https_speed measurement for the current actor",
+    )
+    parser.add_argument(
         "--interface", action="append", nargs=2, metavar=("SOURCE", "NAME"),
         help="verify recent interface telemetry in REST and MCP; repeat to check multiple interfaces",
     )
     args = parser.parse_args()
     if args.max_age_minutes < 1:
         parser.error("--max-age-minutes must be positive")
+    if any(check not in {"iperf3", "https_speed"} for check, _, _ in args.speed or ()):
+        parser.error("--speed CHECK must be iperf3 or https_speed")
     try:
         report = verify(args.mcp_script, timedelta(minutes=args.max_age_minutes))
     except (OSError, LookupError, RuntimeError, TypeError, ValueError, subprocess.SubprocessError):
@@ -379,7 +429,19 @@ def main() -> int:
             report["capture"] = {"capture_id": str(args.capture_id), "error": "capture_verification_failed"}
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 1
+    if args.speed:
+        try:
+            report["speed"] = verify_speed(args.mcp_script, args.speed, timedelta(minutes=args.max_age_minutes))
+        except (OSError, LookupError, RuntimeError, TypeError, ValueError, subprocess.SubprocessError):
+            report["speed"] = []
+            report["speed_error"] = "speed_verification_failed"
     print(json.dumps(report, ensure_ascii=False, indent=2))
+    if args.speed and (
+        not report["speed"] or any(
+            not row["confirmed"] for profile in report["speed"] for row in profile["directions"].values()
+        )
+    ):
+        return 1
     if args.interface and (
         not report["interfaces"] or any(not (row["fresh"] and row["api_matches"]) for row in report["interfaces"])
     ):

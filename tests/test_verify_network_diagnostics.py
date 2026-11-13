@@ -278,6 +278,32 @@ def test_interface_report_distinguishes_zero_from_missing_and_rejects_drift():
     assert not verifier.interface_report(api, mcp, now + timedelta(minutes=12), timedelta(minutes=10))["fresh"]
 
 
+@pytest.mark.parametrize("check,path,expected,confirmed", [
+    ("https_speed", {"wan_observation": {"status": "confirmed", "nat_interface": "wan1"}}, "wan1", True),
+    ("https_speed", {"wan_observation": {"status": "unconfirmed", "nat_interface": "wan1"}}, "wan1", False),
+    ("https_speed", {"wan_observation": {"status": "confirmed", "nat_interface": "wan2"}}, "wan1", False),
+    ("iperf3", {"kernel_route": {"dev": "ens18"}, "connection": {"peer_address": "192.0.2.1"}}, "ens18", True),
+    ("iperf3", {"kernel_route": {"dev": "ens18"}}, "ens18", False),
+])
+def test_speed_report_requires_measured_directions_and_path(check, path, expected, confirmed):
+    now = datetime(2026, 11, 13, 2, 15, tzinfo=UTC)
+    data = {"mbps": 40} if check == "https_speed" else {"sender_mbps": 5, "receiver_mbps": 4.9}
+    rows = [
+        {"check": check, "status": "measured", "target": f"test · {direction}",
+         "checked_at": now.isoformat(), "result": {**data, **path}}
+        for direction in ("receive", "send")
+    ]
+    report = verifier.speed_report(rows, rows, check, "test", expected, now, timedelta(minutes=10))
+    assert all(row["confirmed"] is confirmed for row in report["directions"].values())
+    newer_failure = {**rows[0], "status": "failed"}
+    limited = {**rows[0], "status": "rate_limited"}
+    attempts = [limited, newer_failure, *rows]
+    report = verifier.speed_report(attempts, rows, check, "test", expected, now, timedelta(minutes=10))
+    assert report["directions"]["receive"]["status"] == "failed"
+    assert not report["directions"]["receive"]["api_matches"]
+    assert not report["directions"]["receive"]["confirmed"]
+
+
 def test_interface_report_uses_common_tail_when_mcp_limits_history(monkeypatch):
     now = datetime(2026, 11, 13, 2, 15, tzinfo=UTC)
     monkeypatch.setattr(verifier, "MCP_INTERFACE_LIMIT", 1)
