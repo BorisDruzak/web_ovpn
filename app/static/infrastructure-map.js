@@ -18,6 +18,16 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     critical: 'Недоступен',
     unknown: 'Доступность не подтверждена',
   };
+  const observerStates = {ok: 'В норме', warn: 'Отклонение', critical: 'Ошибка', unknown: 'Нет подтверждения'};
+  const observerNumber = new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 2});
+  const measurement = (unit, value) => {
+    if (!Number.isFinite(value)) return '';
+    if (unit === 'percent') return observerNumber.format(value) + '%';
+    if (unit === 'bytes') return observerNumber.format(value / 2**30) + ' ГиБ';
+    if (unit === 'hours') return observerNumber.format(value) + ' ч';
+    if (unit === 'count') return observerNumber.format(value);
+    return '';
+  };
   const availabilityOf = node => {
     const color = node.mapStatus ?? 'unknown';
     let label = availabilityStates[color];
@@ -1429,16 +1439,6 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       panel.open = node.checks.some(check => (check.required && check.status !== 'ok')
         || (check.unit && ['warn', 'critical'].includes(check.status)));
       const list = make('ul', null, 'map-detail-list');
-      const states = {ok: 'В норме', warn: 'Отклонение', critical: 'Ошибка', unknown: 'Нет подтверждения'};
-      const number = new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 2});
-      const measurement = (unit, value) => {
-        if (!Number.isFinite(value)) return '';
-        if (unit === 'percent') return number.format(value) + '%';
-        if (unit === 'bytes') return number.format(value / 2**30) + ' ГиБ';
-        if (unit === 'hours') return number.format(value) + ' ч';
-        if (unit === 'count') return number.format(value);
-        return '';
-      };
       const errors = {
         timeout: 'Нет ответа от проверки', transport: 'Ошибка соединения сборщика',
         parse: 'Сборщик не смог прочитать ответ', unexpected_response: 'Неожиданный ответ',
@@ -1455,7 +1455,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const threshold = measurement(check.unit, check.warningThreshold);
         const limit = check.unit === 'hours' ? 'предел ' : 'порог предупреждения ';
         const memoryMeasurement = /^(windows|linux)_memory_available_/.test(check.name);
-        const status = check.status === 'ok' && memoryMeasurement ? 'Измерено' : states[check.status];
+        const status = check.status === 'ok' && memoryMeasurement ? 'Измерено' : observerStates[check.status];
         const job = check.backupJob;
         const jobDetails = job ? [backupStates[job.state],
           job.exitCode !== null && `код ${job.exitCode}`,
@@ -1470,7 +1470,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           const {usedBytes, maximumBytes, freeGiB, minimumFreeGiB, checkedAt} = check.backupRepository;
           row.append(make('small', [
             `Репозиторий ${measurement('bytes', usedBytes)} из ${measurement('bytes', maximumBytes)}`,
-            `Свободно ${number.format(freeGiB)} ГиБ при минимуме ${number.format(minimumFreeGiB)} ГиБ`,
+            `Свободно ${observerNumber.format(freeGiB)} ГиБ при минимуме ${observerNumber.format(minimumFreeGiB)} ГиБ`,
             'Watchdog · ' + formatTime(checkedAt),
           ].join(' · ')));
         }
@@ -2295,6 +2295,26 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           row.append(open);
           const observed = (service.basis ?? []).map(basis => bases[basis]).filter(Boolean);
           if (observed.length) row.append(make('small', observed.join(' · ')));
+          for (const check of service.observerIssues ?? []) {
+            const threshold = measurement(check.unit, check.warningThreshold);
+            row.append(make('small', ['Server Observer', check.label || check.name, observerStates[check.status],
+              !check.stale && measurement(check.unit, check.observed), threshold && `порог ${threshold}`,
+              check.checkedAt && formatTime(check.checkedAt)].filter(Boolean).join(' · ')));
+          }
+          const dependencyLabels = {unavailable: 'Недоступны', degraded: 'Есть сбои', unknown: 'Без подтверждения'};
+          for (const [state, label] of Object.entries(dependencyLabels)) {
+            const ids = service.dependencies?.[state];
+            if (!ids?.length) continue;
+            const dependency = make('small', `${label} · `);
+            ids.forEach((id, index) => {
+              if (index) dependency.append(', ');
+              const node = byId.get(id);
+              const target = make(node ? 'a' : 'span', node?.name ?? id);
+              if (node) target.href = '?' + new URLSearchParams({node: id});
+              dependency.append(target);
+            });
+            row.append(dependency);
+          }
           if (service.backupScope) {
             const {storage, total, scheduled, notScheduled, unknown} = service.backupScope;
             row.append(make('small', `Расписание ${storage} · включено: ${scheduled} из ${total} · вне расписания: ${notScheduled} · без подтверждения: ${unknown}`));
