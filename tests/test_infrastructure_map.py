@@ -9123,6 +9123,14 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
                                                  {"name": "sshd", "status": "active"},
                                                  {"name": "NetworkManager", "status": "inactive"},
                                              ]}}
+    service_agents_url = "/api/v1/network/infrastructure?view=agents&node_id=web"
+    service_context = client.get(service_agents_url, headers=headers).json()["infrastructure"]
+    assert service_context["attachment"] == service_attachment
+    assert service_context["serviceAudit"]["services"] == [web]
+    service_agent, = service_context["agentAudit"]["guests"]
+    assert service_agent["ipv4Comparison"]["matchedPaths"][0]["physicalPair"]["switchPort"] == "ge3"
+    assert service_agent["health"] == detail["health"]
+    assert len(Adapter.reads) == 2 and Adapter.reads.pop() == Adapter.reads[0]
     snapshot = json.loads(path.read_text(encoding="utf-8"))
     snapshot["links"].append({"a": "vm:2", "b": "web", "kind": "Цель проверки", "confirmed": True})
     path.write_text(json.dumps(snapshot), encoding="utf-8")
@@ -9130,6 +9138,10 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
                         headers=headers).json()["infrastructure"]["attachment"]
     assert shared["serviceTotal"] == 1
     assert shared["services"] == [{**hosted, "servicePaths": []}]
+    shared_context = client.get(service_agents_url, headers=headers).json()["infrastructure"]
+    assert shared_context["attachment"]["guestTotal"] == 2
+    assert shared_context["agentAudit"]["guests"] == []
+    assert shared_context["serviceAudit"]["services"][0]["hosts"] == ["vm:1", "vm:2"]
     snapshot["links"].pop()
     snapshot["nodes"].append(ssh_service)
     snapshot["links"].append({"a": "vm:1", "b": "ssh", "kind": "Цель проверки", "confirmed": True})
@@ -9203,6 +9215,10 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
     assert unavailable["agentAudit"] == {"sourceState": "unavailable"}
     assert unavailable["attachment"] == context["attachment"]
     assert unavailable["serviceAudit"] == context["serviceAudit"]
+    unavailable_service = client.get(service_agents_url, headers=headers).json()["infrastructure"]
+    assert unavailable_service["agentAudit"] == {"sourceState": "unavailable"}
+    assert unavailable_service["attachment"] == service_attachment
+    assert unavailable_service["serviceAudit"]["services"] == [web]
 
 
 def test_agent_address_comparison_omits_path_for_ambiguous_network_observations():

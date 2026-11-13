@@ -3536,7 +3536,8 @@ def _confirmed_guest_uplinks(guests: dict, *, switch_id: str | None = None, port
     return {"confirmedUplinkTotal": len(confirmed_uplinks), "confirmedUplinks": confirmed_uplinks[:64]}
 
 
-def summarize_services(graph: dict, *, host_id: str | None = None, offset: int = 0) -> dict:
+def summarize_services(graph: dict, *, host_id: str | None = None, service_id: str | None = None,
+                       offset: int = 0) -> dict:
     nodes = {node["id"]: node for node in graph["nodes"]}
     hosts = {}
     for link in graph["links"]:
@@ -3548,7 +3549,8 @@ def summarize_services(graph: dict, *, host_id: str | None = None, offset: int =
     counts = dict.fromkeys(priority, 0)
     services = []
     for node in nodes.values():
-        if node["kind"] != "Сервис" or (host_id is not None and host_id not in hosts.get(node["id"], ())):
+        if (node["kind"] != "Сервис" or (service_id is not None and node["id"] != service_id)
+                or (host_id is not None and host_id not in hosts.get(node["id"], ()))):
             continue
         state = node["mapStatus"]
         counts[state] += 1
@@ -3661,11 +3663,14 @@ def load_infrastructure_agent_audit(path: Path, *, node_id: str | None = None) -
             adapter.close()
     result = {**{key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph},
               "agentAudit": graph.get("agentAudit", {"sourceState": "unavailable"})}
-    if node_id is not None and any(node["id"] == node_id and (node["guest"] or node["kind"] == "Гипервизор")
-                                   for node in graph["nodes"]):
+    node = next((item for item in graph["nodes"] if item["id"] == node_id), None)
+    if node and (node["guest"] or node["kind"] in ("Гипервизор", "Сервис")):
         attachment = summarize_guest_attachment(graph, node_id)["attachment"]
         result["attachment"] = attachment
-        result["serviceAudit"] = summarize_services(graph, host_id=node_id)["serviceAudit"]
+        if node["kind"] == "Сервис":
+            result["serviceAudit"] = summarize_services(graph, service_id=node_id)["serviceAudit"]
+        else:
+            result["serviceAudit"] = summarize_services(graph, host_id=node_id)["serviceAudit"]
         for entry in result["agentAudit"].get("guests", []):
             network = entry.get("network")
             if not network or network["stale"] or not network["interfaces"]:
@@ -3675,7 +3680,7 @@ def load_infrastructure_agent_audit(path: Path, *, node_id: str | None = None) -
                 local_services = entry.get("health", {}).get("services", [])
                 if any(service["name"] == "sshd" for service in local_services):
                     service_ids = {edge["b"] for edge in graph["links"]
-                                   if edge["a"] == node_id and _is_service_attachment(edge)}
+                                   if edge["a"] == entry["id"] and _is_service_attachment(edge)}
                     guests = {guest["guest"]["id"]: guest for guest in attachment["guests"]}
                     checks = [
                         {"serviceId": service["id"], "localService": "sshd",
@@ -4356,6 +4361,11 @@ def load_infrastructure_map(
         _, inventory_pairs, _, pending, current_pairs = topology_pairs
         attachments.update(currentPortPairs=current_pairs, inventoryPairs=inventory_pairs, pendingPortPairs=pending,
                            lacpPartnerInterfaceGaps=_lacp_partner_interface_gaps(nodes))
+    selected_agent_node = agent_node_id
+    if agent_identities is not None and nodes.get(agent_node_id, {}).get("kind") == "Сервис":
+        hosts = {edge["a"] for edge in links if edge["b"] == agent_node_id and _is_service_attachment(edge)}
+        if len(hosts) == 1:
+            selected_agent_node, = hosts
     return {
         **empty, "availability": "stale" if now - stamp > MAX_AGE else "ready",
         "snapshotAt": stamp.isoformat(), "nodes": list(nodes.values()), "links": links,
@@ -4368,7 +4378,7 @@ def load_infrastructure_map(
         **({"agentAudit": _summarize_agent_audit(
             nodes, agent_keys, agent_conflicts, agent_identities, now, snapshot_fresh=now - stamp <= MAX_AGE,
             enrollments=agent_enrollments, device_presences=device_presences, load_agent_profiles=load_agent_profiles,
-            hypervisor_evidence=hypervisor_evidence, selected_node=agent_node_id,
+            hypervisor_evidence=hypervisor_evidence, selected_node=selected_agent_node,
         )}
            if agent_identities is not None else {}),
         **attachments,
