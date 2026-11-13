@@ -1716,7 +1716,8 @@ def test_observer_service_attaches_to_the_vm_with_the_expected_mac(monkeypatch):
     assert load()[1] == []
 
 
-def test_guest_service_requires_matching_mac_and_arp_to_enable_probe(monkeypatch):
+@pytest.mark.parametrize("inventory_service", [False, True])
+def test_guest_service_requires_matching_mac_and_arp_to_enable_probe(monkeypatch, inventory_service):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import _public_service_check
     from app import infrastructure_service_probes as probes
@@ -1734,6 +1735,12 @@ def test_guest_service_requires_matching_mac_and_arp_to_enable_probe(monkeypatch
                "guest_services": {"zabbix-api": {"label": "Zabbix API", "vmid": 108, "mac": mac,
                                                 "used_by": ["consumer"]}}}
     context = {"services": [{"id": "consumer", "name": "Consumer"}]}
+    host_id = "pve-guest:108"
+    if inventory_service:
+        host_id = "zabbix"
+        context["devices"] = [{"id": host_id, "name": "Zabbix", "kind": "server", "management_ip": address}]
+        context["services"].append({"id": "zabbix-api", "name": "Zabbix API", "device": host_id})
+        binding["guests"] = {"108": {"asset": host_id, "mac": mac}}
     configured = {"zabbix-api": [{"ip": address, "port": 80, "type": "zabbix_api"}]}
     calls = []
     monkeypatch.setattr(probes, "_probe", lambda spec: calls.append(spec["ip"]) or "reachable")
@@ -1746,7 +1753,7 @@ def test_guest_service_requires_matching_mac_and_arp_to_enable_probe(monkeypatch
     graph, service = build()
     assert service["reachability"]["state"] == "reachable"
     assert service["serviceChecks"][0]["identityCheckedAt"] == now.isoformat()
-    assert any(e["a"] == "pve-guest:108" and e["b"] == "zabbix-api" and e["confirmed"] for e in graph["links"])
+    assert any(e["a"] == host_id and e["b"] == "zabbix-api" and e["confirmed"] for e in graph["links"])
     assert any(e["a"] == "consumer" and e["b"] == "zabbix-api" and e["confirmed"]
                and e["kind"] == "Зависимость сервиса" for e in graph["links"])
     configured["zabbix-api"][0]["ip"] = "192.0.2.22"
@@ -1766,7 +1773,7 @@ def test_guest_service_requires_matching_mac_and_arp_to_enable_probe(monkeypatch
     pve["configs"]["108"]["net0"] = "virtio=02:00:00:00:00:99,bridge=vmbr0"
     graph, service = build()
     assert "reachability" not in service
-    dependency, = [e for e in graph["links"] if e["b"] == "zabbix-api"]
+    dependency, = [e for e in graph["links"] if e["b"] == "zabbix-api" and e["kind"] == "Зависимость сервиса"]
     assert (dependency["a"], dependency["kind"], dependency["confirmed"]) == (
         "consumer", "Зависимость сервиса", True,
     )
@@ -1774,7 +1781,13 @@ def test_guest_service_requires_matching_mac_and_arp_to_enable_probe(monkeypatch
     pve["at"] = (now - timedelta(hours=1)).isoformat()
     graph, service = build()
     assert service["serviceChecks"][0]["reason"] == "probe_target_unconfirmed"
-    assert [e["kind"] for e in graph["links"] if e["b"] == "zabbix-api"] == ["Зависимость сервиса"]
+    assert not any(e["source"] == "Proxmox" and e["b"] == "zabbix-api" for e in graph["links"])
+    if inventory_service:
+        pve["at"] = now.isoformat()
+        binding["guests"] = {}
+        graph, service = build()
+        assert service["serviceChecks"][0]["reason"] == "probe_target_unconfirmed"
+        assert not any(e["a"] == "pve-guest:108" and e["b"] == "zabbix-api" for e in graph["links"])
 
 
 def test_guest_service_uses_fresh_explicit_local_arp_without_router_entry(monkeypatch):

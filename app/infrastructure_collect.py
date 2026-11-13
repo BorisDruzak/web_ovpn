@@ -1687,6 +1687,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
     intents = {item["id"]: item for item in context.get("routing_intent", []) if "id" in item}
     identity_services = {}
     asset_services = bindings.get("asset_services", {})
+    guest_service_bindings = bindings.get("guest_services", {})
 
     def bind_asset_vlan(item, asset, spec):
         if "local_vlan_transit" not in spec:
@@ -1697,11 +1698,14 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             item.update(probeTargetIP=transit["ip"], probeTargetVlan=transit)
         return True
 
+    inventory_service_hosts = {}
     for service in context.get("services", []):
         host = service.get("device")
+        inventory_service_hosts[service["id"]] = host
         item = node(service["id"], service["name"], "Сервис", nodes.get(host, {}).get("site", ""))
         spec = asset_services.get(service["id"], {})
-        if not bind_asset_vlan(item, host, spec) and spec.get("require_network_identity") is True:
+        if (service["id"] not in guest_service_bindings and not bind_asset_vlan(item, host, spec)
+                and spec.get("require_network_identity") is True):
             item["probeTargetIP"] = None
             if spec.get("asset") == host and host in address_by_asset and "gateway_segment" not in spec:
                 item["probeTargetArpAsset"] = host
@@ -2373,11 +2377,14 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             item["probeTargetIP"] = None
             guest_services.setdefault(str(configured["vmid"]), []).append((item, configured))
 
-    for service_id, spec in bindings.get("guest_services", {}).items():
+    for service_id, spec in guest_service_bindings.items():
         if service_id not in nodes:
-            item = node(service_id, spec["label"], "Сервис", origin="UI_VPN")
-            item["probeTargetIP"] = None
-            guest_services.setdefault(str(spec["vmid"]), []).append((item, spec))
+            node(service_id, spec["label"], "Сервис", origin="UI_VPN")
+        elif service_id not in inventory_service_hosts:
+            continue
+        item = nodes[service_id]
+        item["probeTargetIP"] = None
+        guest_services.setdefault(str(spec["vmid"]), []).append((item, spec))
 
     for role, spec in roles.items():
         if spec.get("asset") in nodes:
@@ -2525,6 +2532,10 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                                 "stopped", "Proxmox", "Состояние ВМ", pve_at,
                             )
                 for service, spec in guest_services.get(str(vmid), []):
+                    if service["id"] in inventory_service_hosts and (
+                        not matched or inventory_service_hosts[service["id"]] != key
+                    ):
+                        continue
                     mac = str(spec.get("mac") or "").lower()
                     if (guest_ids[vmid] != 1 or not observation_is_fresh(pve_at, now)
                             or mac_counts[mac] != 1 or mac not in guest_macs.get(str(vmid), set())):
