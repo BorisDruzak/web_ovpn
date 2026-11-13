@@ -3983,7 +3983,8 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
                {"id": "snr", "name": "SNR", "kind": "switch", "management_ip": "192.0.2.254"}]
     bindings = {"lacp_links": [{"source": "switch", "asset": "pbs", "aggregate": "po1", "members": ["ge6", "ge7"]}]}
     sources = [{"id": 1, "name": "switch", "enabled": True, "driver": "snmp_switch", "host": "192.0.2.254"}]
-    ports = [{"source": "switch", "port_key": name, "name": name, "oper_status": "up", "last_seen_at": at}
+    ports = [{"source": "switch", "port_key": name, "name": name, "oper_status": "up", "last_seen_at": at,
+              "speed_bps": 10**9 if name != "po1" else 2 * 10**9}
              for name in ("ge6", "ge7", "po1")]
     report = {**bindings["lacp_links"][0], "expected": 2, "at": at, "members": [
         {"port": "ge6", "partner_port": 1, "mac": mac}, {"port": "ge7", "partner_port": 2, "mac": mac}]}
@@ -4012,6 +4013,8 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
     assert (color, health["status"]) == ("ok", "ok")
     assert [member["partnerPort"] for member in health["members"]] == [1, 2]
     assert [member["partnerInterfaceState"] for member in health["members"]] == ["unconfirmed"] * 2
+    assert [member["speedBps"] for member in health["members"]] == [10**9] * 2
+    assert [member["linkCheckedAt"] for member in health["members"]] == [at] * 2
 
     def service_paths(stamp=now):
         snapshot = load_infrastructure_map(path, stamp, include_guest_attachments=True)

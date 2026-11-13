@@ -1609,8 +1609,12 @@ def _attach_lacp_health(nodes: dict, expectations: dict, links: list[dict], port
                         and (not sample or _time(at) >= _time(sample[0]))):
                     members.append({"name": name, "status": port["state"], "checkedAt": at})
                 elif sample:
-                    members.append({"name": name, "status": "forwarding", "checkedAt": sample[0],
-                                    "partnerPort": sample[1], "partnerInterfaceState": "unconfirmed"})
+                    member = {"name": name, "status": "forwarding", "checkedAt": sample[0],
+                              "partnerPort": sample[1], "partnerInterfaceState": "unconfirmed"}
+                    if (port.get("state") == "up" and port.get("speedBps")
+                            and observation_is_fresh(at, now, max_age=LACP_HEALTH_MAX_AGE)):
+                        member.update(speedBps=port["speedBps"], linkCheckedAt=at)
+                    members.append(member)
                 else:
                     members.append({"name": name, "status": "unknown"})
             states = {member["status"] for member in members}
