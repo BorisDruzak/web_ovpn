@@ -634,7 +634,7 @@ def test_guest_network_reports_an_empty_configuration_only_after_a_successful_re
 
 def test_cluster_health_distinguishes_quorum_members_and_api(tmp_path):
     from app.infrastructure_collect import build_graph
-    from app.infrastructure_map import load_infrastructure_map
+    from app.infrastructure_map import load_infrastructure_map, summarize_guest_attachment
 
     now = datetime.now(timezone.utc)
     path = tmp_path / "infrastructure.json"
@@ -642,7 +642,8 @@ def test_cluster_health_distinguishes_quorum_members_and_api(tmp_path):
     members = [{"type": "node", "name": "pve1", "online": 1}, {"type": "node", "name": "pve2", "online": 1}]
 
     def read(when=now):
-        pve = {"at": now.isoformat(), "cluster": [cluster, *members], "guests": [],
+        pve = {"at": now.isoformat(), "cluster": [cluster, *members],
+               "guests": [{"node": "pve1", "vmid": 103, "status": "stopped", "type": "qemu"}],
                "nodes": [{"node": "pve1", "status": "online"}, {"node": "pve2", "status": "online"}]}
         graph = build_graph({}, {}, {}, pve, {}, now)
         path.write_text(json.dumps(graph), encoding="utf-8")
@@ -654,6 +655,11 @@ def test_cluster_health_distinguishes_quorum_members_and_api(tmp_path):
         ("Кворум", "reachable"), ("Участники кластера", "reachable"),
     ]
     assert healthy["properties"]["Узлы"] == "2 из 2 в сети"
+    graph = load_infrastructure_map(path, now)
+    attachment = summarize_guest_attachment(graph, healthy["id"])["attachment"]
+    assert attachment["guestTotal"] == 1
+    assert attachment["guests"][0]["hypervisor"]["id"] == "pve1"
+    assert [host["host"]["id"] for host in attachment["physicalHosts"]] == ["pve1", "pve2"]
     cluster["quorate"] = 0
     no_quorum = read()
     assert no_quorum["reachability"]["state"] == "reachable"

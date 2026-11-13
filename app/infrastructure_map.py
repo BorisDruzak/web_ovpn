@@ -3027,14 +3027,18 @@ def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
     host_ids = sorted(key for key in targets if key not in guest_ids and nodes[key]["kind"] not in ("Сервис", CLUSTER_KIND))
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
     detail = {}
-    if anchor and anchor["kind"] == "Гипервизор":
+    if anchor and anchor["kind"] in ("Гипервизор", CLUSTER_KIND):
+        if anchor["kind"] == CLUSTER_KIND:
+            host_ids = sorted({edge["b"] for edge in links if edge["a"] == node_id and edge["confirmed"]
+                               and edge["kind"] == "Узел кластера" and nodes[edge["b"]]["kind"] == "Гипервизор"})
         detail.update({key: anchor[key] for key in (
             "resourceCapacity", "hardwareDisks", "zfsPools", "lvmThinPools",
         ) if key in anchor})
-        candidates = {edge["b"] for edge in links if edge["a"] == node_id
+        members = set(host_ids)
+        candidates = {edge["b"] for edge in links if edge["a"] in members
                       and edge["confirmed"] and edge["kind"] == "Размещение ВМ" and nodes[edge["b"]]["guest"]}
         hosted = {key: guest for key, guest in _guest_attachments(nodes, links, sorted(candidates)).items()
-                  if guest["placement"] == "confirmed" and guest["hypervisor"]["id"] == node_id}
+                  if guest["placement"] == "confirmed" and guest["hypervisor"]["id"] in members}
         guest_ids = set(hosted)
         guests = dict(list(hosted.items())[:12])
         detail.update(_confirmed_guest_uplinks(hosted))
