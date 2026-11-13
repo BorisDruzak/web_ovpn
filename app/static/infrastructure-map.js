@@ -1553,6 +1553,18 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const columns = make('div', null, 'map-detail-columns');
     const propertiesSection = make('section');
     propertiesSection.append(make('h3', 'Доступность'), properties);
+    if (node.managementSwitchPort) {
+      const {switchId, port, checkedAt, portLink, physicalPair} = node.managementSwitchPort;
+      const upstream = byId.get(switchId);
+      if (upstream) {
+        const link = make('a', `${upstream.name} · ${port}`);
+        link.href = '?' + new URLSearchParams({node: switchId, port});
+        const row = make('dd');
+        const evidence = physicalPair ? `Пара подтверждена · ${physicalPair.hostPort}` : 'Путь по ARP и MAC-таблице';
+        row.append(link, make('small', [evidence, formatPortSpeed(portLink?.speedBps), formatTime(checkedAt)].filter(Boolean).join(' · ')));
+        properties.append(make('dt', 'Порт на пути управления'), row);
+      }
+    }
     if (node.managementPortErrors) {
       const {switchId, port, telemetry} = node.managementPortErrors;
       const upstream = byId.get(switchId);

@@ -6353,17 +6353,24 @@ def test_controller_warns_for_errors_on_its_unambiguous_management_switch_port(t
     node = read()
     assert node["mapStatus"] == "warn"
     assert node["reachability"]["state"] == "reachable"
+    location = node["managementSwitchPort"]
+    assert (location["switchId"], location["port"], location["source"], location["checkedAt"]) == ("sw", "ge4", "netctl FDB", at)
+    assert "physicalPair" not in location and location["portLink"]["state"] == "up"
     assert node["managementPortErrors"] == {"switchId": "sw", "port": "ge4", "source": "netctl FDB",
                                             "checkedAt": at, "telemetry": telemetry}
     port["fdbLearned"]["learnedMacCount"] = 2
-    assert read()["mapStatus"] == "ok"
+    node = read()
+    assert node["mapStatus"] == "ok" and node["managementSwitchPort"]["port"] == "ge4"
     port["fdbLearned"]["learnedMacCount"] = 1
     telemetry["rxErrors"] = 0
     telemetry["rxDiscards"] = 5
     assert "managementPortErrors" not in read()
     telemetry["rxErrors"] = 12
+    controller["kind"] = "Видеорегистратор"
+    node = read()
+    assert node["mapStatus"] == "ok" and node["managementSwitchPort"]["port"] == "ge4"
     evidence["at"] = (now - timedelta(hours=1)).isoformat()
-    assert "managementPortErrors" not in read()
+    assert "managementSwitchPort" not in read()
 
 
 def test_hypervisor_fdb_path_reports_management_interface_without_claiming_direct_cable(tmp_path):
