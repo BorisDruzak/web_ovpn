@@ -8470,6 +8470,8 @@ def test_reciprocal_mac_path_shows_fresh_stp_evidence_without_confirming_cable(t
     assert proof["stpPaths"] == [{**stp, "deviceId": "css"}]
     pending, = summarize_topology(graph)["topologyAudit"]["pending"]
     assert pending["observedPaths"][0]["stpPaths"] == proof["stpPaths"]
+    assert pending["identifiedPeerSides"] == ["a", "b"]
+    assert graph["pendingPortPairs"][0]["identifiedPeerSides"] == ["a", "b"]
     assert graph["pendingPortPairs"][0]["stpPaths"] == proof["stpPaths"]
     confirmed, = summarize_topology(graph)["topologyAudit"]["currentPairs"]
     assert pending["stpBridgeConnections"] == [confirmed]
@@ -8496,6 +8498,7 @@ def test_reciprocal_mac_path_shows_fresh_stp_evidence_without_confirming_cable(t
     observed["a"] = "Port14"
     assert "stpPaths" not in read()["links"][1]["portEvidence"][0]
     assert "stpBridgeConnections" not in read()["pendingPortPairs"][0]
+    assert read()["pendingPortPairs"][0]["identifiedPeerSides"] == ["b"]
 
 
 def test_pending_switch_pair_links_stp_bridge_to_observed_fdb_port(tmp_path):

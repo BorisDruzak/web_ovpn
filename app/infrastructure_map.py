@@ -1896,9 +1896,11 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
                 "missingPortSides": [side for side in ("a", "b") if port_label_key(declared[side]) in unnamed],
                 "identifiedPeerSides": [side for side, path_port in (("a", "portA"), ("b", "portB"))
                                         if side in declared.get("lldpPeers", {})
-                                        or any(path.get("learnedEndpoint", {}).get("switchId") == link[side]
-                                               and port_key(link[side], path[path_port])
-                                               == port_key(link[side], declared[side]) for path in related)],
+                                        or any(path[path_port]
+                                               and port_key(link[side], path[path_port]) == port_key(link[side], declared[side])
+                                               and (path["source"] == RECIPROCAL_MAC_SOURCE
+                                                    or path.get("learnedEndpoint", {}).get("switchId") == link[side])
+                                               for path in related)],
                 **({"inventorySources": declared["inventorySources"]} if "inventorySources" in declared else {}),
                 **({"inventoryPortSides": inventory_only} if inventory_only else {}),
                 **({"portObservations": reading} if reading else {}),
