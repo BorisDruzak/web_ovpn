@@ -29,7 +29,7 @@ from .availability_settings import (
     set_availability_setting,
 )
 from .attachment_reconcile import reconcile_attachments
-from .config import DEFAULT_CONFIG, DEFAULT_DB_URL, load_secrets, normalize_source, validate_source_yaml_scalars, write_source_yaml
+from .config import DEFAULT_CONFIG, DEFAULT_DB_URL, load_config_sources, load_secrets, normalize_source, validate_source_yaml_scalars, write_source_yaml
 from .context import context_summary, load_context_bytes, load_schema, normalise_import_entities, validate_context, validate_import_semantics
 from .context_diff import diff_snapshots
 from .context_query import context_snapshot, inspect_asset_context, topology_context, search_context_page
@@ -1385,54 +1385,58 @@ def _ipsec_site_checks(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def cmd_ipsec(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
-    conn = prepare_conn(args)
-    try:
-        if args.ipsec_command != "status":
-            return 2, err("unsupported ipsec command")
-        sources = list_sources(conn)
-        if args.source:
-            validate_source_name(args.source)
-            sources = [source for source in sources if source["name"] == args.source]
-            if not sources:
-                return 1, err("source not found", source=args.source)
-        sources = [
-            source
-            for source in sources
-            if source.get("enabled") and source.get("driver") in {"mikrotik_api", "mikrotik_ssh", "mock"}
-        ]
-        results = []
-        for source in sources:
-            try:
-                results.append(_ipsec_source_status(source))
-            except Exception as exc:
-                results.append(
-                    {
-                        "source": source["name"],
-                        "host": source.get("host") or "",
-                        "site": source.get("site") or "",
-                        "role": source.get("role") or "",
-                        "status": "error",
-                        "summary": {"active_peers": 0, "installed_sas": 0, "policies_total": 0, "policies_established": 0},
-                        "active_peers": [],
-                        "policies": [],
-                        "installed_sas": [],
-                        "errors": [{"section": "source", "message": str(exc)}],
-                    }
-                )
-        summary = {
-            "sources": len(results),
-            "ok": sum(1 for item in results if item.get("status") == "ok"),
-            "warn": sum(1 for item in results if item.get("status") == "warn"),
-            "error": sum(1 for item in results if item.get("status") == "error"),
-        }
-        site_checks = _ipsec_site_checks(results)
-        summary["site_checks_ok"] = sum(1 for item in site_checks if item.get("status") == "ok")
-        summary["site_checks_warn"] = sum(1 for item in site_checks if item.get("status") == "warn")
-        source_errors = summary["ok"] == 0 and summary["error"] > 0
-        exit_code = 1 if source_errors and not args.allow_source_errors else 0
-        return exit_code, ok(summary=summary, sources=results, site_checks=site_checks)
-    finally:
-        conn.close()
+    if args.ipsec_command != "status":
+        return 2, err("unsupported ipsec command")
+    sources_by_name = {}
+    if db_path_from_url(args.db).exists():
+        conn = connect_read_only(args.db)
+        try:
+            sources_by_name.update((source["name"], source) for source in list_sources(conn))
+        finally:
+            conn.close()
+    sources_by_name.update((source["name"], source) for source in load_config_sources(args.config))
+    sources = [sources_by_name[name] for name in sorted(sources_by_name)]
+    if args.source:
+        validate_source_name(args.source)
+        sources = [source for source in sources if source["name"] == args.source]
+        if not sources:
+            return 1, err("source not found", source=args.source)
+    sources = [
+        source
+        for source in sources
+        if source.get("enabled") and source.get("driver") in {"mikrotik_api", "mikrotik_ssh", "mock"}
+    ]
+    results = []
+    for source in sources:
+        try:
+            results.append(_ipsec_source_status(source))
+        except Exception as exc:
+            results.append(
+                {
+                    "source": source["name"],
+                    "host": source.get("host") or "",
+                    "site": source.get("site") or "",
+                    "role": source.get("role") or "",
+                    "status": "error",
+                    "summary": {"active_peers": 0, "installed_sas": 0, "policies_total": 0, "policies_established": 0},
+                    "active_peers": [],
+                    "policies": [],
+                    "installed_sas": [],
+                    "errors": [{"section": "source", "message": str(exc)}],
+                }
+            )
+    summary = {
+        "sources": len(results),
+        "ok": sum(1 for item in results if item.get("status") == "ok"),
+        "warn": sum(1 for item in results if item.get("status") == "warn"),
+        "error": sum(1 for item in results if item.get("status") == "error"),
+    }
+    site_checks = _ipsec_site_checks(results)
+    summary["site_checks_ok"] = sum(1 for item in site_checks if item.get("status") == "ok")
+    summary["site_checks_warn"] = sum(1 for item in site_checks if item.get("status") == "warn")
+    source_errors = summary["ok"] == 0 and summary["error"] > 0
+    exit_code = 1 if source_errors and not args.allow_source_errors else 0
+    return exit_code, ok(summary=summary, sources=results, site_checks=site_checks)
 
 
 def cmd_dashboard(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:

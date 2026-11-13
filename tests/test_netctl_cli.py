@@ -2882,6 +2882,23 @@ def test_ipsec_status_reports_source_health(tmp_path, capsys):
     assert data["sources"][0]["policies"][0]["dst_address"] == "192.168.99.0/24"
 
 
+def test_ipsec_status_reads_config_while_collector_database_is_write_locked(tmp_path, capsys):
+    from netctl.db import connect
+
+    config_path = tmp_path / "netctl.yaml"
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    write_mock_source(config_path)
+    writer = connect(db_url)
+    try:
+        writer.execute("BEGIN IMMEDIATE")
+        rc, data = run_cli(["--json", "--config", str(config_path), "--db", db_url, "ipsec", "status"], capsys)
+        assert rc == 0
+        assert [source["source"] for source in data["sources"]] == ["mock-main"]
+        assert writer.execute("SELECT count(*) FROM network_sources").fetchone()[0] == 0
+    finally:
+        writer.close()
+
+
 def test_ipsec_report_keeps_source_errors_without_hiding_command_errors(tmp_path, capsys, monkeypatch):
     config_path = tmp_path / "netctl.yaml"
     db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
