@@ -534,10 +534,14 @@ def test_mcp_infrastructure_returns_one_node_and_its_linked_peers(monkeypatch):
                   {"id": "sw", "name": "Switch", "mapStatus": "ok"}, {"id": "other"}],
         "links": [{"a": "sw", "b": "vm:103", "portEvidence": [{"a": "xe3"}]},
                   {"a": "other", "b": "sw"}],
+        "currentPortPairs": [{"a": "sw", "b": "vm:103", "portA": "xe3", "portB": "eth0"}],
+        "pendingPortPairs": [{"a": "other", "b": "sw", "portA": "", "portB": "ge2"},
+                             {"a": "vm:103", "b": "sw", "portA": "eth1", "portB": ""}],
     }
 
     def api(method, path):
-        assert (method, path) == ("GET", "/api/v1/network/infrastructure")
+        assert method == "GET"
+        assert path in ("/api/v1/network/infrastructure", "/api/v1/network/infrastructure?include_port_pairs=true")
         return {"status": "ok", "infrastructure": graph}
 
     monkeypatch.setattr(server, "api_request", api)
@@ -581,8 +585,12 @@ def test_mcp_infrastructure_returns_one_node_and_its_linked_peers(monkeypatch):
     assert scoped["links"] == graph["links"][:1]
     assert scoped["snapshotAt"] == graph["snapshotAt"]
     assert scoped["collectionIssues"] == ["proxmox"]
+    assert scoped["currentPortPairs"] == graph["currentPortPairs"]
+    assert scoped["inventoryPairs"] == []
+    assert scoped["pendingPortPairs"] == graph["pendingPortPairs"][1:]
     absent = server.call_tool("openvpn_network_infrastructure", {"node_id": "unknown"})["infrastructure"]
     assert absent["node"] is None and absent["links"] == absent["neighbors"] == []
+    assert absent["currentPortPairs"] == absent["pendingPortPairs"] == []
 
 
 def test_mcp_infrastructure_search_returns_bounded_matches_and_stable_ids(monkeypatch):

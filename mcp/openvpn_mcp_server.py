@@ -179,7 +179,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         "view=topology for port confirmation gaps, "
         "view=agents for Proxmox agent matches (node_id for guest health), "
         "view=attachment for VM-to-switch coverage (node_id for VM, host, or service paths), "
-        "query to search, or node_id and optional port_name to inspect links, guests and service checks on a port.",
+        "Use query to search, node_id to inspect links and port pairs, or add port_name for port-specific evidence.",
         {
             "query": {"type": "string", "minLength": 1, "maxLength": 160},
             "node_id": {"type": "string", "minLength": 1, "maxLength": 160},
@@ -580,11 +580,21 @@ def _port_key(name: str) -> str:
     return f"gi{gigabit[1]}" if gigabit else label
 
 
+def _infrastructure_port_pairs(graph: dict, node_id: str | None, port_keys: set[str] | None = None) -> dict:
+    return {
+        field: [pair for pair in graph.get(field, []) if node_id is not None and any(
+            pair[side] == node_id and (port_keys is None or _port_key(pair[port_field]) in port_keys)
+            for side, port_field in (("a", "portA"), ("b", "portB"))
+        )]
+        for field in ("currentPortPairs", "inventoryPairs", "pendingPortPairs")
+    }
+
+
 def _infrastructure_port(graph: dict, node: dict | None, port_name: str) -> dict:
     result = {"portName": port_name.strip(), "ports": [], "links": [], "guestObservations": [], "servicePorts": []}
-    result.update(currentPortPairs=[], inventoryPairs=[], pendingPortPairs=[], lacpHealth=[], lacpPartnerInterfaceGaps=[])
+    result.update(lacpHealth=[], lacpPartnerInterfaceGaps=[])
     if node is None:
-        return result
+        return {**result, **_infrastructure_port_pairs(graph, None)}
     node_id = node["id"]
     port_key = _port_key(port_name)
     port_keys = {port_key}
@@ -595,11 +605,7 @@ def _infrastructure_port(graph: dict, node: dict | None, port_name: str) -> dict
             port_keys.update(keys)
     result["servicePorts"] = [row for row in graph.get("servicePorts", {}).get(node_id, [])
                               if _port_key(row["port"]) in port_keys]
-    for field in ("currentPortPairs", "inventoryPairs", "pendingPortPairs"):
-        result[field] = [pair for pair in graph.get(field, []) if any(
-            pair[side] == node_id and _port_key(pair[port_field]) in port_keys
-            for side, port_field in (("a", "portA"), ("b", "portB"))
-        )]
+    result.update(_infrastructure_port_pairs(graph, node_id, port_keys))
     result["lacpPartnerInterfaceGaps"] = [
         gap for gap in graph.get("lacpPartnerInterfaceGaps", [])
         if gap["switchId"] == node_id
@@ -685,6 +691,8 @@ def _infrastructure_snapshot(node_id: str | None, query: str | None, port_name: 
     path = "/api/v1/network/infrastructure"
     if port_name is not None:
         path += "?include_service_ports=true&include_port_pairs=true"
+    elif node_id is not None:
+        path += "?include_port_pairs=true"
     response = api_request("GET", path)
     graph = response.get("infrastructure")
     if not isinstance(graph, dict) or (node_id is None and query is None):
@@ -700,6 +708,7 @@ def _infrastructure_snapshot(node_id: str | None, query: str | None, port_name: 
             node = {key: node[key] for key in ("id", "name", "kind", "mapStatus") if key in node}
     else:
         detail = {"links": [edge for edge in graph["links"] if node_id in (edge["a"], edge["b"])] if node else []}
+        detail.update(_infrastructure_port_pairs(graph, node_id if node else None))
     peers = {edge["b"] if edge["a"] == node_id else edge["a"] for edge in detail["links"]}
     neighbors = [
         {key: item[key] for key in ("id", "name", "kind", "mapStatus") if key in item}
