@@ -963,6 +963,11 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     return panel;
   }
 
+  function ntpLabel(ntp) {
+    return ntp ? [`NTPv${ntp.version}`, `stratum ${ntp.stratum}`, `LI ${ntp.leapIndicator}`, ntp.kissCode]
+      .filter(Boolean).join(' · ') : '';
+  }
+
   function certificateLabel(expiresAt, version) {
     return [version, `Срок действия до ${formatTime(expiresAt)}`].filter(Boolean).join(' · ');
   }
@@ -1018,6 +1023,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     tcp_connection_refused: 'Отклонено TCP-соединение',
     rdp_negotiation_rejected: 'Сервер отклонил согласование RDP',
     ntp_unsynchronized: 'Сервер NTP не предоставил синхронизированное время',
+    ntp_rate_limited: 'Сервер NTP ограничил частоту запросов',
+    ntp_access_denied: 'Сервер NTP отклонил запрос по правилам доступа',
     ntp_route_mismatch: 'Выбран другой маршрут UI_VPN, NTP-запрос не отправлен',
     ntp_route_unconfirmed: 'Маршрут UI_VPN не подтверждён, NTP-запрос не отправлен',
     rtsp_connection_refused: 'Отклонено TCP-соединение', rtsp_auth_required: 'Требуется авторизация',
@@ -1125,7 +1132,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const smb = probe.smbDialect && smbNegotiationLabel(probe.smbDialect, probe.smbSigningRequired);
         const postgres = postgresqlTlsLabel(probe.postgresqlTls, probe.tlsVersion);
         const redfish = probe.redfishVersion && `Redfish ${probe.redfishVersion}`;
-        readings.add([probe.path, question, outcome, code, rdp, tls, zabbix, redfish, smb, postgres, responseFrom, rtt,
+        readings.add([probe.path, question, outcome, code, rdp, tls, zabbix, redfish, smb, postgres, ntpLabel(probe.ntp), responseFrom, rtt,
           probe.state && formatTime(probe.checkedAt)].filter(Boolean).join(' · '));
       }
       for (const reading of readings) {
@@ -2006,7 +2013,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           title.type = 'button';
           title.addEventListener('click', () => select(guests[0].id));
         }
-        row.append(title, make('small', result + http + rtsp + ftp + certificate + postgresql + smb + (reason ? ' · ' + reason + errorSource : '') + backup + policy + dns + rtt + attempts + gateway + egress + management + scope + source + time + identity + (check.stale ? ' · устарело' : '')));
+        const ntp = check.ntp ? ' · ' + ntpLabel(check.ntp) : '';
+        row.append(title, make('small', result + http + rtsp + ftp + certificate + postgresql + smb + (reason ? ' · ' + reason + errorSource : '') + backup + policy + dns + ntp + rtt + attempts + gateway + egress + management + scope + source + time + identity + (check.stale ? ' · устарело' : '')));
         if (udp) {
           const addresses = udp.addresses?.map(address => address.includes(':') ? `[${address}]` : address).join(', ');
           const label = {bound: 'Открыт локальный UDP-сокет', unbound: 'Локальный UDP-сокет отсутствует',

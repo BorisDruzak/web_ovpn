@@ -1655,11 +1655,19 @@ def _ntp(spec: dict, *, source: str | None = None) -> dict:
     if (len(response) < 48 or response[0] & 7 != 4 or (response[0] >> 3) & 7 not in (3, 4)
             or response[24:32] != request[40:48]):
         return {**evidence, "state": "unknown", "reason": "unexpected_response"}
-    if response[0] >> 6 == 3 or not 1 <= response[1] <= 15:
+    ntp = {"version": (response[0] >> 3) & 7, "leapIndicator": response[0] >> 6, "stratum": response[1]}
+    if ntp["stratum"] == 0:
+        code = response[12:16]
+        if code in (b"RATE", b"DENY", b"RSTR"):
+            ntp["kissCode"] = code.decode("ascii")
+            reason = "ntp_rate_limited" if code == b"RATE" else "ntp_access_denied"
+            return {**evidence, "ntp": ntp, "state": "unreachable", "reason": reason}
+    if ntp["leapIndicator"] == 3 or not 1 <= ntp["stratum"] <= 15:
+        evidence["ntp"] = ntp
         return {**evidence, "state": "unreachable", "reason": "ntp_unsynchronized"}
     if not any(response[32:40]) or not any(response[40:48]):
         return {**evidence, "state": "unknown", "reason": "unexpected_response"}
-    return {**evidence, "state": "reachable"}
+    return {**evidence, "ntp": ntp, "state": "reachable"}
 
 
 def _rdp_negotiation(spec: dict) -> dict:

@@ -112,6 +112,8 @@ def test_rdp_negotiation_requires_a_valid_connection_confirm(monkeypatch, reply,
     ("zero_time", "unknown", "unexpected_response"),
     ("unsynchronized", "unreachable", "ntp_unsynchronized"),
     ("stratum_zero", "unreachable", "ntp_unsynchronized"),
+    ("rate_limited", "unreachable", "ntp_rate_limited"),
+    ("access_denied", "unreachable", "ntp_access_denied"),
     ("timeout", "unknown", "timeout"),
 ])
 def test_ntp_probe_requires_a_synchronized_reply_to_its_request(monkeypatch, reply, state, reason):
@@ -139,7 +141,9 @@ def test_ntp_probe_requires_a_synchronized_reply_to_its_request(monkeypatch, rep
                 raise TimeoutError
             packet = bytearray(48)
             packet[0] = {"unsynchronized": 0xE4, "wrong_mode": 0x23}.get(reply, 0x24)
-            packet[1] = 0 if reply == "stratum_zero" else 2
+            packet[1] = 0 if reply in ("stratum_zero", "rate_limited", "access_denied") else 2
+            if reply in ("rate_limited", "access_denied"):
+                packet[12:16] = b"RATE" if reply == "rate_limited" else b"DENY"
             if reply != "wrong_origin":
                 packet[24:32] = self.request[40:48]
             if reply != "zero_time":
@@ -157,6 +161,17 @@ def test_ntp_probe_requires_a_synchronized_reply_to_its_request(monkeypatch, rep
 
     public = _public_service_check(check, datetime.now(timezone.utc))
     assert (public["state"], public["port"], public.get("reason")) == (state, 123, reason)
+    if reply in ("synchronized", "unsynchronized", "rate_limited", "access_denied", "stratum_zero"):
+        assert public["ntp"] == {
+            "version": 4, "stratum": 0 if reply in ("rate_limited", "access_denied", "stratum_zero") else 2,
+            "leapIndicator": 3 if reply == "unsynchronized" else 0,
+            **({"kissCode": {"rate_limited": "RATE", "access_denied": "DENY"}[reply]}
+               if reply in ("rate_limited", "access_denied") else {}),
+        }
+        check["checkedAt"] = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        assert "ntp" not in _public_service_check(check, datetime.now(timezone.utc))
+    else:
+        assert "ntp" not in public
     if reply == "synchronized":
         datagram = Datagram()
         monkeypatch.setattr(probes.socket, "socket", lambda *args: nullcontext(datagram))

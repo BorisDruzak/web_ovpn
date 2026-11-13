@@ -652,11 +652,11 @@ def _public_service_check(check: dict, now: datetime) -> dict:
             result["rdpSecurity"] = security
         if result["state"] == "unreachable" and reason == "rdp_negotiation_rejected" and type(failure) is int and 1 <= failure <= 7:
             result.update(reason=reason, rdpFailureCode=failure)
-    if result["method"] == "NTP (UDP)" and reason in (
-        "ntp_unsynchronized", "ntp_route_mismatch", "ntp_route_unconfirmed",
-        "timeout", "unexpected_response", "transport_error", "probe_configuration",
-    ):
-        result["reason"] = reason
+    if result["method"] == "NTP (UDP)":
+        if reason in ("ntp_unsynchronized", "ntp_rate_limited", "ntp_access_denied",
+                      "ntp_route_mismatch", "ntp_route_unconfirmed", "timeout",
+                      "unexpected_response", "transport_error", "probe_configuration"):
+            result["reason"] = reason
     if check.get("supplemental") is True:
         result["supplemental"] = True
     elif check.get("required") is True:
@@ -676,6 +676,16 @@ def _public_service_check(check: dict, now: datetime) -> dict:
             result["identityCheckedAt"] = _time(identity_at).isoformat()
         else:
             result.update(state="unknown", stale=True)
+    if result["method"] == "NTP (UDP)" and result["source"] == "UI_VPN" and not result["stale"]:
+        ntp = check.get("ntp")
+        if isinstance(ntp, dict):
+            version, stratum, leap = (ntp.get(key) for key in ("version", "stratum", "leapIndicator"))
+            if (type(version) is int and version in (3, 4) and type(stratum) is int and 0 <= stratum <= 255
+                    and type(leap) is int and 0 <= leap <= 3):
+                result["ntp"] = {"version": version, "stratum": stratum, "leapIndicator": leap}
+                code = ntp.get("kissCode")
+                if stratum == 0 and code in ("RATE", "DENY", "RSTR"):
+                    result["ntp"]["kissCode"] = code
     icmp = identified_icmp or result["method"] in ("ICMP", "ICMP адреса из инвентаря", "ICMP · VLAN", PPPOE_INTERNET_METHOD)
     if icmp or (result["method"] == "IPMI LAN (UDP)" and result["source"] == "UI_VPN"
                 and result["state"] == "reachable" and not result["stale"]):
@@ -2283,7 +2293,7 @@ def _attachment_probe_location(check: dict) -> dict:
     return {"target": check["target"], "port": check["port"], "method": check["method"],
             "checkedAt": check["checkedAt"], "state": check["state"],
             **({"path": check["path"]} if check.get("path") else {}),
-            **{key: check[key] for key in ("reason", "errorSource", "roundTripMs", "httpStatus", "responseCode", "rtspStatus", "dns",
+            **{key: check[key] for key in ("reason", "errorSource", "roundTripMs", "httpStatus", "responseCode", "rtspStatus", "dns", "ntp",
                                            "rdpSecurity", "rdpFailureCode", "tlsExpiresAt", "tlsVersion", "zabbixVersion",
                                            "smbDialect", "smbSigningRequired", "postgresqlTls", "redfishVersion", "ftpReply")
                if key in check}}
@@ -2876,7 +2886,7 @@ def summarize_services(graph: dict, *, host_id: str | None = None, offset: int =
              "required": check.get("required") is True,
              **{key: check[key] for key in ("source", "checkedAt", "stale", "reason", "path", "port", "target",
                                             "pppoe", "rtspStatus", "ftpReply", "tlsExpiresAt", "tlsVersion",
-                                            "dns", "localRoute", "vlanTransit", "identityCheckedAt", "errorSource",
+                                            "dns", "ntp", "localRoute", "vlanTransit", "identityCheckedAt", "errorSource",
                                             "responseCode", "attempts", "ipsecPolicy", "configuredPort", "localUdpSocket",
                                             "sessionCount", "daemonReady", "arpDiagnostic")
                 if key in check and check[key] is not None and check[key] != ""}}
