@@ -681,6 +681,9 @@ def test_mcp_infrastructure_port_scope_preserves_evidence_and_guest_observations
     pending = {"a": "unrelated", "b": "sw", "portA": "", "portB": "Gi1/0/22",
                "missingPortSides": ["a"], "portObservations": {"b": {"state": "up"}}}
     graph["currentPortPairs"] = [confirmed]
+    guest_attachment = {"guest": {"id": "vm"}, "switchPort": live["name"], "guestPort": "net0",
+                        "physicalPair": {"hostPort": "eno1", "switchPort": live["name"]}}
+    graph["guestSwitchAttachments"] = {"sw": [guest_attachment, {**guest_attachment, "switchPort": "Gi1/0/2"}]}
     inventory = {**confirmed, "portA": "Gi1/0/22",
                  "inventorySources": [{"path": "evidence/switch.yaml", "observedOn": "2026-11-11"}]}
     graph["inventoryPairs"] = [inventory, {**inventory, "portA": "Gi1/0/2"}]
@@ -704,6 +707,8 @@ def test_mcp_infrastructure_port_scope_preserves_evidence_and_guest_observations
     assert result["ports"] == [live]
     assert result["servicePorts"] == [graph["servicePorts"]["sw"][0]]
     assert result["currentPortPairs"] == [confirmed]
+    assert result["guestAttachmentTotal"] == 1
+    assert result["guestAttachments"] == [guest_attachment]
     assert result["inventoryPairs"] == [inventory]
     assert result["lacpPartnerInterfaceGaps"] == [lacp_gap]
     aggregate = server.call_tool(tool, {"node_id": "sw", "port_name": "po1"})["infrastructure"]

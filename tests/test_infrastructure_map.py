@@ -7222,6 +7222,9 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     row, = guests_on_port("XE3")
     assert row == {"guest": guest["guest"], "hypervisor": guest["hypervisor"],
                    "guestPort": "net0", "bridge": "vmbr1", **match}
+    legacy = client.get("/api/v1/network/infrastructure?include_service_ports=true&include_port_pairs=true",
+                        headers=headers).json()["infrastructure"]
+    assert legacy["guestSwitchAttachments"]["snr"] == [row]
     assert guests_on_port("ge12") == []
     vlan_evidence = match["vlanMemberships"]
     assert vlan_evidence == {"id": 1, "basis": "guest_mac", "ports": {

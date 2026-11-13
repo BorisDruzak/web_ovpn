@@ -602,7 +602,7 @@ def _infrastructure_port_pairs(graph: dict, node_id: str | None, port_keys: set[
 
 def _infrastructure_port(graph: dict, node: dict | None, port_name: str) -> dict:
     result = {"portName": port_name.strip(), "ports": [], "links": [], "guestObservations": [], "servicePorts": []}
-    result.update(lacpHealth=[], lacpPartnerInterfaceGaps=[])
+    result.update(lacpHealth=[], lacpPartnerInterfaceGaps=[], guestAttachmentTotal=0, guestAttachments=[])
     if node is None:
         return {**result, **_infrastructure_port_pairs(graph, None)}
     node_id = node["id"]
@@ -615,6 +615,9 @@ def _infrastructure_port(graph: dict, node: dict | None, port_name: str) -> dict
             port_keys.update(keys)
     result["servicePorts"] = [row for row in graph.get("servicePorts", {}).get(node_id, [])
                               if _port_key(row["port"]) in port_keys]
+    attached = [row for row in graph.get("guestSwitchAttachments", {}).get(node_id, [])
+                if _port_key(row["switchPort"]) in port_keys]
+    result.update(guestAttachmentTotal=len(attached), guestAttachments=attached[:128])
     result.update(_infrastructure_port_pairs(graph, node_id, port_keys))
     result["lacpPartnerInterfaceGaps"] = [
         gap for gap in graph.get("lacpPartnerInterfaceGaps", [])

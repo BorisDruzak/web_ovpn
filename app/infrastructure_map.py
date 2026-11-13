@@ -3233,6 +3233,7 @@ def load_infrastructure_map(
         "availability": "missing", "snapshotAt": None, "nodes": [], "links": [],
         "clusterId": "", "nodeOrder": [], "overviewGuests": [], "switchKinds": list(NETWORK_KINDS), "git": "",
         **({"servicePorts": {}} if include_service_ports else {}),
+        **({"guestSwitchAttachments": {}} if include_service_ports and include_port_pairs else {}),
         **({"currentPortPairs": [], "inventoryPairs": [], "pendingPortPairs": [],
             "lacpPartnerInterfaceGaps": []} if include_port_pairs else {}),
         **({"guestAttachments": {}, "servicePaths": {}, "servicePorts": {},
@@ -3554,7 +3555,10 @@ def load_infrastructure_map(
             lacpPartnerInterfaceGaps=lacp_gaps[:64],
         )
     elif include_service_ports:
-        attachments["servicePorts"] = _map_attachments(nodes, links, now, endpoint_keys=endpoint_keys)["servicePorts"]
+        mapped = _map_attachments(nodes, links, now, endpoint_keys=endpoint_keys)
+        attachments["servicePorts"] = mapped["servicePorts"]
+        if include_port_pairs:
+            attachments["guestSwitchAttachments"] = _guest_switch_attachments(mapped["guestAttachments"])
     if include_port_pairs:
         _, inventory_pairs, _, pending, current_pairs = _topology_port_pairs(nodes, links)
         attachments.update(currentPortPairs=current_pairs, inventoryPairs=inventory_pairs, pendingPortPairs=pending,
