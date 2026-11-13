@@ -5183,6 +5183,25 @@ def test_ipsec_path_checks_explicit_sources_in_both_directions(monkeypatch):
     assert calls[2:] == [("ui", "198.51.100.1", "192.0.2.30")]
 
 
+def test_routeros_ipsec_policy_read_requires_recognizable_rows(monkeypatch):
+    import pytest
+    from netctl.drivers.mikrotik_ssh import MikroTikSshDriver
+
+    driver = MikroTikSshDriver({"host": "198.51.100.1", "username": "observer"}, {})
+    template = '0 T * src-address=::/0 dst-address=::/0 template=yes'
+    policy = ('1 A peer=central src-address=198.51.100.0/24 dst-address=192.0.2.0/24 '
+              'tunnel=yes action=encrypt ph2-count=1')
+    for output in ("", "Flags: T - template", template + "\n1 A peer=central", policy.replace("peer=central ", "")):
+        monkeypatch.setattr(driver, "_run_read", lambda _, output=output: output)
+        with pytest.raises(ValueError, match="policy table"):
+            driver.read_ipsec_policies()
+    monkeypatch.setattr(driver, "_run_read", lambda _: template)
+    assert driver.read_ipsec_policies() == []
+    monkeypatch.setattr(driver, "_run_read", lambda _: template + "\n" + policy)
+    row, = driver.read_ipsec_policies()
+    assert row["peer"] == "central" and row["established"]
+
+
 def test_routeros_ping_uses_one_packet_and_rejects_injected_addresses(monkeypatch):
     from types import SimpleNamespace
     import pytest

@@ -244,7 +244,16 @@ class MikroTikSshDriver(NetworkDriver):
         return snapshot
 
     def read_ipsec_policies(self) -> list[dict[str, Any]]:
-        return MikroTikApiDriver.normalize_ipsec_policy_rows(self._run_print(self.IPSEC_PATHS["policies"]))
+        rows = self._run_print(self.IPSEC_PATHS["policies"])
+        if not rows or any(
+            not row.get("src-address") or not row.get("dst-address")
+            or (row.get("template") != "yes" and not row.get("action"))
+            or (row.get("action") == "encrypt" and row.get("template") != "yes"
+                and (row.get("tunnel") not in {"yes", "no"} or (row["tunnel"] == "yes" and not row.get("peer"))))
+            for row in rows
+        ):
+            raise ValueError("RouterOS IPsec policy table is empty or incomplete")
+        return MikroTikApiDriver.normalize_ipsec_policy_rows(rows)
 
     def ipsec_status(self) -> dict[str, Any]:
         raw: dict[str, Any] = {}
