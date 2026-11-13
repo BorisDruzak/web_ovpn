@@ -119,21 +119,45 @@ def store_receipt(origin: str, profile_id: str, profile: RouteProfile, payload: 
             pending.unlink(missing_ok=True)
 
 
-def read_measurement(profile_id: str, probe: RouteProbe) -> dict:
-    started = monotonic()
+def _receipt_measurement(probe: RouteProbe, envelopes: dict, measured: datetime, now: datetime, started: float) -> dict:
+    measured_at = measured.isoformat()
     try:
-        measured, envelopes = _read(_receipt_path(probe.push_origin, profile_id))
-        now = utcnow()
         if not now - MAX_AGE <= measured <= now + CLOCK_TOLERANCE:
-            return _result("unavailable", "origin_receipt_stale", started)
-        envelope = envelopes.get(probe.id, {})
-        if envelope.get("digest") != probe.config_digest():
-            return _result("unavailable", "profile_mismatch", started)
-        return {**_measurement(envelope, probe), "measured_at": measured.isoformat()}
-    except FileNotFoundError:
-        return _result("unavailable", "origin_receipt_missing", started)
+            result = _result("unavailable", "origin_receipt_stale", started)
+        else:
+            envelope = envelopes.get(probe.id, {})
+            if envelope.get("digest") != probe.config_digest():
+                result = _result("unavailable", "profile_mismatch", started)
+            else:
+                result = {**_measurement(envelope, probe), "measured_at": measured_at}
     except (AttributeError, OSError, KeyError, TypeError, ValueError, RecursionError):
         return _result("unavailable", "origin_receipt_invalid", started)
+    result["evidence"]["origin_measured_at"] = measured_at
+    return result
+
+
+def read_measurements(profile_id: str, profile: RouteProfile) -> dict[str, dict]:
+    by_origin: dict[str, list[RouteProbe]] = {}
+    for probe in profile.probes:
+        if probe.push_origin:
+            by_origin.setdefault(probe.push_origin, []).append(probe)
+    results = {}
+    now = utcnow()
+    for origin, probes in by_origin.items():
+        started = monotonic()
+        try:
+            measured, envelopes = _read(_receipt_path(origin, profile_id))
+        except FileNotFoundError:
+            reason = "origin_receipt_missing"
+        except (OSError, TypeError, ValueError, RecursionError, OverflowError):
+            reason = "origin_receipt_invalid"
+        else:
+            results.update({
+                probe.id: _receipt_measurement(probe, envelopes, measured, now, started) for probe in probes
+            })
+            continue
+        results.update({probe.id: _result("unavailable", reason, started) for probe in probes})
+    return results
 
 
 def main() -> int:

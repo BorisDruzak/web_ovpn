@@ -43,12 +43,41 @@ def test_pushed_measurement_uses_original_time_and_current_config(tmp_path, monk
     assert row["status"] == "reachable"
     assert row["origin"] == ORIGIN
     assert row["checked_at"] == NOW.isoformat()
+    assert row["evidence"]["origin_measured_at"] == NOW.isoformat()
     assert row["evidence"]["http_status"] == 200
     assert "private" not in row["evidence"]
     changed = probe.model_copy(update={"http_path": "/health"})
-    assert network_route_spool.read_measurement(PROFILE, changed)["evidence"]["reason"] == "profile_mismatch"
+    changed_profile = push_profile.model_copy(update={"probes": [changed]})
+    assert network_route_spool.read_measurements(PROFILE, changed_profile)[probe.id]["evidence"]["reason"] == "profile_mismatch"
     monkeypatch.setattr(network_route_spool, "utcnow", lambda: NOW + timedelta(minutes=4))
-    assert network_route_spool.read_measurement(PROFILE, probe)["evidence"]["reason"] == "origin_receipt_stale"
+    stale = network_route_spool.read_measurements(PROFILE, push_profile)[probe.id]
+    assert stale["evidence"]["reason"] == "origin_receipt_stale"
+    assert stale["evidence"]["origin_measured_at"] == NOW.isoformat()
+    assert "measured_at" not in stale
+
+
+def test_matrix_reads_one_receipt_for_all_probes_from_origin(tmp_path, monkeypatch, push_profile):
+    from app import network_route_matrix, network_route_spool
+
+    probe, = push_profile.probes
+    second = probe.model_copy(update={"id": "http-second"})
+    profile = push_profile.model_copy(update={"probes": [probe, second]})
+    reads = []
+
+    def read(path):
+        reads.append(path)
+        return NOW, {
+            definition.id: json.loads(receipt(definition))["probes"][definition.id]
+            for definition in profile.probes
+        }
+
+    monkeypatch.setattr(network_route_spool, "SPOOL_PATH", tmp_path)
+    monkeypatch.setattr(network_route_spool, "utcnow", lambda: NOW)
+    monkeypatch.setattr(network_route_spool, "_read", read)
+    result = network_route_matrix.run_route_matrix(PROFILE, profile)
+    assert result["status"] == "reachable"
+    assert len(reads) == 1
+    assert {row["evidence"]["origin_measured_at"] for row in result["result"]["probes"]} == {NOW.isoformat()}
 
 
 def test_push_rejects_unapproved_replay_and_wrong_route(tmp_path, monkeypatch, push_profile):

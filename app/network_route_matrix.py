@@ -98,7 +98,9 @@ def _openvpn_session(probe: RouteProbe, sessions: list[dict] | None) -> str:
     return "not_connected"
 
 
-def _run_probe(profile_id: str, probe: RouteProbe, sessions: list[dict] | None = None) -> dict:
+def _run_probe(
+    profile_id: str, probe: RouteProbe, sessions: list[dict] | None, pushed: dict[str, dict],
+) -> dict:
     config_digest = probe.config_digest()
     session = _openvpn_session(probe, sessions) if probe.openvpn_client else None
     try:
@@ -114,9 +116,7 @@ def _run_probe(profile_id: str, probe: RouteProbe, sessions: list[dict] | None =
 
             measurement = probe_remote_route(probe.agent_origin, profile_id, probe.id, probe.local_arguments())
         elif probe.push_origin:
-            from .network_route_spool import read_measurement
-
-            measurement = read_measurement(profile_id, probe)
+            measurement = pushed[probe.id]
         else:
             measurement = probe_local_route(**probe.local_arguments())
     except (NetctlError, OSError, UnicodeError, ValueError):
@@ -159,11 +159,14 @@ def _run_probe(profile_id: str, probe: RouteProbe, sessions: list[dict] | None =
 
 
 def run_route_matrix(profile_id: str, profile: RouteProfile) -> dict:
+    from .network_route_spool import read_measurements
+
+    pushed = read_measurements(profile_id, profile)
     sessions = _read_openvpn_sessions() if any(probe.openvpn_client for probe in profile.probes) else None
     with ThreadPoolExecutor(max_workers=4) as pool:
         sources = {probe.router_source for probe in profile.probes if probe.ipsec}
         ipsec = {source: pool.submit(_read_ipsec, source) for source in sources}
-        probes = list(pool.map(lambda probe: _run_probe(profile_id, probe, sessions), profile.probes))
+        probes = list(pool.map(lambda probe: _run_probe(profile_id, probe, sessions, pushed), profile.probes))
     for definition, row in zip(profile.probes, probes, strict=True):
         if definition.ipsec:
             row["ipsec"] = _ipsec_evidence(ipsec[definition.router_source].result(), definition)

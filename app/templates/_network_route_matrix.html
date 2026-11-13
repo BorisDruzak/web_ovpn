@@ -10,6 +10,9 @@
         <td>{{ row.target }} · {{ row.protocol | upper }}{% if row.dns_transport %} / {{ row.dns_transport | upper }}{% endif %}</td>
         <td>
           {{ status_labels.get(row.status, row.status) }}
+          {% if row.evidence.origin_measured_at is defined %}
+          <br>Замер на пробнике <time datetime="{{ row.evidence.origin_measured_at }}">{{ row.evidence.origin_measured_at }}</time>
+          {% endif %}
           {% if row.evidence.openvpn_session is defined %}
           <br>{{ row.openvpn_client }} · {{ {
             'connected': 'сессия подтверждена',
