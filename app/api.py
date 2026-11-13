@@ -1486,6 +1486,13 @@ def api_network_route_runs(
     return api_response({"runs": runs})
 
 
+@router.get("/network/websites")
+def api_network_websites(actor: str = Depends(require_api_actor)):
+    from .website_checks import report
+
+    return api_response(report())
+
+
 @router.get("/network/diagnostics/route-overview")
 def api_network_route_overview(
     actor: str = Depends(require_api_actor),

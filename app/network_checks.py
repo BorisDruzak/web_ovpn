@@ -248,11 +248,16 @@ def trace_linux_route(destination: ipaddress.IPv4Address) -> dict:
     denial = host_availability_action_error(host, address)
     if denial is not None:
         return {"status": "not_found" if denial[0] == 404 else "not_monitored", "result": {}}
+    return trace_address(destination)
+
+
+def trace_address(destination: ipaddress.IPv4Address | ipaddress.IPv6Address) -> dict:
+    address = str(destination)
     timed_out = False
     returncode = 0
     try:
         completed = subprocess.run(
-            [TRACEPATH_PATH, "-4", "-n", "-m", str(TRACE_MAX_HOPS), address],
+            [TRACEPATH_PATH, f"-{destination.version}", "-n", "-m", str(TRACE_MAX_HOPS), address],
             capture_output=True, text=True, timeout=TRACE_TIMEOUT_SECONDS, check=False,
             env={**os.environ, "LC_ALL": "C"},
         )
@@ -270,7 +275,7 @@ def trace_linux_route(destination: ipaddress.IPv4Address) -> dict:
         if match is None or not 1 <= int(match[1]) <= TRACE_MAX_HOPS:
             continue
         try:
-            responder = str(ipaddress.IPv4Address(match[2]))
+            responder = str(ipaddress.ip_address(match[2]))
         except ValueError:
             if match[2] != "no" or match[3].strip() != "reply":
                 continue

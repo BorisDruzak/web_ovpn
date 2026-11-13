@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Доступность сайтов{% endblock %}
+{% block page_title %}Доступность сайтов{% endblock %}
+{% block content %}
+{% set labels = {
+  'ok': 'HTML получен', 'challenge': 'Страница проверки браузера', 'not_html': 'HTML не получен',
+  'blocked': 'Доступ ограничен', 'http_error': 'Ошибка HTTP', 'dns_error': 'Ошибка DNS',
+  'tls_error': 'Ошибка TLS', 'timeout': 'Тайм-аут', 'connection_error': 'Ошибка соединения',
+  'redirect_outside_catalog': 'Переадресация за пределы списка', 'redirect_limit': 'Слишком много переадресаций',
+  'body_limit': 'Превышен размер ответа', 'pending': 'Ожидается проверка'
+} %}
+<section class="card">
+  <p>Источник — VPN-сервер. Интервал — {{ report.interval_minutes }} мин.</p>
+  {% if report.checked_at %}<p>Последний цикл <time>{{ report.checked_at }}</time>{% if report.stale %} · данные устарели{% endif %}</p>{% endif %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Сайт</th><th>Результат</th><th>DNS и TLS</th><th>Трассировка</th></tr></thead>
+      <tbody>
+      {% for site in report.sites %}
+        <tr>
+          <td><a href="{{ site.url }}">{{ site.url }}</a></td>
+          <td>{{ labels.get(site.status, site.status) }}{% if site.http_status %} · HTTP {{ site.http_status }}{% endif %}
+            {% if site.total_ms is not none and site.total_ms is defined %}<br>{{ site.total_ms }} мс{% endif %}
+            {% if site.first_byte_ms is defined and site.first_byte_ms is not none %} · первый байт {{ site.first_byte_ms }} мс{% endif %}
+            {% if site.body_bytes %}<br>{{ site.content_type or 'Тип ответа не указан' }} · {{ site.body_bytes }} Б{% endif %}
+            {% if site.redirects %}<br>Переадресации: {{ site.redirects | join(' → ') }}{% endif %}
+          </td>
+          <td>{% if site.dns %}{{ site.dns | join(', ') }}{% else %}—{% endif %}
+            {% if site.address %}<br>Проверен {{ site.address }}{% endif %}
+            {% if site.tls == 'verified' %}<br>TLS подтверждён{% elif site.tls == 'failed' %}<br>TLS не прошёл{% endif %}
+          </td>
+          <td>{% if site.trace %}
+            <details><summary>{{ {'reached': 'Цель достигнута', 'partial': 'Частичная', 'failed': 'Ошибка', 'unavailable': 'Недоступна'}.get(site.trace.status, site.trace.status) }}</summary>
+              {% if site.trace.result.hops %}<ul>{% for hop in site.trace.result.hops %}
+                <li>{{ hop.hop }} · {{ hop.address or 'Нет ответа' }}{% if hop.rtt_ms is not none %} · {{ hop.rtt_ms }} мс{% endif %}</li>
+              {% endfor %}</ul>{% endif %}
+              {% if site.trace.result.timed_out %}<p>Истёк срок трассировки.</p>{% endif %}
+            </details>
+          {% else %}—{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% if report.history %}
+<section class="card">
+  <h2>Последние циклы</h2>
+  {% for cycle in report.history %}
+  <details><summary>{{ cycle.checked_at }}</summary>
+    <ul>{% for site in cycle.sites %}<li>{{ site.url }} · {{ labels.get(site.status, site.status) }}{% if site.http_status %} · HTTP {{ site.http_status }}{% endif %}</li>{% endfor %}</ul>
+  </details>
+  {% endfor %}
+</section>
+{% endif %}
+{% endblock %}

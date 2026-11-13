@@ -221,6 +221,9 @@ TOOLS: dict[str, dict[str, Any]] = {
         "List the authenticated actor's recent network diagnostic runs.",
         {"limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}},
     ),
+    "openvpn_network_website_checks": tool_schema(
+        "Read scheduled website checks including DNS, TLS, HTML, HTTP timing, trace and recent history.",
+    ),
     "openvpn_network_route_overview": tool_schema(
         "Read the latest scheduled result for every scheduled route profile, including freshness and configuration status.",
     ),
@@ -900,6 +903,8 @@ def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         return api_request("GET", "/api/v1/network/diagnostics/checks")
     if name == "openvpn_network_check_runs":
         return api_request("GET", _query_path("/api/v1/network/diagnostics/runs", [("limit", arguments.get("limit", 20))]))
+    if name == "openvpn_network_website_checks":
+        return api_request("GET", "/api/v1/network/websites")
     if name == "openvpn_network_route_overview":
         return api_request("GET", "/api/v1/network/diagnostics/route-overview")
     if name == "openvpn_network_route_runs":

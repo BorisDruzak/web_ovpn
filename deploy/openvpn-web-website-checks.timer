@@ -1,0 +1,10 @@
+[Unit]
+Description=Check website availability every five minutes
+
+[Timer]
+OnCalendar=*-*-* *:00/5:20
+AccuracySec=1s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

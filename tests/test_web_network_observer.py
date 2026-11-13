@@ -3167,6 +3167,22 @@ def test_network_diagnostic_api_returns_ipsec_backups_and_logs(tmp_path, monkeyp
     assert logs.json()["data"]["events"] == []
 
 
+def test_scheduled_websites_are_available_in_panel_and_api(tmp_path, monkeypatch):
+    from app import website_checks
+
+    client, headers = make_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(website_checks, "STATE", tmp_path / "website-checks.json")
+    endpoint = "/api/v1/network/websites"
+    assert client.get(endpoint).status_code == 401
+    data = client.get(endpoint, headers=headers).json()["data"]
+    assert len(data["sites"]) == 5 and data["stale"]
+    login(client)
+    page = client.get("/network/websites")
+    assert page.status_code == 200
+    assert "https://pos.gosuslugi.ru/admin/login" in page.text
+    assert "Ожидается проверка" in page.text
+
+
 def test_ipsec_keeps_unreachable_source_in_api_and_panel(tmp_path, monkeypatch):
     client, headers = make_client(tmp_path, monkeypatch)
     login(client)

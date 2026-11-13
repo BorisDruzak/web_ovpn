@@ -35,6 +35,7 @@
         <summary>Сеть и диагностика</summary>
         {{ nav_item('/network/dashboard', 'Обзор сети', nav_path == '/network/dashboard') }}
         {{ nav_item('/network/diagnostics', 'Сетевые проверки', nav_path.startswith('/network/diagnostics')) }}
+        {{ nav_item('/network/websites', 'Доступность сайтов', nav_path == '/network/websites') }}
         {{ nav_item('/network/infrastructure', 'Инфраструктура', nav_path == '/network/infrastructure') }}
         {{ nav_item('/network/server-health', 'Состояние серверов', nav_path == '/network/server-health') }}
         {{ nav_item('/network/hosts', 'Устройства сети', nav_path.startswith('/network/hosts') or nav_path.startswith('/network/assets/')) }}

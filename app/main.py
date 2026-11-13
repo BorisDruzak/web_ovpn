@@ -2620,6 +2620,14 @@ def network_checks(request: Request, db: Session = Depends(get_db)):
     return render_network_checks(request, db)
 
 
+@app.get("/network/websites", response_class=HTMLResponse)
+def network_websites(request: Request, db: Session = Depends(get_db)):
+    from .website_checks import report
+
+    require_user(request, db)
+    return render(request, "network_websites.html", {"report": report()}, db)
+
+
 @app.post("/network/diagnostics/checks", response_class=HTMLResponse)
 async def run_network_check(request: Request, db: Session = Depends(get_db)):
     user = require_user(request, db)

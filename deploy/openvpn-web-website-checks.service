@@ -1,0 +1,17 @@
+[Unit]
+Description=Check configured HTTPS websites from the VPN server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=openvpn-web
+Group=openvpn-web
+WorkingDirectory=/opt/openvpn-web
+ExecStart=/opt/openvpn-web/.venv/bin/python -m app.website_checks
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/openvpn-web
+NoNewPrivileges=true
+TimeoutStartSec=3min
