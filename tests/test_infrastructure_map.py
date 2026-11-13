@@ -7925,6 +7925,8 @@ def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_pa
     assert (pending["a"], pending["b"], pending["portA"], pending["portB"]) == ("snr", "pve", "ge12", "management_1g")
     observed, = pending["observedPaths"]
     assert (observed["portA"], observed["portB"]) == ("ge12", "enp134s0")
+    projected = next(row for row in browser_graph["pendingPortPairs"] if row["portA"] == "ge12")
+    assert projected["observedPaths"] == [{key: observed[key] for key in ("portA", "portB", "source", "checkedAt")}]
     assert pending["portObservations"] == {
         "a": {"name": "ge12", "state": "down", "checkedAt": now, "speedBps": None,
               "configuredLabel": {"text": "PVE1 IPMI", "checkedAt": now}},

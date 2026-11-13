@@ -257,7 +257,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   function pendingPortPairRow({a, b, nameA, nameB, portA, portB, observedSources = [], lldpPortIds = [],
       observedSourceTimes = {}, identifiedPeerSides = [], archivedPortSides = [], inventoryPortSides = [],
       portObservations = {}, stpPaths = [], stpBridgeConnections = [], stpBridgeMacObservations = [], lldpPeers = {},
-      archivedPortAt = {}, inventorySources = [], inventoryPeerPorts = [], arpDiagnostics = {}}) {
+      archivedPortAt = {}, inventorySources = [], inventoryPeerPorts = [], arpDiagnostics = {}, observedPaths = []}) {
     const item = make('li');
     const provenance = key => archivedPortSides.includes(key) ? ' (по архиву)' :
       inventoryPortSides.includes(key) ? ' (по инвентарю)' : '';
@@ -271,6 +271,13 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       const label = source === 'netctl FDB' ? 'MAC на порту' : source;
       const checkedAt = observedSourceTimes[source];
       item.append(make('small', checkedAt ? `${label} · ${formatTime(checkedAt)}` : label));
+    }
+    for (const path of observedPaths) {
+      if (!path.portA || !path.portB) continue;
+      const row = make('small', `Наблюдаемый путь · ${path.source} · `);
+      row.append(portPairEndpoint(a, nameA, path.portA), ' ↔ ', portPairEndpoint(b, nameB, path.portB));
+      if (path.checkedAt) row.append(` · ${formatTime(path.checkedAt)}`);
+      item.append(row);
     }
     for (const [side, peers] of Object.entries(lldpPeers)) {
       const [observer, neighbor] = side === 'a' ? [nameA, nameB] : [nameB, nameA];

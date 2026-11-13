@@ -3604,6 +3604,10 @@ def load_infrastructure_map(
             pendingPortPairTotal=len(pending),
             pendingPortPairs=[
                 {**{key: row[key] for key in ("a", "b", "nameA", "nameB", "portA", "portB")},
+                 "observedPaths": [
+                     {key: reading[key] for key in ("portA", "portB", "source", "checkedAt")}
+                     for reading in row["observedPaths"]
+                 ],
                  "observedSources": sorted({reading["source"] for reading in row["observedPaths"]}),
                  "observedSourceTimes": {
                      reading["source"]: reading["checkedAt"]
