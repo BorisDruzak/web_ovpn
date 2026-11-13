@@ -6306,6 +6306,46 @@ def test_management_path_includes_both_ports_only_for_unique_current_cable(tmp_p
     assert "lldpPeers" not in read()
 
 
+def test_controller_warns_for_errors_on_its_unambiguous_management_switch_port(tmp_path):
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    telemetry = {"checkedAt": at, "intervalSeconds": 300, "rxErrors": 12}
+    port = {"name": "ge4", "state": "up", "checkedAt": at, "telemetry": telemetry,
+            "fdbLearned": {"learnedMacCount": 1, "partial": False, "checkedAt": at}}
+    controller = {"id": "bmc", "name": "BMC", "kind": "Контроллер управления",
+                  "reachability": {"state": "reachable", "source": "UI_VPN", "method": "ICMP · ARP + FDB", "checkedAt": at}}
+    switch = {"id": "sw", "name": "Switch", "kind": "Коммутатор", "ports": [port]}
+    evidence = {"a": "ge4", "b": "", "source": "netctl FDB", "at": at, "confirmed": True,
+                "managementAddress": "192.0.2.14",
+                "learnedEndpoint": {"switchId": "sw", "deviceId": "bmc", "mac": "02:00:00:00:00:14"}}
+    link = {"a": "sw", "b": "bmc", "kind": "Путь по MAC-таблице", "source": "netctl FDB", "confirmed": True,
+            "observedAt": at, "portEvidence": [evidence]}
+    snapshot = tmp_path / "map.json"
+
+    def read():
+        raw = {"schema": 1, "snapshotAt": at, "nodes": [switch, controller], "links": [link]}
+        snapshot.write_text(json.dumps(raw), encoding="utf-8")
+        graph = load_infrastructure_map(snapshot, now)
+        return next(node for node in graph["nodes"] if node["id"] == "bmc")
+
+    node = read()
+    assert node["mapStatus"] == "warn"
+    assert node["reachability"]["state"] == "reachable"
+    assert node["managementPortErrors"] == {"switchId": "sw", "port": "ge4", "source": "netctl FDB",
+                                            "checkedAt": at, "telemetry": telemetry}
+    port["fdbLearned"]["learnedMacCount"] = 2
+    assert read()["mapStatus"] == "ok"
+    port["fdbLearned"]["learnedMacCount"] = 1
+    telemetry["rxErrors"] = 0
+    telemetry["rxDiscards"] = 5
+    assert "managementPortErrors" not in read()
+    telemetry["rxErrors"] = 12
+    evidence["at"] = (now - timedelta(hours=1)).isoformat()
+    assert "managementPortErrors" not in read()
+
+
 def test_hypervisor_fdb_path_reports_management_interface_without_claiming_direct_cable(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map

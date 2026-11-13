@@ -1552,6 +1552,17 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const columns = make('div', null, 'map-detail-columns');
     const propertiesSection = make('section');
     propertiesSection.append(make('h3', 'Доступность'), properties);
+    if (node.managementPortErrors) {
+      const {switchId, port, telemetry} = node.managementPortErrors;
+      const upstream = byId.get(switchId);
+      if (upstream) {
+        const link = make('a', `${upstream.name} · ${port}`);
+        link.href = '?' + new URLSearchParams({node: switchId, port});
+        const row = make('dd');
+        row.append(link, make('small', formatPortCounterChanges(telemetry)));
+        properties.append(make('dt', 'Ошибки на порту управления'), row);
+      }
+    }
     if (node.checks?.length) {
       const panel = make('details', null, 'map-port-panel');
       panel.dataset.section = 'checks';

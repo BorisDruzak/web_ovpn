@@ -1493,6 +1493,8 @@ def _map_statuses(nodes: dict, links: list[dict]) -> None:
             if memory := capacity.get("memoryHeadroom"):
                 checks.append(memory["status"])
         checks.extend(report["status"] for report in node.get("lacpHealth", []))
+        if node.get("managementPortErrors"):
+            checks.append("warn")
         if coverage := node.get("backupScope", {}).get("running"):
             if coverage["notScheduled"]:
                 checks.append("warn")
@@ -2992,6 +2994,34 @@ def _observed_management_ports(links: list[dict], nodes: dict) -> dict:
     return {key: next(iter(ports.values())) for key, ports in candidates.items() if len(ports) == 1}
 
 
+def _attach_controller_port_errors(nodes: dict, links: list[dict]) -> None:
+    paths = defaultdict(list)
+    for (host, _), path in _observed_management_ports(links, nodes).items():
+        if attachment := path.get("switchAttachment"):
+            paths[host].append(attachment)
+    for host, attachments in paths.items():
+        if nodes[host]["kind"] != "Контроллер управления" or len(attachments) != 1:
+            continue
+        attachment, = attachments
+        telemetry = attachment.get("telemetry", {})
+        if not (telemetry.get("rxErrors") or telemetry.get("txErrors")):
+            continue
+        switch = attachment["switchId"]
+        label = port_label_key(attachment["port"])
+        ports = [port for port in nodes[switch]["ports"] if label in {
+            port_label_key(name) for name in [port["name"], *port.get("aliases", [])]
+        }]
+        if len(ports) != 1:
+            continue
+        learned = ports[0].get("fdbLearned", {})
+        if (learned.get("partial") is False and learned.get("learnedMacCount") == 1
+                and learned.get("checkedAt") == telemetry["checkedAt"]
+                and abs(_time(attachment["checkedAt"]) - _time(telemetry["checkedAt"])) <= timedelta(seconds=30)):
+            nodes[host]["managementPortErrors"] = {**{
+                key: attachment[key] for key in ("switchId", "port", "source", "checkedAt")
+            }, "telemetry": telemetry}
+
+
 def _management_service_paths(service: dict, host: str, management: dict, observed_ports: dict,
                               nodes: dict | None = None) -> list[dict]:
     paths = []
@@ -4177,6 +4207,7 @@ def load_infrastructure_map(
     _attach_guest_observer_measurements(nodes, links)
     _attach_acti_backup_job(nodes, links)
     _attach_backup_scope(nodes)
+    _attach_controller_port_errors(nodes, links)
     _map_statuses(nodes, links)
     cluster_id = _text(raw.get("clusterId"))
     _attach_storage_assignments(nodes, links, cluster_id)
