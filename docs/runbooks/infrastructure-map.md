@@ -402,6 +402,8 @@
 
 Тот же порядок применяется для ACTI, Реестровой системы, Storage Console, SonarQube и Sentry. Внутренний DNS должен вернуть адрес, указанный в основной HTTPS-проверке соответствующего приложения.
 
+Карточки `pve1-management-internal-dns`, `pve2-management-internal-dns`, `pve3-management-internal-dns` и `pbs-management-internal-dns` используют тот же адрес OPNsense и привязку к ВМ 110. Для каждой карточки ожидаемая A-запись соответствует каноническому адресу управления хоста. Через `used_by` свяжите каждую карточку PVE со своим `pveN-management`, а карточку PBS — с `pbs-web`. Отказ DNS при рабочем HTTPS виден как недоступная зависимость панели. Проверки выполняются из UI_VPN и отражают ответы этого резолвера.
+
 Для клиентского API Directum задайте `json_fields` как `{"ProductName":"Directum RX","PlatformName":"Sungero","MaintenanceModeState.IsEnabled":false,"MaintenanceModeState.IsSafeModeEnabled":false}` и `json_unavailable` как `{"ProductName":"Directum RX","PlatformName":"Sungero","MaintenanceModeState.IsEnabled":true}`.
 
 Для службы, привязанной к серверу из сетевого контекста, задайте в `asset_services` запись по ID службы с полями `asset` и `label`. Адрес проверки должен совпадать с `management_ip` этого сервера. HTTPS по умолчанию проверяет системную цепочку доверия. Для сервера с самоподписанным сертификатом можно указать сверенный отпечаток `tls_sha256` из 64 шестнадцатеричных символов. При смене сертификата проверьте новый отпечаток перед обновлением привязки. Доступность веб-панели PBS и состояние резервных копий проверяются независимо.
