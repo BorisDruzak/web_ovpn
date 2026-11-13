@@ -2053,6 +2053,22 @@ def test_network_action_throttle_accepts_only_one_concurrent_session(tmp_path, m
     assert sorted(accepted) == [False, True]
 
 
+def test_network_throttle_reports_remaining_time_without_extending_it(tmp_path, monkeypatch):
+    make_client(tmp_path, monkeypatch)
+    from app.db import get_sessionmaker
+    from app.network_actions import acquire_network_action
+
+    now = datetime.now(timezone.utc)
+    with get_sessionmaker()() as db:
+        assert acquire_network_action(db, "operator", "capture", now).accepted
+        denied = acquire_network_action(db, "operator", "capture", now + timedelta(seconds=120.25))
+        assert not denied.accepted and denied.retry_after_seconds == 180
+        almost_ready = acquire_network_action(db, "operator", "capture", now + timedelta(seconds=299.5))
+        assert not almost_ready.accepted and almost_ready.retry_after_seconds == 1
+        ready = acquire_network_action(db, "operator", "capture", now + timedelta(seconds=300))
+        assert ready.accepted and ready.retry_after_seconds is None
+
+
 def test_observation_refresh_is_independently_throttled_and_uses_fixed_command(tmp_path, monkeypatch):
     """Observation refresh must not accept a browser-selected source or reuse the probe budget."""
     client, _ = make_client(tmp_path, monkeypatch)
@@ -2498,8 +2514,15 @@ def test_network_active_check_uses_shared_throttle(tmp_path, monkeypatch):
     endpoint = "/api/v1/network/diagnostics/checks"
     payload = {"check": "trace_route", "destination": "192.0.2.20"}
     assert client.post(endpoint, headers=headers, json=payload).json()["data"]["status"] == "reached"
-    assert client.post(endpoint, headers=headers, json=payload).json()["data"]["status"] == "rate_limited"
-    assert targets == ["192.0.2.20"]
+    limited = client.post(endpoint, headers=headers, json=payload).json()["data"]
+    assert limited["status"] == "rate_limited"
+    assert 1 <= limited["result"]["retry_after_seconds"] <= 300
+    csrf = login(client)
+    form = {**payload, "csrf_token": csrf}
+    assert client.post("/network/diagnostics/checks", data=form).status_code == 200
+    page = client.post("/network/diagnostics/checks", data=form)
+    assert "Повтор доступен через" in page.text
+    assert targets == ["192.0.2.20", "192.0.2.20"]
 
 
 @pytest.mark.parametrize("reason,route_status,label,route_label", [

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
+from math import ceil
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.orm import Session
 
@@ -17,6 +18,7 @@ NETWORK_ACTION_INTERVAL_SECONDS = 300
 class NetworkActionPermit:
     accepted: bool
     message: str
+    retry_after_seconds: int | None = None
 
 
 def acquire_network_action(
@@ -45,10 +47,20 @@ def acquire_network_action(
                 .values(last_accepted_at=now)
             )
             accepted = updated.rowcount == 1
+        retry_after_seconds = None
+        if not accepted:
+            last_accepted = db.execute(
+                select(NetworkActionThrottle.last_accepted_at).where(
+                    NetworkActionThrottle.actor == actor, NetworkActionThrottle.action == action,
+                )
+            ).scalar_one()
+            last_accepted = last_accepted.replace(tzinfo=last_accepted.tzinfo or UTC)
+            cutoff_utc = cutoff.replace(tzinfo=cutoff.tzinfo or UTC)
+            retry_after_seconds = max(1, ceil((last_accepted - cutoff_utc).total_seconds()))
         db.commit()
     except Exception:
         db.rollback()
         raise
     if accepted:
         return NetworkActionPermit(True, "")
-    return NetworkActionPermit(False, "Повторите действие через 5 минут")
+    return NetworkActionPermit(False, "Повторите действие через 5 минут", retry_after_seconds)

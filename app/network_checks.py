@@ -130,7 +130,7 @@ CHECK_STATUS_LABELS = {
     "reached": "Назначение ответило на трассировку",
     "partial": "Получена неполная трассировка",
     "not_monitored": "Узел не входит в мониторинг",
-    "rate_limited": "Повторите эту проверку через 5 минут",
+    "rate_limited": "Действует интервал между запусками",
     "measured": "Замер пропускной способности завершён",
     "captured": "Захват сохранён",
     "empty_capture": "Захват завершён без совпавших пакетов",
@@ -411,8 +411,10 @@ def run_audited_network_check(db: Session, request: Request, actor: str, check: 
     throttle_action = f"{action}:{check.profile}:{check.direction}" if isinstance(check, (IperfCheck, HttpsSpeedCheck)) else action
     if isinstance(check, RouteAvailabilityCheck):
         throttle_action = f"{action}:{check.profile}"
-    allowed = not active or acquire_network_action(db, owner, throttle_action, datetime.now(UTC)).accepted
-    result = execute_network_check(check, allowed=allowed, capture_owner=owner)
+    permit = acquire_network_action(db, owner, throttle_action, datetime.now(UTC)) if active else None
+    result = execute_network_check(check, allowed=permit is None or permit.accepted, capture_owner=owner)
+    if permit is not None and not permit.accepted and permit.retry_after_seconds is not None:
+        result["result"]["retry_after_seconds"] = permit.retry_after_seconds
     if isinstance(check, RouteAvailabilityCheck) and result["result"].get("probes"):
         persist_route_run(db, owner=owner, result=result)
     message = result["target"]

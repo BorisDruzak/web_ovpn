@@ -35,7 +35,9 @@
 <section class="card" aria-labelledby="network-check-result">
   <h2 id="network-check-result">{{ route_status(result.status, result.result.probes, status_labels) if result.check == 'route_availability' else status_labels.get(result.status, result.status) }}</h2>
   <p>{{ result.target }} · <time datetime="{{ result.checked_at }}">{{ result.checked_at }}</time></p>
-  {% if result.check == 'route_availability' and result.result %}
+  {% if result.status == 'rate_limited' and result.result.retry_after_seconds is defined %}
+  <p>Повтор доступен через {{ result.result.retry_after_seconds }} с.</p>
+  {% elif result.check == 'route_availability' and result.result %}
   <p>{{ result.result.label }}</p>
   {% with route_probes = result.result.probes %}{% include "_network_route_matrix.html" %}{% endwith %}
   {% elif result.check == 'linux_route' and result.result %}
