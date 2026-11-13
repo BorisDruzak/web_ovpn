@@ -10137,6 +10137,19 @@ def test_router_layer2_checks_follow_inventory_and_guest_arp_identity(monkeypatc
     context["devices"][0]["mac_addresses"] = [mac]
     assert collector._collect_asset_mac_probes(context, [source], bindings["asset_mac_probes"]) == {}
     assert len(calls) == 2
+    context["devices"][0].update(mac_addresses=[ap_mac], management_ip="192.0.2.24")
+    spec = bindings["asset_mac_probes"]["ap"]
+    spec["address"] = "192.0.2.24"
+    checked = collector._collect_asset_mac_probes(context, [source], bindings["asset_mac_probes"])
+    assert checked["ap"]["method"] == "ARP · L2"
+    assert checked["ap"]["target"] == "192.0.2.24"
+    assert calls[-1] == ("bridge-lan", ap_mac, "192.0.2.24")
+    spec["address"] = ip
+    assert collector._collect_asset_mac_probes(context, [source], bindings["asset_mac_probes"]) == {}
+    spec["address"] = "192.0.2.24"
+    context["devices"].append({"id": "other", "management_ip": spec["address"]})
+    assert collector._collect_asset_mac_probes(context, [source], bindings["asset_mac_probes"]) == {}
+    assert len(calls) == 3
 
 
 def test_guest_attachment_probe_requires_router_arp_and_a_live_learned_switch_port(monkeypatch):

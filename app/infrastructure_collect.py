@@ -615,8 +615,10 @@ def _refresh_lacp_peer_arp(context: dict, network: dict, now: datetime) -> None:
 
 
 def _collect_asset_mac_probes(context: dict, sources: list[dict], configured: dict) -> dict:
+    devices = {device["id"]: device for device in context.get("devices", [])}
+    addresses = Counter(device.get("management_ip") for device in devices.values())
     ownership = {}
-    for device in context.get("devices", []):
+    for device in devices.values():
         for mac in device.get("mac_addresses", []):
             ownership.setdefault(mac.lower(), set()).add(device["id"])
     checks = {}
@@ -624,9 +626,13 @@ def _collect_asset_mac_probes(context: dict, sources: list[dict], configured: di
         mac = spec["mac"].lower()
         if ownership.get(mac) != {asset}:
             continue
-        observation = _router_layer2_observation(sources, spec["source"], spec["interface"], mac)
+        address = spec.get("address")
+        if "address" in spec and (not isinstance(address, str) or addresses[address] != 1
+                                  or devices[asset].get("management_ip") != address):
+            continue
+        observation = _router_layer2_observation(sources, spec["source"], spec["interface"], mac, address=address)
         if observation:
-            checks[asset] = observation
+            checks[asset] = {**observation, "target": address} if address else observation
     return checks
 
 
