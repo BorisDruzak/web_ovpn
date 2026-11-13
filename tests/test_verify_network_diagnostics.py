@@ -11,6 +11,33 @@ from deploy import verify_network_diagnostics as verifier
 from deploy.verify_network_diagnostics import route_report
 
 
+def test_verify_map_ports_retries_snapshot_change_and_keeps_open_pairs(monkeypatch):
+    now = datetime.now(UTC)
+    audit = {"node": {"id": "sw"}, "ports": [{"name": "ge23"}],
+             "currentPairTotal": 0, "inventoryPairs": [], "pendingTotal": 1,
+             "pending": [{"portA": "ge23", "portB": "", "multiMacPortSides": ["a"]}]}
+    data = {"availability": "ready", "snapshotAt": now.isoformat(), "topologyAudit": audit}
+    old = {**data, "snapshotAt": (now - timedelta(minutes=2)).isoformat()}
+    reads = iter((old, data, data))
+    monkeypatch.setattr(verifier.bridge, "api_request", lambda method, path: {"infrastructure": data})
+
+    def mcp_requests(script, messages):
+        assert messages == [verifier.mcp_call("openvpn_network_infrastructure", {
+            "view": "topology", "node_id": "sw", "port_name": "ge23",
+        })]
+        return [{"content": [{"text": json.dumps({"infrastructure": next(reads)})}]}]
+
+    monkeypatch.setattr(verifier, "mcp_requests", mcp_requests)
+    result, = verifier.verify_map_ports(Path("plugin.py"), [("sw", "ge23")], timedelta(minutes=10))
+    assert result == {"node_id": "sw", "port_name": "ge23", "snapshot_at": now.isoformat(),
+                      "fresh": True, "port_found": True, "api_matches": True,
+                      "current_pairs": 0, "inventory_pairs": 0, "pending_pairs": 1}
+
+    data["topologyAudit"] = {**audit, "ports": []}
+    missing, = verifier.verify_map_ports(Path("plugin.py"), [("sw", "ge23")], timedelta(minutes=10))
+    assert missing["api_matches"] is True and missing["port_found"] is False
+
+
 @pytest.mark.parametrize("selected,expected,status,overview_changes", [
     ([], ["archive", "vlan50"], 2, 0),
     (["vlan50", "vlan50"], ["vlan50"], 0, 1),

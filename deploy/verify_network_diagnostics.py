@@ -472,6 +472,33 @@ def verify_interfaces(script: Path, selections: list[list[str]], max_age: timede
     return reports
 
 
+def verify_map_ports(script: Path, selections: list[list[str]], max_age: timedelta) -> list[dict]:
+    reports = []
+    for node_id, port_name in selections:
+        args = {"view": "topology", "node_id": node_id, "port_name": port_name}
+        path = f"/api/v1/network/infrastructure?{urlencode(args)}"
+        for _ in range(2):
+            reply, = mcp_requests(script, [mcp_call("openvpn_network_infrastructure", args)])
+            if reply.get("isError"):
+                raise ValueError("MCP topology query failed")
+            mcp = json.loads(reply["content"][0]["text"])["infrastructure"]
+            api = bridge.api_request("GET", path)["infrastructure"]
+            if api["snapshotAt"] == mcp["snapshotAt"]:
+                break
+        stamp = api["snapshotAt"]
+        audit = api["topologyAudit"]
+        reports.append({
+            "node_id": node_id, "port_name": port_name, "snapshot_at": stamp,
+            "fresh": bool(api["availability"] == "ready" and stamp
+                          and timedelta(0) <= datetime.now(UTC) - datetime.fromisoformat(stamp) <= max_age),
+            "port_found": (audit.get("node") or {}).get("id") == node_id and bool(audit["ports"]),
+            "api_matches": api == mcp,
+            "current_pairs": audit["currentPairTotal"], "inventory_pairs": len(audit["inventoryPairs"]),
+            "pending_pairs": audit["pendingTotal"],
+        })
+    return reports
+
+
 def speed_report(
     runs: list[dict], api_runs: list[dict], check: str, profile: str, expected_interface: str,
     now: datetime, max_age: timedelta,
@@ -679,11 +706,23 @@ def main() -> int:
         "--interface", action="append", nargs=2, metavar=("SOURCE", "NAME"),
         help="verify recent interface telemetry in REST and MCP; repeat to check multiple interfaces",
     )
+    parser.add_argument(
+        "--map-port", action="append", nargs=2, metavar=("NODE_ID", "PORT"),
+        help="verify scoped map responses in REST and MCP instead of route diagnostics; repeat for multiple ports",
+    )
     args = parser.parse_args()
     if args.require_capture_filter and args.capture_id is None:
         parser.error("--require-capture-filter requires --capture-id")
     if args.max_age_minutes < 1:
         parser.error("--max-age-minutes must be positive")
+    if args.map_port:
+        try:
+            ports = verify_map_ports(args.mcp_script, args.map_port, timedelta(minutes=args.max_age_minutes))
+        except (OSError, LookupError, RuntimeError, TypeError, ValueError, subprocess.SubprocessError):
+            print(json.dumps({"error": "map_port_verification_failed"}))
+            return 1
+        print(json.dumps({"map_ports": ports}, ensure_ascii=False, indent=2))
+        return 0 if all(row["fresh"] and row["port_found"] and row["api_matches"] for row in ports) else 1
     if any(check not in {"iperf3", "https_speed"} for check, _, _ in args.speed or ()):
         parser.error("--speed CHECK must be iperf3 or https_speed")
     loopback_vlans = []
