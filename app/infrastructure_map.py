@@ -1743,9 +1743,10 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
             continue
         a, b = link["a"], link["b"]
         reports = link["portEvidence"]
-        archived = {report["b"]: report["at"] for report in reports
+        archived = {report["b"]: report for report in reports
                     if report["source"] == "GitHub" and not report["confirmed"] and not report["a"] and report["b"]}
         peer_port = next(iter(archived)) if len(archived) == 1 else ""
+        peer_record = archived.get(peer_port, {})
         for report in reports:
             port = report["a"]
             if (report["source"] not in ("MikroTik · ARP", "MikroTik · ARP + FDB") or not report["confirmed"]
@@ -1757,7 +1758,8 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
                 "portA": port, "portB": peer_port, "basis": "router_attachment",
                 "missingPortSides": [] if peer_port else ["b"], "identifiedPeerSides": ["a"],
                 "observedPaths": [{"portA": port, "portB": "", "source": report["source"], "checkedAt": report["at"]}],
-                **({"archivedPortSides": ["b"], "archivedPortAt": {"b": archived[peer_port]}} if peer_port else {}),
+                **({"archivedPortSides": ["b"], "archivedPortAt": {"b": peer_record["at"]}} if peer_port else {}),
+                **({"inventorySources": peer_record["inventorySources"]} if "inventorySources" in peer_record else {}),
                 **({"portObservations": reading} if reading else {}),
             }
     discovered = {}
@@ -3472,7 +3474,8 @@ def load_infrastructure_map(
                                                        "fdbLearned", "lldpPort") if key in port}
                      for side, port in row.get("portObservations", {}).items()
                  },
-                 **{key: row[key] for key in ("archivedPortSides", "inventoryPortSides", "inventoryPeerPorts", "lldpPeers",
+                 **{key: row[key] for key in ("archivedPortSides", "archivedPortAt", "inventoryPortSides", "inventorySources",
+                                             "inventoryPeerPorts", "lldpPeers",
                                              "stpBridgeConnections", "stpBridgeMacObservations", "arpDiagnostics") if key in row}}
                 for row in pending[:64]
             ],

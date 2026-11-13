@@ -229,12 +229,16 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   function pendingPortPairRow({a, b, nameA, nameB, portA, portB, observedSources = [], lldpPortIds = [],
       observedSourceTimes = {}, identifiedPeerSides = [], archivedPortSides = [], inventoryPortSides = [],
       portObservations = {}, stpPaths = [], stpBridgeConnections = [], stpBridgeMacObservations = [], lldpPeers = {},
-      inventoryPeerPorts = [], arpDiagnostics = {}}) {
+      archivedPortAt = {}, inventorySources = [], inventoryPeerPorts = [], arpDiagnostics = {}}) {
     const item = make('li');
     const provenance = key => archivedPortSides.includes(key) ? ' (по архиву)' :
       inventoryPortSides.includes(key) ? ' (по инвентарю)' : '';
     item.append(portPairEndpoint(a, nameA, portA), provenance('a'), ' ↔ ',
       portPairEndpoint(b, nameB, portB), provenance('b'));
+    for (const [side, checkedAt] of Object.entries(archivedPortAt)) {
+      if (checkedAt) item.append(make('small', `Архив · ${side === 'a' ? nameA : nameB} · ${formatTime(checkedAt)}`));
+    }
+    appendInventorySources(item, inventorySources);
     for (const source of observedSources) {
       const label = source === 'netctl FDB' ? 'MAC на порту' : source;
       const checkedAt = observedSourceTimes[source];

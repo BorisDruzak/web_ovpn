@@ -936,7 +936,7 @@ def _route_checks(intent: dict, source: str, routes: list[dict], now: datetime, 
     return checks
 
 
-def _inventory_ipv4_interface(device: dict, address: str, now: datetime) -> tuple[str, str] | None:
+def _inventory_ipv4_interface(device: dict, address: str, now: datetime) -> tuple[str, str, list[dict]] | None:
     state = device.get("observed_state")
     rows = state.get("ipv4_interfaces") if isinstance(state, dict) else None
     matches = []
@@ -951,7 +951,8 @@ def _inventory_ipv4_interface(device: dict, address: str, now: datetime) -> tupl
             stamp = datetime.fromisoformat(observed)
             if stamp.tzinfo is None or stamp > now or str(ipaddress.IPv4Interface(interface_address).ip) != address:
                 continue
-            matches.append((name, stamp.astimezone(timezone.utc).isoformat()))
+            sources = inventory_link_sources([{"path": row.get("source"), "observedOn": stamp.date().isoformat()}])
+            matches.append((name, stamp.astimezone(timezone.utc).isoformat(), sources))
         except (OverflowError, ValueError):
             continue
     return matches[0] if len(matches) == 1 else None
@@ -2131,7 +2132,9 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                  details=f"{segment['local_address']} ↔ {spec['peer']}", ports=(port, ""), at=observed,
                  management_address=spec["peer"])
             if archived := _inventory_ipv4_interface(devices[asset], spec["peer"], now):
-                edge(router, asset, "Транзитный сегмент", "GitHub", False, ports=("", archived[0]), at=archived[1])
+                name, checked_at, references = archived
+                edge(router, asset, "Транзитный сегмент", "GitHub", False, ports=("", name), at=checked_at,
+                     inventory_sources=references)
         bridge = spec.get("lan_bridge")
         address = address_by_asset[asset]
         if isinstance(bridge, str) and addresses.get(address) == [asset]:
@@ -2141,7 +2144,9 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 edge(router, asset, "Путь по MAC-таблице", "MikroTik · ARP + FDB",
                      details=f"{address} · {bridge}", ports=(port, ""), at=observed, management_address=address)
                 if archived := _inventory_ipv4_interface(devices[asset], address, now):
-                    edge(router, asset, "Путь по MAC-таблице", "GitHub", False, ports=("", archived[0]), at=archived[1])
+                    name, checked_at, references = archived
+                    edge(router, asset, "Путь по MAC-таблице", "GitHub", False, ports=("", name), at=checked_at,
+                         inventory_sources=references)
         for endpoint in (router, asset):
             edge(endpoint, item["id"], "Цель проверки", "Настройки карты")
     fdb_reports = []

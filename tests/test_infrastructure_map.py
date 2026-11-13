@@ -5606,7 +5606,8 @@ def test_transit_peer_management_port_requires_fresh_arp_fdb_and_active_ethernet
     context = {"devices": [{"id": "rb", "name": "RB", "kind": "router"},
                            {"id": "coordinator", "name": "Coordinator", "kind": "security_gateway",
                             "management_ip": address, "observed_state": {"ipv4_interfaces": [
-                                {"name": "eth0", "address": address + "/24", "observed_at": inventory_stamp},
+                                {"name": "eth0", "address": address + "/24", "observed_at": inventory_stamp,
+                                 "source": "docs/coordinator.yaml"},
                                 {"name": "eth2", "address": "192.0.2.2/30", "observed_at": inventory_stamp},
                             ]}}],
                "services": [{"id": "coordinator-web", "name": "Coordinator web", "device": "coordinator"}],
@@ -5645,15 +5646,20 @@ def test_transit_peer_management_port_requires_fresh_arp_fdb_and_active_ethernet
     live, inventory = link["portEvidence"]
     assert live == {"a": "ether7", "b": "", "source": "MikroTik · ARP + FDB", "at": at,
                     "confirmed": True, "managementAddress": address, "portStates": {"a": expected}}
-    assert inventory == {"a": "", "b": "eth0", "source": "GitHub", "at": inventory_stamp, "confirmed": False}
+    sources = [{"path": "docs/coordinator.yaml", "observedOn": inventory_stamp[:10]}]
+    assert inventory == {"a": "", "b": "eth0", "source": "GitHub", "at": inventory_stamp, "confirmed": False,
+                         "inventorySources": sources}
     public = load_infrastructure_map(path, now, include_guest_attachments=True)
     audit = summarize_topology(public)["topologyAudit"]
     row, = audit["pending"]
     assert (row["a"], row["portA"], row["b"], row["portB"]) == ("rb", "ether7", "coordinator", "eth0")
     assert row["archivedPortSides"] == ["b"]
+    assert row["inventorySources"] == sources
     assert row["observedPaths"] == [{"portA": "ether7", "portB": "", "source": "MikroTik · ARP + FDB", "checkedAt": at}]
     assert not any(audit["directLinks"].values())
     assert public["pendingPortPairs"][0]["archivedPortSides"] == ["b"]
+    assert public["pendingPortPairs"][0]["archivedPortAt"] == {"b": inventory_stamp}
+    assert public["pendingPortPairs"][0]["inventorySources"] == sources
     service_path, = summarize_guest_attachment(public, "coordinator-web")["attachment"]["servicePaths"]
     assert service_path == {"target": address, "port": 8080, "method": "HTTPS", "checkedAt": at,
                             "state": "reachable",
