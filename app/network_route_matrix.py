@@ -27,7 +27,11 @@ def _ipsec_evidence(snapshot: dict, probe: RouteProbe) -> dict:
     if reason := snapshot.get("reason"):
         return {**observed, "reason": reason}
     if snapshot.get("status") == "error":
-        return {**observed, "reason": "source_error"}
+        transport_reason = next((
+            error["reason"] for error in snapshot.get("errors", [])
+            if error.get("reason") in {"ssh_connect_timeout", "ssh_transport_error"}
+        ), "source_error")
+        return {**observed, "reason": transport_reason}
     matches = []
     for policy in snapshot.get("policies", []):
         if (policy.get("disabled") or policy.get("action") != "encrypt"

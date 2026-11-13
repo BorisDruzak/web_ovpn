@@ -252,6 +252,15 @@ class MikroTikSshDriver(NetworkDriver):
         for key, path in self.IPSEC_PATHS.items():
             try:
                 raw[key] = self._run_print(path)
+            except RouterOSSshTransportError as exc:
+                reason = (
+                    "ssh_connect_timeout"
+                    if re.search(r"(?:connect to host .*: Connection timed out|Connection timed out during banner exchange)",
+                                 str(exc), re.IGNORECASE)
+                    else "ssh_transport_error"
+                )
+                errors.append({"section": key, "message": str(exc), "reason": reason})
+                break
             except Exception as exc:
                 raw[key] = []
                 errors.append({"section": key, "message": str(exc)})

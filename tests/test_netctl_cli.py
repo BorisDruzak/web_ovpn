@@ -2846,6 +2846,24 @@ def test_collect_lock_rejects_retry_collision(tmp_path, monkeypatch):
     assert calls == 2
 
 
+def test_ssh_ipsec_reports_connect_timeout_without_retrying_other_sections(monkeypatch):
+    import subprocess
+
+    from netctl.drivers.mikrotik_ssh import MikroTikSshDriver
+
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 255, "", "ssh: connect to host router port 22: Connection timed out")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    report = MikroTikSshDriver({"host": "192.0.2.1", "username": "observer"}, {}).ipsec_status()
+    assert len(calls) == 1
+    assert report["policies"] == []
+    assert report["errors"][0]["reason"] == "ssh_connect_timeout"
+
+
 def test_ipsec_status_reports_source_health(tmp_path, capsys):
     config_path = tmp_path / "netctl.yaml"
     db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"

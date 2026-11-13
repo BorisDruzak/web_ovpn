@@ -121,6 +121,8 @@
           {% if row.ipsec.local_sa_address_status == 'unavailable' %}<br>Назначение локального IPv4 для SA не проверено{% endif %}
           {% if row.ipsec.reason %} · {{ {
             'collector_timeout': 'истёк срок опроса', 'collector_failed': 'сбой команды опроса',
+            'ssh_connect_timeout': 'истёк срок подключения по SSH',
+            'ssh_transport_error': 'сбой подключения по SSH',
             'source_error': 'источник вернул ошибку опроса', 'source_not_reported': 'источника нет в отчёте',
             'source_report_incomplete': 'неполный отчёт источника'
           }.get(row.ipsec.reason, 'причина недоступна') }}{% endif %}

@@ -235,7 +235,7 @@ def test_ipsec_policy_and_peer_sa_bytes_are_independent_of_echo_reply(monkeypatc
     }
 
 
-@pytest.mark.parametrize("failure", ["collector_timeout", "source_error"])
+@pytest.mark.parametrize("failure", ["collector_timeout", "source_error", "ssh_connect_timeout"])
 def test_ipsec_observation_failure_is_separate_from_ping_status(monkeypatch, failure):
     from subprocess import TimeoutExpired
 
@@ -252,7 +252,9 @@ def test_ipsec_observation_failure_is_separate_from_ping_status(monkeypatch, fai
             return {"probe": {"status": "timeout"}}
         if failure == "collector_timeout":
             raise NetctlError("netctl timeout", stdout="internal output") from TimeoutExpired(args, 12)
-        return {"sources": [{"source": "archive-router", "status": "error", "errors": [{"message": "internal output"}]}]}
+        return {"sources": [{"source": "archive-router", "status": "error", "errors": [{
+            "message": "internal output", "reason": failure,
+        }]}]}
 
     monkeypatch.setattr(network_route_matrix, "run_netctl", netctl)
     row = network_route_matrix.run_route_matrix("archive", profile)["result"]["probes"][0]
