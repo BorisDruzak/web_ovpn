@@ -2339,6 +2339,15 @@ def _summarize_shared_ports(pending: list[dict]) -> list[dict]:
     return result
 
 
+def _summarize_pair_measurement_gaps(pairs: list[dict]) -> dict:
+    gaps = []
+    for pair in pairs:
+        missing = sorted({"a", "b"} - pair.get("portStates", {}).keys())
+        if missing:
+            gaps.append({**{key: pair[key] for key in ("a", "b", "portA", "portB")}, "missingSides": missing})
+    return {"currentPairMeasurementGapTotal": len(gaps), "currentPairMeasurementGaps": gaps[:64]}
+
+
 def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: str | None = None) -> dict:
     nodes = {node["id"]: node for node in graph["nodes"]}
     counts, inventory_pairs, alerts, pending, current_pairs = _topology_port_pairs(nodes, graph["links"])
@@ -2418,6 +2427,7 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
             "node": _attachment_node(node) if node else None, "portName": port_name, "ports": ports,
             "currentPairTotal": len(current), "currentPairs": current[:64],
             "currentPairLinkCounts": dict(Counter(row["linkHealth"]["state"] for row in current)),
+            **_summarize_pair_measurement_gaps(current),
             "inventoryPairs": [row for row in inventory_pairs if matches(row)][:64],
             "inventoryOnlyPairTotal": len(archived), "inventoryOnlyPairs": archived[:64],
             "pendingTotal": len(gaps), "pending": gaps[:64],
@@ -2458,6 +2468,7 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
                                         "currentPairTotal": len(current_pairs), "currentPairs": current_pairs[:64],
                                         "currentPairLinkCounts": dict(Counter(
                                             row["linkHealth"]["state"] for row in current_pairs)),
+                                        **_summarize_pair_measurement_gaps(current_pairs),
                                         "inventoryPairs": inventory_pairs[:64],
                                         "inventoryOnlyPairTotal": len(inventory_only), "inventoryOnlyPairs": inventory_only[:64],
                                         "portAlertTotal": len(alerts), "portAlerts": alerts[:64],

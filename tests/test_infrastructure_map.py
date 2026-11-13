@@ -3627,6 +3627,9 @@ def test_topology_port_alerts_require_confirmed_pairs_and_fresh_states(tmp_path)
             assert pair["linkHealth"]["state"] == expected_state
             assert pair["linkHealth"]["checkedAt"] == stamp
             assert audit["currentPairLinkCounts"][expected_state] == 1
+            assert scoped["currentPairMeasurementGaps"] == ([
+                {"a": "a", "b": "b", "portA": "ge1", "portB": "ge2", "missingSides": ["a"]},
+            ] if expected_state == "port_down" else [])
             assert pair["portStates"]["b"]["state"] == b["ports"][0]["state"]
             expected_speed = b["ports"][0]["speedBps"] if b["ports"][0]["state"] == "up" else None
             assert pair["portStates"]["b"]["speedBps"] == expected_speed
@@ -3634,6 +3637,9 @@ def test_topology_port_alerts_require_confirmed_pairs_and_fresh_states(tmp_path)
         elif scoped["currentPairs"]:
             assert "portStates" not in scoped["currentPairs"][0]
             assert scoped["currentPairs"][0]["linkHealth"] == {"state": "unconfirmed"}
+            assert audit["currentPairMeasurementGaps"] == [
+                {"a": "a", "b": "b", "portA": "ge1", "portB": "ge2", "missingSides": ["a", "b"]},
+            ]
         assert summarize_topology(graph, node_id="a", port_name="ge99")["topologyAudit"]["portAlerts"] == []
         return alerts
 
