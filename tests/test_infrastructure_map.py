@@ -8559,6 +8559,22 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
                          "reachability": {"state": "unreachable", "source": "UI_VPN", "checkedAt": stamp}})
     raw["links"].append({"a": "directum", "b": "backup", "kind": "Зависимость сервиса", "confirmed": True})
     assert len(read()["servicePaths"]) == 2
+    services_url = "/api/v1/network/infrastructure?view=services"
+    def service_audit_row():
+        audit = client.get(services_url, headers=headers).json()["infrastructure"]["serviceAudit"]
+        return next(row for row in audit["services"] if row["id"] == "directum")
+
+    audit_row = service_audit_row()
+    assert audit_row["guestUplinks"] == [{
+        "guestId": "vm", "guestPort": "net0", "bridge": "vmbr1", "hypervisorId": "pve",
+        "switchId": "snr", "basis": "guest_mac", **match["physicalPair"],
+    }]
+    assert "portObservation" not in next(issue for issue in audit_row["issues"] if issue["check"] == "c_disk_free")
+    adapter["virtual"]["linkDisabled"] = True
+    read()
+    assert "guestUplinks" not in service_audit_row()
+    adapter["virtual"]["linkDisabled"] = False
+    read()
     vm_url = url + "&node_id=vm"
     vm = client.get(vm_url, headers=headers).json()["infrastructure"]["attachment"]
     disk, = vm["checks"]

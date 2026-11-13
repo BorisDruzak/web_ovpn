@@ -3786,6 +3786,25 @@ def summarize_services(graph: dict, *, host_id: str | None = None, service_ids: 
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
     end = offset + 128
     page = services[offset:end]
+    guest_ids = sorted({host for row in page if row["status"] != "ok"
+                        for host in row["hosts"] if nodes[host]["guest"]})
+    if guest_ids:
+        guests = _guest_attachments(nodes, graph["links"], guest_ids)
+        running = {key: guest for key, guest in guests.items() if guest["power"] == "running"}
+        uplinks = defaultdict(list)
+        for switch_id, attachments in _guest_switch_attachments(running).items():
+            for attachment in attachments:
+                guest_id = attachment["guest"]["id"]
+                uplinks[guest_id].append({
+                    "guestId": guest_id, "guestPort": attachment["guestPort"], "bridge": attachment["bridge"],
+                    "hypervisorId": attachment["hypervisor"]["id"], "switchId": switch_id,
+                    "basis": attachment["basis"], **attachment["physicalPair"],
+                })
+        for row in page:
+            if row["status"] != "ok":
+                paths = [path for host in row["hosts"] for path in uplinks.get(host, ())]
+                if paths:
+                    row.update(guestUplinkTotal=len(paths), guestUplinks=paths[:8])
     if any(row["issues"] and len(row["hosts"]) == 1 for row in page):
         management = _management_port_paths(nodes, graph["links"])
         observed_ports = _observed_management_ports(graph["links"], nodes)
