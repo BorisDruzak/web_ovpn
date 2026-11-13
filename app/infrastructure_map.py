@@ -1745,7 +1745,10 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
                  "portB": canonical_ports.get(ends[1], report["b"])}, {},
             ))
             source, at = report["source"], report["at"]
-            sources[source] = max(at, sources.get(source, at))
+            if source not in sources or at > sources[source]["checkedAt"]:
+                sources[source] = {"source": source, "checkedAt": at}
+                if "windowsAdapter" in report:
+                    sources[source]["windowsAdapter"] = report["windowsAdapter"]
         for report in current + inventory + lacp_members:
             remember_ports(a, b, report["a"], report["b"])
             if lacp := report.get("lacp"):
@@ -1914,7 +1917,7 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
     }
     device_names = Counter(node["name"].casefold() for node in nodes.values())
     verified_pairs = [
-        {**pair, "evidence": [{"source": source, "checkedAt": at} for source, at in sorted(sources.items())]}
+        {**pair, "evidence": [sources[source] for source in sorted(sources)]}
         for _, (pair, sources) in sorted(current_pairs.items())
     ]
     by_port = defaultdict(list)
@@ -2356,7 +2359,7 @@ def _physical_attachments(nodes: dict, links: list[dict], host_ids: list[str]) -
                     continue
                 reading = {"hostPort": report[host_side], "peerPort": report[peer_side], "source": report["source"],
                            "checkedAt": report["at"], "confirmed": report["confirmed"]}
-                reading.update({key: report[key] for key in ("pairEvidence", "learnedEndpoint", "inventorySources")
+                reading.update({key: report[key] for key in ("pairEvidence", "learnedEndpoint", "inventorySources", "windowsAdapter")
                                 if key in report})
                 sides = {host_side: "host", peer_side: "peer"}
                 if port_states := report.get("portStates"):
@@ -3650,6 +3653,16 @@ def load_infrastructure_map(
                         evidence[-1]["pairEvidence"] = "verified_inventory"
                     elif source in CURRENT_PORT_PAIR_SOURCES:
                         evidence[-1]["pairEvidence"] = "current"
+                    adapter = report.get("windowsAdapter")
+                    if source == ENDPOINT_PAIR_SOURCE and isinstance(adapter, dict):
+                        index = adapter.get("ifIndex")
+                        adapter_at, switch_at = (_time(adapter.get(key)) for key in ("checkedAt", "switchCheckedAt"))
+                        if (type(index) is int and 0 < index <= 0xFFFFFFFF and adapter_at and switch_at
+                                and min(adapter_at, switch_at) == observed
+                                and max(adapter_at, switch_at) <= now):
+                            evidence[-1]["windowsAdapter"] = {
+                                "ifIndex": index, "checkedAt": adapter_at.isoformat(), "switchCheckedAt": switch_at.isoformat(),
+                            }
                 if source == "SNMP LACP + ARP":
                     polled = _time(report.get("lacpPolledAt", report.get("at")))
                     evidence[-1]["confirmed"] = bool(evidence[-1]["confirmed"] and observed and polled

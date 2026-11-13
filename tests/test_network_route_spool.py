@@ -113,14 +113,17 @@ def test_adapter_receipt_requires_matching_route_and_fresh_measurement(tmp_path,
 
 
 @pytest.mark.parametrize("learned_count", [1, 2])
-def test_endpoint_pair_uses_fresh_switch_mac_and_physical_adapter(monkeypatch, push_profile, learned_count):
+def test_endpoint_pair_uses_fresh_switch_mac_and_physical_adapter(tmp_path, monkeypatch, push_profile, learned_count):
     from types import SimpleNamespace
     from app import infrastructure_endpoint_ports as ports
+    from app.infrastructure_map import load_infrastructure_map, summarize_topology
 
     mac = "02:00:00:00:00:10"
     at = NOW.isoformat()
     monkeypatch.setattr(ports, "load_probe_profiles", lambda **_: SimpleNamespace(routes={PROFILE: push_profile}))
-    monkeypatch.setattr(ports, "read_adapter_observation", lambda *_: {"name": "Ethernet", "mac": mac, "checkedAt": at})
+    monkeypatch.setattr(ports, "read_adapter_observation", lambda *_: {
+        "name": "Ethernet", "mac": mac, "checkedAt": at, "index": 10,
+    })
     inventory = {"a": "Port7", "b": "Ethernet", "source": "GitHub", "confirmed": True}
     link = {"a": "switch", "b": "pc", "kind": "Сетевое соединение", "confirmed": True, "portEvidence": [inventory]}
     graph = {"nodes": [
@@ -132,8 +135,19 @@ def test_endpoint_pair_uses_fresh_switch_mac_and_physical_adapter(monkeypatch, p
     ], "links": [link]}
     ports.confirm_endpoint_ports(graph, {"pc": {"origin": ORIGIN, "profile": PROFILE}}, NOW)
     assert link["portEvidence"] == [inventory] + (
-        [{**inventory, "source": "SNMP + Windows", "at": at}] if learned_count == 1 else []
+        [{**inventory, "source": "SNMP + Windows", "at": at, "windowsAdapter": {
+            "ifIndex": 10, "checkedAt": at, "switchCheckedAt": at,
+        }}] if learned_count == 1 else []
     )
+    for node in graph["nodes"]:
+        node["name"] = node["id"]
+    path = tmp_path / "snapshot.json"
+    path.write_text(json.dumps({**graph, "schema": 1, "snapshotAt": at}), encoding="utf-8")
+    audit = summarize_topology(load_infrastructure_map(path, NOW))["topologyAudit"]
+    if learned_count == 1:
+        assert audit["currentPairs"][0]["evidence"][0]["windowsAdapter"] == link["portEvidence"][-1]["windowsAdapter"]
+    expired = summarize_topology(load_infrastructure_map(path, NOW + timedelta(minutes=4)))["topologyAudit"]
+    assert expired["currentPairTotal"] == 0 and expired["inventoryOnlyPairTotal"] == 1
 
 
 def test_push_rejects_unapproved_replay_and_wrong_route(tmp_path, monkeypatch, push_profile):

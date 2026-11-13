@@ -45,7 +45,10 @@ def confirm_endpoint_ports(graph: dict, bindings: dict, now: datetime) -> None:
                         and observation_is_fresh(learned.get("checkedAt"), now, max_age=timedelta(minutes=8))):
                     stamp = min(observed, datetime.fromisoformat(sample["checkedAt"]))
                     matches.append((edge, {"a": row["a"], "b": row["b"], "source": ENDPOINT_PAIR_SOURCE,
-                                           "at": stamp.isoformat(), "confirmed": True}))
+                                           "at": stamp.isoformat(), "confirmed": True, "windowsAdapter": {
+                                               "ifIndex": adapter["index"], "checkedAt": adapter["checkedAt"],
+                                               "switchCheckedAt": sample["checkedAt"],
+                                           }}))
         if len(matches) == 1:
             (edge, reading), = matches
             edge["portEvidence"].append(reading)
