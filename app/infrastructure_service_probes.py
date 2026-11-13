@@ -115,6 +115,7 @@ def _http(ip: str, port: int, spec: dict) -> dict:
     json_unavailable = spec.get("json_unavailable")
     redfish_root = spec.get("redfish_service_root", False)
     oidc_jwks = spec.get("oidc_rs256_jwks", False)
+    basic_auth_realm = spec.get("basic_auth_realm")
     allow_gzip = spec.get("allow_gzip", False)
     tls = spec["type"] == "https"
     if type(redfish_root) is not bool or (redfish_root and (
@@ -133,7 +134,12 @@ def _http(ip: str, port: int, spec: dict) -> dict:
         content_type = "application/json"
     if type(allow_gzip) is not bool:
         raise ValueError("allow_gzip requires a boolean")
-    if (not all(isinstance(value, (str, type(None))) for value in (body_expected, body_marker, content_type))
+    if basic_auth_realm is not None:
+        if (not tls or not spec.get("tls_server_name") or not isinstance(basic_auth_realm, str)
+                or not re.fullmatch(r"[A-Za-z0-9 _.-]{1,80}", basic_auth_realm)
+                or any(value is not None for value in (body_expected, body_marker, content_type, json_fields, json_unavailable))):
+            raise ValueError("invalid HTTPS Basic authentication challenge contract")
+    elif (not all(isinstance(value, (str, type(None))) for value in (body_expected, body_marker, content_type))
             or not (body_expected or body_marker or content_type or json_fields)):
         raise ValueError("HTTP probe requires a response contract")
     if json_fields is not None or json_unavailable is not None:
@@ -202,6 +208,14 @@ def _http(ip: str, port: int, spec: dict) -> dict:
         observed["httpStatus"] = response.status
         if 500 <= response.status < 600:
             return {**observed, "state": "unreachable", "reason": "http_status"}
+        if basic_auth_realm is not None:
+            if response.status != 401:
+                return {**observed, "state": "unknown", "reason": "http_status"}
+            challenges = [value.strip() for name, value in response.getheaders() if name.lower() == "www-authenticate"]
+            expected = rf'(?i:Basic realm)="{re.escape(basic_auth_realm)}"'
+            if any(re.fullmatch(expected, value) for value in challenges):
+                return {**observed, "state": "reachable"}
+            return {**observed, "state": "unknown", "reason": "http_payload_mismatch"}
         if response.status != 200:
             return {**observed, "state": "unknown", "reason": "http_status"}
         if content_type and response.getheader("Content-Type", "").split(";", 1)[0].strip().lower() != content_type:

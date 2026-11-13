@@ -1409,7 +1409,7 @@ def test_https_probe_checks_dns_name_against_ca_while_connecting_to_verified_ip(
             events.append((self.host, method, path))
 
         def getresponse(self):
-            return SimpleNamespace(status=200, getheader=lambda *_: "text/plain", read=lambda _: b"ready")
+            return reply
 
         def close(self):
             pass
@@ -1425,6 +1425,7 @@ def test_https_probe_checks_dns_name_against_ca_while_connecting_to_verified_ip(
     monkeypatch.setattr(probes.socket, "create_connection", connect)
     monkeypatch.setattr(probes.ssl, "create_default_context", trust)
     monkeypatch.setattr(probes.http.client, "HTTPSConnection", Connection)
+    reply = SimpleNamespace(status=200, getheader=lambda *_: "text/plain", read=lambda _: b"ready")
     spec = {"type": "https", "ip": ip, "port": 443, "path": "/ready", "body": "ready",
             "tls_server_name": name, "tls_ca_file": ca}
     assert probes._probe(spec) == "reachable"
@@ -1441,6 +1442,18 @@ def test_https_probe_checks_dns_name_against_ca_while_connecting_to_verified_ip(
     assert (public["state"], public["tlsExpiresAt"], public["tlsVersion"]) == ("reachable", "2031-01-01T00:00:00+00:00", "TLSv1.3")
     failed = probes._http_probe({**spec, "tls_server_name": "wrong.example.test", "report_tls_expiry": True})
     assert "tlsExpiresAt" not in failed
+
+    protected = {key: value for key, value in spec.items() if key != "body"}
+    protected.update(path="/mcp", basic_auth_realm="GitNexus")
+    assert probes._http_probe(protected) == {"state": "unknown", "httpStatus": 200, "reason": "http_status"}
+    reply.status = 401
+    reply.getheaders = lambda: [("WWW-Authenticate", 'Basic realm="GitNexus"')]
+    assert probes._http_probe(protected) == {"state": "reachable", "httpStatus": 401}
+    reply.getheaders = lambda: [("WWW-Authenticate", 'Basic realm="Other"')]
+    assert probes._http_probe(protected) == {"state": "unknown", "httpStatus": 401, "reason": "http_payload_mismatch"}
+    reply.getheaders = lambda: [("WWW-Authenticate", 'Basic realm="GitNexus"')]
+    assert probes._http_probe(spec) == {"state": "unknown", "httpStatus": 401, "reason": "http_status"}
+    assert probes._http_probe({**protected, "type": "http"}) == {"state": "unknown", "reason": "http_configuration"}
 
 
 def test_asset_https_probe_validates_certificate_before_sending_request(monkeypatch):

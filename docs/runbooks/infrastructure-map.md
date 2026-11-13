@@ -334,7 +334,7 @@
 
 Для `gitnexus-health` включён тот же повтор после отказа TCP. Проверка `/health` на TCP/3000 ждёт HTTP 200 и JSON с `status: ok`. Повторный отказ показывается как сбой GitNexus. Доступность ВМ 114 и SSH отображаются отдельно.
 
-Карточка `gitnexus-web-tls` привязана к той же ВМ и проверяет TLS на TCP/443 с именем `gitnexus.sosnadmin.local` и доверенным внутренним CA. Она показывает срок действия сертификата и согласованную версию TLS. Для проверки входа пользователя и веб-приложения нужны отдельные наблюдения. [Инвентарь GitNexus](https://github.com/BorisDruzak/network_configuration/blob/main/docs/compliance/fstec-117/linux-server/2026-09-27/gitnexus-baseline.md)
+Карточка `gitnexus-web-tls` привязана к той же ВМ и проверяет TLS на TCP/443 с именем `gitnexus.sosnadmin.local` и доверенным внутренним CA. Она показывает срок действия сертификата и согласованную версию TLS. Обязательный компонент HTTPS выполняет GET `/mcp` без учётных данных с `basic_auth_realm: GitNexus`. Доступность входа подтверждают HTTP 401 и заголовок `WWW-Authenticate: Basic realm="GitNexus"`. Запрос проверяет ответ шлюза аутентификации. Обработку запросов API и вход пользователя проверяют отдельно. [Инвентарь GitNexus](https://github.com/BorisDruzak/network_configuration/blob/main/docs/compliance/fstec-117/linux-server/2026-09-27/gitnexus-baseline.md)
 
 Карточка `gitnexus-web-internal-dns` проверяет A-запись этого имени по UDP/53 и TCP/53 через OPNsense (ВМ 110). Ожидаемый адрес совпадает с адресом TLS-проверки веб-входа. Проверка API GitNexus на TCP/3000 обращается к своему адресу напрямую.
 
