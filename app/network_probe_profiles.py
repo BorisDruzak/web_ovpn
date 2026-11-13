@@ -61,6 +61,7 @@ class HttpsSpeedProfile(ProbeProfile):
     upload_bytes: int = Field(ge=MIN_BYTES, le=MAX_UPLOAD_BYTES)
     router_source: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
     source_address: str | None = None
+    expected_wan_interface: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_][A-Za-z0-9_.:@-]{0,31}$")
 
     @field_validator("peer")
     @classmethod
@@ -71,6 +72,8 @@ class HttpsSpeedProfile(ProbeProfile):
     def validate_router_observation(self):
         if bool(self.router_source) != (self.source_address is not None):
             raise ValueError("router_source and source_address are required together")
+        if self.expected_wan_interface and not self.router_source:
+            raise ValueError("expected WAN interface requires RouterOS observation")
         if self.source_address is not None:
             address = ipaddress.IPv4Address(self.source_address)
             if address.is_unspecified or address.is_multicast:
@@ -78,7 +81,8 @@ class HttpsSpeedProfile(ProbeProfile):
         return self
 
     def config_digest(self) -> str:
-        return hashlib.sha256(self.model_dump_json().encode()).hexdigest()
+        exclude = {"expected_wan_interface"} if self.expected_wan_interface is None else set()
+        return hashlib.sha256(self.model_dump_json(exclude=exclude).encode()).hexdigest()
 
 
 class CaptureProfile(ProbeProfile):

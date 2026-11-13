@@ -2669,13 +2669,19 @@ def test_route_ipsec_phase_and_unavailable_reason_in_history_and_ui(
     assert "источник вернул ошибку опроса" in page.text
 
 
-@pytest.mark.parametrize("observation, wan_label", [
-    ({"status": "confirmed", "nat_interface": "wan1"}, "wan1"),
-    ({"status": "unconfirmed", "reason": "no_unique_connection"},
+@pytest.mark.parametrize("observation, expected_wan, status, wan_label", [
+    ({"status": "confirmed", "nat_interface": "wan1"}, "wan1", "measured", "wan1"),
+    ({"status": "confirmed", "nat_interface": "wan2"}, "wan1", "wan_mismatch",
+     "Ожидался wan1 · наблюдался wan2"),
+    ({"status": "unconfirmed", "reason": "no_unique_connection"}, "wan1", "wan_unconfirmed",
      "WAN не подтверждён · соединение не найдено или неоднозначно"),
-    ({"status": "unavailable"}, "Нет данных о WAN"),
+    ({"status": "unconfirmed", "reason": "no_unique_connection"},
+     None, "measured", "WAN не подтверждён · соединение не найдено или неоднозначно"),
+    ({"status": "unavailable"}, None, "measured", "Нет данных о WAN"),
 ])
-def test_https_speed_uses_profile_and_records_result_in_api_and_ui(tmp_path, monkeypatch, observation, wan_label):
+def test_https_speed_uses_profile_and_records_result_in_api_and_ui(
+    tmp_path, monkeypatch, observation, expected_wan, status, wan_label,
+):
     client, headers = make_client(tmp_path, monkeypatch)
     from app import network_checks, network_probe_profiles
 
@@ -2685,6 +2691,7 @@ def test_https_speed_uses_profile_and_records_result_in_api_and_ui(tmp_path, mon
             "label": "Internet", "peer": peer,
             "download_bytes": 1_000_000, "upload_bytes": 500_000,
             "router_source": "mikrotik-main", "source_address": "192.0.2.10",
+            "expected_wan_interface": expected_wan,
         }},
     })
     monkeypatch.setattr(network_probe_profiles, "load_probe_profiles", lambda: profiles)
@@ -2715,12 +2722,15 @@ def test_https_speed_uses_profile_and_records_result_in_api_and_ui(tmp_path, mon
     assert catalog["https_speed"][0]["id"] == "internet"
     assert client.post(endpoint, headers=headers, json={**payload, "url": "https://example.org"}).status_code == 422
     result = client.post(endpoint, headers=headers, json=payload).json()["data"]
-    assert result["status"] == "measured"
+    assert result["status"] == status
     assert result["result"]["kernel_route"]["result"]["dev"] == "eth0"
-    assert result["result"]["wan_observation"] == {"source": "mikrotik-main", **observation}
+    assert result["result"]["wan_observation"] == {
+        "source": "mikrotik-main", **observation,
+        **({"expected_interface": expected_wan} if expected_wan else {}),
+    }
     assert client.post(endpoint, headers=headers, json=payload).json()["data"]["status"] == "rate_limited"
     runs = client.get(base + "/runs", headers=headers).json()["data"]["runs"]
-    measured = next(row for row in runs if row["status"] == "measured")
+    measured = next(row for row in runs if row["status"] == status)
     assert measured["target"] == "internet · receive"
     assert measured["result"]["mbps"] == 8.0
     assert measured["result"]["wan_observation"] == result["result"]["wan_observation"]

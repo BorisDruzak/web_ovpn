@@ -132,6 +132,8 @@ CHECK_STATUS_LABELS = {
     "not_monitored": "Узел не входит в мониторинг",
     "rate_limited": "Действует интервал между запусками",
     "measured": "Замер пропускной способности завершён",
+    "wan_mismatch": "Замер прошёл через другой WAN",
+    "wan_unconfirmed": "Интерфейс WAN для замера не подтверждён",
     "captured": "Захват сохранён",
     "empty_capture": "Захват завершён без совпавших пакетов",
     "busy": "Проверка занята. Повторите позже",
@@ -349,8 +351,9 @@ def _https_speed_check(check: HttpsSpeedCheck) -> dict:
             return {"status": route["status"], "result": result}
         size = profile.upload_bytes if check.direction == "send" else profile.download_bytes
         reading = run_https_speed(profile.peer, check.direction, size)
+        status = reading["status"]
         result.update(reading["result"])
-        if profile.router_source and reading["status"] == "measured":
+        if profile.router_source and status == "measured":
             observation = {"status": "unconfirmed", "reason": "source_mismatch"}
             if result.get("source_address") == profile.source_address:
                 try:
@@ -362,7 +365,14 @@ def _https_speed_check(check: HttpsSpeedCheck) -> dict:
                 except (NetctlError, OSError, UnicodeError):
                     observation = {"status": "unavailable"}
             result["wan_observation"] = {"source": profile.router_source, **observation}
-        return {"status": reading["status"], "result": result}
+            if expected := profile.expected_wan_interface:
+                result["wan_observation"]["expected_interface"] = expected
+                observed = observation.get("nat_interface")
+                if observation["status"] != "confirmed" or not observed:
+                    status = "wan_unconfirmed"
+                elif observed != expected:
+                    status = "wan_mismatch"
+        return {"status": status, "result": result}
     finally:
         _throughput_lock.release()
 
@@ -404,6 +414,9 @@ def execute_network_check(check: NetworkCheck, *, allowed: bool = True, capture_
     return {"check": check.check, "target": target, "checked_at": datetime.now(UTC).isoformat(), **evidence}
 
 
+_HTTPS_MEASUREMENT_STATUSES = {"measured", "wan_mismatch", "wan_unconfirmed"}
+
+
 def run_audited_network_check(db: Session, request: Request, actor: str, check: NetworkCheck) -> dict:
     action = AUDIT_PREFIX + check.check
     active = isinstance(check, (SourceTestCheck, TraceRouteCheck, IperfCheck, HttpsSpeedCheck, CaptureCheck, RouteAvailabilityCheck))
@@ -418,7 +431,7 @@ def run_audited_network_check(db: Session, request: Request, actor: str, check: 
     if isinstance(check, RouteAvailabilityCheck) and result["result"].get("probes"):
         persist_route_run(db, owner=owner, result=result)
     message = result["target"]
-    if isinstance(check, HttpsSpeedCheck) and result["status"] == "measured":
+    if isinstance(check, HttpsSpeedCheck) and result["status"] in _HTTPS_MEASUREMENT_STATUSES:
         details = {key: result["result"][key] for key in ("mbps", "transferred_bytes", "duration_seconds")}
         if "wan_observation" in result["result"]:
             details["wan_observation"] = result["result"]["wan_observation"]
@@ -463,7 +476,9 @@ def list_network_check_runs(db: Session, actor: str, limit: int) -> list[dict]:
             "checked_at": row.ts.replace(tzinfo=row.ts.tzinfo or UTC).isoformat(),
             "request_id": row.request_id,
         }
-        if check in ("https_speed", "iperf3") and row.result == "measured":
+        if (check == "https_speed" and row.result in _HTTPS_MEASUREMENT_STATUSES) or (
+            check == "iperf3" and row.result == "measured"
+        ):
             try:
                 details = json.loads(row.message)
                 run.update(target=details["target"], result=details["result"])
