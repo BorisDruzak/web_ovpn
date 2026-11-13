@@ -2059,7 +2059,8 @@ def _attachment_probe_location(check: dict) -> dict:
     return {"target": check["target"], "port": check["port"], "method": check["method"],
             "checkedAt": check["checkedAt"], "state": check["state"],
             **({"path": check["path"]} if check.get("path") else {}),
-            **{key: check[key] for key in ("reason", "roundTripMs", "httpStatus", "dns") if key in check}}
+            **{key: check[key] for key in ("reason", "roundTripMs", "httpStatus", "responseCode", "rtspStatus", "dns")
+               if key in check}}
 
 
 def _service_attachment_paths(service: dict, guests: dict) -> list[dict]:
@@ -2362,6 +2363,11 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime) -> dict:
             })
             count = {"reachable": "passed", "unreachable": "failed"}.get(check["state"], "unconfirmed")
             probe[count] += 1
+            code = check.get("httpStatus") or check.get("responseCode") or check.get("rtspStatus")
+            if code is not None:
+                codes = probe.setdefault("responseCodes", [])
+                if code not in codes:
+                    codes.append(code)
         return {**_attachment_node(node), "basis": sorted(bases),
                 **({"probeEndpoints": [probes[entry] for entry in sorted(probes)]} if probes else {})}
 

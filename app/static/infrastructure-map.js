@@ -786,7 +786,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const question = dns && [dns.transport, dns.record, dns.name].filter(Boolean).join(' ');
         const responder = dns?.unexpectedResponder;
         const responseFrom = responder && `Ответ от ${responder.address}:${responder.port}`;
-        readings.add([probe.path, question, outcome, probe.httpStatus && `HTTP ${probe.httpStatus}`, responseFrom, rtt,
+        const code = probe.httpStatus ? `HTTP ${probe.httpStatus}` : probe.responseCode ? `SIP ${probe.responseCode}` :
+          probe.rtspStatus ? `RTSP ${probe.rtspStatus}` : '';
+        readings.add([probe.path, question, outcome, code, responseFrom, rtt,
           probe.state && formatTime(probe.checkedAt)].filter(Boolean).join(' · '));
       }
       for (const reading of readings) {
@@ -1972,6 +1974,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
             row.append(make('small', [
               [probe.method, probe.localListener ? '' : probe.transport].filter(Boolean).join(' '),
               `${address}${probe.port ? ':' + probe.port : ''}${probe.path ?? ''}`, ...states,
+              probe.responseCodes?.length && `Ответ ${probe.responseCodes.join(', ')}`,
               probe.dns && `${probe.dns.record} ${probe.dns.name}`,
             ].filter(Boolean).join(' · ')));
           }

@@ -5313,6 +5313,7 @@ def test_asset_service_can_require_current_fdb_and_arp_identity(monkeypatch, tmp
     group, = summarize_guest_attachment(graph, "observer:switch")["attachment"]["servicePorts"]
     endpoint, = group["services"][0]["probeEndpoints"]
     assert group["port"] == "ge15" and endpoint["target"] == ip and endpoint["path"] == "/login"
+    assert endpoint["responseCodes"] == [200]
     assert read(now + timedelta(minutes=2))["mapStatus"] == "unknown"
     stale = load_infrastructure_map(snapshot, now + timedelta(minutes=2), include_guest_attachments=True)
     assert "recorder-web" not in stale["servicePaths"]
@@ -6919,6 +6920,16 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     assert [(probe["path"], probe["passed"], probe["failed"], probe["unconfirmed"]) for probe in probes] == [
         ("/api/session", 1, 0, 0), ("/app.js", 0, 1, 0), ("/style.css", 0, 0, 1),
     ]
+    assert [probe.get("responseCodes") for probe in probes] == [[200], [503], None]
+    raw["nodes"][0]["serviceChecks"] = [
+        {**check, "method": "SIP OPTIONS (UDP)", "port": 5060, "reason": "sip_response", "responseCode": 200},
+        {**check, "method": "RTSP OPTIONS", "port": 554, "reason": "rtsp_auth_required", "rtspStatus": 401},
+    ]
+    sip, rtsp = read()["servicePaths"]
+    assert sip["responseCode"] == 200 and rtsp["rtspStatus"] == 401
+    browser = client.get(browser_endpoint).json()["infrastructure"]
+    probes = browser["servicePorts"]["snr"][0]["services"][0]["probeEndpoints"]
+    assert [(probe["port"], probe["responseCodes"]) for probe in probes] == [(554, [401]), (5060, [200])]
     route = {"state": "reachable", "gateway": address["address"], "expectedGateway": address["address"],
              "sourceIP": "192.0.2.20", "interface": "ens18"}
     routed = {**check, "method": "DNS", "port": 53, "target": "198.51.100.1", "localRoute": route}
