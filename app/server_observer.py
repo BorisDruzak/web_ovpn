@@ -48,7 +48,7 @@ SNAPSHOT_REPLACE_ATTEMPTS = 3
 SNAPSHOT_REPLACE_RETRY_SECONDS = 0.01
 _PUBLIC_CHECK_FIELDS = frozenset(
     {"name", "source", "status", "observed", "expected", "latency_ms", "error",
-     "backup_job", "backup_repository", "disk_capacity"}
+     "backup_job", "backup_repository", "backup_snapshot_at", "disk_capacity"}
 )
 _STATUS_PRIORITY = {"ok": 0, "warn": 1, "critical": 2, "error": 3}
 _SAFE_CHECK_NAMES = re.compile(r"[a-z][a-z0-9_]{0,63}$")
@@ -144,7 +144,7 @@ checked_at=[long]($a.ToUnixTimeSeconds());used_bytes=[long]$b;free_gib=[double]$
 $s=T $p.newest_snapshot_utc;$h=$null;if($s){$h=($z-$s).TotalHours};
 $v=$n-gt 0-and(N $x)-and(N $h)-and[math]::Abs(($a-$s).TotalHours-$x)-le(1.0/12);
 $r.backup_snapshot_fresh=$v-and$x-le 30-and$h-le 30;
-if($n-le 9007199254740991){$r.snapshot_count=[long]$n;$r.snapshot_age_hours=$null;if($v){$r.snapshot_age_hours=$h}}}
+if($n-le 9007199254740991){$r.snapshot_count=[long]$n;$r.snapshot_age_hours=$null;if($v){$r.snapshot_age_hours=$h;$r.backup_snapshot_at=$s.ToUnixTimeSeconds()}}}
 }catch{};$r|ConvertTo-Json -Compress
 '''.splitlines())
 
@@ -711,6 +711,8 @@ def _checks_from_payload(
             if age is not None:
                 freshness = next(check for check in checks if check["name"] == "backup_snapshot_fresh")
                 freshness.update(observed=age, expected=30)
+                if "backup_snapshot_at" in payload:
+                    freshness["backup_snapshot_at"] = payload["backup_snapshot_at"]
             checks.append({"name": "backup_snapshot_count", "source": source,
                            "status": "ok" if count else "critical", "observed": count,
                            "latency_ms": latency_ms})
@@ -796,11 +798,16 @@ def valid_acti_backup_repository(repo: Any) -> bool:
             and type(free) in (int, float) and 0 <= free < 2**53)
 
 
+def valid_backup_snapshot_at(value: Any) -> bool:
+    return type(value) is int and 0 < value < 10**10
+
+
 def _require_role_payload(role: str, payload: dict[str, Any]) -> None:
     if role == "acti_backup":
         required = {"format", "services", *ACTI_BACKUP_FLAGS}
         measurements = {"snapshot_count", "snapshot_age_hours"}
-        if (set(payload) not in (required, required | measurements, required | measurements | {"backup_repository"})
+        fields = set(payload) - {"backup_snapshot_at"}
+        if (fields not in (required, required | measurements, required | measurements | {"backup_repository"})
             or payload.get("format") != "acti-backup-observer-v1"
             or payload.get("services") != {}
             or any(type(payload.get(field)) is not bool for field in ACTI_BACKUP_FLAGS)):
@@ -811,6 +818,9 @@ def _require_role_payload(role: str, payload: dict[str, Any]) -> None:
             if (not payload["watchdog_fresh"] or type(count) is not int or not 0 <= count < 2**53
                     or age is not None and (count == 0 or type(age) not in (int, float) or not 0 <= age < 2**53)):
                 raise _ProbeFailure("unexpected_response")
+        if "backup_snapshot_at" in payload and (payload.get("snapshot_age_hours") is None
+                or not valid_backup_snapshot_at(payload["backup_snapshot_at"])):
+            raise _ProbeFailure("unexpected_response")
         if "backup_repository" in payload:
             repo = payload["backup_repository"]
             if (not valid_acti_backup_repository(repo) or payload["repository_capacity"] != (
@@ -1026,6 +1036,10 @@ def public_check(check: dict[str, Any]) -> dict[str, Any]:
         if name != "repository_capacity" or not valid_acti_backup_repository(check["backup_repository"]):
             raise ValueError("backup repository measurements are not allowed")
         public["backup_repository"] = check["backup_repository"]
+    if "backup_snapshot_at" in check:
+        if name != "backup_snapshot_fresh" or not valid_backup_snapshot_at(check["backup_snapshot_at"]):
+            raise ValueError("backup snapshot timestamp is not allowed")
+        public["backup_snapshot_at"] = check["backup_snapshot_at"]
     if "disk_capacity" in check:
         capacity = check["disk_capacity"]
         if not valid_observer_disk_capacity(name, capacity, public.get("observed")):

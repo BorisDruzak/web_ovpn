@@ -979,7 +979,8 @@ def test_acti_service_reflects_backup_dependency_on_inventory_host(tmp_path):
     report = {"freshness": "current", "targets": [
         {"role": "acti_backup", "status": "critical", "observed_at": stamp,
          "checks": [{"name": "watchdog_fresh", "status": "ok"},
-                    {"name": "backup_snapshot_fresh", "status": "critical"},
+                    {"name": "backup_snapshot_fresh", "status": "critical", "observed": 48, "expected": 30,
+                     "backup_snapshot_at": int((now - timedelta(hours=48)).timestamp())},
                     {"name": "repository_capacity", "status": "ok", "backup_repository": {
                         "checked_at": int((now - timedelta(hours=1)).timestamp()), "used_bytes": 2**30, "free_gib": 200,
                     }}]},
@@ -1027,6 +1028,8 @@ def test_acti_service_reflects_backup_dependency_on_inventory_host(tmp_path):
     issue, = [issue for issue in acti["issues"] if issue["check"] == "backup_job"]
     assert issue["backupJob"] == job["backupJob"]
     backup = next(service for service in audit if service["id"] == "role:acti_backup")
+    freshness = next(issue for issue in backup["issues"] if issue["check"] == "backup_snapshot_fresh")
+    assert freshness["backupSnapshotAt"] == (now - timedelta(hours=48)).replace(microsecond=0).isoformat()
     assert next(issue for issue in backup["issues"] if issue["check"] == "backup_job")["sourceNodeId"] == "role:acti"
     assert nodes["role:acti"]["mapStatus"] == nodes["acti-vm"]["mapStatus"] == "warn"
     assert nodes["role:acti"]["serviceAvailability"]["unavailable"] == ["role:acti_backup"]
@@ -1036,6 +1039,7 @@ def test_acti_service_reflects_backup_dependency_on_inventory_host(tmp_path):
     report["targets"][0]["observed_at"] = (now - timedelta(minutes=25)).isoformat()
     nodes, _ = read()
     assert nodes["acti-vm"]["mapStatus"] == "unknown"
+    assert all("backupSnapshotAt" not in check for check in nodes["role:acti_backup"]["checks"])
     backup_job, = [check for check in nodes["role:acti_backup"]["checks"] if check["name"] == "backup_job"]
     assert backup_job["checkedAt"] == stamp and backup_job["stale"] is False
     context["devices"].pop(0)

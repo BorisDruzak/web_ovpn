@@ -23,7 +23,7 @@ from .network_route_receipt_timing import MAX_AGE as ROUTE_RECEIPT_MAX_AGE
 from .server_observer import STALE_AFTER as SERVER_OBSERVER_MAX_AGE
 from .server_observer import (
     ACTI_BACKUP_MAX_REPOSITORY_BYTES, ACTI_BACKUP_MIN_FREE_GIB, ACTI_BACKUP_WATCHDOG_MAX_AGE,
-    valid_acti_backup_job, valid_acti_backup_repository, valid_observer_disk_capacity,
+    valid_acti_backup_job, valid_acti_backup_repository, valid_backup_snapshot_at, valid_observer_disk_capacity,
 )
 
 if TYPE_CHECKING:
@@ -192,7 +192,7 @@ def _number(value: object) -> int | float | None:
     return value if type(value) is float and math.isfinite(value) else None
 
 
-def _observer_measurement(check: dict, name: str, now: datetime) -> dict:
+def _observer_measurement(check: dict, name: str, now: datetime, *, fresh: bool) -> dict:
     job = check.get("backup_job")
     if name == "backup_job" and valid_acti_backup_job(job):
         completed = job["completed_at"]
@@ -224,6 +224,10 @@ def _observer_measurement(check: dict, name: str, now: datetime) -> dict:
     expected = _number(check.get("expected"))
     if valid(expected):
         result["warningThreshold"] = expected
+    if fresh and name == "backup_snapshot_fresh" and valid_backup_snapshot_at(stamp := check.get("backup_snapshot_at")):
+        snapshot = datetime.fromtimestamp(stamp, timezone.utc)
+        if snapshot <= now:
+            result["backupSnapshotAt"] = snapshot.isoformat()
     if valid_observer_disk_capacity(name, capacity := check.get("disk_capacity"), observed):
         result["diskCapacity"] = {"freeBytes": capacity["free_bytes"], "totalBytes": capacity["total_bytes"]}
     return result
@@ -1319,7 +1323,8 @@ def _public_node(row: dict, now: datetime) -> dict:
                 and check_counts[name] == 1 and check.get("status") == "unknown"
                 and check.get("error") in OBSERVER_CHECK_ERRORS else {}),
              "checkedAt": observer["at"] if observer else None, "stale": not observer or observer["stale"],
-             **_observer_measurement(check, name, now), "latency": _number(check.get("latency"))}
+             **_observer_measurement(check, name, now, fresh=bool(observer and not observer["stale"])),
+             "latency": _number(check.get("latency"))}
             for check in checks
             for name in [_text(check.get("name"), 64)]
         ],
@@ -3122,7 +3127,7 @@ def summarize_services(graph: dict, *, host_id: str | None = None, offset: int =
              "required": check.get("required") is True,
              "status": check["status"], "source": "Server Observer",
              **{key: check[key] for key in ("checkedAt", "stale", "error", "unit", "observed", "warningThreshold",
-                                           "backupJob", "backupRepository", "diskCapacity", "sourceNodeId")
+                                           "backupJob", "backupRepository", "backupSnapshotAt", "diskCapacity", "sourceNodeId")
                 if key in check}}
             for check in node["checks"] if check.get("required") or check["status"] in ("critical", "warn")
         ]

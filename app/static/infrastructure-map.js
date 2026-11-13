@@ -1482,6 +1482,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           check.required && 'обязательная проверка', check.checkedAt && formatTime(check.checkedAt),
           check.stale && 'устарело'];
         row.append(make('strong', check.label || check.name), make('small', notes.filter(Boolean).join(' · ')));
+        if (check.backupSnapshotAt) row.append(make('small', 'Последний снимок · ' + formatTime(check.backupSnapshotAt)));
         if (check.backupRepository) {
           const {usedBytes, maximumBytes, freeGiB, minimumFreeGiB, checkedAt} = check.backupRepository;
           row.append(make('small', [

@@ -2363,6 +2363,8 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                            **({"backup_job": check["backup_job"]} if "backup_job" in check else {}),
                            **({"backup_repository": check["backup_repository"]}
                               if valid_report and "backup_repository" in check else {}),
+                           **({"backup_snapshot_at": check["backup_snapshot_at"]}
+                              if valid_report and "backup_snapshot_at" in check else {}),
                            **({"disk_capacity": check["disk_capacity"]} if "disk_capacity" in check else {}),
                            "error": check.get("message") or check.get("error"),
                            "latency": check.get("latency_ms")}

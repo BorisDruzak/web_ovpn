@@ -481,6 +481,8 @@ def test_backup_eventlog_program_validates_owned_report_without_writes(mutation)
     }
     if data["watchdog_fresh"]:
         expected_fields |= {"snapshot_count", "snapshot_age_hours", "backup_repository"}
+        if data["snapshot_age_hours"] is not None:
+            expected_fields.add("backup_snapshot_at")
     assert set(data) == expected_fields
     if mutation == "healthy":
         assert all(
@@ -491,6 +493,8 @@ def test_backup_eventlog_program_validates_owned_report_without_writes(mutation)
         checks = {c["name"]: c for c in observer._checks_from_payload("acti_backup", "gateway", data, 1)}
         assert checks["backup_snapshot_fresh"]["expected"] == 30
         assert checks["backup_snapshot_fresh"]["observed"] == data["snapshot_age_hours"]
+        assert data["backup_snapshot_at"] == int((now - timedelta(hours=1)).timestamp())
+        assert observer.public_check(checks["backup_snapshot_fresh"])["backup_snapshot_at"] == data["backup_snapshot_at"]
         assert checks["backup_snapshot_count"]["observed"] == 2
         usage = data["backup_repository"]
         assert usage == {"checked_at": int(now.timestamp()), "used_bytes": 1000, "free_gib": 1000}
