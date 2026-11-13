@@ -2038,7 +2038,8 @@ def _physical_attachments(nodes: dict, links: list[dict], host_ids: list[str]) -
     for group in connections.values():
         group.sort(key=lambda row: (row["kind"] != "Сетевое соединение", not row["confirmed"], row["peer"]["id"]))
     return [{"host": _attachment_node(nodes[host_id]), "connectionTotal": len(group), "connections": group[:24],
-             "pendingPortPairTotal": len(pending_by_host[host_id]), "pendingPortPairs": pending_by_host[host_id][:24]}
+             "pendingPortPairTotal": len(pending_by_host[host_id]), "pendingPortPairs": pending_by_host[host_id][:24],
+             **({"lacpHealth": nodes[host_id]["lacpHealth"]} if "lacpHealth" in nodes[host_id] else {})}
             for host_id, group in connections.items()]
 
 
