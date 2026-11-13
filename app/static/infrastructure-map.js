@@ -951,9 +951,12 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     return panel;
   }
 
-  function renderServiceHostPortPairs(host, pending = false) {
+  function renderHostPortPairs(host, pending = false, port = null) {
     const records = pending ? data.pendingPortPairs : data.currentPortPairs;
-    const pairs = (records ?? []).filter(pair => pair.a === host.id || pair.b === host.id);
+    const keys = port ? portKeys(port) : null;
+    const pairs = (records ?? []).filter(pair =>
+      (pair.a === host.id && (!keys || keys.includes(portKey(pair.portA)))) ||
+      (pair.b === host.id && (!keys || keys.includes(portKey(pair.portB)))));
     if (!pairs.length) return null;
     const panel = make('details', null, 'map-port-panel');
     panel.dataset.section = pending ? 'service-host-pending-port-pairs' : 'service-host-port-pairs';
@@ -1220,13 +1223,19 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     if (servicePaths) propertiesSection.append(servicePaths);
     if (node.kind === 'Сервис' && placementHost !== node && !placementHost.guest) {
       if (!servicePaths) {
-        const portPairs = renderServiceHostPortPairs(placementHost);
+        const portPairs = renderHostPortPairs(placementHost);
         if (portPairs) propertiesSection.append(portPairs);
       }
-      const pendingPairs = renderServiceHostPortPairs(placementHost, true);
+      const pendingPairs = renderHostPortPairs(placementHost, true);
       if (pendingPairs) propertiesSection.append(pendingPairs);
       const observedPorts = renderObservedHostPorts(placementHost, paths);
       if (observedPorts) propertiesSection.append(observedPorts);
+    }
+    if (node.kind !== 'Сервис' && !node.guest) {
+      for (const pending of [false, true]) {
+        const pairs = renderHostPortPairs(node, pending, chosenPort);
+        if (pairs) propertiesSection.append(pairs);
+      }
     }
     const guestAttachment = renderGuestAttachment(data.guestAttachments?.[resourceHost.id]);
     if (guestAttachment) {
