@@ -7775,6 +7775,10 @@ def test_service_audit_shares_map_status_and_reports_required_check_gaps(tmp_pat
     full = client.get(url, headers=headers).json()["infrastructure"]
     assert row["id"] == "svc" and row["status"] == full["nodes"][1]["mapStatus"] == "warn"
     assert row["hosts"] == ["vm"]
+    attachment = client.get(url + "?view=attachment&node_id=svc", headers=headers).json()["infrastructure"]["attachment"]
+    assert attachment["checks"] == full["nodes"][1]["checks"]
+    assert attachment["serviceChecks"] == full["nodes"][1]["serviceChecks"]
+    assert attachment["physicalHosts"][0]["host"]["id"] == "vm"
     assert row["requiredChecks"] == {"passed": 1, "failed": 1, "unconfirmed": 2}
     assert {(c["check"], c["status"], c["stale"]) for c in row["issues"]} == {
         ("c_disk_free", "critical", False), ("iis_active", "unknown", False), ("HTTPS", "unknown", True),

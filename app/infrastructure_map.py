@@ -2822,6 +2822,7 @@ def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
     detail = {}
     if anchor and anchor["kind"] == "Сервис":
+        detail["checks"] = anchor["checks"]
         detail["serviceChecks"] = anchor["serviceChecks"]
         detail["reachability"] = anchor["reachability"]
     if anchor and anchor["kind"] == "Сервис" and len(guest_ids) <= 12:
