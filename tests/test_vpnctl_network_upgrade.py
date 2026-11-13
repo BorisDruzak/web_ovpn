@@ -2,7 +2,9 @@ import json
 import os
 import subprocess
 import sys
+from importlib.machinery import SourceFileLoader
 from pathlib import Path
+from types import ModuleType
 
 
 VPNCTL = Path(__file__).resolve().parents[1] / "deploy" / "vpnctl"
@@ -65,6 +67,27 @@ def run_vpnctl(tmp_path: Path, *args: str, check: bool = True) -> dict:
     if not check and proc.returncode != 0:
         return {"returncode": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr}
     return json.loads(proc.stdout)
+
+
+def test_disable_registered_client_preserves_profile(tmp_path, monkeypatch):
+    client = "registered-client"
+    module = ModuleType("vpnctl_disable_test")
+    SourceFileLoader(module.__name__, str(VPNCTL)).exec_module(module)
+    monkeypatch.setitem(module.CFG.values, "REGISTRY_DB", str(tmp_path / "registry.sqlite"))
+    monkeypatch.setitem(module.CFG.values, "OPERATION_LOG", str(tmp_path / "vpnctl.log"))
+    monkeypatch.setattr(module, "client_paths", lambda name: {
+        key: tmp_path / key for key in (
+            "ccd", "ovpn", "tlscrypt", "bat", "share_ovpn", "share_bat", "crt", "key"
+        )
+    })
+    monkeypatch.setattr(module, "revoke_cert", lambda name: {"cert_status_after": "revoked"})
+    module.upsert_client({"name": client, "profile": "directum", "status": "active"})
+
+    module.disable_or_delete(client, "disable", reason="retire probe")
+
+    row = module.get_client_row(client)
+    assert row["status"] == "disabled"
+    assert row["profile"] == "directum"
 
 
 def test_router_site_to_site_preview_renders_iroute_and_server_route_plan(tmp_path):

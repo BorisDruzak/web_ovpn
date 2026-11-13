@@ -1490,7 +1490,7 @@ def disable_or_delete(client: str, mode: str, purge: bool = False, reason: str =
     status = "disabled" if mode == "disable" else "deleted"
     row = {
         "name": client,
-        "profile": (get_client_row(client) or {}).get("profile") if get_client_row(client) else None,
+        "profile": registry_value(get_client_row(client), "profile"),
         "detected_profile": None,
         "vpn_ip": parse_ccd(paths["ccd"]).get("vpn_ip") if paths["ccd"].exists() else None,
         "status": status,
