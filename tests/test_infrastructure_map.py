@@ -7015,7 +7015,12 @@ def test_ssh_identification_confirms_only_a_bounded_protocol_response(monkeypatc
             assert 0 < timeout <= probes.TIMEOUT
 
         def recv(self, size):
-            return chunks.pop(0)[:size] if chunks else b""
+            if not chunks:
+                return b""
+            chunk = chunks.pop(0)
+            if isinstance(chunk, OSError):
+                raise chunk
+            return chunk[:size]
 
     def connect(destination, *, timeout):
         assert destination == (ip, 22) and 0 < timeout <= probes.TIMEOUT
@@ -7035,10 +7040,12 @@ def test_ssh_identification_confirms_only_a_bounded_protocol_response(monkeypatc
     success = check(b"NOTICE\r\nSSH-", b"2.0-example private-text\r\n\x00\x01")
     assert (success["method"], success["state"], success["target"], success["port"]) == ("SSH", "reachable", ip, 22)
     assert "private-text" not in json.dumps(success)
+    assert success["sshTcpConnected"] is True
     assert check(b"SSH-1.99-example\n")["state"] == "reachable"
     assert check(b"SSH-2.0-example\n")["state"] == "reachable"
     closed = check(b"")
     assert (closed["state"], closed["reason"]) == ("unknown", "ssh_closed_before_identification")
+    assert closed["sshTcpConnected"] is True
     ipssh = check(b"SSH-2.0-IPSSH-6.6.0\r\n")
     assert ipssh["state"] == "reachable" and "IPSSH" not in json.dumps(ipssh)
     for banner in (b"HTTP/1.1 200 OK\r\n", b"SSH-2.0-" + b"x" * 250 + b"\r\n", b"SSH-2.0-example", b"x" * 1024,
@@ -7049,6 +7056,10 @@ def test_ssh_identification_confirms_only_a_bounded_protocol_response(monkeypatc
     assert (refused["state"], refused["reason"]) == ("unreachable", "ssh_connection_refused")
     expired = check(TimeoutError())
     assert (expired["state"], expired["reason"]) == ("unknown", "timeout")
+    assert "sshTcpConnected" not in expired
+    banner_timeout = check(b"NOTICE\r\n", TimeoutError())
+    assert (banner_timeout["state"], banner_timeout["reason"]) == ("unknown", "timeout")
+    assert banner_timeout["sshTcpConnected"] is True
     previous = len(connections)
     assert check(target="192.0.2.21")["reason"] == "probe_target_mismatch"
     assert len(connections) == previous

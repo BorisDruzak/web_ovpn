@@ -1189,7 +1189,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const smb = probe.smbDialect && smbNegotiationLabel(probe.smbDialect, probe.smbSigningRequired);
         const postgres = postgresqlTlsLabel(probe.postgresqlTls, probe.tlsVersion);
         const redfish = probe.redfishVersion && `Redfish ${probe.redfishVersion}`;
-        readings.add([probe.source, probe.via && `через ${probe.via}`, probe.path, question, outcome, code, rdp, tls, zabbix, redfish, smb, postgres, ntpLabel(probe.ntp), responseFrom, rtt,
+        const tcp = probe.sshTcpConnected && probe.state !== 'reachable' && probe.reason !== 'ssh_closed_before_identification' && 'TCP подключён';
+        readings.add([probe.source, probe.via && `через ${probe.via}`, probe.path, question, tcp, outcome, code, rdp, tls, zabbix, redfish, smb, postgres, ntpLabel(probe.ntp), responseFrom, rtt,
           probe.state && formatTime(probe.checkedAt)].filter(Boolean).join(' · '));
       }
       for (const reading of readings) {
@@ -2171,7 +2172,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           title.addEventListener('click', () => select(guests[0].id));
         }
         const ntp = check.ntp ? ' · ' + ntpLabel(check.ntp) : '';
-        row.append(title, make('small', result + http + rtsp + ftp + certificate + postgresql + smb + (reason ? ' · ' + reason + errorSource : '') + backup + policy + dns + ntp + rtt + attempts + gateway + egress + management + scope + source + time + identity + (check.stale ? ' · устарело' : '')));
+        const tcp = check.sshTcpConnected && check.state !== 'reachable' && check.reason !== 'ssh_closed_before_identification' ? ' · TCP подключён' : '';
+        row.append(title, make('small', result + http + rtsp + ftp + certificate + postgresql + smb + tcp + (reason ? ' · ' + reason + errorSource : '') + backup + policy + dns + ntp + rtt + attempts + gateway + egress + management + scope + source + time + identity + (check.stale ? ' · устарело' : '')));
         if (check.managementInterface) {
           row.append(make('small', `Интерфейс управления ${check.managementInterface.name} · ${check.managementInterface.source}`));
         }

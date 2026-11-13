@@ -1000,21 +1000,23 @@ def _ssh_identification(spec: dict) -> dict:
     except ValueError:
         return {"state": "unknown"}
 
-    invalid = {"state": "unknown", "reason": "ssh_identification_invalid"}
+    invalid = {"state": "unknown", "reason": "ssh_identification_invalid", "sshTcpConnected": True}
     buffer = b""
     limit = budget = 1024
     deadline = monotonic() + TIMEOUT
+    connected = {}
     try:
         with socket.create_connection((address, port), timeout=TIMEOUT) as connection:
+            connected["sshTcpConnected"] = True
             while budget:
                 remaining = deadline - monotonic()
                 if remaining <= 0:
-                    return {"state": "unknown", "reason": "timeout"}
+                    return {"state": "unknown", "reason": "timeout", **connected}
                 connection.settimeout(remaining)
                 chunk = connection.recv(budget)
                 if not chunk:
                     if budget == limit:
-                        return {"state": "unknown", "reason": "ssh_closed_before_identification"}
+                        return {"state": "unknown", "reason": "ssh_closed_before_identification", **connected}
                     break
                 budget -= len(chunk)
                 buffer += chunk
@@ -1025,13 +1027,15 @@ def _ssh_identification(spec: dict) -> dict:
                             rb"SSH-(?:2\.0|1\.99)-(?:[\x21-\x2c\x2e-\x7e]+|IPSSH-[0-9]+(?:\.[0-9]+){2})(?: [ -~]*)?\r?",
                             line,
                         )
-                        return {"state": "reachable"} if valid else invalid
+                        return {"state": "reachable", **connected} if valid else invalid
     except TimeoutError:
-        return {"state": "unknown", "reason": "timeout"}
+        return {"state": "unknown", "reason": "timeout", **connected}
     except ConnectionRefusedError:
-        return {"state": "unreachable", "reason": "ssh_connection_refused"}
+        if not connected:
+            return {"state": "unreachable", "reason": "ssh_connection_refused"}
+        return {"state": "unknown", "reason": "transport_error", **connected}
     except OSError:
-        return {"state": "unknown", "reason": "transport_error"}
+        return {"state": "unknown", "reason": "transport_error", **connected}
     return invalid
 
 

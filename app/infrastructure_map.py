@@ -949,6 +949,9 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         "ssh_closed_before_identification",
     }:
         result["reason"] = reason
+    if (result["method"] == "SSH" and result["source"] == "UI_VPN" and not result["stale"]
+            and check.get("sshTcpConnected") is True):
+        result["sshTcpConnected"] = True
     attempts = check.get("attempts")
     if type(attempts) is int and (
         (sip and 1 <= attempts <= 3)
@@ -2542,7 +2545,8 @@ def _attachment_probe_location(check: dict) -> dict:
             **({"path": check["path"]} if check.get("path") else {}),
             **{key: check[key] for key in ("reason", "errorSource", "roundTripMs", "httpStatus", "responseCode", "rtspStatus", "dns", "ntp",
                                            "rdpSecurity", "rdpFailureCode", "tlsExpiresAt", "tlsVersion", "zabbixVersion",
-                                           "smbDialect", "smbSigningRequired", "postgresqlTls", "redfishVersion", "ftpReply")
+                                           "smbDialect", "smbSigningRequired", "postgresqlTls", "redfishVersion", "ftpReply",
+                                           "sshTcpConnected")
                if key in check}}
 
 
@@ -3294,7 +3298,7 @@ def summarize_services(graph: dict, *, host_id: str | None = None, offset: int =
                                             "pppoe", "rtspStatus", "ftpReply", "tlsExpiresAt", "tlsVersion",
                                             "dns", "ntp", "localRoute", "vlanTransit", "identityCheckedAt", "errorSource",
                                             "responseCode", "attempts", "ipsecPolicy", "configuredPort", "localUdpSocket",
-                                            "sessionCount", "daemonReady", "arpDiagnostic")
+                                            "sessionCount", "daemonReady", "arpDiagnostic", "sshTcpConnected")
                 if key in check and check[key] is not None and check[key] != ""}}
             for check in node["serviceChecks"] if check.get("required") or (
                 state == "unknown" and check.get("supplemental") and check["state"] != "reachable"
