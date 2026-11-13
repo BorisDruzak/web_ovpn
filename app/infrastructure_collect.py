@@ -2024,6 +2024,9 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                                    "egress": ("untagged" if row["untagged"] == 1 else "tagged")
                                    if row["egress"] == 1 else ""} for row in memberships[:4094]],
                     }
+                elif (row.get("enabled") and port["checkedAt"]
+                      and network.get("empty_vlan_collections", {}).get(name) == port["checkedAt"]):
+                    port["vlanCollection"] = {"state": "empty", "checkedAt": port["checkedAt"]}
                 sample = port_telemetry.get((name, port["key"], latest_run, port["checkedAt"]))
                 if not sample or port["state"] != "up":
                     continue
@@ -3224,6 +3227,17 @@ def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | N
     }
     with read_context_snapshot(DEFAULT_DB_URL) as connection:
         data = {"sources": list_sources(connection), "attachments": query_confirmed_attachment_ports(connection)}
+        data["empty_vlan_collections"] = {row["source"]: row["checked_at"] for row in connection.execute(
+            """
+            SELECT s.name AS source, c.checked_at
+            FROM switch_capabilities AS c
+            JOIN network_sources AS s ON s.id = c.source_id
+            WHERE s.enabled = 1 AND s.driver = 'snmp_switch'
+              AND c.capability IN ('vlan_current_egress', 'vlan_current_untagged', 'pvid')
+            GROUP BY s.name, c.checked_at
+            HAVING COUNT(*) = 3 AND SUM(c.outcome = 'success_empty' AND c.rows_seen = 0) = 3
+            """
+        )}
         data["switch_collection"] = {row["source"]: dict(row) for row in connection.execute(
             """
             SELECT s.name AS source, r.finished_at, r.status, r.error_class

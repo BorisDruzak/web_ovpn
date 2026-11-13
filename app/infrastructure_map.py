@@ -405,6 +405,9 @@ def _public_port(row: dict, now: datetime) -> dict:
                 result["rxErrorCounters"] = {"checkedAt": _time(counters["checkedAt"]).isoformat(), **readings}
     if memberships := _public_port_vlans(row.get("vlanMemberships"), result):
         result["vlanMemberships"] = memberships
+    elif (isinstance(collection := row.get("vlanCollection"), dict) and collection.get("state") == "empty"
+          and observation_is_fresh(collection.get("checkedAt"), now, max_age=VLAN_AUDIT_MAX_AGE)):
+        result["vlanCollection"] = {"state": "empty", "checkedAt": _time(collection["checkedAt"]).isoformat()}
     if fdb_vlans := _public_port_fdb_vlans(row.get("fdbVlans"), result):
         result["fdbVlans"] = fdb_vlans
     return result
@@ -1520,6 +1523,9 @@ def _audit_link_vlans(expected: object, ports: dict, now: datetime) -> list[dict
     for side, port in ports.items():
         if port["state"] != "up":
             continue
+        if collection := port.get("vlanCollection"):
+            for readings in observations.values():
+                readings[side] = {"vlanCollection": collection}
         for field, value, timestamp in (("vlanMemberships", "egress", "membershipCheckedAt"),
                                          ("fdbVlans", "learnedMacCount", "fdbCheckedAt")):
             sample = port.get(field, {})

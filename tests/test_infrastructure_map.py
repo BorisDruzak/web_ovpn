@@ -3015,6 +3015,7 @@ def test_vlan_audit_keeps_port_configuration_and_learned_mac_evidence_distinct(t
     port_a = {"name": "ge23", "state": "up", "checkedAt": stamp,
               "vlanMemberships": {"checkedAt": stamp, "vlans": configured}}
     port_b = {"name": "Gi1/0/47", "state": "up", "checkedAt": stamp,
+              "vlanCollection": {"state": "empty", "checkedAt": stamp},
               "fdbVlans": {"checkedAt": stamp, "vlans": [{"id": 20, "learnedMacCount": 2}]}}
     snapshot = {"schema": 1, "snapshotAt": stamp, "nodes": [
         {"id": "a", "name": "A", "kind": "Коммутатор", "ports": [port_a]},
@@ -3024,9 +3025,9 @@ def test_vlan_audit_keeps_port_configuration_and_learned_mac_evidence_distinct(t
                                     "expectedVlans": expected}]}]}
     path = tmp_path / "map.json"
 
-    def read():
+    def read(when=now):
         path.write_text(json.dumps(snapshot), encoding="utf-8")
-        graph = load_infrastructure_map(path, now)
+        graph = load_infrastructure_map(path, when)
         audit, = summarize_topology(graph)["topologyAudit"]["vlanAudits"]
         for node_id, port_name in (("a", "GE23"), ("b", "gigabitEthernet 1/0/47"), ("b", None)):
             scoped = summarize_topology(graph, node_id=node_id, port_name=port_name)["topologyAudit"]
@@ -3038,8 +3039,10 @@ def test_vlan_audit_keeps_port_configuration_and_learned_mac_evidence_distinct(t
     assert native["state"] == tagged["state"] == "unconfirmed"
     assert tagged["ports"] == {
         "a": {"egress": "tagged", "membershipCheckedAt": stamp},
-        "b": {"learnedMacCount": 2, "fdbCheckedAt": stamp},
+        "b": {"learnedMacCount": 2, "fdbCheckedAt": stamp,
+              "vlanCollection": {"state": "empty", "checkedAt": stamp}},
     }
+    assert "b" not in read(now + timedelta(minutes=11))[1]["ports"]
     port_b["vlanMemberships"] = {"checkedAt": stamp, "vlans": configured}
     assert all(vlan["state"] == "confirmed" for vlan in read())
     port_b["vlanMemberships"]["vlans"] = [{"id": 20, "egress": "untagged", "pvid": False}]
@@ -4702,13 +4705,13 @@ def test_switch_port_telemetry_requires_matching_current_collection(tmp_path):
     context = {"devices": [{"id": "sw", "name": "Switch", "kind": "switch"}]}
     sample = {"source": "core", "port_key": "physical:7", "collector_run_id": 11, "observed_at": at,
               "sample_interval_seconds": 300, "rx_bps": 250000, "tx_bps": 0, "in_errors_delta": 2}
-    network = {"sources": [{"id": 1, "name": "core", "driver": "snmp_switch",
+    network = {"sources": [{"id": 1, "name": "core", "driver": "snmp_switch", "enabled": True,
                             "driver_options": {"intent_stable_id": "sw"}}],
                "ports": [{"source": "core", "port_key": "physical:7", "name": "Port7",
                           "collector_run_id": 11, "oper_status": "up", "last_seen_at": at,
                           "rxErrorCounters": {"checkedAt": at, "ifInErrors": 44, "fcsErrors": 0,
                                               "alignmentErrors": -1, "unrecognized": 1}}],
-               "port_telemetry": [sample]}
+               "port_telemetry": [sample], "empty_vlan_collections": {"core": at}}
     path = tmp_path / "map.json"
 
     def read(when=now):
@@ -4719,6 +4722,9 @@ def test_switch_port_telemetry_requires_matching_current_collection(tmp_path):
         return graph["nodes"][0]["ports"][0], audit
 
     port, audit = read()
+    assert port["vlanCollection"] == {"state": "empty", "checkedAt": at}
+    network["empty_vlan_collections"]["core"] = (now - timedelta(seconds=1)).isoformat()
+    assert "vlanCollection" not in read()[0]
     assert port["telemetry"] == {"checkedAt": at, "intervalSeconds": 300,
                                  "rxBps": 250000, "txBps": 0, "rxErrors": 2}
     assert port["rxErrorCounters"] == {"checkedAt": at, "ifInErrors": 44, "fcsErrors": 0}

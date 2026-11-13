@@ -2069,7 +2069,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
               row.append(make('strong', `VLAN ${vlan.id} · ожидается ${modes[vlan.expected]}`), make('small', states[vlan.state]));
               for (const side of ['a', 'b']) {
                 const port = vlan.ports[side] ?? {};
-                const membership = port.egress ? `${modes[port.egress]} · ${formatTime(port.membershipCheckedAt)}` : 'режим неизвестен';
+                const membership = port.egress ? `${modes[port.egress]} · ${formatTime(port.membershipCheckedAt)}`
+                  : port.vlanCollection?.state === 'empty' ? `SNMP не вернул данные VLAN · ${formatTime(port.vlanCollection.checkedAt)}`
+                  : 'режим неизвестен';
                 const learned = port.learnedMacCount ? ` · изучено MAC ${port.learnedMacCount} · ${formatTime(port.fdbCheckedAt)}` : '';
                 row.append(make('small', `${byId.get(edge[side]).name} ${evidence[side]} · ${membership}${learned}`));
               }
