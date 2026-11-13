@@ -30,7 +30,7 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
 LOGGER = logging.getLogger(__name__)
-WINDOWS_DNS_SOURCE = "Windows · сетевая проба"
+WINDOWS_PROBE_SOURCE = "Windows · сетевая проба"
 
 MAX_SNAPSHOT_BYTES = 1_000_000
 MAX_AGE = timedelta(minutes=25)
@@ -595,8 +595,8 @@ def _public_service_check(check: dict, now: datetime) -> dict:
     backup = check.get("method") == BACKUP_PROBE_METHOD and check.get("source") == "Proxmox"
     current_probe = (check.get("source") == "UI_VPN" and check.get("required") is True
                      or check.get("source") == "RouterOS" and check.get("method") == PPPOE_INTERNET_METHOD)
-    windows_dns = check.get("source") == WINDOWS_DNS_SOURCE and check.get("method") == "DNS"
-    max_age = ROUTE_RECEIPT_MAX_AGE if windows_dns else SERVICE_PROBE_MAX_AGE if backup or current_probe else MAX_AGE
+    windows_probe = check.get("source") == WINDOWS_PROBE_SOURCE and check.get("method") in ("DNS", "HTTP")
+    max_age = ROUTE_RECEIPT_MAX_AGE if windows_probe else SERVICE_PROBE_MAX_AGE if backup or current_probe else MAX_AGE
     result = {
         **_public_reachability(check, now, max_age=max_age),
         "port": port if type(port) is int and 1 <= port <= 65535 else None,
@@ -775,7 +775,7 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         if result["method"] == "HTTP" and isinstance(host, str) and re.fullmatch(r"[A-Za-z0-9.-]{1,253}", host):
             result["httpHost"] = host
         status = check.get("httpStatus")
-        if type(status) is int and 100 <= status <= 599:
+        if type(status) is int and 100 <= status <= 599 and (not windows_probe or not result["stale"]):
             result["httpStatus"] = status
         version = check.get("redfishVersion")
         if (result["method"] == "HTTPS" and result["path"] == "/redfish/v1/" and status == 200
@@ -820,10 +820,10 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         diagnostic = _public_dns_check(check.get("dns"))
         if diagnostic:
             result["dns"] = diagnostic
-            if (windows_dns and not result["stale"] and "rcode" in diagnostic
+            if (windows_probe and not result["stale"] and "rcode" in diagnostic
                     and type(match := check["dns"].get("answersMatch")) is bool):
                 diagnostic["answersMatch"] = match
-            if windows_dns and reason == "dns_rcode":
+            if windows_probe and reason == "dns_rcode":
                 result["reason"] = reason
             if reason in ("dns_no_answer", "dns_address_mismatch", "dns_srv_mismatch", "dns_unexpected_source",
                           "dns_route_unconfirmed", "dns_route_mismatch", "dns_truncated"):

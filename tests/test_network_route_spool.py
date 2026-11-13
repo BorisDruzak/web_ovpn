@@ -72,6 +72,36 @@ def push_profile():
     }]})
 
 
+def test_map_exposes_windows_http_without_overriding_server_checks(tmp_path, monkeypatch, push_profile):
+    from types import SimpleNamespace
+    from app import infrastructure_endpoint_ports as ports, network_route_spool as spool
+    from app.infrastructure_map import load_infrastructure_map
+
+    monkeypatch.setattr(ports, "load_probe_profiles", lambda **_: SimpleNamespace(routes={PROFILE: push_profile}))
+    monkeypatch.setattr(spool, "SPOOL_PATH", tmp_path)
+    monkeypatch.setattr(spool, "utcnow", lambda: NOW)
+    (tmp_path / ORIGIN).mkdir()
+    probe, = push_profile.probes
+    spool.store_receipt(ORIGIN, PROFILE, push_profile, receipt(probe), now=NOW)
+    primary = {"source": "UI_VPN", "method": "HTTP", "required": True, "state": "unreachable",
+               "target": probe.target, "path": "/", "port": 80, "checkedAt": NOW.isoformat()}
+    service = {"id": "directum", "name": "Directum", "kind": "Сервис", "serviceChecks": [primary],
+               "reachability": {**primary, "source": "Проверка сервиса"}}
+    graph = {"schema": 1, "snapshotAt": NOW.isoformat(), "nodes": [service,
+             {"id": "pc", "name": "Windows", "kind": "Рабочая станция"}], "links": []}
+    ports.collect_endpoint_http(graph, {"directum": {"station": "pc", "origin": ORIGIN,
+                                                     "profile": PROFILE, "probe": probe.id}}, NOW)
+    path = tmp_path / "map.json"
+    path.write_text(json.dumps(graph), encoding="utf-8")
+    node = next(node for node in load_infrastructure_map(path, NOW)["nodes"] if node["id"] == "directum")
+    assert node["mapStatus"] == "critical"
+    check = next(check for check in node["serviceChecks"] if check.get("supplemental"))
+    assert check["state"] == "reachable" and check["httpStatus"] == 200
+    assert check["checkedAt"] == NOW.isoformat()
+    expired = next(node for node in load_infrastructure_map(path, NOW + timedelta(minutes=4))["nodes"] if node["id"] == "directum")
+    assert next(c for c in expired["serviceChecks"] if c.get("supplemental"))["state"] == "unknown"
+
+
 def receipt(probe, *, measured=NOW, source="192.0.2.20", gateway="192.0.2.1"):
     return json.dumps({"measured_at": measured.isoformat(), "probes": {probe.id: {
         "digest": probe.config_digest(), "result": {

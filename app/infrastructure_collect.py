@@ -54,14 +54,14 @@ from .infrastructure_map import (
     PPPOE_INTERNET_METHOD, PPPOE_METHOD, PPPOE_SOURCE, PVE_DISK_DEVICE, PVE_STORAGE_ID, RECIPROCAL_MAC_SOURCE,
     RX_SILENCE_MAX_INTERVALS, RX_SILENCE_MAX_WINDOW, SERVICE_PROBE_MAX_AGE, SHARED_LLDP_KIND, SHARED_LLDP_SOURCE,
     SNMP_COLLECTION_METHOD, STP_ROOT_PATH_MAX_AGE,
-    TRANSCEIVER_MAX_AGE, WINDOWS_DNS_SOURCE,
+    TRANSCEIVER_MAX_AGE, WINDOWS_PROBE_SOURCE,
     _public_service_check, _service_reachability, index_port_states, inventory_link_sources,
     observation_is_fresh, port_label_key, public_probe_transition,
     project_hypervisor_disks, project_hypervisor_lvm_thin, project_hypervisor_zfs,
 )
 from .infrastructure_port_ssh import collect_proxmox_port_states
 from .infrastructure_redfish import collect_redfish_power
-from .infrastructure_endpoint_ports import collect_endpoint_dns, confirm_endpoint_ports
+from .infrastructure_endpoint_ports import collect_endpoint_dns, collect_endpoint_http, confirm_endpoint_ports
 from .infrastructure_service_probes import _local_arp_diagnostic, apply_service_probes, probe_icmp
 from .netctl_client import NetctlError, run_netctl
 from .server_health_view import build_server_health_view
@@ -3438,7 +3438,7 @@ def _add_service_probe_transitions(graph: dict, previous: dict) -> None:
     def observe(node):
         raw = node.get("serviceChecks")
         checks = [_public_service_check(row, now) for row in raw[:16]
-                  if isinstance(row, dict) and row.get("source") in ("UI_VPN", WINDOWS_DNS_SOURCE)]
+                  if isinstance(row, dict) and row.get("source") in ("UI_VPN", WINDOWS_PROBE_SOURCE)]
         reachability = _service_reachability(node.get("reachability"), checks, now)
         identity = Counter(
             (c["source"], c["method"], c.get("target"), c.get("port"), c.get("path"), c.get("via"),
@@ -3739,6 +3739,8 @@ def main() -> int:
             confirm_endpoint_ports(graph, endpoint_ports, datetime.now(timezone.utc))
         if isinstance(endpoint_dns := bindings.get("endpoint_dns"), dict) and endpoint_dns:
             collect_endpoint_dns(graph, endpoint_dns, datetime.now(timezone.utc))
+        if isinstance(endpoint_http := bindings.get("endpoint_http"), dict) and endpoint_http:
+            collect_endpoint_http(graph, endpoint_http, datetime.now(timezone.utc))
         start_stage("publish snapshot")
         graph["snapshotAt"] = datetime.now(timezone.utc).isoformat()
         graph["git"] = args.git_revision

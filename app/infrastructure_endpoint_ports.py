@@ -2,10 +2,60 @@
 
 from datetime import datetime, timedelta
 
-from .infrastructure_map import ENDPOINT_PAIR_SOURCE, NETWORK_KINDS, WINDOWS_DNS_SOURCE, observation_is_fresh, port_label_key
+from .infrastructure_map import ENDPOINT_PAIR_SOURCE, NETWORK_KINDS, WINDOWS_PROBE_SOURCE, observation_is_fresh, port_label_key
 from .network_probe_profiles import load_probe_profiles
 from .network_route_receipt_timing import MAX_AGE as RECEIPT_MAX_AGE
 from .network_route_spool import read_adapter_observation, read_measurements
+
+
+def _verified_route(result, probe, now):
+    route = result.get("kernel_route", {})
+    fields = route.get("result", {})
+    return (observation_is_fresh(result.get("measured_at"), now, max_age=RECEIPT_MAX_AGE)
+            and route.get("status") == "route_found" and fields.get("dst") == probe.target
+            and fields.get("from", fields.get("prefsrc")) == probe.source_address
+            and fields.get("dev") == probe.expected_kernel_interface
+            and (not probe.expected_kernel_gateway or fields.get("gateway") == probe.expected_kernel_gateway))
+
+
+def _link_probe_source(graph, station_id, service_id):
+    graph["links"].append({"a": station_id, "b": service_id, "kind": "Источник проверки", "source": "Настройки карты",
+                           "confirmed": True})
+
+
+def collect_endpoint_http(graph: dict, bindings: dict, now: datetime) -> None:
+    profiles = load_probe_profiles(routes_only=True).routes
+    nodes = {node["id"]: node for node in graph["nodes"]}
+    for service_id, spec in bindings.items():
+        service = nodes.get(service_id, {})
+        if service.get("kind") != "Сервис" or not isinstance(spec, dict):
+            continue
+        station, origin, profile_id, probe_id = (spec.get(key) for key in ("station", "origin", "profile", "probe"))
+        if not all(isinstance(value, str) for value in (station, origin, profile_id, probe_id)):
+            continue
+        profile = profiles.get(profile_id)
+        if profile is None or nodes.get(station, {}).get("kind") != "Рабочая станция":
+            continue
+        probe = next((probe for probe in profile.probes if probe.id == probe_id and probe.push_origin == origin), None)
+        if not probe or probe.protocol != "http" or not (probe.source_address and probe.expected_kernel_interface):
+            continue
+        target, port, path = probe.target, probe.port or 80, probe.http_path or "/"
+        checks = service.get("serviceChecks", [])
+        if not any(c.get("required") and c.get("source") == "UI_VPN" and c.get("method") == "HTTP"
+                   and (c.get("target"), c.get("port"), c.get("path"), c.get("httpHost"))
+                   == (target, port, path, probe.server_name) for c in checks):
+            continue
+        result = read_measurements(profile_id, profile).get(probe_id, {})
+        verified = _verified_route(result, probe, now)
+        evidence = result.get("evidence", {}) if verified else {}
+        status = {"reachable": "reachable", "unreachable": "unreachable"}.get(result.get("status"), "unknown") if verified else "unknown"
+        reason = {"http_status_mismatch": "http_status", "timeout": "timeout"}.get(evidence.get("reason"))
+        checks.append({"state": status, "source": WINDOWS_PROBE_SOURCE, "method": "HTTP", "supplemental": True,
+                       "target": target, "port": port, "path": path, "httpHost": probe.server_name,
+                       "via": probe.expected_kernel_gateway, "httpStatus": evidence.get("http_status"),
+                       "checkedAt": result["measured_at"] if verified else now.isoformat(),
+                       **({"reason": reason} if reason else {})})
+        _link_probe_source(graph, station, service_id)
 
 
 def collect_endpoint_dns(graph: dict, bindings: dict, now: datetime) -> None:
@@ -36,13 +86,7 @@ def collect_endpoint_dns(graph: dict, bindings: dict, now: datetime) -> None:
             result = results.get(probe.id, {})
             stamp = result.get("measured_at")
             evidence = result.get("evidence", {})
-            route = result.get("kernel_route", {})
-            fields = route.get("result", {})
-            verified = (observation_is_fresh(stamp, now, max_age=RECEIPT_MAX_AGE)
-                        and route.get("status") == "route_found" and fields.get("dst") == probe.target
-                        and fields.get("from", fields.get("prefsrc")) == probe.source_address
-                        and fields.get("dev") == probe.expected_kernel_interface
-                        and (not probe.expected_kernel_gateway or fields.get("gateway") == probe.expected_kernel_gateway))
+            verified = _verified_route(result, probe, now)
             status = result.get("status") if verified else None
             dns = {"name": probe.dns_name.rstrip(".") + ".", "record": probe.dns_type or "A",
                    "transport": probe.dns_transport.upper()}
@@ -51,14 +95,13 @@ def collect_endpoint_dns(graph: dict, bindings: dict, now: datetime) -> None:
             reason = {"dns_answer_mismatch": "dns_address_mismatch", "dns_no_answer": "dns_no_answer",
                       "dns_rcode": "dns_rcode", "timeout": "timeout"}.get(evidence.get("reason")) if verified else None
             state = "reachable" if status == "reachable" else "unreachable" if status == "unreachable" else "unknown"
-            checks.append({"state": state, "source": WINDOWS_DNS_SOURCE, "method": "DNS", "required": True,
+            checks.append({"state": state, "source": WINDOWS_PROBE_SOURCE, "method": "DNS", "required": True,
                            "target": probe.target, "port": probe.port or 53, "dns": dns,
                            "checkedAt": stamp if verified else now.isoformat(), **({"reason": reason} if reason else {})})
         service.setdefault("serviceChecks", []).extend(checks)
         service["reachability"] = {"state": "unknown", "source": "Проверка сервиса", "method": "DNS",
                                    "checkedAt": now.isoformat()}
-        graph["links"].append({"a": station_id, "b": service_id, "kind": "Источник проверки", "source": "Настройки карты",
-                               "confirmed": True})
+        _link_probe_source(graph, station_id, service_id)
 
 
 def confirm_endpoint_ports(graph: dict, bindings: dict, now: datetime) -> None:

@@ -306,7 +306,7 @@ def test_ntp_probe_requires_a_synchronized_reply_to_its_request(monkeypatch, rep
 @pytest.mark.parametrize("windows", [False, True])
 def test_service_probe_transition_tracks_confirmed_recovery(tmp_path, windows):
     from app.infrastructure_collect import _add_service_probe_transitions
-    from app.infrastructure_map import WINDOWS_DNS_SOURCE, load_infrastructure_map, summarize_guest_attachment, summarize_services
+    from app.infrastructure_map import WINDOWS_PROBE_SOURCE, load_infrastructure_map, summarize_guest_attachment, summarize_services
 
     now = datetime.now(timezone.utc)
     before = now - timedelta(minutes=2)
@@ -316,7 +316,7 @@ def test_service_probe_transition_tracks_confirmed_recovery(tmp_path, windows):
         check = {"source": "UI_VPN", "method": "HTTP", "state": state, "checkedAt": stamp,
                  "required": True, "target": target, "port": 3000, "path": "/health"}
         if windows:
-            check.update(source=WINDOWS_DNS_SOURCE, method="DNS", port=53, path="",
+            check.update(source=WINDOWS_PROBE_SOURCE, method="DNS", port=53, path="",
                          dns={"name": "example.test.", "record": "A", "transport": "UDP"})
         return {"schema": 1, "snapshotAt": stamp, "nodes": [
             {"id": "git", "name": "Git", "kind": "Сервис", "serviceChecks": [check],
