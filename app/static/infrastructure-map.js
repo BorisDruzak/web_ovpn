@@ -1141,11 +1141,17 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         if (reading) row.append(make('small', reading));
       }
       if (path.lacpAttachment) {
-        const {switchId, aggregate, checkedAt, members} = path.lacpAttachment;
+        const {switchId, aggregate, checkedAt, members, aggregateState} = path.lacpAttachment;
         const device = byId.get(switchId)?.name ?? switchId;
         row.append(make('small', `LACP + ARP · ${formatTime(checkedAt)}`), switchPortButton(switchId, device, aggregate));
-        for (const {name, partnerPort} of members) {
-          row.append(switchPortButton(switchId, device, name), make('small', `Порт партнёра LACP ${partnerPort}`));
+        if (aggregateState && !aggregateState.stale) {
+          const {state, speedBps, checkedAt: observedAt} = aggregateState;
+          const details = [portLabels[state], formatPortSpeed(speedBps), 'SNMP', formatTime(observedAt)];
+          row.append(make('small', `Агрегат ${aggregate}: ${details.filter(Boolean).join(' · ')}`));
+        }
+        for (const {name, partnerPort, partnerInterfaceState} of members) {
+          const gap = partnerInterfaceState === 'unconfirmed' ? ' · Имя интерфейса не подтверждено' : '';
+          row.append(switchPortButton(switchId, device, name), make('small', `Порт партнёра LACP ${partnerPort}${gap}`));
         }
         list.append(row);
         continue;
