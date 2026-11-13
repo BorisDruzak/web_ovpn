@@ -7483,6 +7483,7 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
         health_at = at
         network_at = at
         network_observed_at = None
+        network_interfaces_empty = False
         platform = "linux"
         health_warnings = []
 
@@ -7501,7 +7502,7 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
             self.reads.append((str(device_id), tuple(profiles)))
             snapshots = {
                 "network_v1": {"profile": "network_v1", "collected_at": self.network_at,
-                               "observed_at": self.network_observed_at, "sections": {"interfaces": [
+                               "observed_at": self.network_observed_at, "sections": {"interfaces": [] if self.network_interfaces_empty else [
                                    {"name": "Ethernet 2", "addresses": ["192.0.2.10/24", "192.0.2.10", "192.0.2.12",
                                                                        "127.0.0.1", "169.254.1.2", "invalid"]},
                                    {"name": "lo", "addresses": ["127.0.0.1/8", "::1"]},
@@ -7594,6 +7595,15 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
     reobserved_guest, = reobserved.json()["infrastructure"]["agentAudit"]["guests"]
     assert reobserved_guest["network"] == {**network, "snapshotAt": Adapter.network_at}
     assert reobserved_guest["ipv4Comparison"]["matched"] == ["192.0.2.10"]
+    Adapter.network_interfaces_empty = True
+    empty = client.get("/api/v1/network/infrastructure?view=agents&node_id=vm:1", headers=headers)
+    empty_guest, = empty.json()["infrastructure"]["agentAudit"]["guests"]
+    assert empty_guest["network"] == {
+        "checkedAt": at, "snapshotAt": Adapter.network_at, "stale": False, "interfaces": [],
+        "reason": "no_reported_ipv4",
+    }
+    assert "ipv4Comparison" not in empty_guest
+    Adapter.network_interfaces_empty = False
     Adapter.network_observed_at = None
     Adapter.health_at = at
     Adapter.network_at = at

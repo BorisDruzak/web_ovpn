@@ -2654,7 +2654,7 @@ def load_infrastructure_agent_audit(path: Path, *, node_id: str | None = None) -
         result["serviceAudit"] = summarize_services(graph, host_id=node_id)["serviceAudit"]
         for entry in result["agentAudit"].get("guests", []):
             network = entry.get("network")
-            if not network or network["stale"]:
+            if not network or network["stale"] or not network["interfaces"]:
                 continue
             observed = {row["address"] for guest in attachment["guests"] if guest["placement"] == "confirmed"
                         for interface in guest["interfaces"] for row in interface.get("ipv4Observations", [])}
@@ -2739,10 +2739,9 @@ def _guest_agent_network(snapshot: object, now: datetime) -> dict:
                 continue
             if not (ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified or ip.is_reserved):
                 interfaces[name].add(ip)
-    if not interfaces:
-        return {}
     return {"checkedAt": checked_at.isoformat(), "stale": now - checked_at > GUEST_AGENT_NETWORK_MAX_AGE,
             **({"snapshotAt": snapshot_at.isoformat()} if checked_at != snapshot_at else {}),
+            **({"reason": "no_reported_ipv4"} if not interfaces else {}),
             "interfaces": [{"name": name, "ipv4": [str(ip) for ip in sorted(addresses)]}
                            for name, addresses in sorted(interfaces.items())]}
 

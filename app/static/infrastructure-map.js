@@ -763,6 +763,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       const row = make('div');
       row.append(make('small', 'IPv4 по Endpoint · ' + formatTime(network.checkedAt) + (network.stale ? ' · устарело' : '')));
       if (network.snapshotAt) row.append(make('small', 'Снимок Endpoint · ' + formatTime(network.snapshotAt)));
+      if (network.reason === 'no_reported_ipv4') row.append(make('small', 'Endpoint не сообщил IPv4'));
       for (const {name, ipv4} of network.interfaces) {
         row.append(make('small', name + ' · ' + ipv4.join(', ')));
       }
