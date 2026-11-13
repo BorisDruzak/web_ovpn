@@ -4166,6 +4166,7 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
     assert [member["partnerInterfaceState"] for member in health["members"]] == ["unconfirmed"] * 2
     assert [member["speedBps"] for member in health["members"]] == [10**9] * 2
     assert [member["linkCheckedAt"] for member in health["members"]] == [at] * 2
+    assert health["aggregateLink"] == {"state": "up", "checkedAt": at, "speedBps": 2 * 10**9}
 
     def service_paths(stamp=now):
         snapshot = load_infrastructure_map(path, stamp, include_guest_attachments=True)
@@ -4301,6 +4302,12 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
     color, health = read()
     assert (color, health["status"]) == ("ok", "ok")
     assert "aggregateLinkFault" not in health
+    ports[2]["last_seen_at"] = (now - timedelta(minutes=6)).isoformat()
+    color, health = read()
+    assert all(member["status"] == "forwarding" for member in health["members"])
+    assert (color, health["status"]) == ("unknown", "unknown")
+    assert health["aggregateLink"] == {"state": "unknown"}
+    ports[2]["last_seen_at"] = at
     assert read(now + timedelta(minutes=6))[0] == "unknown"
     assert all(member["status"] == "unknown" for member in service_host(now + timedelta(minutes=6))["lacpHealth"][0]["members"])
     network.clear()

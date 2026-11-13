@@ -1686,14 +1686,18 @@ def _attach_lacp_health(nodes: dict, expectations: dict, links: list[dict], port
                     members.append({"name": name, "status": "unknown"})
             states = {member["status"] for member in members}
             aggregate_port = port_states.get(switch_id, {}).get(port_label_key(aggregate), {})
-            fault = {}
-            if (aggregate_port.get("state") in {"down", "disabled"}
+            aggregate_link = {"state": "unknown"}
+            if (aggregate_port.get("state") in {"up", "down", "disabled"}
                     and observation_is_fresh(aggregate_port.get("checkedAt"), now, max_age=LACP_HEALTH_MAX_AGE)):
-                fault = {key: aggregate_port[key] for key in ("state", "checkedAt")}
-            status = "warn" if fault or states & {"down", "disabled"} else "unknown" if "unknown" in states else "ok"
+                aggregate_link = {key: aggregate_port[key] for key in ("state", "checkedAt", "speedBps")
+                                  if aggregate_port.get(key) is not None}
+            fault = aggregate_link["state"] in {"down", "disabled"}
+            states.add(aggregate_link["state"])
+            status = "warn" if states & {"down", "disabled"} else "unknown" if "unknown" in states else "ok"
             nodes[node_id].setdefault("lacpHealth", []).append({
-                "switchId": switch_id, "aggregate": aggregate, "members": members, "status": status,
-                **({"aggregateLinkFault": fault} if fault else {}),
+                "switchId": switch_id, "aggregate": aggregate, "members": members,
+                "status": status, "aggregateLink": aggregate_link,
+                **({"aggregateLinkFault": aggregate_link} if fault else {}),
             })
 
 

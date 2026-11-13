@@ -1028,8 +1028,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const panel = make('section');
     panel.dataset.section = 'lacp-health';
     const list = make('ul', null, 'map-detail-list');
-    const labels = {forwarding: 'Готов к передаче', down: 'Линк опущен', disabled: 'Порт отключён', unknown: 'Нет подтверждения'};
-    for (const {host, report: {switchId, aggregate, members, aggregateLinkFault}} of reports) {
+    const labels = {forwarding: 'Готов к передаче', up: 'Линк поднят', down: 'Линк опущен', disabled: 'Порт отключён', unknown: 'Нет подтверждения'};
+    for (const {host, report: {switchId, aggregate, members, aggregateLink, aggregateLinkFault}} of reports) {
       const row = make('li');
       const sw = byId.get(switchId);
       const confirmed = members.filter(member => member.status === 'forwarding').length;
@@ -1040,8 +1040,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         row.append(open);
       }
       row.append(make('strong', `${sw.name} ${aggregate} · ${confirmed} из ${members.length} портов готовы к передаче`));
-      if (aggregateLinkFault) {
-        row.append(make('small', `Агрегат ${aggregate} · ${labels[aggregateLinkFault.state]} · SNMP · ${formatTime(aggregateLinkFault.checkedAt)}`));
+      const link = aggregateLink ?? aggregateLinkFault;
+      if (link) {
+        row.append(make('small', [`Агрегат ${aggregate}`, labels[link.state], formatPortSpeed(link.speedBps),
+          link.checkedAt && `SNMP · ${formatTime(link.checkedAt)}`].filter(Boolean).join(' · ')));
       }
       const appendPort = port => {
         const target = sw.ports?.find(item => portKeys(item).includes(portKey(port)));
