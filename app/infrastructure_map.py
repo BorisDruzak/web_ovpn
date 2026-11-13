@@ -2073,15 +2073,23 @@ def _physical_attachments(nodes: dict, links: list[dict], host_ids: list[str]) -
 
 
 def _attachment_service_checks(service: dict):
+    listener_ports = {check["configuredPort"] for check in service["serviceChecks"]
+                        if check["method"] == "OpenVPN UDP-сокет" and check["source"] == "UI_VPN"
+                        and "configuredPort" in check}
     for check in service["serviceChecks"]:
         yield check
         socket = check.get("localUdpSocket", {})
-        if (check["method"] == "OpenVPN Management" and check["source"] == "UI_VPN"
-                and socket.get("state") == "bound"):
+        port = check.get("configuredPort")
+        if check["source"] != "UI_VPN" or port is None or socket.get("state") != "bound":
+            continue
+        if (check["method"] == "OpenVPN UDP-сокет" and check["state"] == "reachable"
+                or check["method"] == "OpenVPN Management" and port not in listener_ports):
+            listener = {**check, "port": port, "state": "reachable",
+                        "method": "Локальный UDP-сокет", "localListener": True}
+            listener.pop("reason", None)
             for address in dict.fromkeys(socket["addresses"]):
                 if address not in ("*", "0.0.0.0", "::"):
-                    yield {**check, "target": address, "port": check["configuredPort"], "state": "reachable",
-                           "method": "Локальный UDP-сокет", "localListener": True}
+                    yield {**listener, "target": address}
 
 
 def _attachment_probe_location(check: dict) -> dict:

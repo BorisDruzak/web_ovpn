@@ -893,7 +893,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       for (const probe of probes) {
         const rtt = probe.roundTripMs === undefined ? '' :
           `RTT ${probe.roundTripMs.toLocaleString('ru-RU', {maximumFractionDigits: 3})} мс`;
-        const outcome = probe.reason === 'icmp_no_echo_reply' ? 'Нет ответа ICMP Echo Reply' : result[probe.state];
+        const outcome = probe.localListener ? 'Открыт локально' :
+          probe.reason === 'icmp_no_echo_reply' ? 'Нет ответа ICMP Echo Reply' : result[probe.state];
         const dns = probe.dns;
         const question = dns && [dns.transport, dns.record, dns.name].filter(Boolean).join(' ');
         const responder = dns?.unexpectedResponder;

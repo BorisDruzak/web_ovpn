@@ -7126,8 +7126,10 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     raw["links"][1]["portEvidence"].pop()
     socket_check = {"method": "OpenVPN Management", "source": "UI_VPN", "state": "unknown", "configuredPort": 1194,
                     "localUdpSocket": {"state": "bound", "addresses": ["0.0.0.0", address["address"]]},
-                    "checkedAt": stamp}
-    raw["nodes"][0]["serviceChecks"] = [socket_check]
+                    "checkedAt": stamp, "reason": "openvpn_no_active_sessions"}
+    listener_check = {**socket_check, "method": "OpenVPN UDP-сокет", "state": "reachable",
+                      "reason": "", "required": True}
+    raw["nodes"][0]["serviceChecks"] = [socket_check, listener_check]
     assert read()["servicePaths"] == []  # An ARP match alone cannot establish which guest owns the local socket.
     adapter["virtual"]["ipv4Observations"] = [{**address, "method": "Локальный интерфейс ens18"}]
     listener, = read()["servicePaths"]
@@ -7137,6 +7139,11 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     assert service["basis"] == ["guest_local_udp"]
     endpoint, = service["probeEndpoints"]
     assert (endpoint["target"], endpoint["port"], endpoint["localListener"]) == (address["address"], 1194, True)
+    listener_check["state"] = "unknown"
+    assert read()["servicePaths"] == []
+    raw["nodes"][0]["serviceChecks"] = [socket_check]
+    legacy_listener, = read()["servicePaths"]
+    assert legacy_listener == listener
     socket_check["localUdpSocket"]["addresses"] = ["0.0.0.0", "::", "*"]
     assert read()["servicePaths"] == []
     raw["nodes"][0].pop("serviceChecks")
