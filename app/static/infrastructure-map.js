@@ -1237,12 +1237,19 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       }
       const attachment = path.routerAttachment ?? path.switchAttachment;
       if (attachment) {
-        const {routerId, switchId, port, source, checkedAt, physicalPair, archivedPeer, telemetry, rxErrorCounters, lldpPeers = []} = attachment;
+        const {routerId, switchId, port, source, checkedAt, physicalPair, archivedPeer, portLink,
+          telemetry, rxErrorCounters, lldpPeers = []} = attachment;
         const deviceId = routerId ?? switchId;
         const device = byId.get(deviceId)?.name ?? deviceId;
         const evidence = switchId ? 'ARP + FDB коммутатора' : source;
         row.append(make('small', [evidence, formatTime(checkedAt)].join(' · ')),
           switchPortButton(deviceId, device, port));
+        if (portLink) {
+          const reading = [portLabels[portLink.state], formatPortSpeed(portLink.speedBps),
+            portLink.source ?? (switchId ? 'SNMP' : 'RouterOS'),
+            formatTime(portLink.speedCheckedAt ?? portLink.checkedAt)].filter(Boolean).join(' · ');
+          row.append(make('small', reading));
+        }
         if (telemetry && telemetry.rxBps !== undefined && telemetry.txBps !== undefined) {
           const rate = value => observerNumber.format(value / 1000) + ' кбит/с';
           row.append(make('small', `${switchId ? 'SNMP' : 'RouterOS'} · RX ${rate(telemetry.rxBps)} · TX ${rate(telemetry.txBps)} · ${formatTime(telemetry.checkedAt)}`));

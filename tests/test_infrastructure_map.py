@@ -5779,6 +5779,7 @@ def test_transit_port_requires_direct_route_running_ethernet_and_neighbor_arp(tm
         "router_interfaces": [{"source": "main", "name": "ether8", "type": "ether", "running": 1, "disabled": 0, "last_seen_at": at}],
         "router_port_telemetry": {("main", "ether8"): {"checkedAt": at, "intervalSeconds": 60,
                                                         "rxBps": 1200, "txBps": 2400}},
+        "router_link_modes": {("main", "ether8"): {"checkedAt": at, "speedBps": 10**9, "duplex": "full"}},
         "arp": [{"ip": "192.0.2.2", "mac": "02:00:00:00:00:08", "source": "main", "interface": "ether8", "last_seen_at": at}],
     }
 
@@ -5810,6 +5811,8 @@ def test_transit_port_requires_direct_route_running_ethernet_and_neighbor_arp(tm
     path, = detail["servicePaths"]
     assert path["routerAttachment"] == {
         "routerId": "rb", "port": "ether8", "source": "MikroTik · ARP", "checkedAt": at,
+        "portLink": {"state": "up", "speedBps": 10**9, "checkedAt": at, "speedCheckedAt": at,
+                     "source": "RouterOS", "linkMode": {"checkedAt": at, "duplex": "full"}},
         "telemetry": {"checkedAt": at, "intervalSeconds": 60, "rxBps": 1200, "txBps": 2400},
         "archivedPeer": {"nodeId": "coordinator", "port": "eth2", "checkedAt": inventory_stamp,
                          "inventorySources": sources},
@@ -6189,8 +6192,12 @@ def test_asset_service_can_require_current_fdb_and_arp_identity(monkeypatch, tmp
     path, = summarize_guest_attachment(graph, "recorder-web")["attachment"]["servicePaths"]
     assert path["target"] == ip and path["port"] == 80
     assert path["path"] == "/login"
-    assert path["switchAttachment"] == {"switchId": "observer:switch", "port": "ge15",
-                                        "source": "netctl FDB", "checkedAt": observed}
+    switch = next(node for node in graph["nodes"] if node["id"] == "observer:switch")
+    local_port, = [port for port in switch["ports"] if port["name"] == "ge15"]
+    assert path["switchAttachment"] == {
+        "switchId": "observer:switch", "port": "ge15", "source": "netctl FDB", "checkedAt": observed,
+        "portLink": {key: local_port[key] for key in ("state", "speedBps", "checkedAt")},
+    }
     assert "physicalPair" not in path and graph["servicePaths"]["recorder-web"] == [path]
     group, = summarize_guest_attachment(graph, "observer:switch")["attachment"]["servicePorts"]
     endpoint, = group["services"][0]["probeEndpoints"]
@@ -6410,6 +6417,7 @@ def test_transit_peer_management_port_requires_fresh_arp_fdb_and_active_ethernet
                             "state": "reachable",
                             "addressCheckedAt": at, "routerAttachment": {"routerId": "rb", "port": "ether7",
                             "source": "MikroTik · ARP + FDB", "checkedAt": at,
+                            "portLink": {"state": "up", "speedBps": None, "checkedAt": at, "source": "RouterOS"},
                             "archivedPeer": {"nodeId": "coordinator", "port": "eth0", "checkedAt": inventory_stamp,
                                              "inventorySources": sources}}}
     reverse, = summarize_guest_attachment(public, "rb")["attachment"]["servicePorts"]
