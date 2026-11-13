@@ -50,6 +50,7 @@ def route_report(
     runs: list[dict], now: datetime, max_age: timedelta, *,
     api_runs: list[dict], expected_hops: dict[str, str | None],
     expected_dns: dict[str, tuple[str, bool]] | None = None,
+    expected_http: dict[str, int] | None = None,
     expected_interfaces: dict[str, str] | None = None,
     expected_gateways: dict[str, str] | None = None,
     expected_ipsec: set[str] | None = None,
@@ -62,6 +63,7 @@ def route_report(
                 "profile_matches": False, "probes": []}
     checked_at = datetime.fromisoformat(row["checked_at"])
     expected_dns = expected_dns or {}
+    expected_http = expected_http or {}
     probes = []
     for probe in row["result"]["probes"]:
         summary = {"id": probe["id"], "status": probe["status"]}
@@ -69,6 +71,14 @@ def route_report(
             expected_digest = expected_digests.get(probe["id"])
             summary["configuration_matches"] = bool(expected_digest and probe.get("config_digest") == expected_digest)
         evidence = probe.get("evidence", {})
+        if probe["id"] in expected_http:
+            expected = expected_http[probe["id"]]
+            observed = evidence.get("http_status")
+            summary.update(
+                expected_http_status=expected,
+                observed_http_status=observed,
+                http_status_matches=probe["status"] == "reachable" and observed == expected,
+            )
         summary.update({
             field: evidence[field] for field in ("sent", "received", "packet_loss_pct")
             if evidence.get(field) is not None
@@ -120,12 +130,18 @@ def route_report(
         session = evidence.get("openvpn_session")
         if session is not None:
             summary["openvpn_session"] = session
+        route = probe.get("kernel_route") or {}
+        if probe["id"] in expected_http and route:
+            summary["kernel_route_status"] = route.get("status", "not_run")
+            for field, route_key in (("interface", "dev"), ("gateway", "gateway")):
+                observed = route.get("result", {}).get(route_key)
+                if observed is not None:
+                    summary[f"observed_kernel_{field}"] = observed
         for field, route_key in (("interface", "dev"), ("gateway", "gateway")):
             expected_key = f"expected_kernel_{field}"
             expected = probe.get(expected_key)
             if not expected:
                 continue
-            route = probe.get("kernel_route") or {}
             observed = route.get("result", {}).get(route_key)
             summary[expected_key] = expected
             summary[f"observed_kernel_{field}"] = observed
@@ -480,6 +496,10 @@ def verify(script: Path, max_age: timedelta, route_profiles: list[str] | None = 
                 probe["id"]: (probe["dns_transport"], bool(probe.get("expected_dns_answers")))
                 for probe in probes if probe.get("dns_transport")
             },
+            expected_http={
+                probe["id"]: probe.get("expected_http_status", 200)
+                for probe in probes if probe.get("protocol") in {"http", "https"}
+            },
             expected_interfaces={
                 probe["id"]: probe["expected_kernel_interface"] for probe in probes if probe.get("expected_kernel_interface")
             },
@@ -529,6 +549,10 @@ def main() -> int:
     parser.add_argument(
         "--require-dns-transport", action="store_true",
         help="require successful DNS responses on each explicitly configured transport",
+    )
+    parser.add_argument(
+        "--require-http-status", action="store_true",
+        help="require the configured status code on each scheduled HTTP and HTTPS probe",
     )
     parser.add_argument(
         "--require-loop-coverage", action="store_true",
@@ -599,6 +623,9 @@ def main() -> int:
         for probe in dns_probes
     )
     report["dns_transports"] = {"configured": len(dns_probes), "confirmed": confirmed_dns}
+    http_probes = [probe for route in routes for probe in route["probes"] if "http_status_matches" in probe]
+    confirmed_http = sum(probe["http_status_matches"] for probe in http_probes)
+    report["http_probes"] = {"configured": len(http_probes), "confirmed": confirmed_http}
     if args.interface:
         try:
             report["interfaces"] = verify_interfaces(
@@ -649,6 +676,8 @@ def main() -> int:
         return 1
     if args.require_ipsec and not ipsec_probes:
         return 1
+    if args.require_http_status and not http_probes:
+        return 1
     for required, field in (
         (args.require_loop_coverage, "coverage"),
         (args.require_broadcast_coverage, "broadcast_coverage"),
@@ -667,6 +696,8 @@ def main() -> int:
     if args.require_expected_kernel_gateway and confirmed_gateways != len(gateway_probes):
         return 2
     if args.require_dns_transport and confirmed_dns != len(dns_probes):
+        return 2
+    if args.require_http_status and confirmed_http != len(http_probes):
         return 2
     if args.require_ipsec and ipsec_confirmed != len(ipsec_probes):
         return 2

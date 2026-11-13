@@ -181,6 +181,37 @@ def test_route_report_preserves_packet_loss_and_latency_measurements():
     ]
 
 
+@pytest.mark.parametrize("status,observed,confirmed", [
+    ("reachable", 204, True),
+    ("reachable", 200, False),
+    ("reachable", None, False),
+    ("timeout", 204, False),
+])
+def test_http_acceptance_uses_catalog_status_and_requires_response(monkeypatch, capsys, status, observed, confirmed):
+    now = datetime.now(UTC)
+    run = {
+        "id": 1, "trigger": "scheduled", "checked_at": now.isoformat(), "status": status,
+        "result": {"probes": [{"id": "service", "status": status, "evidence": {
+            "http_status": observed, "expected_http_status": 200,
+        }, "kernel_route": {"status": "route_found", "result": {"dev": "eth0", "gateway": "192.0.2.1"}}}]},
+    }
+    route = route_report(
+        [run], now, timedelta(minutes=10), api_runs=[run], expected_hops={"service": None},
+        expected_http={"service": 204},
+    )
+    monkeypatch.setattr(verifier, "verify", lambda *_: {"routes": {"services": route}})
+    monkeypatch.setattr(sys, "argv", ["verifier", "--require-http-status"])
+    assert verifier.main() == (0 if confirmed else 2)
+    result = json.loads(capsys.readouterr().out)
+    assert result["http_probes"] == {"configured": 1, "confirmed": int(confirmed)}
+    [probe] = result["routes"]["services"]["probes"]
+    assert probe["expected_http_status"] == 204
+    assert probe["observed_http_status"] == observed
+    assert probe["http_status_matches"] is confirmed
+    assert probe["observed_kernel_interface"] == "eth0"
+    assert probe["observed_kernel_gateway"] == "192.0.2.1"
+
+
 def test_route_report_rejects_previous_configuration_for_same_probe_id():
     now = datetime(2026, 11, 13, 2, 15, tzinfo=UTC)
     run = {
