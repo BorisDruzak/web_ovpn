@@ -2068,7 +2068,7 @@ def _attachment_probe_location(check: dict) -> dict:
             "checkedAt": check["checkedAt"], "state": check["state"],
             **({"path": check["path"]} if check.get("path") else {}),
             **{key: check[key] for key in ("reason", "roundTripMs", "httpStatus", "responseCode", "rtspStatus", "dns",
-                                           "rdpSecurity", "rdpFailureCode")
+                                           "rdpSecurity", "rdpFailureCode", "tlsExpiresAt", "tlsVersion")
                if key in check}}
 
 
@@ -2381,6 +2381,13 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime) -> dict:
                 modes = probe.setdefault("rdpSecurityModes", [])
                 if security not in modes:
                     modes.append(security)
+            if expires := check.get("tlsExpiresAt"):
+                certificate = {"expiresAt": expires}
+                if version := check.get("tlsVersion"):
+                    certificate["version"] = version
+                certificates = probe.setdefault("tlsCertificates", [])
+                if certificate not in certificates:
+                    certificates.append(certificate)
         return {**_attachment_node(node), "basis": sorted(bases),
                 **({"probeEndpoints": [probes[entry] for entry in sorted(probes)]} if probes else {})}
 

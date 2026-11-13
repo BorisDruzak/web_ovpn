@@ -6950,6 +6950,16 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
         ("/api/session", 1, 0, 0), ("/app.js", 0, 1, 0), ("/style.css", 0, 0, 1),
     ]
     assert [probe.get("responseCodes") for probe in probes] == [[200], [503], None]
+    expires = (datetime.fromisoformat(stamp) - timedelta(days=1)).isoformat()
+    raw["nodes"][0]["serviceChecks"] = [
+        {**check, "method": "Сертификат TLS", "port": 443, "tlsVersion": "TLSv1.3",
+         "tlsExpiresAt": expires, "state": "unreachable", "reason": "tls_certificate_expired"},
+    ]
+    certificate_path, = read()["servicePaths"]
+    assert certificate_path["tlsExpiresAt"] == expires and certificate_path["tlsVersion"] == "TLSv1.3"
+    browser = client.get(browser_endpoint).json()["infrastructure"]
+    certificate, = browser["servicePorts"]["snr"][0]["services"][0]["probeEndpoints"]
+    assert certificate["tlsCertificates"] == [{"expiresAt": expires, "version": "TLSv1.3"}]
     raw["nodes"][0]["serviceChecks"] = [
         {**check, "method": "SIP OPTIONS (UDP)", "port": 5060, "reason": "sip_response", "responseCode": 200},
         {**check, "method": "RTSP OPTIONS", "port": 554, "reason": "rtsp_auth_required", "rtspStatus": 401},

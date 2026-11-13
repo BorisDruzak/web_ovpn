@@ -756,6 +756,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     return open;
   }
 
+  function certificateLabel(expiresAt, version) {
+    return [version, `Срок действия до ${formatTime(expiresAt)}`].filter(Boolean).join(' · ');
+  }
+
   function renderServicePaths(paths) {
     if (!paths?.length) return null;
     const panel = make('section');
@@ -789,7 +793,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const code = probe.httpStatus ? `HTTP ${probe.httpStatus}` : probe.responseCode ? `SIP ${probe.responseCode}` :
           probe.rtspStatus ? `RTSP ${probe.rtspStatus}` : '';
         const rdp = probe.rdpSecurity ?? (probe.rdpFailureCode && `Код отказа RDP ${probe.rdpFailureCode}`);
-        readings.add([probe.path, question, outcome, code, rdp, responseFrom, rtt,
+        const tls = probe.tlsExpiresAt && certificateLabel(probe.tlsExpiresAt, probe.tlsVersion);
+        readings.add([probe.path, question, outcome, code, rdp, tls, responseFrom, rtt,
           probe.state && formatTime(probe.checkedAt)].filter(Boolean).join(' · '));
       }
       for (const reading of readings) {
@@ -1978,6 +1983,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
               `${address}${probe.port ? ':' + probe.port : ''}${probe.path ?? ''}`, ...states,
               probe.responseCodes?.length && `Ответ ${probe.responseCodes.join(', ')}`,
               probe.rdpSecurityModes?.join(', '),
+              ...(probe.tlsCertificates ?? []).map(cert => certificateLabel(cert.expiresAt, cert.version)),
               probe.dns && `${probe.dns.record} ${probe.dns.name}`,
             ].filter(Boolean).join(' · ')));
           }
