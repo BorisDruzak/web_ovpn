@@ -436,6 +436,8 @@
 
 У регистратора HiWatch компонент `digest_auth_challenge: true` проверяет ответ HTTP 401 от `/ISAPI/System/deviceInfo` и заголовок Digest с непустыми `realm` и `nonce`. Запрос выполняется без учётных данных после сверки адреса по ARP и FDB SNR. Результат показывает доступность защищённого API. Вход и получение сведений об устройстве проверяются отдельно. [RFC 7616](https://www.rfc-editor.org/rfc/rfc7616.html#section-3.3)
 
+Для `hiwatch-web` добавьте обязательный GET `/doc/script/lib/seajs/seajs/sea.min.js` с `content_type: application/javascript` и `body_contains: seajs`. Используйте адрес, порт и привязку по ARP и FDB существующей веб-проверки. Этот скрипт загружает страница входа регистратора.
+
 Карточки `fileserver-rdp-tcp` и `fileserver-winrm-tcp` проверяют TCP/3389 и TCP/5985 на FILESERVER после сверки адреса и сетевого адаптера ВМ 116. Проверки подтверждают доступность слушателей из UI_VPN. Аутентификация, работа удалённого сеанса и команды WinRM требуют отдельных проверок. [Инвентарь FILESERVER](https://github.com/BorisDruzak/network_configuration/blob/main/docs/compliance/fstec-117/windows-server/2026-09-26/fileserver-baseline.md)
 
 Те же TCP-проверки настроены для AD-MAIN (ВМ 201) и DirectumServer (ВМ 103). Карточки RDP и WinRM используют подтверждённый адрес сетевого адаптера соответствующей ВМ. [Инвентарь AD-MAIN](https://github.com/BorisDruzak/network_configuration/blob/main/docs/compliance/fstec-117/windows-server/2026-09-26/ad-main-baseline.md) · [Инвентарь DirectumServer](https://github.com/BorisDruzak/network_configuration/blob/main/docs/compliance/fstec-117/windows-server/2026-09-26/directumserver-baseline.md)
