@@ -2091,6 +2091,7 @@ def _physical_attachments(nodes: dict, links: list[dict], host_ids: list[str]) -
     if not host_ids:
         return []
     connections = {host_id: [] for host_id in host_ids}
+    controllers = defaultdict(set)
     pending_by_host = {host_id: [] for host_id in host_ids}
     _, _, _, pending, _ = _topology_port_pairs(nodes, links)
     for pair in pending:
@@ -2098,6 +2099,9 @@ def _physical_attachments(nodes: dict, links: list[dict], host_ids: list[str]) -
             if pair[side] in pending_by_host:
                 pending_by_host[pair[side]].append(pair)
     for edge in links:
+        if (edge["kind"] == "Управление оборудованием" and edge["confirmed"] and edge["b"] in connections
+                and nodes[edge["a"]]["kind"] == "Контроллер управления"):
+            controllers[edge["b"]].add(edge["a"])
         direct = edge["kind"] == "Сетевое соединение"
         if not direct and (edge["kind"] not in ("Путь по MAC-таблице", SHARED_LLDP_KIND) or not edge["confirmed"]):
             continue
@@ -2141,8 +2145,14 @@ def _physical_attachments(nodes: dict, links: list[dict], host_ids: list[str]) -
                                          "confirmed": edge["confirmed"], "ports": readings})
     for group in connections.values():
         group.sort(key=lambda row: (row["kind"] != "Сетевое соединение", not row["confirmed"], row["peer"]["id"]))
+    observed_ports = _observed_management_ports(links) if controllers else {}
     return [{"host": _attachment_node(nodes[host_id]), "connectionTotal": len(group), "connections": group[:24],
              "pendingPortPairTotal": len(pending_by_host[host_id]), "pendingPortPairs": pending_by_host[host_id][:24],
+             **({"managementControllers": [
+                 {"node": _attachment_node(nodes[controller]),
+                  "servicePaths": _management_service_paths(nodes[controller], controller, {}, observed_ports)}
+                 for controller in sorted(controllers[host_id])[:12]
+             ]} if host_id in controllers else {}),
              **({"lacpHealth": nodes[host_id]["lacpHealth"]} if "lacpHealth" in nodes[host_id] else {})}
             for host_id, group in connections.items()]
 

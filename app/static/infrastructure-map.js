@@ -1369,6 +1369,19 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const paths = data.servicePaths?.[id] ?? [];
     const servicePaths = renderServicePaths(paths);
     if (servicePaths) propertiesSection.append(servicePaths);
+    for (const edge of incident.get(placementHost.id) ?? []) {
+      if (!edge.confirmed || edge.b !== placementHost.id || edge.kind !== 'Управление оборудованием') continue;
+      const controller = byId.get(edge.a);
+      if (controller?.kind !== 'Контроллер управления') continue;
+      const panel = make('details', null, 'map-port-panel');
+      panel.dataset.section = 'hardware-management';
+      const open = make('a', controller.name);
+      open.href = '?' + new URLSearchParams({node: controller.id});
+      panel.append(make('summary', 'Управление оборудованием'), open);
+      const controllerPaths = renderServicePaths(data.servicePaths?.[controller.id]);
+      if (controllerPaths) panel.append(controllerPaths);
+      propertiesSection.append(panel);
+    }
     if (node.kind === 'Сервис' && placementHost !== node && !placementHost.guest) {
       if (!servicePaths) {
         const portPairs = renderHostPortPairs(placementHost);

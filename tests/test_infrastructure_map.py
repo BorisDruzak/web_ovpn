@@ -6692,6 +6692,42 @@ def test_port_includes_fresh_layer2_check_for_current_lldp_neighbor(tmp_path):
     assert "linkChecks" not in read_connection_ports("ap")[0]
 
 
+def test_attachment_includes_controller_path_without_attributing_it_to_the_server(tmp_path):
+    from app.infrastructure_map import load_infrastructure_map, summarize_guest_attachment
+
+    stamp = datetime.now(timezone.utc).isoformat()
+    path = tmp_path / "map.json"
+    links = [
+        {"a": "bmc", "b": "server", "kind": "Управление оборудованием", "confirmed": True},
+        {"a": "sw", "b": "bmc", "kind": "Путь по MAC-таблице", "confirmed": True, "portEvidence": [
+            {"a": "ge13", "b": "", "source": "netctl FDB", "confirmed": True, "at": stamp,
+             "learnedEndpoint": {"switchId": "sw", "deviceId": "bmc", "mac": "02:00:00:00:00:13"},
+             "managementAddress": "192.0.2.31"}]},
+    ]
+
+    def read():
+        path.write_text(json.dumps({"schema": 1, "snapshotAt": stamp, "links": links, "nodes": [
+            {"id": "server", "name": "Server", "kind": "Сервер"},
+            {"id": "bmc", "name": "BMC", "kind": "Контроллер управления", "serviceChecks": [
+                {"method": "ICMP · ARP + FDB", "source": "UI_VPN", "state": "reachable", "checkedAt": stamp,
+                 "identityCheckedAt": stamp, "target": "192.0.2.31"}]},
+            {"id": "sw", "name": "Switch", "kind": "Коммутатор", "ports": [
+                {"name": "ge13", "state": "up", "checkedAt": stamp}]},
+        ]}), encoding="utf-8")
+        return summarize_guest_attachment(load_infrastructure_map(path), "server")["attachment"]
+
+    attachment = read()
+    host, = attachment["physicalHosts"]
+    controller, = host["managementControllers"]
+    assert controller["node"]["id"] == "bmc"
+    probe, = controller["servicePaths"]
+    assert probe["switchAttachment"]["port"] == "ge13"
+    assert "physicalPair" not in probe["switchAttachment"]
+    assert host["connections"] == [] and "servicePaths" not in attachment
+    links[0]["confirmed"] = False
+    assert "managementControllers" not in read()["physicalHosts"][0]
+
+
 def test_attachment_view_includes_physical_service_hosts_and_distinguishes_port_evidence(tmp_path, monkeypatch):
     stamp = datetime.now(timezone.utc).isoformat()
     expired = (datetime.fromisoformat(stamp) - timedelta(minutes=8)).isoformat()
