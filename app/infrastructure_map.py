@@ -1603,6 +1603,17 @@ def _summarize_port_rx_silence(nodes: dict) -> dict:
     return {"total": len(ports), "ports": ports[:64]}
 
 
+def _archived_router_peer(edge: dict) -> dict:
+    archived = {report["b"]: report for report in edge["portEvidence"]
+                if report["source"] == "GitHub" and not report["confirmed"] and not report["a"] and report["b"]}
+    if len(archived) != 1:
+        return {}
+    port, = archived
+    report = archived[port]
+    return {"nodeId": edge["b"], "port": port, "checkedAt": report["at"],
+            **({"inventorySources": report["inventorySources"]} if "inventorySources" in report else {})}
+
+
 def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
     port_aliases = {
         (node["id"], port_label_key(alias)): port_label_key(port["name"])
@@ -1743,10 +1754,8 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
             continue
         a, b = link["a"], link["b"]
         reports = link["portEvidence"]
-        archived = {report["b"]: report for report in reports
-                    if report["source"] == "GitHub" and not report["confirmed"] and not report["a"] and report["b"]}
-        peer_port = next(iter(archived)) if len(archived) == 1 else ""
-        peer_record = archived.get(peer_port, {})
+        peer_record = _archived_router_peer(link)
+        peer_port = peer_record.get("port", "")
         for report in reports:
             port = report["a"]
             if (report["source"] not in ("MikroTik · ARP", "MikroTik · ARP + FDB") or not report["confirmed"]
@@ -1758,7 +1767,7 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
                 "portA": port, "portB": peer_port, "basis": "router_attachment",
                 "missingPortSides": [] if peer_port else ["b"], "identifiedPeerSides": ["a"],
                 "observedPaths": [{"portA": port, "portB": "", "source": report["source"], "checkedAt": report["at"]}],
-                **({"archivedPortSides": ["b"], "archivedPortAt": {"b": peer_record["at"]}} if peer_port else {}),
+                **({"archivedPortSides": ["b"], "archivedPortAt": {"b": peer_record["checkedAt"]}} if peer_port else {}),
                 **({"inventorySources": peer_record["inventorySources"]} if "inventorySources" in peer_record else {}),
                 **({"portObservations": reading} if reading else {}),
             }
@@ -2174,7 +2183,8 @@ def _physical_attachments(nodes: dict, links: list[dict], host_ids: list[str]) -
             candidates = controllers[edge["b"]]
             candidates[edge["a"]] = candidates.get(edge["a"], False) or edge["confirmed"]
         direct = edge["kind"] == "Сетевое соединение"
-        if not direct and (edge["kind"] not in ("Путь по MAC-таблице", SHARED_LLDP_KIND) or not edge["confirmed"]):
+        if not direct and (edge["kind"] not in ("Путь по MAC-таблице", "Транзитный сегмент", SHARED_LLDP_KIND)
+                           or not edge["confirmed"]):
             continue
         for host_side, peer_side in (("a", "b"), ("b", "a")):
             host_id, peer = edge[host_side], nodes[edge[peer_side]]
@@ -2436,6 +2446,8 @@ def _observed_management_ports(links: list[dict]) -> dict:
             key = (device, port_label_key(port))
             if key not in ports or ports[key][field]["checkedAt"] < report["at"]:
                 attachment = {id_key: device, "port": port, "source": report["source"], "checkedAt": report["at"]}
+                if field == "routerAttachment" and not report["b"] and (archived := _archived_router_peer(edge)):
+                    attachment["archivedPeer"] = archived
                 pair = physical.get(key)
                 if field == "switchAttachment" and pair and pair["hostId"] == host:
                     attachment["physicalPair"] = pair

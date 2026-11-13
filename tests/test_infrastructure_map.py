@@ -5165,7 +5165,8 @@ def test_transit_port_requires_direct_route_running_ethernet_and_neighbor_arp(tm
                "segments": [{"id": "transit", "cidr": "192.0.2.0/30", "local_address": "192.0.2.1", "gateway_device": "rb"}]}
     inventory_stamp = (now - timedelta(days=30)).isoformat()
     context["devices"][1]["observed_state"] = {"ipv4_interfaces": [
-        {"name": "eth2", "address": "192.0.2.2/30", "observed_at": inventory_stamp},
+        {"name": "eth2", "address": "192.0.2.2/30", "observed_at": inventory_stamp,
+         "source": "docs/coordinator.yaml"},
         {"name": "eth0", "address": "198.51.100.20/24", "observed_at": inventory_stamp},
     ]}
     binding = {"transit_links": {"transit": {"asset": "coordinator", "source": "main",
@@ -5189,7 +5190,9 @@ def test_transit_port_requires_direct_route_running_ethernet_and_neighbor_arp(tm
     assert service["probeTargetIP"] == "192.0.2.2"
     assert link["confirmed"] and link["portEvidence"][0]["a"] == "ether8"
     assert link["portEvidence"][0]["b"] == ""
-    assert link["portEvidence"][1] == {"a": "", "b": "eth2", "source": "GitHub", "at": inventory_stamp, "confirmed": False}
+    sources = [{"path": "docs/coordinator.yaml", "observedOn": inventory_stamp[:10]}]
+    assert link["portEvidence"][1] == {"a": "", "b": "eth2", "source": "GitHub", "at": inventory_stamp,
+                                      "confirmed": False, "inventorySources": sources}
 
     def attachment(node_id, at=now):
         graph = build_graph(context, network, {}, {}, binding, now)
@@ -5201,8 +5204,17 @@ def test_transit_port_requires_direct_route_running_ethernet_and_neighbor_arp(tm
         public = load_infrastructure_map(snapshot, at, include_guest_attachments=True)
         return summarize_guest_attachment(public, node_id)["attachment"]
 
-    path, = attachment("transit:transit")["servicePaths"]
-    assert path["routerAttachment"] == {"routerId": "rb", "port": "ether8", "source": "MikroTik · ARP", "checkedAt": at}
+    detail = attachment("transit:transit")
+    path, = detail["servicePaths"]
+    assert path["routerAttachment"] == {
+        "routerId": "rb", "port": "ether8", "source": "MikroTik · ARP", "checkedAt": at,
+        "archivedPeer": {"nodeId": "coordinator", "port": "eth2", "checkedAt": inventory_stamp,
+                         "inventorySources": sources},
+    }
+    for host in detail["physicalHosts"]:
+        connection, = host["connections"]
+        assert connection["kind"] == "Транзитный сегмент"
+        assert all("pairEvidence" not in report for report in connection["ports"])
     port, = attachment("rb")["servicePorts"]
     row, = port["services"]
     assert port["port"] == "ether8" and row["basis"] == ["router_arp"]
@@ -5744,7 +5756,9 @@ def test_transit_peer_management_port_requires_fresh_arp_fdb_and_active_ethernet
     assert service_path == {"target": address, "port": 8080, "method": "HTTPS", "checkedAt": at,
                             "state": "reachable",
                             "addressCheckedAt": at, "routerAttachment": {"routerId": "rb", "port": "ether7",
-                            "source": "MikroTik · ARP + FDB", "checkedAt": at}}
+                            "source": "MikroTik · ARP + FDB", "checkedAt": at,
+                            "archivedPeer": {"nodeId": "coordinator", "port": "eth0", "checkedAt": inventory_stamp,
+                                             "inventorySources": sources}}}
     reverse, = summarize_guest_attachment(public, "rb")["attachment"]["servicePorts"]
     endpoint, = reverse["services"][0]["probeEndpoints"]
     assert reverse["port"] == "ether7" and endpoint["target"] == address

@@ -1077,12 +1077,21 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       }
       const attachment = path.routerAttachment ?? path.switchAttachment;
       if (attachment) {
-        const {routerId, switchId, port, source, checkedAt, physicalPair} = attachment;
+        const {routerId, switchId, port, source, checkedAt, physicalPair, archivedPeer} = attachment;
         const deviceId = routerId ?? switchId;
         const device = byId.get(deviceId)?.name ?? deviceId;
         const evidence = switchId ? 'ARP + FDB коммутатора' : source;
         row.append(make('small', [evidence, formatTime(checkedAt)].join(' · ')),
           switchPortButton(deviceId, device, port));
+        if (archivedPeer) {
+          const {nodeId, port: peerPort, checkedAt: peerAt, inventorySources} = archivedPeer;
+          const peer = byId.get(nodeId)?.name ?? nodeId;
+          const reading = make('small');
+          reading.append(portPairEndpoint(nodeId, peer, peerPort), ' · по архиву',
+            peerAt ? ` · ${formatTime(peerAt)}` : '');
+          row.append(reading);
+          appendInventorySources(row, inventorySources);
+        }
         if (physicalPair) {
           const {hostId, hostPort, source: pairSource, checkedAt: pairAt} = physicalPair;
           const host = byId.get(hostId);
