@@ -580,7 +580,7 @@ def _port_key(name: str) -> str:
 
 def _infrastructure_port(graph: dict, node: dict | None, port_name: str) -> dict:
     result = {"portName": port_name.strip(), "ports": [], "links": [], "guestObservations": [], "servicePorts": []}
-    result.update(currentPortPairs=[], pendingPortPairs=[])
+    result.update(currentPortPairs=[], inventoryPairs=[], pendingPortPairs=[])
     if node is None:
         return result
     node_id = node["id"]
@@ -593,7 +593,7 @@ def _infrastructure_port(graph: dict, node: dict | None, port_name: str) -> dict
             port_keys.update(keys)
     result["servicePorts"] = [row for row in graph.get("servicePorts", {}).get(node_id, [])
                               if _port_key(row["port"]) in port_keys]
-    for field in ("currentPortPairs", "pendingPortPairs"):
+    for field in ("currentPortPairs", "inventoryPairs", "pendingPortPairs"):
         result[field] = [pair for pair in graph.get(field, []) if any(
             pair[side] == node_id and _port_key(pair[port_field]) in port_keys
             for side, port_field in (("a", "portA"), ("b", "portB"))

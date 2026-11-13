@@ -652,6 +652,9 @@ def test_mcp_infrastructure_port_scope_preserves_evidence_and_guest_observations
     pending = {"a": "unrelated", "b": "sw", "portA": "", "portB": "Gi1/0/22",
                "missingPortSides": ["a"], "portObservations": {"b": {"state": "up"}}}
     graph["currentPortPairs"] = [confirmed]
+    inventory = {**confirmed, "portA": "Gi1/0/22",
+                 "inventorySources": [{"path": "evidence/switch.yaml", "observedOn": "2026-11-11"}]}
+    graph["inventoryPairs"] = [inventory, {**inventory, "portA": "Gi1/0/2"}]
     graph["pendingPortPairs"] = [pending, {**pending, "portB": "Gi1/0/2"}]
 
     def api(method, path):
@@ -665,6 +668,7 @@ def test_mcp_infrastructure_port_scope_preserves_evidence_and_guest_observations
     assert result["ports"] == [live]
     assert result["servicePorts"] == [graph["servicePorts"]["sw"][0]]
     assert result["currentPortPairs"] == [confirmed]
+    assert result["inventoryPairs"] == [inventory]
     assert result["pendingPortPairs"] == [pending]
     assert result["links"] == [{**graph["links"][0], "portEvidence": [port]}]
     assert result["neighbors"] == [{"id": "other", "name": "Peer"}]

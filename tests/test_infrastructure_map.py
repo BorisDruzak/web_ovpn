@@ -7220,6 +7220,9 @@ def test_inventory_port_sources_are_dated_and_kept_separate_from_live_checks(tmp
     assert audit["pending"][0]["inventorySources"] == expected
     assert audit["inventoryPairs"] == [{"a": "a", "b": "b", "portA": "ge1", "portB": "eth0",
                                          "inventorySources": expected}]
+    port_graph = load_infrastructure_map(path, now, include_port_pairs=True)
+    assert port_graph["inventoryPairs"] == audit["inventoryPairs"]
+    assert port_graph["currentPortPairs"] == []
 
 
 def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_paths(tmp_path, monkeypatch):
