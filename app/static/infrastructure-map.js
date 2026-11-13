@@ -228,7 +228,16 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   function confirmedPortPairRow({a, b, nameA, nameB, portA, portB, evidence, portStates = {}, linkHealth}) {
     const row = make('li');
     row.append(portPairEndpoint(a, nameA, portA), ' ↔ ', portPairEndpoint(b, nameB, portB));
-    appendLinkComparison(row, linkHealth);
+    const missingPorts = [];
+    if (!portStates.a) missingPorts.push(`${nameA} ${portA}`);
+    if (!portStates.b) missingPorts.push(`${nameB} ${portB}`);
+    if (!missingPorts.length || linkHealth?.state !== 'unconfirmed') {
+      appendLinkComparison(row, linkHealth);
+    }
+    if (missingPorts.length) {
+      const label = missingPorts.length === 1 ? 'Нет свежего замера' : 'Нет свежих замеров';
+      row.append(make('small', label + ': ' + missingPorts.join(', ')));
+    }
     for (const [side, port] of Object.entries(portStates)) {
       const name = side === 'a' ? nameA : nameB;
       const label = side === 'a' ? portA : portB;
