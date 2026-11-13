@@ -3974,6 +3974,24 @@ def _guest_agent_presence(identity: dict, now: datetime, *, verified_enrollment:
     return last_seen, ""
 
 
+def _reobserved_agent_baseline(snapshot: object, identity: dict, now: datetime) -> datetime | None:
+    from .inventory.endpoint import CANDIDATE_MAX_AGE
+
+    if not isinstance(snapshot, dict) or snapshot.get("profile") != "baseline_v1":
+        return None
+    collected = _time(snapshot.get("collected_at"))
+    observed = _time(snapshot.get("observed_at"))
+    if (not collected or collected != _time(identity.get("baseline_collected_at"))
+            or not observed or not collected <= observed <= now or now - observed > CANDIDATE_MAX_AGE):
+        return None
+    sections = snapshot.get("sections")
+    if not isinstance(sections, dict):
+        return None
+    macs = {key for row in _rows(sections.get("interfaces"), 64)
+            if isinstance(key := row.get("stable_key"), str) and re.fullmatch(r"mac-[0-9a-f]{12}", key)}
+    return observed if macs and macs == set(identity.get("baseline_mac_keys", [])) else None
+
+
 def _summarize_agent_audit(nodes: dict, keys: dict, conflicts: set[str], identities: list[dict], now: datetime,
                            *, snapshot_fresh: bool, enrollments: dict[str, str], device_presences: list[dict],
                            hypervisor_evidence: dict[str, str],
@@ -4008,6 +4026,7 @@ def _summarize_agent_audit(nodes: dict, keys: dict, conflicts: set[str], identit
         matches.setdefault(node_id, set())
     nodes_by_identity = Counter(identity_id for values in matches.values() for identity_id in values)
     guests, hypervisors = [], []
+    baseline_reads_remaining = 8
     for node_id, node in nodes.items():
         hypervisor = node["kind"] == "Гипервизор"
         if not hypervisor and (not node["guest"] or node["vmid"] is None):
@@ -4063,6 +4082,16 @@ def _summarize_agent_audit(nodes: dict, keys: dict, conflicts: set[str], identit
                     entry["identitySource"] = "active_mac_registration"
                 presence = verified[identity_id] if explicit else identity
                 last_seen, presence_reason = _guest_agent_presence(presence, now, verified_enrollment=explicit)
+                if (presence_reason == "endpoint_network_baseline_stale" and load_agent_profiles is not None
+                        and baseline_reads_remaining and (selected_node is None or node_id == selected_node)):
+                    baseline_reads_remaining -= 1
+                    try:
+                        baseline = load_agent_profiles(UUID(identity_id), ("baseline_v1",)).get("baseline_v1")
+                    except (EndpointPlatformServiceError, ValueError):
+                        baseline = None
+                    if observed_at := _reobserved_agent_baseline(baseline, identity, now):
+                        last_seen = _time(presence["last_seen_at"])
+                        entry["baselineObservedAt"] = observed_at.isoformat()
                 entry["presence"] = "online" if last_seen is not None else "unconfirmed"
                 if last_seen is not None:
                     entry["lastSeenAt"] = last_seen.isoformat()

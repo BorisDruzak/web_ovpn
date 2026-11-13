@@ -9761,6 +9761,29 @@ def test_agent_audit_explains_unconfirmed_presence_even_with_recent_health(tmp_p
         )
         assert "lastSeenAt" not in entry and "health" not in entry
 
+    identity["id"] = "3218eb22-423b-43a4-8f97-a0a00f21a4bd"
+    identity["baseline_collected_at"] = stale
+
+    def read_baseline(device, profiles):
+        assert str(device) == identity["id"]
+        assert profiles == ("baseline_v1",)
+        return {"baseline_v1": {"profile": "baseline_v1", "observed_at": at, "collected_at": stale,
+                                "sections": {"interfaces": [{"stable_key": key}]}}}
+
+    audit = load_infrastructure_map(path, now, agent_identities=[identity], load_agent_profiles=read_baseline)["agentAudit"]
+    entry, = audit["guests"]
+    assert entry["presence"] == "online" and entry["lastSeenAt"] == at
+    assert entry["baselineObservedAt"] == at
+    assert "presenceReason" not in entry
+
+    def conflicting_baseline(device, profiles):
+        result = read_baseline(device, profiles)
+        result["baseline_v1"]["sections"]["interfaces"][0]["stable_key"] = "mac-020000000002"
+        return result
+
+    audit = load_infrastructure_map(path, now, agent_identities=[identity], load_agent_profiles=conflicting_baseline)["agentAudit"]
+    assert audit["guests"][0]["presenceReason"] == "endpoint_network_baseline_stale"
+
 
 def test_browser_can_refresh_snapshot_only_with_a_web_session(tmp_path, monkeypatch):
     path = tmp_path / "map.json"

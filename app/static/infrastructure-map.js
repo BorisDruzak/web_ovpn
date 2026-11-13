@@ -966,6 +966,11 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     label.textContent = entry?.presence === 'online'
       ? 'На связи · ' + formatTime(entry.lastSeenAt)
       : reasons[entry?.reason ?? entry?.presenceReason] ?? (entry?.state === 'matched' ? 'Связь не подтверждена' : 'Привязка не подтверждена');
+    if (entry?.baselineObservedAt) {
+      const proof = make('div');
+      proof.append(make('small', 'Сетевой инвентарь подтверждён · ' + formatTime(entry.baselineObservedAt)));
+      label.append(proof);
+    }
     const identitySourceLabels = {
       verified_enrollment: 'Регистрация сверена на ВМ',
       active_mac_registration: 'Одна активная регистрация с этим MAC',
