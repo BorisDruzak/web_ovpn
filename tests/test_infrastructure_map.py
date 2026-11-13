@@ -289,6 +289,18 @@ def test_service_probe_transition_tracks_confirmed_recovery(tmp_path):
     expired = load_infrastructure_map(path, after + timedelta(days=1))
     assert "probeTransition" not in expired["nodes"][0]
     assert "probeTransition" not in summarize_guest_attachment(expired, "git")["attachment"]
+    public["nodes"].extend(
+        {**public["nodes"][0], "id": f"earlier-{i}", "name": f"A service {i}", "probeTransition": None}
+        for i in range(128)
+    )
+    audit = summarize_services(public)["serviceAudit"]
+    assert all(row["id"] != "git" for row in audit["services"])
+    assert audit["recentTransitionTotal"] == 1
+    assert audit["recentTransitions"] == [
+        {"id": "git", "name": "Git", "status": "ok", "hosts": [], **transition},
+    ]
+    assert summarize_services(public, host_id="another-host")["serviceAudit"]["recentTransitions"] == []
+    assert summarize_services(expired)["serviceAudit"]["recentTransitionTotal"] == 0
     for old in (snapshot(before, "unknown"), snapshot(before, "unreachable", "192.0.2.31"),
                 snapshot(before - timedelta(minutes=8), "unreachable")):
         changed = snapshot(now, "reachable")

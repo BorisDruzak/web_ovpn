@@ -3037,10 +3037,16 @@ def summarize_services(graph: dict, *, host_id: str | None = None, offset: int =
             **({"backupScope": node["backupScope"]} if "backupScope" in node else {}),
         })
     services.sort(key=lambda node: (priority[node["status"]], node["name"].casefold(), node["id"]))
+    recent_transitions = [
+        {**{key: row[key] for key in ("id", "name", "status", "hosts")}, **row["probeTransition"]}
+        for row in services if row.get("probeTransition")
+    ]
+    recent_transitions.sort(key=lambda row: row["checkedAt"], reverse=True)
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
     end = offset + 128
     return {**metadata, "serviceAudit": {
         "total": len(services), "counts": counts, "offset": offset,
+        "recentTransitionTotal": len(recent_transitions), "recentTransitions": recent_transitions[:16],
         "nextOffset": end if end < len(services) else None, "services": services[offset:end],
     }}
 
