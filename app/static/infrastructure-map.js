@@ -1644,6 +1644,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const panel = make('details', null, 'map-port-panel');
     const list = make('ul', null, 'map-detail-list');
     const labels = {reachable: 'Доступен', unreachable: 'Недоступен', unknown: 'Нет подтверждения'};
+    panel.open = localPort !== null;
     for (const {mac, ip, reachability, switchPort, rtsp} of visible) {
       const row = make('li');
       row.append(make('strong', ip ?? mac), make('small', [ip && mac, labels[reachability.state],
@@ -2893,6 +2894,29 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const terms = node => [node.name, node.id, ...(node.aliases ?? []), String(node.vmid ?? '')].map(value => value.toLocaleLowerCase('ru-RU'));
     const matches = data.nodes.filter(node => terms(node).some(value => value.includes(term)));
     const exact = matches.filter(value => terms(value).includes(term));
+    const macKey = value => /^(?:[a-f0-9]{12}|(?:[a-f0-9]{2}:){5}[a-f0-9]{2}|(?:[a-f0-9]{2}-){5}[a-f0-9]{2})$/i.test(value)
+      ? value.toLowerCase().replace(/[:-]/g, '') : null;
+    const mac = macKey(term);
+    const observations = new Map();
+    for (const observer of data.nodes) {
+      for (const device of observer.downstream?.devices ?? []) {
+        if (device.ip !== term && (!mac || macKey(device.mac) !== mac)) continue;
+        const port = device.switchPort && observer.ports.find(item => portKeys(item).includes(portKey(device.switchPort.name)));
+        const key = JSON.stringify([observer.id, port?.name]);
+        if (observations.has(key)) continue;
+        const result = make('button', [observer.name, port?.name].filter(Boolean).join(' · '));
+        result.type = 'button';
+        result.addEventListener('click', () => {
+          select(observer.id);
+          if (port && selected === observer.id) selectPort(observer.id, port.name);
+        });
+        observations.set(key, result);
+      }
+    }
+    if (observations.size) {
+      feedback.replaceChildren(make('span', 'Наблюдения по MAC-таблице '), ...observations.values());
+      return;
+    }
     const node = exact.find(value => value.name.toLocaleLowerCase('ru-RU') === term) ?? exact[0] ?? matches[0];
     feedback.textContent = node ? (matches.length > 1 ? 'Совпадений '+matches.length+'. Открыт '+node.name+'.' : '') : 'Узел не найден';
     if (node) select(node.id);

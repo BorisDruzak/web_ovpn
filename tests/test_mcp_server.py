@@ -617,6 +617,9 @@ def test_mcp_infrastructure_search_returns_bounded_matches_and_stable_ids(monkey
     ]
     nodes.append({"id": "directumrx", "name": "Directum", "aliases": ["Документооборот"],
                   "kind": "Виртуальная машина", "vmid": 103, "mapStatus": "ok", "checks": ["details"]})
+    device = {"ip": "192.0.2.42", "mac": "00:12:34:56:78:9a",
+              "switchPort": {"name": "Ge2", "checkedAt": "2026-11-11T12:00:00Z"}}
+    nodes.append({"id": "poe", "name": "PoE", "downstream": {"devices": [device, device]}})
     graph = {"snapshotAt": "2026-11-11T12:00:00Z", "availability": "ready", "git": "abcdef",
              "nodes": nodes, "links": []}
     requests = []
@@ -639,6 +642,11 @@ def test_mcp_infrastructure_search_returns_bounded_matches_and_stable_ids(monkey
     for query in ("ВМ 103", "VM  103", "103", "ДОКУМЕНТООБОРОТ", "directumrx"):
         assert search(query)["matches"] == [expected]
     assert search("not present")["total"] == 0
+    for address in ("192.0.2.42", "00:12:34:56:78:9A", "00123456789a"):
+        result = search(address)
+        assert result["portObservationTotal"] == 1
+        assert result["portObservations"] == [{"nodeId": "poe", "nodeName": "PoE", "portName": "Ge2", **device}]
+    assert not search("192.0.2.4").get("portObservations")
     assert set(requests) == {("GET", "/api/v1/network/infrastructure")}
     requests.clear()
     for arguments in ({"query": "  "}, {"query": "x" * 161}, {"query": 103},

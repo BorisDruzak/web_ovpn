@@ -584,6 +584,23 @@ def _infrastructure_matches(nodes: list[dict[str, Any]], query: str) -> dict[str
     return {"matches": (exact + partial)[:12], "total": len(exact) + len(partial)}
 
 
+def _infrastructure_address_observations(nodes: list[dict[str, Any]], query: str) -> dict[str, Any]:
+    mac = query.replace(":", "").replace("-", "") if re.fullmatch(
+        r"(?:[a-f0-9]{12}|(?:[a-f0-9]{2}:){5}[a-f0-9]{2}|(?:[a-f0-9]{2}-){5}[a-f0-9]{2})", query
+    ) else None
+    observations = {}
+    for node in nodes:
+        for device in node.get("downstream", {}).get("devices", []):
+            if device.get("ip") != query and not (mac and device["mac"].replace(":", "") == mac):
+                continue
+            port = device.get("switchPort", {}).get("name")
+            key = node["id"], port, device["mac"], device.get("ip")
+            observations.setdefault(key, {
+                "nodeId": node["id"], "nodeName": node["name"], "portName": port, **device,
+            })
+    return {"portObservations": list(observations.values())[:12], "portObservationTotal": len(observations)}
+
+
 def _port_key(name: str) -> str:
     label = name.strip().casefold()
     gigabit = re.fullmatch(r"(?:gi|gigabitethernet)\s*(\d+/\d+/\d+)", label)
@@ -723,7 +740,9 @@ def _infrastructure_snapshot(node_id: str | None, query: str | None, port_name: 
         return response
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
     if query is not None:
-        search = _infrastructure_matches(graph["nodes"], " ".join(query.casefold().split()))
+        normalized = " ".join(query.casefold().split())
+        search = {**_infrastructure_matches(graph["nodes"], normalized),
+                  **_infrastructure_address_observations(graph["nodes"], normalized)}
         return {**response, "infrastructure": {**metadata, **search}}
     node = next((item for item in graph["nodes"] if item["id"] == node_id), None)
     if port_name is not None:

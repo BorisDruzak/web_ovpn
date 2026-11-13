@@ -9,7 +9,7 @@
   <header class="map-heading">
     <p id="map-sources"></p>
     <div id="map-search" role="search">
-      <input id="map-query" type="search" placeholder="Найти узел…" aria-label="Найти узел">
+      <input id="map-query" type="search" placeholder="Узел, IP или MAC" aria-label="Найти узел по имени, IP или MAC">
       <button type="button">Найти</button>
       <span id="map-search-result" role="status"></span>
     </div>
@@ -57,5 +57,5 @@
 <script id="infrastructure-data" type="application/json">{{ graph | tojson }}</script>
 {% endblock %}
 {% block page_scripts %}
-<script type="module" src="{{ url_for('static', path='infrastructure-map.js') }}?v=live-275"></script>
+<script type="module" src="{{ url_for('static', path='infrastructure-map.js') }}?v=live-276"></script>
 {% endblock %}
