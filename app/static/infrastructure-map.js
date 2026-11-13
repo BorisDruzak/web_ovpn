@@ -1777,8 +1777,31 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       const shared = chosenPort && (data.sharedPorts ?? []).find(row =>
         row.switchId === node.id && portKeys(chosenPort).includes(portKey(row.port)));
       if (shared) {
-        const summary = make('p', `Общий порт · узлов: ${shared.peerTotal} · MAC: ${shared.liveFdbPeerIds.length} · LLDP: ${shared.liveLldpPeerIds.length}`);
-        propertiesSection.append(summary);
+        const title = `Общий порт · узлов: ${shared.peerTotal} · MAC: ${shared.liveFdbPeerIds.length} · LLDP: ${shared.liveLldpPeerIds.length}`;
+        if (shared.peerObservations?.length) {
+          const panel = make('details', null, 'map-port-panel');
+          panel.dataset.section = 'shared-port-peers';
+          const list = make('ul', null, 'map-detail-list');
+          for (const peer of shared.peerObservations) {
+            const row = make('li');
+            const open = make('a', peer.name);
+            open.href = '?' + new URLSearchParams({node: peer.id});
+            row.append(open);
+            const readings = [
+              ['MAC-таблица', peer.fdbCheckedAt],
+              ['LLDP', peer.lldpCheckedAt],
+              ['Кандидат LLDP', peer.lldpCandidateCheckedAt],
+            ];
+            for (const [label, checkedAt] of readings) {
+              if (checkedAt) row.append(make('small', `${label} · ${formatTime(checkedAt)}`));
+            }
+            list.append(row);
+          }
+          panel.append(make('summary', title), list);
+          propertiesSection.append(panel);
+        } else {
+          propertiesSection.append(make('p', title));
+        }
       }
       for (const pending of [false, true]) {
         const pairs = renderHostPortPairs(node, pending, chosenPort);
