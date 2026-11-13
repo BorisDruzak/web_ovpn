@@ -4076,9 +4076,13 @@ def test_shared_lldp_ports_publish_paths_and_require_live_port_and_unique_chassi
                            "peerIds": ["one", "two"], "liveLldpPeerIds": ["two"],
                            "liveFdbPeerIds": ["one", "two"], "peerObservations": [
                                {"id": "one", "name": "one", "fdbCheckedAt": at, "lldpCandidateCheckedAt": at,
-                                "lldpCandidatePortIds": [candidate["portId"]]},
+                                "lldpCandidatePortIds": [candidate["portId"]],
+                                "fdbMacs": [fdb_only["observedPaths"][0]["learnedEndpoint"]["mac"]],
+                                "lldpCandidateChassisMacs": [candidate["chassisId"]]},
                                {"id": "two", "name": "two", "fdbCheckedAt": at, "lldpCheckedAt": at,
-                                "lldpPortIds": [combined_row["lldpPeers"]["a"][0]["portId"]]},
+                                "lldpPortIds": [combined_row["lldpPeers"]["a"][0]["portId"]],
+                                "fdbMacs": [combined_row["observedPaths"][0]["learnedEndpoint"]["mac"]],
+                                "lldpChassisMacs": [combined_row["lldpPeers"]["a"][0]["chassisId"]]},
                            ]}
     assert firmware()["two"] == {**provenance, "product": "RouterOS", "version": "7.19.6"}
     neighbors[0]["last_seen_at"] = (now - timedelta(hours=1)).isoformat()

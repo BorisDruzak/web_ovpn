@@ -1949,12 +1949,12 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
             open.href = '?' + new URLSearchParams({node: peer.id});
             row.append(open);
             const readings = [
-              ['MAC-таблица', peer.fdbCheckedAt],
-              ['LLDP', peer.lldpCheckedAt, peer.lldpPortIds],
-              ['Кандидат LLDP', peer.lldpCandidateCheckedAt, peer.lldpCandidatePortIds],
+              ['MAC-таблица', peer.fdbCheckedAt, peer.fdbMacs],
+              ['LLDP', peer.lldpCheckedAt, peer.lldpPortIds, peer.lldpChassisMacs],
+              ['Кандидат LLDP', peer.lldpCandidateCheckedAt, peer.lldpCandidatePortIds, peer.lldpCandidateChassisMacs],
             ];
-            for (const [label, checkedAt, portIds] of readings) {
-              if (checkedAt) row.append(make('small', [label, ...(portIds ?? []), formatTime(checkedAt)].join(' · ')));
+            for (const [label, checkedAt, identifiers, chassis] of readings) {
+              if (checkedAt) row.append(make('small', [label, ...(identifiers ?? []), ...(chassis ?? []), formatTime(checkedAt)].join(' · ')));
             }
             list.append(row);
           }

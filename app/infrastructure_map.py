@@ -2415,23 +2415,23 @@ def _summarize_shared_ports(pending: list[dict]) -> list[dict]:
     for row in pending:
         switch_id, peer = row["a"], row["b"]
         port = port_label_key(row["portA"])
-        fdb_at = max((
-            path["checkedAt"] for path in row["observedPaths"]
+        fdb_readings = [
+            path for path in row["observedPaths"]
             if path["source"] == "netctl FDB" and path["checkedAt"]
             and port_label_key(path.get("portA", "")) == port
             and path.get("learnedEndpoint", {}).get("switchId") == switch_id
             and path["learnedEndpoint"].get("deviceId") == peer
-        ), default="")
-        if row.get("sharedPort") or fdb_at:
-            groups[switch_id, port].append((row, fdb_at))
+        ]
+        if row.get("sharedPort") or fdb_readings:
+            groups[switch_id, port].append((row, fdb_readings))
     result = []
     for (switch_id, _), rows in sorted(groups.items()):
         observations = {}
-        for row, fdb_at in rows:
+        for row, fdb_readings in rows:
             peer = row["b"]
             observation = observations.setdefault(peer, {"id": peer, "name": row["nameB"]})
             readings = {
-                "fdbCheckedAt": (fdb_at,),
+                "fdbCheckedAt": (path["checkedAt"] for path in fdb_readings),
                 "lldpCheckedAt": (path["checkedAt"] for path in row["observedPaths"]
                                   if path["source"] == SHARED_LLDP_SOURCE),
                 "lldpCandidateCheckedAt": (candidate["checkedAt"] for candidate in row.get("unconfirmedLldpCandidates", [])),
@@ -2439,14 +2439,20 @@ def _summarize_shared_ports(pending: list[dict]) -> list[dict]:
             for key, stamps in readings.items():
                 if latest := max((stamp for stamp in stamps if stamp), default=""):
                     observation[key] = max(latest, observation.get(key, ""))
-            for key, advertisements in (
-                ("lldpPortIds", row.get("lldpPeers", {}).get("a", [])),
-                ("lldpCandidatePortIds", row.get("unconfirmedLldpCandidates", [])),
+            values = {"fdbMacs": {path["learnedEndpoint"]["mac"] for path in fdb_readings
+                                  if path["learnedEndpoint"].get("mac")}}
+            for prefix, advertisements in (
+                ("lldp", row.get("lldpPeers", {}).get("a", [])),
+                ("lldpCandidate", row.get("unconfirmedLldpCandidates", [])),
             ):
-                names = {item["portId"] for item in advertisements
-                         if item.get("portIdSubtype") == "interface_name" and item.get("portId")}
-                if names:
-                    observation[key] = sorted(names.union(observation.get(key, [])))[:8]
+                values[prefix + "PortIds"] = {item["portId"] for item in advertisements
+                                              if item.get("portIdSubtype") == "interface_name" and item.get("portId")}
+                values[prefix + "ChassisMacs"] = {item["chassisId"] for item in advertisements
+                                                  if re.fullmatch(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}",
+                                                                  item.get("chassisId", ""))}
+            for key, entries in values.items():
+                if entries:
+                    observation[key] = sorted(entries.union(observation.get(key, [])))[:8]
         peers = sorted(observations)
         lldp_peers = [peer for peer in peers if "lldpCheckedAt" in observations[peer]]
         fdb_peers = [peer for peer in peers if "fdbCheckedAt" in observations[peer]]
