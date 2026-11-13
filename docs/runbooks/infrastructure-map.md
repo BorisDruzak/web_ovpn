@@ -617,7 +617,7 @@
 
 Server Observer измеряет доступную физическую память Windows у Directum, файлового сервера и Active Directory через `Win32_OperatingSystem`. `windows_memory_available_bytes` показывает объём в байтах, `windows_memory_available_percent` — долю от видимой Windows физической памяти. В привязке роли можно задать `windows_memory_warning_percent`, например `roles.directum.windows_memory_warning_percent: 5`. Тогда процент становится обязательной проверкой и значение ниже порога даёт предупреждение. Пропущенное или устаревшее измерение остаётся неподтверждённым. Для Nextcloud и OnlyOffice поля `linux_memory_available_bytes` и `linux_memory_available_percent` строятся из `MemAvailable` и `MemTotal` в `/proc/meminfo`.
 
-В рабочем UI_VPN порог 5% задан для ролей `directum`, `file_server` и `active_directory`. После изменения привязок сверьте `required`, `observed`, `warningThreshold` и `checkedAt` проверки `windows_memory_available_percent` в `view=attachment` для каждой роли.
+В рабочем UI_VPN для роли `directum` задан порог 10%, для `file_server` и `active_directory` — 5%. После изменения привязок сверьте `required`, `observed`, `warningThreshold` и `checkedAt` проверки `windows_memory_available_percent` в `view=attachment` для каждой роли.
 
 Для Linux используется `linux_memory_warning_percent` с той же семантикой. В рабочем UI_VPN порог 5% задан для ролей `nextcloud` и `onlyoffice`. Проверка доступна в `view=attachment` под именем `linux_memory_available_percent`.
 
