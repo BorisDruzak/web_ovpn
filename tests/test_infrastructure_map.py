@@ -5058,7 +5058,7 @@ def test_switch_port_telemetry_requires_matching_current_collection(tmp_path):
 def test_switch_rx_silence_requires_continuous_64_bit_samples_on_the_current_port(tmp_path):
     import sqlite3
     from app.infrastructure_collect import _read_rx_silence_windows
-    from app.infrastructure_map import load_infrastructure_map, summarize_topology
+    from app.infrastructure_map import load_infrastructure_map, summarize_guest_attachment, summarize_topology
 
     now = datetime.now(timezone.utc)
     stamps = [(now - timedelta(seconds=offset)).isoformat() for offset in (600, 300, 0)]
@@ -5110,6 +5110,11 @@ def test_switch_rx_silence_requires_continuous_64_bit_samples_on_the_current_por
     assert graph()["nodes"][0]["ports"][0]["rxSilence"] == silence
     pending, = summarize_topology(graph())["topologyAudit"]["pending"]
     assert pending["portObservations"]["a"]["rxSilence"] == silence
+    host, = summarize_guest_attachment(graph(), "pbs")["attachment"]["physicalHosts"]
+    connection, = host["connections"]
+    report, = connection["ports"]
+    assert report["portStates"]["peer"]["telemetry"] == raw_port["telemetry"]
+    assert report["portStates"]["peer"]["rxSilence"] == silence
     audit = graph()["portRxSilenceAudit"]
     assert audit == {"total": 1, "ports": [{"deviceId": "sw", "deviceName": "SNR", "port": "xe1", "rxSilence": silence}]}
     assert summarize_topology(graph())["topologyAudit"]["portRxSilenceAudit"] == audit
