@@ -6567,6 +6567,19 @@ def test_transit_peer_management_port_requires_fresh_arp_fdb_and_active_ethernet
     assert not expired["confirmed"]
     assert "portStates" not in expired["portEvidence"][0]
     assert lan(at=now + timedelta(hours=1), public_at=now + timedelta(hours=1)) == []
+    speed_at = (now - timedelta(seconds=1)).isoformat()
+    network["router_interfaces"][0]["last_seen_at"] = (now - timedelta(minutes=3)).isoformat()
+    network["router_link_modes"] = {("main", "ether7"): {"checkedAt": speed_at, "speedBps": 10**9}}
+    lan()
+    public = load_infrastructure_map(path, now, include_guest_attachments=True)
+    pending, = summarize_topology(public)["topologyAudit"]["pending"]
+    for item in (pending, public["pendingPortPairs"][0]):
+        port = item["portObservations"]["a"]
+        assert port["speedBps"] == 10**9 and port["speedCheckedAt"] == speed_at
+        assert port["checkedAt"] == network["router_interfaces"][0]["last_seen_at"]
+        assert item["archivedPortSides"] == ["b"]
+    network.pop("router_link_modes")
+    network["router_interfaces"][0]["last_seen_at"] = at
     declared = context["devices"][1]["observed_state"]["ipv4_interfaces"]
     declared.append({**declared[0], "name": "eth3"})
     assert lan()[0]["portEvidence"] == [live]

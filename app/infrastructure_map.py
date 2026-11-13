@@ -1949,7 +1949,7 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
 
     def observations(report):
         return {
-            side: {key: port[key] for key in ("name", "state", "speedBps", "checkedAt", "source", "linkMode",
+            side: {key: port[key] for key in ("name", "state", "speedBps", "speedCheckedAt", "checkedAt", "source", "linkMode",
                                               "stpPort", "telemetry", "rxErrorCounters", "rxSilence", "fdbLearned", "transceiver",
                                               "configuredLabel", "lldpPort") if key in port}
             for side, port in report.get("portStates", {}).items() if port["state"] != "unknown"
