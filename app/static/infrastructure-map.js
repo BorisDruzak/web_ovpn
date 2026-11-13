@@ -165,6 +165,13 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     link.href = '/network/interfaces?' + new URLSearchParams(history) + '#interface-history-chart';
     return link;
   }
+  function appendPairHistory(row, portHistory, names) {
+    for (const [side, history] of Object.entries(portHistory)) {
+      const line = make('small');
+      line.append(portHistoryLink(history, `История порта ${names[side]}`));
+      row.append(line);
+    }
+  }
   function renderPortCounterSummary() {
     const panel = root.querySelector('#map-port-counters');
     const summary = panel.querySelector('summary');
@@ -258,12 +265,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       row.append(make('small', [`${name} ${label}`, portLabels[port.state], formatPortSpeed(port.speedBps),
         port.source, formatTime(port.speedCheckedAt ?? port.checkedAt)].filter(Boolean).join(' · ')));
     }
-    for (const [side, history] of Object.entries(portHistory)) {
-      const endpoint = side === 'a' ? `${nameA} ${portA}` : `${nameB} ${portB}`;
-      const line = make('small');
-      line.append(portHistoryLink(history, `История порта ${endpoint}`));
-      row.append(line);
-    }
+    appendPairHistory(row, portHistory, {a: `${nameA} ${portA}`, b: `${nameB} ${portB}`});
     for (const {source, checkedAt, expiresAt, windowsAdapter} of evidence) {
       const expiry = expiresAt ? ` · актуально до ${formatTime(expiresAt)}` : '';
       row.append(make('small', source + ' · ' + formatTime(checkedAt) + expiry));
@@ -344,7 +346,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       portObservations = {}, stpPaths = [], stpBridgeConnections = [], stpBridgeMacObservations = [], lldpPeers = {},
       archivedPortAt = {}, inventorySources = [], inventoryPeerPorts = [], arpDiagnostics = {}, observedPaths = [],
       multiMacPortSides = [], unconfirmedLldpCandidates = [], confirmationGaps = [], trafficComparison, linkHealth,
-      stoppedEndpoints = {}, logicalPeerInterfaces = {}, lldpNoRxSides = []}) {
+      stoppedEndpoints = {}, logicalPeerInterfaces = {}, lldpNoRxSides = [], portHistory = {}}) {
     const item = make('li');
     const provenance = key => archivedPortSides.includes(key) ? ' (по архиву)' :
       inventoryPortSides.includes(key) ? ' (по инвентарю)' : '';
@@ -370,6 +372,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       }
     }
     appendLinkComparison(item, linkHealth, 'Замеры портов · ');
+    appendPairHistory(item, portHistory, {a: `${nameA} ${portA}`, b: `${nameB} ${portB}`});
     for (const [side, checkedAt] of Object.entries(archivedPortAt)) {
       if (checkedAt) item.append(make('small', `Архив · ${side === 'a' ? nameA : nameB} · ${formatTime(checkedAt)}`));
     }

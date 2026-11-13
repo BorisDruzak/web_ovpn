@@ -8887,8 +8887,9 @@ def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_pa
     path.write_text(json.dumps({
         "schema": 1, "snapshotAt": now,
         "nodes": [{"id": "snr", "name": "SNR", "kind": "Коммутатор",
+                   "properties": {"Источник сбора": "snr-test"},
                    "ports": [{"name": "ge12", "state": "down", "checkedAt": now, "ifAlias": "PVE1 IPMI"},
-                             {"name": "ge15", "state": "up", "speedBps": 10**9, "checkedAt": now,
+                             {"name": "ge15", "key": "ifindex:5015", "state": "up", "speedBps": 10**9, "checkedAt": now,
                               "ifAlias": "<invalid>\npassword=value",
                               "lldpNeighborCount": 2,
                               "lldpNeighbors": [
@@ -8962,6 +8963,9 @@ def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_pa
     assert "missing_port_name" in recorder["confirmationGaps"]
     assert "no_live_peer_identity" not in recorder["confirmationGaps"]
     browser_recorder = next(pair for pair in browser_graph["pendingPortPairs"] if pair["b"] == "recorder")
+    assert recorder["portHistory"] == {"a": {"source": "snr-test", "interface": "ifindex:5015"}}
+    assert browser_recorder["portHistory"] == recorder["portHistory"]
+    assert "portHistory" not in mismatch
     assert browser_recorder["confirmationGaps"] == recorder["confirmationGaps"]
     scoped = client.get("/api/v1/network/infrastructure?view=topology&node_id=snr&port_name=GE15", headers=headers)
     assert scoped.status_code == 200

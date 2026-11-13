@@ -2199,7 +2199,7 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
     }
     device_names = Counter(node["name"].casefold() for node in nodes.values())
     verified_pairs = []
-    for _, (pair, sources) in sorted(current_pairs.items()):
+    def attach_history(pair):
         history = {}
         for side, label in (("a", "portA"), ("b", "portB")):
             device = pair[side]
@@ -2207,6 +2207,9 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
                 history[side] = reading
         if history:
             pair["portHistory"] = history
+
+    for _, (pair, sources) in sorted(current_pairs.items()):
+        attach_history(pair)
         ports = pair.get("portStates", {})
         health = _compare_link_ports(ports) or _link_ports_down(ports) or {"state": "unconfirmed"}
         verified_pairs.append({**pair, "linkHealth": health,
@@ -2216,6 +2219,7 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
         for side, field in (("a", "portA"), ("b", "portB")):
             by_port[pair[side], port_key(pair[side], pair[field])].append(pair)
     for row in pending.values():
+        attach_history(row)
         ports = row.get("portObservations", {})
         row["linkHealth"] = _compare_link_ports(ports) or _link_ports_down(ports) or {"state": "unconfirmed"}
         if any(path["source"] == RECIPROCAL_MAC_SOURCE for path in row["observedPaths"]):
@@ -4468,7 +4472,7 @@ def load_infrastructure_map(
                                              "inventoryPeerPorts", "lldpPeers", "unconfirmedLldpCandidates", "multiMacPortSides",
                                              "stpBridgeConnections", "stpBridgeMacObservations", "arpDiagnostics",
                                              "trafficComparison", "stoppedEndpoints", "conflictingPortSides",
-                                             "logicalPeerInterfaces", "lldpNoRxSides") if key in row}}
+                                             "logicalPeerInterfaces", "lldpNoRxSides", "portHistory") if key in row}}
                 for row in pending[:64]
             ],
             lacpPartnerInterfaceGapTotal=len(lacp_gaps),
