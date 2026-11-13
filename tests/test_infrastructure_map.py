@@ -6600,6 +6600,37 @@ def test_infrastructure_map_serves_only_public_snapshot(tmp_path, monkeypatch):
     assert response.headers["cache-control"] == "no-store"
 
 
+def test_port_includes_fresh_layer2_check_for_current_lldp_neighbor(tmp_path):
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    stamp = now.isoformat()
+    check = {"source": "mikrotik-main", "method": "MAC ping · L2", "state": "reachable", "checkedAt": stamp}
+    evidence = {"a": "ge3", "b": "ether1", "source": "LLDP UI_VPN", "at": stamp, "confirmed": True}
+    raw = {"schema": 1, "snapshotAt": stamp, "nodes": [
+        {"id": "sw", "name": "Switch", "kind": "Коммутатор"},
+        {"id": "ap", "name": "AP", "kind": "Точка доступа", "serviceChecks": [check]},
+    ], "links": [{"a": "sw", "b": "ap", "kind": "Сетевое соединение", "confirmed": True,
+                  "portEvidence": [evidence]}]}
+    path = tmp_path / "map.json"
+
+    def read_ports():
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        return load_infrastructure_map(path, now, include_service_ports=True)["servicePorts"]
+
+    port, = read_ports()["sw"]
+    neighbor, = port["services"]
+    assert port["port"] == "ge3" and neighbor["id"] == "ap"
+    assert neighbor["basis"] == ["lldp_peer"] and neighbor["linkChecks"] == [check]
+    evidence["b"] = ""
+    assert read_ports() == {}
+    evidence["b"] = "ether1"
+    check["checkedAt"] = (now - timedelta(hours=1)).isoformat()
+    assert read_ports() == {}
+    evidence["at"], check["checkedAt"] = check["checkedAt"], stamp
+    assert read_ports() == {}
+
+
 def test_attachment_view_includes_physical_service_hosts_and_distinguishes_port_evidence(tmp_path, monkeypatch):
     stamp = datetime.now(timezone.utc).isoformat()
     expired = (datetime.fromisoformat(stamp) - timedelta(minutes=8)).isoformat()

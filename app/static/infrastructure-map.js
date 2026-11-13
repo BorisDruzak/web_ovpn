@@ -1962,7 +1962,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const bases = {host_mac: 'MAC устройства', host_lacp: 'LACP хоста', host_management: 'Интерфейс управления',
           guest_gateway: 'Вход через шлюз', guest_local_udp: 'Привязка к интерфейсу ВМ',
           router_arp: 'Подключённый маршрут и ARP', router_mac: 'ARP и FDB маршрутизатора',
-          switch_mac: 'Адрес проверен по ARP и FDB'};
+          switch_mac: 'Адрес проверен по ARP и FDB', lldp_peer: 'Сосед по LLDP'};
         for (const service of serviceGroup.services) {
           const row = make('li');
           const open = make('button', service.name);
@@ -1971,6 +1971,11 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           row.append(open);
           const observed = (service.basis ?? []).map(basis => bases[basis]).filter(Boolean);
           if (observed.length) row.append(make('small', observed.join(' · ')));
+          for (const check of service.linkChecks ?? []) {
+            const state = {reachable: 'Отвечает', unreachable: 'Недоступен', unknown: 'Нет подтверждения'};
+            row.append(make('small', [check.method, state[check.state], check.source, formatTime(check.checkedAt)]
+              .filter(Boolean).join(' · ')));
+          }
           for (const probe of service.probeEndpoints ?? []) {
             const address = probe.target.includes(':') ? `[${probe.target}]` : probe.target;
             const count = probe.passed + probe.failed + probe.unconfirmed;

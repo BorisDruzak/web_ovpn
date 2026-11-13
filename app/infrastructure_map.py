@@ -2306,6 +2306,12 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime) -> dict:
     port_services = defaultdict(lambda: defaultdict(lambda: defaultdict(set)))
     port_names = {}
     path_checks = defaultdict(set)
+    link_checks = {
+        key: [{field: check[field] for field in ("method", "source", "state", "checkedAt")}
+              for check in node["serviceChecks"] if check["method"] == "MAC ping · L2"
+              and check["checkedAt"] and not check["stale"]]
+        for key, node in nodes.items() if node["kind"] == "Точка доступа"
+    }
 
     def check_key(check):
         dns = check.get("dns", {})
@@ -2316,6 +2322,18 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime) -> dict:
         key = port_label_key(port)
         port_names.setdefault((switch, key), port)
         port_services[switch][key][service].add(basis)
+
+    for edge in links:
+        if not edge["confirmed"] or edge["kind"] != "Сетевое соединение":
+            continue
+        for side, peer in (("a", "b"), ("b", "a")):
+            switch, device = edge[side], edge[peer]
+            if nodes[switch]["kind"] != NETWORK_KINDS[0] or not link_checks.get(device):
+                continue
+            for report in edge["portEvidence"]:
+                if (report.get("pairEvidence") == "current" and report["source"] == "LLDP UI_VPN"
+                        and report[side] and report[peer]):
+                    record(switch, report[side], device, "lldp_peer")
 
     for service, paths in service_paths.items():
         for path in paths:
@@ -2389,6 +2407,7 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime) -> dict:
                 if certificate not in certificates:
                     certificates.append(certificate)
         return {**_attachment_node(node), "basis": sorted(bases),
+                **({"linkChecks": link_checks[key]} if "lldp_peer" in bases else {}),
                 **({"probeEndpoints": [probes[entry] for entry in sorted(probes)]} if probes else {})}
 
     service_ports = {
