@@ -7760,6 +7760,7 @@ def test_attachment_includes_controller_path_without_attributing_it_to_the_serve
     from app.infrastructure_map import load_infrastructure_map, summarize_guest_attachment
 
     stamp = datetime.now(timezone.utc).isoformat()
+    telemetry = {"checkedAt": stamp, "intervalSeconds": 300, "rxErrors": 12}
     path = tmp_path / "map.json"
     links = [
         {"a": "bmc", "b": "server", "kind": "Управление оборудованием", "confirmed": True},
@@ -7774,12 +7775,14 @@ def test_attachment_includes_controller_path_without_attributing_it_to_the_serve
 
     def read():
         path.write_text(json.dumps({"schema": 1, "snapshotAt": stamp, "links": links, "nodes": [
-            {"id": "server", "name": "Server", "kind": "Сервер"},
+            {"id": "server", "name": "Server", "kind": "Сервер", "reachability": {
+                "state": "reachable", "source": "UI_VPN", "method": "ICMP", "checkedAt": stamp}},
             {"id": "bmc", "name": "BMC", "kind": "Контроллер управления", "serviceChecks": [
                 {"method": "ICMP · ARP + FDB", "source": "UI_VPN", "state": "reachable", "checkedAt": stamp,
                  "identityCheckedAt": stamp, "target": "192.0.2.31"}]},
             {"id": "sw", "name": "Switch", "kind": "Коммутатор", "ports": [
-                {"name": "ge13", "state": "up", "checkedAt": stamp}]},
+                {"name": "ge13", "state": "up", "checkedAt": stamp, "telemetry": telemetry,
+                 "fdbLearned": {"checkedAt": stamp, "partial": False, "learnedMacCount": 1}}]},
             {"id": "redfish", "name": "Redfish", "kind": "Сервис", "serviceChecks": [
                 {"method": "HTTPS", "source": "UI_VPN", "state": "reachable", "checkedAt": stamp,
                  "required": True, "port": 443, "target": "192.0.2.31", "httpStatus": 200}]},
@@ -7791,6 +7794,11 @@ def test_attachment_includes_controller_path_without_attributing_it_to_the_serve
     controller, = host["managementControllers"]
     assert controller["node"]["id"] == "bmc"
     assert controller["confirmed"] is True
+    assert host["host"]["mapStatus"] == "warn"
+    assert controller["managementPortErrors"] == {
+        "switchId": "sw", "port": "ge13", "source": "netctl FDB",
+        "checkedAt": stamp, "telemetry": telemetry,
+    }
     service, = controller["services"]
     assert service["node"]["id"] == "redfish"
     check, = service["serviceChecks"]
@@ -7805,7 +7813,9 @@ def test_attachment_includes_controller_path_without_attributing_it_to_the_serve
     assert (pending["a"], pending["portA"], pending["b"], pending["portB"]) == ("sw", "ge13", "bmc", "eth0")
     assert pending["identifiedPeerSides"] == ["a"]
     links[0]["confirmed"] = False
-    candidate, = read()["physicalHosts"][0]["managementControllers"]
+    uncertain_host, = read()["physicalHosts"]
+    assert uncertain_host["host"]["mapStatus"] == "ok"
+    candidate, = uncertain_host["managementControllers"]
     assert candidate == {**controller, "confirmed": False}
     links[2]["confirmed"] = True
     links[2]["portEvidence"][0]["confirmed"] = True

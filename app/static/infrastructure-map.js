@@ -1731,8 +1731,19 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       panel.dataset.section = 'hardware-management';
       const open = make('a', controller.name);
       open.href = '?' + new URLSearchParams({node: controller.id});
-      panel.append(make('summary', 'Управление оборудованием'), open);
+      const errors = controller.managementPortErrors;
+      panel.append(make('summary', errors && edge.confirmed
+        ? 'Управление оборудованием · ошибки на порту' : 'Управление оборудованием'), open);
       if (!edge.confirmed) panel.append(make('small', 'Принадлежность контроллера серверу не подтверждена'));
+      if (errors) {
+        const upstream = byId.get(errors.switchId);
+        if (upstream) {
+          const port = switchPortButton(upstream.id, upstream.name, errors.port);
+          const reading = make('div');
+          reading.append(port, make('small', formatPortCounterChanges(errors.telemetry)));
+          panel.append(reading);
+        }
+      }
       const controllerPaths = renderServicePaths(data.servicePaths?.[controller.id]);
       if (controllerPaths) panel.append(controllerPaths);
       for (const pairs of [renderHostPortPairs(controller), renderInventoryPortPairs(controller),

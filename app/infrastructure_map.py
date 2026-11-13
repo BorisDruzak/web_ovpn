@@ -1461,10 +1461,16 @@ def _map_statuses(nodes: dict, links: list[dict]) -> None:
     consumers = {key: set() for key in nodes}
     cluster_members = defaultdict(set)
     placements = defaultdict(set)
+    controller_port_faults = set()
     for edge in links:
         if (edge["confirmed"] and edge["kind"] == "Узел кластера" and nodes[edge["a"]]["kind"] == CLUSTER_KIND
                 and nodes[edge["b"]]["kind"] == "Гипервизор"):
             cluster_members[edge["a"]].add(edge["b"])
+        if (edge["confirmed"] and edge["kind"] == "Управление оборудованием"
+                and nodes[edge["a"]].get("managementPortErrors")
+                and nodes[edge["b"]]["kind"] in ("Сервер", "Гипервизор")
+                and not nodes[edge["b"]]["guest"]):
+            controller_port_faults.add(edge["b"])
         if edge["confirmed"] and edge["kind"] in SERVICE_LINKS and nodes[edge["b"]]["kind"] == "Сервис":
             services[edge["a"]].add(edge["b"])
             consumers[edge["b"]].add(edge["a"])
@@ -1501,7 +1507,7 @@ def _map_statuses(nodes: dict, links: list[dict]) -> None:
             if memory := capacity.get("memoryHeadroom"):
                 checks.append(memory["status"])
         checks.extend(report["status"] for report in node.get("lacpHealth", []))
-        if node.get("managementPortErrors"):
+        if node.get("managementPortErrors") or key in controller_port_faults:
             checks.append("warn")
         if coverage := node.get("backupScope", {}).get("running"):
             if coverage["notScheduled"]:
@@ -2704,6 +2710,8 @@ def _physical_attachments(nodes: dict, links: list[dict], host_ids: list[str]) -
              **port_pairs(host_id),
              **({"managementControllers": [
                  {"node": _attachment_node(nodes[controller]), "confirmed": confirmed,
+                  **({"managementPortErrors": errors}
+                     if (errors := nodes[controller].get("managementPortErrors")) else {}),
                   "servicePaths": _management_service_paths(nodes[controller], controller, {}, observed_ports),
                   "serviceTotal": len(controller_services[controller]),
                   "services": [{"node": _attachment_node(nodes[service]),
