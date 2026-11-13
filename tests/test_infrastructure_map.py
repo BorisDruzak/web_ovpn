@@ -7651,6 +7651,7 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     ])
     windows = next((path for path in read()["servicePaths"] if path.get("source") == WINDOWS_PROBE_SOURCE), None)
     assert windows and windows["physicalPair"] == match["physicalPair"] and windows["via"] == "192.0.2.1"
+    assert windows["destinationVlan"] == match["vlanMemberships"]
     assert windows["clientAttachment"] == {"stationId": "pc", "stationPort": "Ethernet", "switchId": "snr",
                                             "switchPort": "ge20", "source": "SNMP + Windows", "checkedAt": stamp}
     evidence = raw["links"].pop()["portEvidence"][0]

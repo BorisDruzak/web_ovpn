@@ -1254,6 +1254,15 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         : [`${guest} ${path.guestPort}`, path.bridge, `${host} ${hostPort}`].join(' → ');
       row.append(make('small', connection),
         switchPortButton(path.switchId, target, switchPort));
+      const destinationVlan = probes.find(probe => probe.destinationVlan)?.destinationVlan;
+      if (destinationVlan) {
+        const labels = {tagged: 'с тегом', untagged: 'без тега'};
+        const modes = Object.entries(destinationVlan.ports).map(([side, reading]) => {
+          const port = side === 'host' ? hostPort : switchPort;
+          return [port, labels[reading.egress], reading.pvid && 'PVID'].filter(Boolean).join(' ');
+        });
+        row.append(make('small', [`VLAN ${destinationVlan.id} на стороне ВМ`, ...modes].join(' · ')));
+      }
       if (path.gateway) {
         row.append(make('small', 'Вход через шлюз ' + path.gateway));
       }
