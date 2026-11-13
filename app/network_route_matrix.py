@@ -130,6 +130,7 @@ def _run_probe(profile_id: str, probe: RouteProbe, sessions: list[dict] | None =
         "origin": probe.router_source or probe.agent_origin or "vpn-server",
         "target": probe.target,
         "protocol": probe.protocol,
+        **({"dns_transport": probe.dns_transport} if probe.dns_transport is not None else {}),
         "expected_path": probe.expected_path,
         "expected_first_hop": probe.expected_first_hop,
         "observed_path": observed_path,

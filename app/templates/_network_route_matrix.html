@@ -7,7 +7,7 @@
       <tr>
         <td>{{ 'VPN-сервер' if row.origin == 'vpn-server' else row.origin }}{% if row.source_address %}<br>{{ row.source_address }}{% endif %}</td>
         <td>{{ row.expected_path }}{% if row.interface or row.routing_table %}<br>{{ [row.interface, row.routing_table] | select | join(' · ') }}{% endif %}</td>
-        <td>{{ row.target }} · {{ row.protocol | upper }}</td>
+        <td>{{ row.target }} · {{ row.protocol | upper }}{% if row.dns_transport %} / {{ row.dns_transport | upper }}{% endif %}</td>
         <td>
           {{ status_labels.get(row.status, row.status) }}
           {% if row.evidence.openvpn_session is defined %}
@@ -39,7 +39,8 @@
           {% endif %}
           {% if row.evidence.duration_ms is defined %}<br>{{ row.evidence.duration_ms }} мс{% endif %}
           {% if row.evidence.http_status is defined %}<br>HTTP {{ row.evidence.http_status }}{% endif %}
-          {% if row.evidence.dns_rcode is defined %}<br>DNS {{ row.evidence.dns_rcode }}{% endif %}
+          {% if row.evidence.dns_rcode is defined %}<br>DNS{% if row.evidence.dns_transport %} {{ row.evidence.dns_transport }}{% endif %} {{ row.evidence.dns_rcode }}{% endif %}
+          {% if row.evidence.reason == 'dns_truncated' %}<br>DNS по UDP вернул усечённый ответ{% endif %}
           {% if row.evidence.dns_answers_match is sameas false %}<br>DNS-записи отличаются от ожидаемых{% endif %}
         </td>
         <td>

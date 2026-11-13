@@ -52,6 +52,7 @@ PROBE_REASONS = {
     "dns_rcode",
     "dns_no_answer",
     "dns_answer_mismatch",
+    "dns_truncated",
     "connection_refused",
     "connection_unreachable",
     "transport_error",

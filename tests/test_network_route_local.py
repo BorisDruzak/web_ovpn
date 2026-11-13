@@ -597,6 +597,35 @@ def test_dns_tcp_fallback_uses_remaining_budget_and_same_resolver(monkeypatch, r
     assert result["evidence"]["duration_ms"] == 2500
 
 
+@pytest.mark.parametrize("transport,status", [("tcp", "reachable"), ("udp", "unreachable")])
+def test_dns_uses_only_the_configured_transport(monkeypatch, routed, transport, status):
+    calls = []
+
+    def udp(query, where, *, timeout, port, source, raise_on_truncation):
+        calls.append("udp")
+        assert (where, port, source, raise_on_truncation) == (TARGET, 5353, SOURCE, True)
+        raise dns.message.Truncated
+
+    def tcp(query, where, *, timeout, port, source):
+        calls.append("tcp")
+        assert (where, port, source) == (TARGET, 5353, SOURCE)
+        response = dns.message.make_response(query)
+        response.answer.append(dns.rrset.from_text("service.test.", 30, "IN", "A", "192.0.2.31"))
+        return dns.message.from_wire(response.to_wire())
+
+    monkeypatch.setattr(dns.query, "udp", udp)
+    monkeypatch.setattr(dns.query, "tcp", tcp)
+    result = probe_local_route(
+        target=TARGET, protocol="dns", source_address=SOURCE, port=5353,
+        dns_name="service.test", dns_transport=transport, expected_dns_answers=("192.0.2.31",),
+    )
+    assert calls == [transport]
+    assert result["status"] == status
+    assert result["evidence"]["dns_transport"] == transport.upper()
+    if transport == "udp":
+        assert result["evidence"]["reason"] == "dns_truncated"
+
+
 def test_kernel_empty_evidence_and_https_no_reply_are_typed(monkeypatch):
     class Tls(_Connection):
         def version(self):

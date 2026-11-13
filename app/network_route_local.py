@@ -339,19 +339,26 @@ def _dns(
     query: dns.message.Message,
     expected: set,
     evidence: dict,
+    transport: str | None,
 ) -> str:
     deadline = monotonic() + PROBE_TIMEOUT
-    try:
+    response = None
+    if transport != "tcp":
         evidence["dns_transport"] = "UDP"
-        response = dns.query.udp(
-            query,
-            target,
-            timeout=_remaining(deadline),
-            port=port,
-            source=source_address,
-            raise_on_truncation=True,
-        )
-    except dns.message.Truncated:
+        try:
+            response = dns.query.udp(
+                query,
+                target,
+                timeout=_remaining(deadline),
+                port=port,
+                source=source_address,
+                raise_on_truncation=True,
+            )
+        except dns.message.Truncated:
+            if transport == "udp":
+                evidence["reason"] = "dns_truncated"
+                return "unreachable"
+    if response is None:
         evidence["dns_transport"] = "TCP"
         response = dns.query.tcp(
             query,
@@ -409,6 +416,7 @@ def probe_local_route(
     expected_http_status: int | None = None,
     dns_name: str | None = None,
     dns_type: str | None = None,
+    dns_transport: str | None = None,
     expected_dns_answers: tuple[str, ...] = (),
     mtu: int | None = None,
 ) -> dict:
@@ -455,8 +463,10 @@ def probe_local_route(
             ):
                 raise ValueError("Invalid HTTP status")
         if protocol == "dns":
+            if dns_transport not in (None, "udp", "tcp"):
+                raise ValueError("Invalid DNS transport")
             query, expected = _dns_request(dns_name, dns_type, expected_dns_answers)
-        elif dns_name is not None or dns_type is not None or expected_dns_answers:
+        elif dns_name is not None or dns_type is not None or dns_transport is not None or expected_dns_answers:
             raise ValueError("DNS parameters require DNS")
     except (ValueError, dns.exception.DNSException):
         return {
@@ -475,7 +485,7 @@ def probe_local_route(
         if protocol == "icmp":
             status = _icmp(target, source_address, mtu, evidence)
         elif protocol == "dns":
-            status = _dns(target, port or 53, source_address, query, expected, evidence)
+            status = _dns(target, port or 53, source_address, query, expected, evidence, dns_transport)
         else:
             status = _tcp(
                 target,

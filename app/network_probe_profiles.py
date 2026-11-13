@@ -120,6 +120,7 @@ class RouteProbe(BaseModel):
     expected_http_status: int | None = Field(default=None, ge=200, le=599)
     dns_name: str | None = Field(default=None, max_length=253, pattern=r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
     dns_type: Literal["A", "AAAA", "CNAME", "SOA", "SRV", "TXT", "MX", "PTR"] | None = None
+    dns_transport: Literal["udp", "tcp"] | None = None
     expected_dns_answers: list[Annotated[str, StringConstraints(min_length=1, max_length=255)]] = Field(
         default_factory=list, max_length=8,
     )
@@ -167,7 +168,7 @@ class RouteProbe(BaseModel):
             raise ValueError("HTTP parameters require HTTP or HTTPS")
         if self.protocol == "dns" and not self.dns_name:
             raise ValueError("DNS requires a query name")
-        if (self.dns_name or self.dns_type or self.expected_dns_answers) and self.protocol != "dns":
+        if (self.dns_name or self.dns_type or self.dns_transport or self.expected_dns_answers) and self.protocol != "dns":
             raise ValueError("DNS parameters require DNS")
         return self
 
@@ -182,10 +183,11 @@ class RouteProbe(BaseModel):
             "expected_http_status": (self.expected_http_status or 200) if is_http else None,
             "dns_name": self.dns_name, "dns_type": (self.dns_type or "A") if self.protocol == "dns" else None,
             "expected_dns_answers": tuple(self.expected_dns_answers), "mtu": self.mtu,
+            **({"dns_transport": self.dns_transport} if self.dns_transport is not None else {}),
         }
 
     def config_digest(self) -> str:
-        exclude = {"openvpn_client"} if self.openvpn_client is None else None
+        exclude = {field for field in ("openvpn_client", "dns_transport") if getattr(self, field) is None}
         return hashlib.sha256(self.model_dump_json(exclude=exclude).encode("utf-8")).hexdigest()
 
 

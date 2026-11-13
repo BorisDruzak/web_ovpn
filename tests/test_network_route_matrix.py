@@ -1,3 +1,5 @@
+import hashlib
+
 import pytest
 from pydantic import ValidationError
 
@@ -43,6 +45,22 @@ def test_route_profiles_reject_invalid_parameters(changes):
     config["routes"]["comparison"]["probes"][0].update(changes)
     with pytest.raises(ValidationError):
         network_probe_profiles.ProbeProfiles.model_validate(config)
+
+
+def test_dns_transport_is_explicit_without_changing_existing_probe_digests():
+    common = {
+        "id": "dns", "expected_path": "LAN", "target": "192.0.2.20",
+        "protocol": "dns", "dns_name": "service.test",
+    }
+    original = network_probe_profiles.RouteProbe.model_validate(common)
+    expected = original.model_dump_json(exclude={"openvpn_client", "dns_transport"})
+    assert original.config_digest() == hashlib.sha256(expected.encode()).hexdigest()
+    assert "dns_transport" not in original.local_arguments()
+    tcp = network_probe_profiles.RouteProbe.model_validate({**common, "dns_transport": "tcp"})
+    assert tcp.local_arguments()["dns_transport"] == "tcp"
+    assert tcp.config_digest() != original.config_digest()
+    with pytest.raises(ValidationError):
+        network_probe_profiles.RouteProbe.model_validate({**common, "dns_transport": "tls"})
 
 
 def test_route_matrix_keeps_requested_and_observed_paths_distinct(monkeypatch):
