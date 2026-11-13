@@ -2473,7 +2473,7 @@ def test_css_access_link_reports_live_mac_only_on_declared_port(monkeypatch, tmp
     import asyncio
 
     from app import infrastructure_collect as collector
-    from app.infrastructure_map import load_infrastructure_map
+    from app.infrastructure_map import load_infrastructure_map, summarize_topology
 
     class Transport:
         async def __aenter__(self):
@@ -2519,12 +2519,20 @@ def test_css_access_link_reports_live_mac_only_on_declared_port(monkeypatch, tmp
     assert edge["confirmed"] and edge["portEvidence"][0]["pairEvidence"] == "verified_inventory"
     port = edge["portEvidence"][0]["portStates"]["a"]
     assert port["state"] == "up" and port["speedBps"] == 10**9
+    audit = summarize_topology(graph, node_id="css", port_name="port7")["topologyAudit"]
+    pair, = audit["inventoryPairs"]
+    assert audit["currentPairTotal"] == 0
+    browser = load_infrastructure_map(path, collected, include_guest_attachments=True)
+    assert browser["inventoryPairs"] == [pair]
     if learned_port == 7:
         assert port["endpointMac"] == {"deviceId": "pc", "mac": mac, "checkedAt": port["checkedAt"]}
+        assert pair["endpointMacObservations"] == {"a": port["endpointMac"]}
     else:
         assert "endpointMac" not in port
+        assert "endpointMacObservations" not in pair
     expired = load_infrastructure_map(path, collected + timedelta(minutes=6))
     assert all("endpointMac" not in port for node in expired["nodes"] for port in node["ports"])
+    assert "endpointMacObservations" not in summarize_topology(expired)["topologyAudit"]["inventoryPairs"][0]
 
 
 def test_proxmox_backup_checks_match_storage_and_guest_and_expire():

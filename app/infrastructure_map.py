@@ -1698,8 +1698,19 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
             if lacp := report.get("lacp"):
                 side, peer = ("a", "b") if lacp["side"] == "a" else ("b", "a")
                 remember_ports(link[side], link[peer], lacp["member"], "")
-        inventory_pairs.extend({"a": a, "b": b, "portA": r["a"], "portB": r["b"],
-                                "inventorySources": r.get("inventorySources", [])} for r in inventory)
+        for report in inventory:
+            endpoint_macs = {}
+            for side, peer in (("a", "b"), ("b", "a")):
+                state = report.get("portStates", {}).get(side, {})
+                endpoint = state.get("endpointMac")
+                if (state.get("state") == "up" and not state["stale"]
+                        and endpoint and endpoint["deviceId"] == link[peer]):
+                    endpoint_macs[side] = endpoint
+            inventory_pairs.append({
+                "a": a, "b": b, "portA": report["a"], "portB": report["b"],
+                "inventorySources": report.get("inventorySources", []),
+                **({"endpointMacObservations": endpoint_macs} if endpoint_macs else {}),
+            })
         counts["current" if current else "verifiedInventory" if inventory else "unconfirmed"] += 1
 
         def covers(declared, report):

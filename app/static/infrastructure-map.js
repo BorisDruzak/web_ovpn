@@ -1186,10 +1186,14 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const panel = make('details', null, 'map-port-panel');
     panel.dataset.section = 'inventory-port-pairs';
     const list = make('ul', null, 'map-detail-list');
-    for (const {a, b, portA, portB, inventorySources} of pairs) {
+    for (const {a, b, portA, portB, inventorySources, endpointMacObservations = {}} of pairs) {
       const row = make('li');
       row.append(portPairEndpoint(a, byId.get(a)?.name ?? a, portA), ' ↔ ',
         portPairEndpoint(b, byId.get(b)?.name ?? b, portB));
+      for (const [side, endpoint] of Object.entries(endpointMacObservations)) {
+        const [device, port] = side === 'a' ? [a, portA] : [b, portB];
+        row.append(make('small', `${byId.get(device)?.name ?? device} ${port} · ${formatEndpointMac(endpoint)}`));
+      }
       appendInventorySources(row, inventorySources);
       list.append(row);
     }
