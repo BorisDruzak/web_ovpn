@@ -420,6 +420,17 @@ def run_audited_network_check(db: Session, request: Request, actor: str, check: 
         details = {key: result["result"][key] for key in ("mbps", "transferred_bytes", "duration_seconds")}
         if "wan_observation" in result["result"]:
             details["wan_observation"] = result["result"]["wan_observation"]
+        message = json.dumps({"target": result["target"], "result": details}, ensure_ascii=False)
+    if isinstance(check, IperfCheck) and result["status"] == "measured":
+        reading = result["result"]
+        details = {
+            key: reading[key] for key in (
+                "sender_mbps", "receiver_mbps", "retransmits", "bitrate_mbps", "preconnect_retries", "connection",
+            ) if key in reading
+        }
+        route = reading.get("kernel_route", {}).get("result", {})
+        if route:
+            details["kernel_route"] = {key: route[key] for key in ("dev", "gateway") if key in route}
         message = json.dumps({
             "target": result["target"],
             "result": details,
@@ -450,7 +461,7 @@ def list_network_check_runs(db: Session, actor: str, limit: int) -> list[dict]:
             "checked_at": row.ts.replace(tzinfo=row.ts.tzinfo or UTC).isoformat(),
             "request_id": row.request_id,
         }
-        if check == "https_speed" and row.result == "measured":
+        if check in ("https_speed", "iperf3") and row.result == "measured":
             try:
                 details = json.loads(row.message)
                 run.update(target=details["target"], result=details["result"])

@@ -288,6 +288,13 @@
           <td><time datetime="{{ run.checked_at }}">{{ run.checked_at }}</time></td>
           <td>{{ check_titles[run.check] }}</td><td>{{ run.target }}
             {% if run.result is defined and run.result.mbps is defined %}<br>{{ '%.2f' | format(run.result.mbps) }} Мбит/с{% endif %}
+            {% if run.result is defined and run.result.receiver_mbps is defined %}
+            <br>Отправитель / получатель {{ '%.2f' | format(run.result.sender_mbps) }} / {{ '%.2f' | format(run.result.receiver_mbps) }} Мбит/с
+            {% if run.result.retransmits is defined and run.result.retransmits is not none %}<br>Повторные передачи TCP {{ run.result.retransmits }}{% endif %}
+            {% if run.result.kernel_route is defined %}
+            <br>Выбор ядра {{ [run.result.kernel_route.dev, run.result.kernel_route.gateway] | select | join(' · ') }}
+            {% endif %}
+            {% endif %}
             {% if run.result is defined and run.result.wan_observation is defined %}
             <br>{{ wan_result(run.result.wan_observation) }}
             {% endif %}
