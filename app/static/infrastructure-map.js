@@ -868,6 +868,110 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     return '';
   }
 
+  const serviceCheckReasons = {
+    connection_refused: 'Отказ на UDP-запрос, источник не определён', timeout: 'Ответ не получен вовремя',
+    icmp_port_unreachable: 'ICMP: UDP-порт недоступен', icmp_rejected: 'Получен отказ ICMP',
+    icmp_no_echo_reply: 'Нет ответа ICMP Echo Reply', icmp_unreachable: 'Получено сообщение о недостижимости',
+    icmp_reply_unconfirmed: 'Ответ ICMP не подтверждён',
+    icmp_source_ssh_unavailable: 'Проверка с маршрутизатора пропущена из-за ошибки SSH',
+    icmp_probe_error: 'Не удалось выполнить ICMP-проверку',
+    ipsec_observation_unavailable: 'Нет свежих данных опроса',
+    ipsec_ssh_unavailable: 'Опрос политик по SSH не выполнен',
+    ipsec_policy_missing: 'Ожидаемая политика не найдена',
+    ipsec_phase2_not_established: 'Политика найдена, фаза 2 не установлена',
+    icmp_route_unconfirmed: 'Маршрут UI_VPN не подтверждён, ICMP не отправлен',
+    icmp_route_mismatch: 'Выбран другой маршрут UI_VPN, ICMP не отправлен',
+    transport_error: 'Ошибка сетевого запроса', unexpected_response: 'Ответ не соответствует запросу',
+    sip_route_unconfirmed: 'Маршрут UI_VPN не подтверждён, SIP-запрос не отправлен',
+    sip_route_mismatch: 'Выбран другой маршрут UI_VPN, SIP-запрос не отправлен',
+    snmp_fdb_unavailable: 'Не получена актуальная таблица MAC',
+    snmp_collection_failed: 'Последний сбор завершился ошибкой',
+    snmp_collection_partial: 'Последний сбор завершился частично',
+    snmp_collection_unconfirmed: 'Нет завершённого опроса',
+    dns_no_answer: 'Нет записи запрошенного типа', dns_address_mismatch: 'Адреса не совпадают с ожидаемыми',
+    dns_srv_mismatch: 'Имена или порты SRV не совпадают с ожидаемыми',
+    dns_unexpected_source: 'DNS-ответ пришёл с другого адреса или порта',
+    dns_truncated: 'UDP-ответ DNS усечён',
+    dns_route_unconfirmed: 'Маршрут UI_VPN не подтверждён, DNS-запрос не отправлен',
+    dns_route_mismatch: 'Выбран другой маршрут UI_VPN, DNS-запрос не отправлен',
+    http_content_type: 'Неожиданный тип ответа', http_body_limit: 'Ответ превышает лимит проверки',
+    http_content_encoding: 'Неподдерживаемое или повреждённое сжатие ответа',
+    http_invalid_json: 'Ответ не содержит ожидаемый объект JSON',
+    http_reported_unavailable: 'Приложение сообщило о сбое',
+    http_payload_mismatch: 'Содержимое ответа не совпало с ожидаемым',
+    oidc_rs256_key_missing: 'В JWKS нет пригодного публичного ключа подписи RS256',
+    http_certificate_pin: 'Не совпал отпечаток сертификата',
+    http_tls_certificate: 'Сертификат TLS не прошёл проверку', http_tls_error: 'Ошибка TLS',
+    http_bad_response: 'Ответ HTTP неполный или некорректный',
+    winrm_auth_required: 'WinRM запросил аутентификацию',
+    http_connection_refused: 'Отклонено TCP-соединение', http_connection_reset: 'Сброшено TCP-соединение',
+    tcp_connection_refused: 'Отклонено TCP-соединение',
+    rdp_negotiation_rejected: 'Сервер отклонил согласование RDP',
+    ntp_unsynchronized: 'Сервер NTP не предоставил синхронизированное время',
+    rtsp_connection_refused: 'Отклонено TCP-соединение', rtsp_auth_required: 'Требуется авторизация',
+    http_configuration: 'Ошибка настройки проверки',
+    probe_configuration: 'Некорректный список проверок',
+    probe_target_unconfirmed: 'Адрес цели не подтверждён',
+    probe_target_mismatch: 'Адрес в настройках проверок не совпал с подтверждённым',
+    probe_host_stopped: 'ВМ сервиса выключена',
+    openvpn_tunnel_probe: 'Не удалось прочитать параметры туннеля',
+    openvpn_management_unavailable: 'Не удалось прочитать сокет OpenVPN Management',
+    openvpn_management_incomplete: 'OpenVPN Management вернул неполный ответ',
+    openvpn_daemon_unconfirmed: 'OpenVPN Management не подтвердил состояние CONNECTED',
+    openvpn_no_active_sessions: 'Нет активной сессии для подтверждения клиентской связности',
+    openvpn_tunnel_missing: 'Туннельный интерфейс отсутствует',
+    openvpn_tunnel_kind: 'Интерфейс другого типа',
+    openvpn_tunnel_down: 'Туннельный интерфейс не поднят',
+    openvpn_tunnel_address: 'На интерфейсе нет ожидаемого адреса',
+    smb_mount_probe: 'Не удалось проверить подключение',
+    smb_mount_idle: 'Автоподключение ещё не выполнено',
+    smb_mount_missing: 'Подключение отсутствует',
+    smb_mount_source: 'Подключён другой ресурс',
+    smb_mount_read: 'Чтение метаданных каталога завершилось ошибкой',
+    smb_mount_changed: 'Подключение сменилось во время проверки',
+    postgresql_tls_handshake: 'Не удалось согласовать TLS',
+    ssh_connection_refused: 'SSH-порт отклонил подключение',
+    ssh_identification_invalid: 'Нет корректного ответа SSH',
+    ssh_closed_before_identification: 'TCP принят, соединение закрыто без ответа SSH',
+    ftp_connection_refused: 'Порт FTP отклонил подключение',
+    ftp_unexpected_reply: 'Неожиданный код ответа FTP',
+    ftp_invalid_reply: 'Неполный или некорректный ответ FTP',
+    tls_certificate_pin: 'Отпечаток сертификата изменился',
+    tls_certificate_expired: 'Срок действия сертификата истёк',
+    tls_certificate_not_yet_valid: 'Сертификат ещё не вступил в силу',
+    tls_certificate_unconfirmed: 'Сертификат TLS не подтверждён',
+    tls_certificate_verification_failed: 'Сертификат TLS не прошёл проверку имени или цепочки доверия',
+    ldaps_response_unconfirmed: 'Полный ответ RootDSE не подтверждён',
+    ldaps_naming_context_mismatch: 'RootDSE вернул другой контекст каталога',
+    ldaps_tls_certificate: 'Сертификат LDAPS не прошёл проверку',
+    ldaps_connection_refused: 'Порт LDAPS отклонил подключение',
+    ldaps_transport_unconfirmed: 'Соединение LDAPS не подтверждено',
+    tls_connection_refused: 'Порт TLS отклонил подключение',
+    icmp_identity_unconfirmed: 'Принадлежность адреса этому узлу не подтверждена',
+    route_other_gateway: 'Активен другой шлюз', route_inactive: 'Маршрут через ожидаемый шлюз неактивен',
+    route_rejecting: 'Активный маршрут отбрасывает трафик',
+    route_multiple_gateways: 'Обнаружено несколько активных шлюзов',
+    backup_no_result: 'Нет подтверждённого результата задания',
+    backup_task_failed: 'Последнее копирование завершилось ошибкой',
+    backup_overdue: 'Копия старше порога',
+    backup_schedule_missing: 'ВМ отсутствует в активном расписании',
+    backup_untracked_schedule: 'Есть активное задание без настроенного порога',
+    vlan_probe_error: 'Не удалось проверить транзит',
+    vlan_interface_missing: 'Интерфейс VLAN отсутствует',
+    vlan_id_mismatch: 'Тип или номер VLAN не совпал',
+    vlan_link_down: 'Интерфейс VLAN не поднят',
+    vlan_address_mismatch: 'Локальный адрес не совпал',
+    vlan_route_mismatch: 'Маршрут к соседу проходит вне ожидаемого VLAN',
+    vlan_peer_identity_mismatch: 'MAC соседа отличается от MAC адаптера Proxmox',
+    vlan_peer_identity_unconfirmed: 'MAC соседа по VLAN не подтверждён',
+    wireguard_route_unconfirmed: 'Маршрут ядра не подтверждён',
+    wireguard_route_mismatch: 'Ядро выбрало другой маршрут',
+    wireguard_evidence_unavailable: 'Нет свежего отчёта о маркировке и WireGuard',
+    wireguard_mark_unconfirmed: 'Входная маркировка не подтверждена',
+    wireguard_mark_mismatch: 'Фактическая метка отличается',
+    wireguard_handshake_unconfirmed: 'Нет свежего handshake с однозначно определённым пиром',
+  };
+
   function renderServicePaths(paths) {
     if (!paths?.length) return null;
     const panel = make('section');
@@ -894,11 +998,12 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const rtt = probe.roundTripMs === undefined ? '' :
           `RTT ${probe.roundTripMs.toLocaleString('ru-RU', {maximumFractionDigits: 3})} мс`;
         const outcome = probe.localListener ? 'Открыт локально' :
-          probe.reason === 'icmp_no_echo_reply' ? 'Нет ответа ICMP Echo Reply' : result[probe.state];
+          (probe.state !== 'reachable' && serviceCheckReasons[probe.reason]) || result[probe.state];
         const dns = probe.dns;
         const question = dns && [dns.transport, dns.record, dns.name].filter(Boolean).join(' ');
         const responder = dns?.unexpectedResponder;
-        const responseFrom = responder && `Ответ от ${responder.address}:${responder.port}`;
+        const responseFrom = probe.errorSource ? `Отказ от ${probe.errorSource}` :
+          responder && `Ответ от ${responder.address}:${responder.port}`;
         const code = probe.httpStatus ? `HTTP ${probe.httpStatus}` : probe.responseCode ? `SIP ${probe.responseCode}` :
           probe.rtspStatus ? `RTSP ${probe.rtspStatus}` : probe.ftpReply ? `FTP ${probe.ftpReply}` : '';
         const rdp = probe.rdpSecurity ?? (probe.rdpFailureCode && `Код отказа RDP ${probe.rdpFailureCode}`);
@@ -1649,109 +1754,6 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     }
     if (node.serviceChecks?.length) {
       const list = make('ul', null, 'map-detail-list');
-      const reasons = {
-        connection_refused: 'Отказ на UDP-запрос, источник не определён', timeout: 'Ответ не получен вовремя',
-        icmp_port_unreachable: 'ICMP: UDP-порт недоступен', icmp_rejected: 'Получен отказ ICMP',
-        icmp_no_echo_reply: 'Нет ответа ICMP Echo Reply', icmp_unreachable: 'Получено сообщение о недостижимости',
-        icmp_reply_unconfirmed: 'Ответ ICMP не подтверждён',
-        icmp_source_ssh_unavailable: 'Проверка с маршрутизатора пропущена из-за ошибки SSH',
-        icmp_probe_error: 'Не удалось выполнить ICMP-проверку',
-        ipsec_observation_unavailable: 'Нет свежих данных опроса',
-        ipsec_ssh_unavailable: 'Опрос политик по SSH не выполнен',
-        ipsec_policy_missing: 'Ожидаемая политика не найдена',
-        ipsec_phase2_not_established: 'Политика найдена, фаза 2 не установлена',
-        icmp_route_unconfirmed: 'Маршрут UI_VPN не подтверждён, ICMP не отправлен',
-        icmp_route_mismatch: 'Выбран другой маршрут UI_VPN, ICMP не отправлен',
-        transport_error: 'Ошибка сетевого запроса', unexpected_response: 'Ответ не соответствует запросу',
-        sip_route_unconfirmed: 'Маршрут UI_VPN не подтверждён, SIP-запрос не отправлен',
-        sip_route_mismatch: 'Выбран другой маршрут UI_VPN, SIP-запрос не отправлен',
-        snmp_fdb_unavailable: 'Не получена актуальная таблица MAC',
-        snmp_collection_failed: 'Последний сбор завершился ошибкой',
-        snmp_collection_partial: 'Последний сбор завершился частично',
-        snmp_collection_unconfirmed: 'Нет завершённого опроса',
-        dns_no_answer: 'Нет записи запрошенного типа', dns_address_mismatch: 'Адреса не совпадают с ожидаемыми',
-        dns_srv_mismatch: 'Имена или порты SRV не совпадают с ожидаемыми',
-        dns_unexpected_source: 'DNS-ответ пришёл с другого адреса или порта',
-        dns_truncated: 'UDP-ответ DNS усечён',
-        dns_route_unconfirmed: 'Маршрут UI_VPN не подтверждён, DNS-запрос не отправлен',
-        dns_route_mismatch: 'Выбран другой маршрут UI_VPN, DNS-запрос не отправлен',
-        http_content_type: 'Неожиданный тип ответа', http_body_limit: 'Ответ превышает лимит проверки',
-        http_content_encoding: 'Неподдерживаемое или повреждённое сжатие ответа',
-        http_invalid_json: 'Ответ не содержит ожидаемый объект JSON',
-        http_reported_unavailable: 'Приложение сообщило о сбое',
-        http_payload_mismatch: 'Содержимое ответа не совпало с ожидаемым',
-        oidc_rs256_key_missing: 'В JWKS нет пригодного публичного ключа подписи RS256',
-        http_certificate_pin: 'Не совпал отпечаток сертификата',
-        http_tls_certificate: 'Сертификат TLS не прошёл проверку', http_tls_error: 'Ошибка TLS',
-        http_bad_response: 'Ответ HTTP неполный или некорректный',
-        winrm_auth_required: 'WinRM запросил аутентификацию',
-        http_connection_refused: 'Отклонено TCP-соединение', http_connection_reset: 'Сброшено TCP-соединение',
-        tcp_connection_refused: 'Отклонено TCP-соединение',
-        rdp_negotiation_rejected: 'Сервер отклонил согласование RDP',
-        ntp_unsynchronized: 'Сервер NTP не предоставил синхронизированное время',
-        rtsp_connection_refused: 'Отклонено TCP-соединение', rtsp_auth_required: 'Требуется авторизация',
-        http_configuration: 'Ошибка настройки проверки',
-        probe_configuration: 'Некорректный список проверок',
-        probe_target_unconfirmed: 'Адрес цели не подтверждён',
-        probe_target_mismatch: 'Адрес в настройках проверок не совпал с подтверждённым',
-        probe_host_stopped: 'ВМ сервиса выключена',
-        openvpn_tunnel_probe: 'Не удалось прочитать параметры туннеля',
-        openvpn_management_unavailable: 'Не удалось прочитать сокет OpenVPN Management',
-        openvpn_management_incomplete: 'OpenVPN Management вернул неполный ответ',
-        openvpn_daemon_unconfirmed: 'OpenVPN Management не подтвердил состояние CONNECTED',
-        openvpn_no_active_sessions: 'Нет активной сессии для подтверждения клиентской связности',
-        openvpn_tunnel_missing: 'Туннельный интерфейс отсутствует',
-        openvpn_tunnel_kind: 'Интерфейс другого типа',
-        openvpn_tunnel_down: 'Туннельный интерфейс не поднят',
-        openvpn_tunnel_address: 'На интерфейсе нет ожидаемого адреса',
-        smb_mount_probe: 'Не удалось проверить подключение',
-        smb_mount_idle: 'Автоподключение ещё не выполнено',
-        smb_mount_missing: 'Подключение отсутствует',
-        smb_mount_source: 'Подключён другой ресурс',
-        smb_mount_read: 'Чтение метаданных каталога завершилось ошибкой',
-        smb_mount_changed: 'Подключение сменилось во время проверки',
-        postgresql_tls_handshake: 'Не удалось согласовать TLS',
-        ssh_connection_refused: 'SSH-порт отклонил подключение',
-        ssh_identification_invalid: 'Нет корректного ответа SSH',
-        ssh_closed_before_identification: 'TCP принят, соединение закрыто без ответа SSH',
-        ftp_connection_refused: 'Порт FTP отклонил подключение',
-        ftp_unexpected_reply: 'Неожиданный код ответа FTP',
-        ftp_invalid_reply: 'Неполный или некорректный ответ FTP',
-        tls_certificate_pin: 'Отпечаток сертификата изменился',
-        tls_certificate_expired: 'Срок действия сертификата истёк',
-        tls_certificate_not_yet_valid: 'Сертификат ещё не вступил в силу',
-        tls_certificate_unconfirmed: 'Сертификат TLS не подтверждён',
-        tls_certificate_verification_failed: 'Сертификат TLS не прошёл проверку имени или цепочки доверия',
-        ldaps_response_unconfirmed: 'Полный ответ RootDSE не подтверждён',
-        ldaps_naming_context_mismatch: 'RootDSE вернул другой контекст каталога',
-        ldaps_tls_certificate: 'Сертификат LDAPS не прошёл проверку',
-        ldaps_connection_refused: 'Порт LDAPS отклонил подключение',
-        ldaps_transport_unconfirmed: 'Соединение LDAPS не подтверждено',
-        tls_connection_refused: 'Порт TLS отклонил подключение',
-        icmp_identity_unconfirmed: 'Принадлежность адреса этому узлу не подтверждена',
-        route_other_gateway: 'Активен другой шлюз', route_inactive: 'Маршрут через ожидаемый шлюз неактивен',
-        route_rejecting: 'Активный маршрут отбрасывает трафик',
-        route_multiple_gateways: 'Обнаружено несколько активных шлюзов',
-        backup_no_result: 'Нет подтверждённого результата задания',
-        backup_task_failed: 'Последнее копирование завершилось ошибкой',
-        backup_overdue: 'Копия старше порога',
-        backup_schedule_missing: 'ВМ отсутствует в активном расписании',
-        backup_untracked_schedule: 'Есть активное задание без настроенного порога',
-        vlan_probe_error: 'Не удалось проверить транзит',
-        vlan_interface_missing: 'Интерфейс VLAN отсутствует',
-        vlan_id_mismatch: 'Тип или номер VLAN не совпал',
-        vlan_link_down: 'Интерфейс VLAN не поднят',
-        vlan_address_mismatch: 'Локальный адрес не совпал',
-        vlan_route_mismatch: 'Маршрут к соседу проходит вне ожидаемого VLAN',
-        vlan_peer_identity_mismatch: 'MAC соседа отличается от MAC адаптера Proxmox',
-        vlan_peer_identity_unconfirmed: 'MAC соседа по VLAN не подтверждён',
-        wireguard_route_unconfirmed: 'Маршрут ядра не подтверждён',
-        wireguard_route_mismatch: 'Ядро выбрало другой маршрут',
-        wireguard_evidence_unavailable: 'Нет свежего отчёта о маркировке и WireGuard',
-        wireguard_mark_unconfirmed: 'Входная маркировка не подтверждена',
-        wireguard_mark_mismatch: 'Фактическая метка отличается',
-        wireguard_handshake_unconfirmed: 'Нет свежего handshake с однозначно определённым пиром',
-      };
       const listenerPorts = new Set(node.serviceChecks.filter(check => check.method === 'OpenVPN UDP-сокет')
         .map(check => check.configuredPort));
       for (const check of node.serviceChecks) {
@@ -1778,7 +1780,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         }[pppoe.state];
         const result = sessionState ?? (check.skipped ? 'Не запущена' :
           ({reachable:confirmed, unreachable:'Сбой проверки'}[check.state] ?? 'Нет подтверждения'));
-        const reason = check.responseCode ? 'SIP ' + check.responseCode : reasons[check.reason];
+        const reason = check.responseCode ? 'SIP ' + check.responseCode : serviceCheckReasons[check.reason];
         const errorSource = check.errorSource ? ' от ' + check.errorSource : '';
         const gatewayLabel = check.method === 'Маршрут' && check.state !== 'reachable' ? 'ожидаемый шлюз' : 'через';
         let gateway = check.via ? ' · ' + gatewayLabel + ' ' + check.via : '';
@@ -1843,7 +1845,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           row.append(make('small', [label, `UDP/${check.configuredPort}`, addresses].filter(Boolean).join(' · ')));
         }
         for (const direction of check.ipsecPolicy?.directions ?? []) {
-          const status = direction.state === 'reachable' ? 'Фаза 2 установлена' : reasons[direction.reason];
+          const status = direction.state === 'reachable' ? 'Фаза 2 установлена' : serviceCheckReasons[direction.reason];
           row.append(make('small', [direction.source, status, direction.checkedAt && formatTime(direction.checkedAt)]
             .filter(Boolean).join(' · ')));
         }
@@ -2099,6 +2101,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
               `${address}${probe.port ? ':' + probe.port : ''}${probe.path ?? ''}`, ...states,
               probe.roundTripSamplesMs?.length && `RTT ${probe.roundTripSamplesMs.map(value =>
                 value.toLocaleString('ru-RU', {maximumFractionDigits: 3})).join(', ')} мс`,
+              ...(probe.issues ?? []).map(({reason, errorSource}) => [serviceCheckReasons[reason],
+                errorSource && `Отказ от ${errorSource}`].filter(Boolean).join(' · ')),
               probe.responseCodes?.length && `Ответ ${probe.responseCodes.join(', ')}`,
               probe.rdpSecurityModes?.join(', '),
               ...(probe.zabbixVersions ?? []).map(version => `Zabbix ${version}`),

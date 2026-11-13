@@ -7086,6 +7086,18 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     ftp, redfish = browser["servicePorts"]["snr"][0]["services"][0]["probeEndpoints"]
     assert ftp["responseCodes"] == [211]
     assert redfish["responseCodes"] == [200] and redfish["redfishVersions"] == ["1.5.0"]
+    raw["nodes"][0]["serviceChecks"] = [
+        {**check, "method": "SIP OPTIONS (UDP)", "port": 5060, "state": "unreachable",
+         "reason": "icmp_port_unreachable", "errorSource": address["address"]},
+        {**check, "method": "TCP", "port": 5060},
+    ]
+    udp_path = read()["servicePaths"][0]
+    assert udp_path["errorSource"] == address["address"]
+    browser = client.get(browser_endpoint).json()["infrastructure"]
+    udp, tcp = browser["servicePorts"]["snr"][0]["services"][0]["probeEndpoints"]
+    assert udp["issues"] == [{"state": "unreachable", "reason": "icmp_port_unreachable",
+                              "errorSource": address["address"]}]
+    assert tcp["passed"] == 1 and "issues" not in tcp
     route = {"state": "reachable", "gateway": address["address"], "expectedGateway": address["address"],
              "sourceIP": "192.0.2.20", "interface": "ens18"}
     routed = {**check, "method": "DNS", "port": 53, "target": "198.51.100.1", "localRoute": route}

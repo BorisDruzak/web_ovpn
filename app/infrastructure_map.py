@@ -2096,7 +2096,7 @@ def _attachment_probe_location(check: dict) -> dict:
     return {"target": check["target"], "port": check["port"], "method": check["method"],
             "checkedAt": check["checkedAt"], "state": check["state"],
             **({"path": check["path"]} if check.get("path") else {}),
-            **{key: check[key] for key in ("reason", "roundTripMs", "httpStatus", "responseCode", "rtspStatus", "dns",
+            **{key: check[key] for key in ("reason", "errorSource", "roundTripMs", "httpStatus", "responseCode", "rtspStatus", "dns",
                                            "rdpSecurity", "rdpFailureCode", "tlsExpiresAt", "tlsVersion", "zabbixVersion",
                                            "smbDialect", "smbSigningRequired", "postgresqlTls", "redfishVersion", "ftpReply")
                if key in check}}
@@ -2444,6 +2444,13 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime, *, endpoint_
             })
             count = {"reachable": "passed", "unreachable": "failed"}.get(check["state"], "unconfirmed")
             probe[count] += 1
+            if count != "passed" and (reason := check.get("reason")):
+                issue = {"state": check["state"], "reason": reason}
+                if error_source := check.get("errorSource"):
+                    issue["errorSource"] = error_source
+                issues = probe.setdefault("issues", [])
+                if issue not in issues:
+                    issues.append(issue)
             if method == "IPMI LAN (UDP)" and "roundTripMs" in check:
                 probe.setdefault("roundTripSamplesMs", []).append(check["roundTripMs"])
             code = check.get("httpStatus") or check.get("responseCode") or check.get("rtspStatus") or check.get("ftpReply")
