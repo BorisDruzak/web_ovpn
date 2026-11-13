@@ -31,6 +31,24 @@ def test_delete_expired_ids_respects_sqlite_variable_limit(conn):
     assert [row[0] for row in conn.execute("SELECT id FROM retention_batch_test")] == [11]
 
 
+def test_host_observation_batch_scans_bounded_id_range_and_keeps_recent_rows(conn):
+    from netctl.retention import prune_host_observation_batch
+
+    conn.executemany(
+        "INSERT INTO host_observations (id, observed_at, observation_type) VALUES (?, ?, 'test')",
+        [(101, NEW), (102, OLD), (103, NEW), (104, OLD), (105, OLD)],
+    )
+    conn.commit()
+
+    assert prune_host_observation_batch(conn, CUTOFF, after_id=100, limit=3) == {
+        "scanned": 3, "deleted": 1, "next_after_id": 103,
+    }
+    assert prune_host_observation_batch(conn, CUTOFF, after_id=103, limit=3) == {
+        "scanned": 2, "deleted": 2, "next_after_id": None,
+    }
+    assert [row[0] for row in conn.execute("SELECT id FROM host_observations WHERE id > 100 ORDER BY id")] == [101, 103]
+
+
 @pytest.fixture
 def conn(tmp_path):
     from netctl.db import connect

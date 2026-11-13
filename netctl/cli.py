@@ -75,7 +75,7 @@ from .switch_queries import (
 )
 from .switch_store import collect_and_save_switch
 from .topology_reconcile import reconcile_topology
-from .retention import apply_retention, retention_report
+from .retention import apply_retention, prune_host_observation_batch, retention_report
 from .user_context import bind_user_asset, close_network_session, create_user, ingest_network_session, inspect_user_context, retire_user_asset_binding
 from .switch_discovery_store import (
     UnknownSwitchFingerprint,
@@ -677,7 +677,7 @@ def cmd_observations(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
 
 def cmd_retention(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     """Preview or atomically apply the fixed 30-day local-history policy."""
-    conn = prepare_conn(args)
+    conn = None
     try:
         now = datetime.fromisoformat(utc_now().replace("Z", "+00:00"))
         cutoff = (now - timedelta(days=args.days)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -685,6 +685,12 @@ def cmd_retention(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
             "+00:00", "Z"
         )
         with CollectLock(args.db):
+            if args.retention_command == "prune-host-observations":
+                conn = connect(args.db)
+                return 0, ok(cutoff=cutoff, **prune_host_observation_batch(
+                    conn, cutoff, after_id=args.after_id, limit=args.limit,
+                ))
+            conn = prepare_conn(args)
             if not args.apply:
                 return 0, ok(
                     dry_run=True,
@@ -707,7 +713,8 @@ def cmd_retention(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     except ValueError:
         return 2, err("retention_failed")
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 def cmd_hosts(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
@@ -1786,6 +1793,10 @@ def build_parser() -> argparse.ArgumentParser:
     cleanup = retention_sub.add_parser("cleanup")
     cleanup.add_argument("--days", type=int, default=30, choices=(30,))
     cleanup.add_argument("--apply", action="store_true")
+    host_prune = retention_sub.add_parser("prune-host-observations")
+    host_prune.add_argument("--days", type=int, default=30, choices=(30,))
+    host_prune.add_argument("--after-id", type=int, default=0)
+    host_prune.add_argument("--limit", type=int, default=10_000)
 
     hosts = sub.add_parser("hosts")
     hosts_sub = hosts.add_subparsers(dest="hosts_command", required=True)

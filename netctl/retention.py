@@ -317,6 +317,35 @@ def _verify_database(conn: sqlite3.Connection) -> None:
         raise RuntimeError("retention_failed")
 
 
+def prune_host_observation_batch(
+    conn: sqlite3.Connection, cutoff: str, *, after_id: int, limit: int,
+) -> dict[str, int | None]:
+    """Prune one bounded slice of append-only observations in a transaction."""
+    cutoff = _validate_cutoff(cutoff)
+    if after_id < 0 or not 1 <= limit <= 10_000:
+        raise ValueError("invalid observation retention batch")
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        rows = conn.execute(
+            "SELECT id FROM host_observations WHERE id > ? ORDER BY id LIMIT ?",
+            (after_id, limit),
+        ).fetchall()
+        last_id = int(rows[-1][0]) if rows else after_id
+        deleted = conn.execute(
+            "DELETE FROM host_observations WHERE id > ? AND id <= ? AND observed_at < ?",
+            (after_id, last_id, cutoff),
+        ).rowcount
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return {
+        "scanned": len(rows),
+        "deleted": deleted,
+        "next_after_id": last_id if len(rows) == limit else None,
+    }
+
+
 def apply_retention(
     conn: sqlite3.Connection,
     cutoff: str,
