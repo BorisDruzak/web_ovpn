@@ -385,6 +385,39 @@ def _css326_fixture_transport() -> _PagedFixtureTransport:
     return _PagedFixtureTransport(fixture["pages"])
 
 
+@pytest.mark.parametrize("fixture", [_dgs_fixture_transport, _tplink_fixture_transport])
+@pytest.mark.parametrize("port_state", [1, 5])
+def test_stp_collection_requires_a_participating_port(fixture, port_state):
+    from netctl.snmp.oids import (
+        DOT1D_STP_DESIGNATED_ROOT, DOT1D_STP_PORT_STATE, DOT1D_STP_PROTOCOL,
+        DOT1D_STP_ROOT_COST, DOT1D_STP_ROOT_PORT, DOT1D_STP_TOPOLOGY_CHANGES,
+    )
+
+    transport = fixture()
+    for oid, name, kind, value in (
+        (DOT1D_STP_PORT_STATE + (1,), "stp_port_state", "integer", port_state),
+        (DOT1D_STP_PROTOCOL, "stp_protocol", "integer", 3),
+        (DOT1D_STP_TOPOLOGY_CHANGES, "stp_topology_changes", "counter32", 0),
+        (DOT1D_STP_DESIGNATED_ROOT, "stp_designated_root", "octet_string", bytes.fromhex("8000001122334455")),
+        (DOT1D_STP_ROOT_COST, "stp_root_cost", "integer", 0),
+        (DOT1D_STP_ROOT_PORT, "stp_root_port", "integer", 0),
+    ):
+        request = DOT1D_STP_PORT_STATE if name == "stp_port_state" else oid
+        transport.results[request] = CapabilityResult(
+            name, SnmpOutcome.SUCCESS_WITH_ROWS, (SnmpVarBind(oid, kind, value),),
+        )
+
+    snapshot = asyncio.run(collect_switch_snapshot({}, transport))
+    outcomes = {row.capability: row.outcome for row in snapshot.capabilities}
+    if port_state == 5:
+        assert snapshot.stp["root_bridge_mac"] == "00:11:22:33:44:55"
+        assert outcomes["stp_active"] is SnmpOutcome.SUCCESS_WITH_ROWS
+    else:
+        assert snapshot.stp is None
+        assert outcomes["stp_active"] is SnmpOutcome.SUCCESS_EMPTY
+        assert "stp_protocol" not in outcomes
+
+
 class _SnapshotDriver:
     def __init__(self, snapshot: object) -> None:
         self.snapshot = snapshot

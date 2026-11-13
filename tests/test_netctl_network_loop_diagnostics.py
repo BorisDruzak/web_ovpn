@@ -372,6 +372,15 @@ def test_failed_fdb_poll_interrupts_coverage_until_three_successful_polls(databa
     assert read(conn)["status"] == "no_evidence"
 
 
+def test_inactive_stp_port_observation_explains_missing_coverage(database):
+    conn, _ = database
+    add_source(conn, 1, "switch")
+    add_collection(conn, 1, "2026-11-12T12:25:00Z", outcomes='{"stp_active":"success_empty"}')
+    [switch] = read(conn)["sources"]
+    assert switch["coverage"]["stp"]["status"] == "unavailable"
+    assert switch["coverage"]["stp"]["reason"] == "no_participating_stp_ports"
+
+
 def test_newer_failed_stp_poll_invalidates_current_coverage_until_recovery(database):
     conn, _ = database
     add_source(conn, 1, "switch")

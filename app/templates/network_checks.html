@@ -153,6 +153,8 @@
             {% endif %}
             {% if device.coverage.stp.reason == 'failed_stp_poll' %}
             <br>STP · новый опрос не подтвердил сохранённое состояние
+            {% elif device.coverage.stp.reason == 'no_participating_stp_ports' %}
+            <br>STP · опрос не обнаружил портов, участвующих в STP
             {% endif %}
             {% set broadcast = device.coverage.broadcast %}
             {% if broadcast is defined %}

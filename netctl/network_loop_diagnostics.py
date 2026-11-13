@@ -251,10 +251,11 @@ def _read_source(
         """
         SELECT started_at, status,
                json_extract(outcomes_json, '$.qbridge_fdb_rejected_rows') AS fdb_rejections,
+               json_extract(outcomes_json, '$.stp_active') AS stp_active,
                EXISTS (
                    SELECT 1 FROM json_each(outcomes_json)
                    WHERE key IN ('stp_protocol', 'stp_topology_changes', 'stp_designated_root',
-                                 'stp_root_cost', 'stp_root_port')
+                                 'stp_root_cost', 'stp_root_port', 'stp_port_state', 'stp_active')
                      AND value <> 'success_with_rows'
                ) AS stp_incomplete
         FROM switch_collection_runs
@@ -314,6 +315,8 @@ def _read_source(
             stp_reason = "failed_stp_poll"
     elif stp_observed is not None and stp_observed < since:
         stp_status = "stale"
+    elif recent_polls and recent_polls[0]["stp_active"] == "success_empty":
+        stp_reason = "no_participating_stp_ports"
     coverage = {
         "fdb": {
             "status": fdb_status,

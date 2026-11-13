@@ -51,6 +51,7 @@ _OPTIONAL_CAPABILITIES = frozenset(
         "stp_designated_root",
         "stp_root_cost",
         "stp_root_port",
+        "stp_port_state",
         "lldp_remote",
         "lldp_remote_chassis_id_subtype",
         "lldp_remote_port_id_subtype",
@@ -743,7 +744,10 @@ def _valid_stp_state(row: object) -> bool:
     return (
         _valid_text(row.get("protocol"))
         and _valid_mac(row.get("root_bridge_mac"))
-        and _valid_text(row.get("root_port_key"))
+        and (
+            _valid_text(row.get("root_port_key"))
+            or (row.get("root_port_key") == "" and row.get("root_port_raw") == 0 and row.get("root_path_cost") == 0)
+        )
         and _valid_optional_int(
             row.get("root_path_cost"), minimum=0, maximum=4_294_967_295
         )
@@ -1309,15 +1313,13 @@ def _replace_optional_current_state(
                 ),
             )
 
-    if _capabilities_confirm_success(snapshot, _STP_CAPABILITIES):
-        outcomes = {
-            capability.capability: capability.outcome
-            for capability in snapshot.capabilities
-        }
-        if snapshot.stp is None and all(
+    outcomes = {capability.capability: capability.outcome for capability in snapshot.capabilities}
+    stp_inactive = outcomes.get("stp_active") is SnmpOutcome.SUCCESS_EMPTY
+    if stp_inactive or _capabilities_confirm_success(snapshot, _STP_CAPABILITIES):
+        if snapshot.stp is None and (stp_inactive or all(
             outcomes[name] is SnmpOutcome.SUCCESS_EMPTY
             for name in _STP_CAPABILITIES
-        ):
+        )):
             conn.execute(
                 """
                 INSERT INTO switch_stp_events (source_id, observed_at, event_type, previous_observed_at)

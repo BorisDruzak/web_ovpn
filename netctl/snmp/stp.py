@@ -11,6 +11,7 @@ from .oids import (
     DOT1D_STP_DESIGNATED_ROOT,
     DOT1D_STP_PORT_DESIGNATED_BRIDGE,
     DOT1D_STP_PORT_DESIGNATED_PORT,
+    DOT1D_STP_PORT_STATE,
     DOT1D_STP_PROTOCOL,
     DOT1D_STP_ROOT_COST,
     DOT1D_STP_ROOT_PORT,
@@ -22,6 +23,19 @@ from .transport import SnmpTransport
 
 
 _PROTOCOLS = {1: "unknown", 2: "dec_lb100", 3: "ieee8021d", 4: "ieee8021q", 5: "rstp"}
+
+
+def has_participating_stp_ports(result: CapabilityResult) -> bool:
+    states = {}
+    for row in result.rows:
+        if (row.oid[:-1] != DOT1D_STP_PORT_STATE or not 1 <= row.oid[-1] <= 65535
+                or row.oid[-1] in states):
+            raise ValueError("STP port state has invalid index")
+        state = _integer(row, "STP port state", value_type="integer")
+        if not 1 <= state <= 6:
+            raise ValueError("STP port state has invalid value")
+        states[row.oid[-1]] = state
+    return any(2 <= state <= 5 for state in states.values())
 
 
 def _scalar(result: CapabilityResult, oid: tuple[int, ...]) -> SnmpVarBind:
@@ -112,7 +126,8 @@ def parse_stp(
         value_type="counter32",
     )
     root = _scalar(designated_root_result, DOT1D_STP_DESIGNATED_ROOT)
-    if root.value_type != "octet_string" or not isinstance(root.value, bytes) or len(root.value) != 8:
+    if (root.value_type != "octet_string" or not isinstance(root.value, bytes)
+            or len(root.value) != 8 or not any(root.value[-6:])):
         raise ValueError("STP designated root has invalid type")
     root_cost = _integer(
         _scalar(root_cost_result, DOT1D_STP_ROOT_COST), "STP root cost", value_type="integer"
@@ -120,17 +135,22 @@ def parse_stp(
     raw_root_port = _integer(
         _scalar(root_port_result, DOT1D_STP_ROOT_PORT), "STP root port", value_type="integer"
     )
-    ports_by_ifindex = {port.if_index: port for port in ports if port.if_index is not None}
-    resolution = profile.resolve_stp_root_port(
-        raw_root_port=raw_root_port,
-        bridge_to_ifindex=bridge_to_ifindex,
-        ports_by_ifindex=ports_by_ifindex,
-    )
+    if raw_root_port == 0:
+        if root_cost != 0:
+            raise ValueError("Root bridge has a nonzero root path cost")
+        root_port_key = ""
+    else:
+        ports_by_ifindex = {port.if_index: port for port in ports if port.if_index is not None}
+        root_port_key = profile.resolve_stp_root_port(
+            raw_root_port=raw_root_port,
+            bridge_to_ifindex=bridge_to_ifindex,
+            ports_by_ifindex=ports_by_ifindex,
+        ).port_key
     return {
         "protocol": _PROTOCOLS.get(protocol, f"unknown:{protocol}"),
         "root_bridge_mac": normalize_mac(root.value[-6:]),
         "root_port_raw": raw_root_port,
-        "root_port_key": resolution.port_key,
+        "root_port_key": root_port_key,
         "root_path_cost": root_cost,
         "topology_changes": topology_changes,
     }

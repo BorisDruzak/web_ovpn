@@ -37,6 +37,7 @@ from .oids import (
     TPLINK_VLAN_TAGGED,
     TPLINK_VLAN_UNTAGGED,
     DOT1D_STP_DESIGNATED_ROOT,
+    DOT1D_STP_PORT_STATE,
     DOT1D_STP_PROTOCOL,
     DOT1D_STP_ROOT_COST,
     DOT1D_STP_ROOT_PORT,
@@ -81,7 +82,7 @@ from .oids import (
 )
 from .outcomes import SnmpOutcome
 from .profiles import PortProfile, detect_profile
-from .stp import parse_stp
+from .stp import has_participating_stp_ports, parse_stp
 from .system import parse_system
 from .vlan import parse_tplink_vlan_memberships, parse_vlan_memberships
 
@@ -530,7 +531,24 @@ async def collect_switch_snapshot(
                 )
                 capabilities[-len(vlan_results) :] = vlan_results
 
-    if profile.profile_id in {"snr", "css326"}:
+    collect_stp = profile.profile_id in {"snr", "css326"}
+    if profile.profile_id in {"dgs", "tplink"}:
+        port_states = await transport.walk(DOT1D_STP_PORT_STATE, capability="stp_port_state")
+        if port_states.outcome is SnmpOutcome.SUCCESS_WITH_ROWS:
+            try:
+                collect_stp = has_participating_stp_ports(port_states)
+            except ValueError:
+                port_states, = _optional_parse_errors(
+                    (port_states,), error_code="malformed_stp_port_state",
+                    error_message="SNMP STP port states are malformed",
+                )
+            else:
+                capabilities.append(CapabilityResult(
+                    "stp_active", SnmpOutcome.SUCCESS_WITH_ROWS if collect_stp else SnmpOutcome.SUCCESS_EMPTY,
+                ))
+        capabilities.append(port_states)
+
+    if collect_stp:
         stp_results = (
             await transport.get(DOT1D_STP_PROTOCOL, capability="stp_protocol"),
             await transport.get(
