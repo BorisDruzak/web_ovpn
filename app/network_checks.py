@@ -482,9 +482,18 @@ def run_audited_network_check(db: Session, request: Request, actor: str, check: 
     if isinstance(check, HttpsSpeedCheck) and (
         result["status"] in _SPEED_MEASUREMENT_STATUSES or "gateway_check" in result["result"]
     ):
-        details = {key: result["result"][key] for key in (
+        reading = result["result"]
+        details = {key: reading[key] for key in (
             "mbps", "transferred_bytes", "duration_seconds", "wan_observation", "gateway_check",
-        ) if key in result["result"]}
+        ) if key in reading}
+        if reading.get("source_address") and reading.get("source_port"):
+            details["connection"] = {
+                "source_address": reading["source_address"], "source_port": reading["source_port"],
+                "peer_address": reading["peer"], "peer_port": 443,
+            }
+        route = reading.get("kernel_route", {}).get("result", {})
+        if route:
+            details["kernel_route"] = {key: route[key] for key in ("dev", "gateway") if key in route}
         message = json.dumps({"target": result["target"], "result": details}, ensure_ascii=False)
     if isinstance(check, IperfCheck) and (
         result["status"] in _SPEED_MEASUREMENT_STATUSES or "gateway_check" in result["result"]

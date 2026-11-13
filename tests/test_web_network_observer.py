@@ -2823,6 +2823,10 @@ def test_https_speed_uses_profile_and_records_result_in_api_and_ui(
     assert measured["target"] == "internet · receive"
     assert measured["result"]["mbps"] == 8.0
     assert measured["result"]["wan_observation"] == result["result"]["wan_observation"]
+    assert measured["result"]["connection"] == {
+        "source_address": "192.0.2.10", "source_port": 42013, "peer_address": peer, "peer_port": 443,
+    }
+    assert measured["result"]["kernel_route"] == {"dev": "eth0", "gateway": "192.0.2.1"}
     csrf = login(client)
     page = client.post("/network/diagnostics/checks", data={
         "csrf_token": csrf, **payload, "direction": "send",
@@ -2833,6 +2837,8 @@ def test_https_speed_uses_profile_and_records_result_in_api_and_ui(
     history_page = client.get("/network/diagnostics")
     assert history_page.status_code == 200 and "8.00 Мбит/с" in history_page.text
     assert wan_label in history_page.text
+    assert f"192.0.2.10 ↔ {peer} · TCP 443" in history_page.text
+    assert "Выбор ядра eth0 · 192.0.2.1" in history_page.text
     assert calls == [(peer, "receive", 1_000_000), (peer, "send", 500_000)]
 
 

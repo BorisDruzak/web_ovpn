@@ -751,6 +751,19 @@ def test_speed_report_preserves_gateway_failure_evidence(check):
     assert all(row["api_matches"] and not row["confirmed"] for row in report["directions"].values())
 
 
+def test_speed_report_preserves_observed_endpoints_and_kernel_gateway():
+    now = datetime(2026, 11, 13, 2, 15, tzinfo=UTC)
+    connection = {"source_address": "192.0.2.1", "peer_address": "192.0.2.2", "peer_port": 443}
+    route = {"dev": "ens18", "gateway": "192.0.2.254"}
+    row = {"check": "https_speed", "status": "measured", "target": "wan · receive",
+           "checked_at": now.isoformat(), "result": {"mbps": 10, "connection": connection,
+           "kernel_route": route, "wan_observation": {"status": "confirmed", "nat_interface": "wan1"}}}
+    result = verifier.speed_report([row], [row], "https_speed", "wan", "wan1", now, timedelta(minutes=10))
+    receive = result["directions"]["receive"]
+    assert receive["connection"] == connection and receive["kernel_route"] == route
+    assert receive["confirmed"]
+
+
 def test_interface_report_uses_common_tail_when_mcp_limits_history(monkeypatch):
     now = datetime(2026, 11, 13, 2, 15, tzinfo=UTC)
     monkeypatch.setattr(verifier, "MCP_INTERFACE_LIMIT", 1)

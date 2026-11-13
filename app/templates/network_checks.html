@@ -364,9 +364,12 @@
             {% if run.result is defined and run.result.receiver_mbps is defined %}
             <br>Отправитель / получатель {{ '%.2f' | format(run.result.sender_mbps) }} / {{ '%.2f' | format(run.result.receiver_mbps) }} Мбит/с
             {% if run.result.retransmits is defined and run.result.retransmits is not none %}<br>Повторные передачи TCP {{ run.result.retransmits }}{% endif %}
-            {% if run.result.kernel_route is defined %}
-            <br>Выбор ядра {{ [run.result.kernel_route.dev, run.result.kernel_route.gateway] | select | join(' · ') }}
             {% endif %}
+            {% if run.result is defined and run.result.connection is defined %}
+            <br>{{ run.result.connection.source_address }} ↔ {{ run.result.connection.peer_address }} · TCP {{ run.result.connection.peer_port }}
+            {% endif %}
+            {% if run.result is defined and run.result.kernel_route is defined %}
+            <br>Выбор ядра {{ [run.result.kernel_route.dev, run.result.kernel_route.gateway] | select | join(' · ') }}
             {% endif %}
             {% if run.result is defined and run.result.wan_observation is defined %}
             <br>{{ wan_result(run.result.wan_observation) }}
