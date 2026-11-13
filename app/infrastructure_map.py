@@ -78,9 +78,11 @@ CLUSTER_HEALTH_METHODS = ("Кворум", "Участники кластера")
 RECIPROCAL_MAC_SOURCE = "SNMP · взаимные MAC"
 REDFISH_PAIR_SOURCE = "netctl FDB + Redfish"
 REDFISH_PAIR_MAX_AGE = timedelta(minutes=10)
+ENDPOINT_PAIR_SOURCE = "SNMP + Windows"
+ENDPOINT_PAIR_MAX_AGE = timedelta(minutes=3)
 CURRENT_PORT_PAIR_SOURCES = {
     "netctl", "LLDP UI_VPN", "LLDP · двустороннее", "netctl FDB + Proxmox",
-    "SNMP · двусторонний FDB", "SNMP · порты STP", REDFISH_PAIR_SOURCE,
+    "SNMP · двусторонний FDB", "SNMP · порты STP", REDFISH_PAIR_SOURCE, ENDPOINT_PAIR_SOURCE,
 }
 SHARED_LLDP_KIND = "Путь через общий порт"
 SHARED_LLDP_SOURCE = "LLDP · общий порт"
@@ -3600,7 +3602,8 @@ def load_infrastructure_map(
                 observed = _time(report.get("at"))
                 source = _text(report.get("source"), 48)
                 max_age = {PPPOE_SOURCE: SERVICE_PROBE_MAX_AGE, "SNMP · порты STP": STP_ROOT_PATH_MAX_AGE,
-                           REDFISH_PAIR_SOURCE: REDFISH_PAIR_MAX_AGE}.get(source, MAX_AGE)
+                           REDFISH_PAIR_SOURCE: REDFISH_PAIR_MAX_AGE,
+                           ENDPOINT_PAIR_SOURCE: ENDPOINT_PAIR_MAX_AGE}.get(source, MAX_AGE)
                 evidence.append({
                     "a": _text(report.get("a"), 64), "b": _text(report.get("b"), 64), "source": source,
                     "at": observed.isoformat() if observed else None,

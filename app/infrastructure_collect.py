@@ -60,6 +60,7 @@ from .infrastructure_map import (
 )
 from .infrastructure_port_ssh import collect_proxmox_port_states
 from .infrastructure_redfish import collect_redfish_power
+from .infrastructure_endpoint_ports import confirm_endpoint_ports
 from .infrastructure_service_probes import _local_arp_diagnostic, apply_service_probes, probe_icmp
 from .netctl_client import NetctlError, run_netctl
 from .server_health_view import build_server_health_view
@@ -3727,6 +3728,8 @@ def main() -> int:
             downstream.result()
         if credentials and isinstance(redfish := bindings.get("redfish_power"), dict):
             collect_redfish_power(graph, redfish, Path(credentials), datetime.now(timezone.utc))
+        if isinstance(endpoint_ports := bindings.get("endpoint_ports"), dict) and endpoint_ports:
+            confirm_endpoint_ports(graph, endpoint_ports, datetime.now(timezone.utc))
         start_stage("publish snapshot")
         graph["snapshotAt"] = datetime.now(timezone.utc).isoformat()
         graph["git"] = args.git_revision

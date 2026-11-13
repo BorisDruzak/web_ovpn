@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import os
+import re
+import subprocess
 import sys
 import tempfile
 from datetime import UTC, datetime
@@ -30,11 +33,11 @@ def _receipt_path(origin: str, profile: str) -> Path:
     return SPOOL_PATH / origin / f"{profile}.json"
 
 
-def _decode(payload: bytes) -> tuple[datetime, dict]:
+def _decode(payload: bytes) -> tuple[datetime, dict, object]:
     if not 0 < len(payload) <= MAX_RECEIPT_BYTES:
         raise ValueError("Invalid receipt size")
     document = json.loads(payload)
-    if not isinstance(document, dict) or set(document) != {"measured_at", "probes"}:
+    if not isinstance(document, dict) or not {"measured_at", "probes"} <= set(document) <= {"measured_at", "probes", "adapter"}:
         raise ValueError("Invalid receipt envelope")
     stamp, probes = document["measured_at"], document["probes"]
     if not isinstance(stamp, str) or not isinstance(probes, dict):
@@ -42,10 +45,10 @@ def _decode(payload: bytes) -> tuple[datetime, dict]:
     measured = datetime.fromisoformat(stamp)
     if measured.tzinfo is None:
         raise ValueError("Receipt time must include an offset")
-    return measured.astimezone(UTC), probes
+    return measured.astimezone(UTC), probes, document.get("adapter")
 
 
-def _read(path: Path) -> tuple[datetime, dict]:
+def _read(path: Path) -> tuple[datetime, dict, object]:
     with path.open("rb") as stream:
         return _decode(stream.read(MAX_RECEIPT_BYTES + 1))
 
@@ -76,9 +79,58 @@ def _measurement(envelope: dict, probe: RouteProbe) -> dict:
     return sanitized
 
 
+def _adapter_observation(value: object, results: dict) -> dict:
+    if not isinstance(value, dict):
+        return {}
+    name, mac, index, address = (value.get(key) for key in ("name", "mac", "index", "address"))
+    if (not isinstance(name, str) or not 0 < len(name) <= 64 or not name.isprintable()
+            or not isinstance(mac, str) or not re.fullmatch(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}", mac)
+            or mac == "00:00:00:00:00:00" or type(index) is not int or not 0 < index <= 0xFFFFFFFF
+            or not isinstance(address, str) or value.get("status") != "Up"):
+        return {}
+    try:
+        ipaddress.IPv4Address(address)
+    except ValueError:
+        return {}
+    for envelope in results.values():
+        result = envelope["result"]
+        fields = result.get("kernel_route", {}).get("result", {})
+        if result["status"] == "reachable" and fields.get("from", fields.get("prefsrc")) == address and fields.get("dev") == f"ifindex-{index}":
+            return {"name": name, "mac": mac, "index": index, "address": address, "status": "Up"}
+    return {}
+
+
+def _windows_adapter(results: dict) -> dict:
+    if os.name != "nt":
+        return {}
+    endpoints = {
+        (fields.get("from"), int(match[1]))
+        for entry in results.values() if entry["result"]["status"] == "reachable"
+        for fields in [entry["result"].get("kernel_route", {}).get("result", {})]
+        if (match := re.fullmatch(r"ifindex-([0-9]{1,10})", fields.get("dev", ""))) and fields.get("from")
+    }
+    if len(endpoints) != 1:
+        return {}
+    ((address, index),) = endpoints
+    command = ("[Console]::OutputEncoding = [Text.UTF8Encoding]::new(); "
+               f"Get-NetAdapter -Physical | Where-Object ifIndex -eq {index} | "
+               "Select-Object Name,MacAddress,Status | ConvertTo-Json -Compress")
+    executable = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    try:
+        response = subprocess.run([str(executable), "-NoProfile", "-NonInteractive", "-Command", command],
+                                  capture_output=True, timeout=3, check=True)
+        row = json.loads(response.stdout.decode("utf-8-sig")) if len(response.stdout) <= 4096 else None
+        if not isinstance(row, dict):
+            return {}
+        return _adapter_observation({"name": row.get("Name"), "mac": str(row.get("MacAddress")).lower().replace("-", ":"),
+                                     "status": row.get("Status"), "address": address, "index": index}, results)
+    except (OSError, subprocess.SubprocessError, ValueError, RecursionError):
+        return {}
+
+
 def store_receipt(origin: str, profile_id: str, profile: RouteProfile, payload: bytes, *, now: datetime) -> None:
     path = _receipt_path(origin, profile_id)
-    measured, envelopes = _decode(payload)
+    measured, envelopes, adapter = _decode(payload)
     if not now - MAX_AGE <= measured <= now + CLOCK_TOLERANCE:
         raise ValueError("Receipt is outside the accepted time window")
     definitions = {probe.id: probe for probe in profile.probes if probe.push_origin == origin}
@@ -86,6 +138,7 @@ def store_receipt(origin: str, profile_id: str, profile: RouteProfile, payload: 
         raise ValueError("Receipt does not match the configured origin")
     clean = {probe_id: {"digest": probe.config_digest(), "result": _measurement(envelopes[probe_id], probe)}
              for probe_id, probe in definitions.items()}
+    adapter = _adapter_observation(adapter, clean)
     with path.with_suffix(".lock").open("ab") as lock:
         if os.name == "nt":
             import msvcrt
@@ -96,11 +149,11 @@ def store_receipt(origin: str, profile_id: str, profile: RouteProfile, payload: 
 
             fcntl.flock(lock, fcntl.LOCK_EX)
         try:
-            previous_time, previous = _read(path)
+            previous_time, previous, previous_adapter = _read(path)
         except FileNotFoundError:
             pass
         else:
-            if measured == previous_time and clean == previous:
+            if measured == previous_time and clean == previous and adapter == (previous_adapter or {}):
                 return
             if measured <= previous_time:
                 raise ValueError("Receipt is older than the stored result")
@@ -108,7 +161,8 @@ def store_receipt(origin: str, profile_id: str, profile: RouteProfile, payload: 
         pending = Path(filename)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                json.dump({"measured_at": measured.isoformat(), "probes": clean}, stream, allow_nan=False)
+                json.dump({"measured_at": measured.isoformat(), "probes": clean,
+                           **({"adapter": adapter} if adapter else {})}, stream, allow_nan=False)
                 stream.flush()
                 if os.name != "nt":
                     os.fchmod(stream.fileno(), 0o640)
@@ -145,7 +199,7 @@ def read_measurements(profile_id: str, profile: RouteProfile) -> dict[str, dict]
     for origin, probes in by_origin.items():
         started = monotonic()
         try:
-            measured, envelopes = _read(_receipt_path(origin, profile_id))
+            measured, envelopes, _ = _read(_receipt_path(origin, profile_id))
         except FileNotFoundError:
             reason = "origin_receipt_missing"
         except (OSError, TypeError, ValueError, RecursionError, OverflowError):
@@ -157,6 +211,23 @@ def read_measurements(profile_id: str, profile: RouteProfile) -> dict[str, dict]
             continue
         results.update({probe.id: _result("unavailable", reason, started) for probe in probes})
     return results
+
+
+def read_adapter_observation(origin: str, profile_id: str, profile: RouteProfile, now: datetime) -> dict:
+    try:
+        measured, envelopes, adapter = _read(_receipt_path(origin, profile_id))
+        if not now - MAX_AGE <= measured <= now:
+            return {}
+        probes = {probe.id: probe for probe in profile.probes if probe.push_origin == origin}
+        if not probes or probes.keys() != envelopes.keys():
+            return {}
+        current = {key: {"result": _receipt_measurement(probe, envelopes, measured, now, monotonic())}
+                   for key, probe in probes.items()}
+        if observation := _adapter_observation(adapter, current):
+            return {**observation, "checkedAt": measured.isoformat()}
+    except (AttributeError, OSError, TypeError, ValueError, RecursionError, OverflowError):
+        pass
+    return {}
 
 
 def main() -> int:
@@ -179,7 +250,9 @@ def main() -> int:
                       for probe in profile.probes if probe.push_origin == args.origin}
             if not probes:
                 raise ValueError("No probes configured for this origin")
-            print(json.dumps({"measured_at": utcnow().isoformat(), "probes": probes}, allow_nan=False))
+            adapter = _windows_adapter(probes)
+            print(json.dumps({"measured_at": utcnow().isoformat(), "probes": probes,
+                              **({"adapter": adapter} if adapter else {})}, allow_nan=False))
     except (AttributeError, OSError, KeyError, TypeError, ValueError, RecursionError):
         print("Route probe receipt rejected", file=sys.stderr)
         return 2

@@ -83,7 +83,7 @@ def test_matrix_reads_one_receipt_for_all_probes_from_origin(tmp_path, monkeypat
         return NOW, {
             definition.id: json.loads(receipt(definition))["probes"][definition.id]
             for definition in profile.probes
-        }
+        }, None
 
     monkeypatch.setattr(network_route_spool, "SPOOL_PATH", tmp_path)
     monkeypatch.setattr(network_route_spool, "utcnow", lambda: NOW)
@@ -92,6 +92,48 @@ def test_matrix_reads_one_receipt_for_all_probes_from_origin(tmp_path, monkeypat
     assert result["status"] == "reachable"
     assert len(reads) == 1
     assert {row["evidence"]["origin_measured_at"] for row in result["result"]["probes"]} == {NOW.isoformat()}
+
+
+def test_adapter_receipt_requires_matching_route_and_fresh_measurement(tmp_path, monkeypatch, push_profile):
+    from app import network_route_spool as spool
+    monkeypatch.setattr(spool, "SPOOL_PATH", tmp_path)
+    (tmp_path / ORIGIN).mkdir()
+    probe, = push_profile.probes
+    data = json.loads(receipt(probe))
+    adapter = {"name": "Ethernet", "mac": "02:00:00:00:00:10", "index": 10,
+               "address": "192.0.2.20", "status": "Up"}
+    data["adapter"] = adapter
+    spool.store_receipt(ORIGIN, PROFILE, push_profile, json.dumps(data).encode(), now=NOW)
+    assert spool.read_adapter_observation(ORIGIN, PROFILE, push_profile, NOW) == {**adapter, "checkedAt": NOW.isoformat()}
+    assert spool.read_adapter_observation(ORIGIN, PROFILE, push_profile, NOW + timedelta(minutes=4)) == {}
+    data["measured_at"] = (NOW + timedelta(seconds=1)).isoformat()
+    adapter["index"] = 11
+    spool.store_receipt(ORIGIN, PROFILE, push_profile, json.dumps(data).encode(), now=NOW + timedelta(seconds=1))
+    assert spool.read_adapter_observation(ORIGIN, PROFILE, push_profile, NOW + timedelta(seconds=1)) == {}
+
+
+@pytest.mark.parametrize("learned_count", [1, 2])
+def test_endpoint_pair_uses_fresh_switch_mac_and_physical_adapter(monkeypatch, push_profile, learned_count):
+    from types import SimpleNamespace
+    from app import infrastructure_endpoint_ports as ports
+
+    mac = "02:00:00:00:00:10"
+    at = NOW.isoformat()
+    monkeypatch.setattr(ports, "load_probe_profiles", lambda **_: SimpleNamespace(routes={PROFILE: push_profile}))
+    monkeypatch.setattr(ports, "read_adapter_observation", lambda *_: {"name": "Ethernet", "mac": mac, "checkedAt": at})
+    inventory = {"a": "Port7", "b": "Ethernet", "source": "GitHub", "confirmed": True}
+    link = {"a": "switch", "b": "pc", "kind": "Сетевое соединение", "confirmed": True, "portEvidence": [inventory]}
+    graph = {"nodes": [
+        {"id": "pc", "kind": "Рабочая станция", "endpointKey": f"mac:{mac.upper()}"},
+        {"id": "switch", "kind": "Коммутатор", "ports": [{
+            "name": "Port7", "linkCheck": {"state": "up", "checkedAt": at, "endpointMac": {"deviceId": "pc", "mac": mac}},
+            "fdbLearned": {"checkedAt": at, "partial": False, "learnedMacCount": learned_count},
+        }]},
+    ], "links": [link]}
+    ports.confirm_endpoint_ports(graph, {"pc": {"origin": ORIGIN, "profile": PROFILE}}, NOW)
+    assert link["portEvidence"] == [inventory] + (
+        [{**inventory, "source": "SNMP + Windows", "at": at}] if learned_count == 1 else []
+    )
 
 
 def test_push_rejects_unapproved_replay_and_wrong_route(tmp_path, monkeypatch, push_profile):
