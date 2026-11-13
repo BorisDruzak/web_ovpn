@@ -144,6 +144,9 @@
               'no_vlan_observations': 'нет наблюдений MAC с VLAN'
             }.get(device.coverage.fdb.reason, 'недостаточно данных') }}
             {% endif %}
+            {% if device.coverage.stp.reason == 'failed_stp_poll' %}
+            <br>STP · новый опрос не подтвердил сохранённое состояние
+            {% endif %}
             {% set broadcast = device.coverage.broadcast %}
             {% if broadcast is defined %}
             <br>Широковещание · {{ {

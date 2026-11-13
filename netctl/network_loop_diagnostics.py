@@ -250,7 +250,13 @@ def _read_source(
     polls = conn.execute(
         """
         SELECT started_at, status,
-               json_extract(outcomes_json, '$.qbridge_fdb_rejected_rows') AS fdb_rejections
+               json_extract(outcomes_json, '$.qbridge_fdb_rejected_rows') AS fdb_rejections,
+               EXISTS (
+                   SELECT 1 FROM json_each(outcomes_json)
+                   WHERE key IN ('stp_protocol', 'stp_topology_changes', 'stp_designated_root',
+                                 'stp_root_cost', 'stp_root_port')
+                     AND value <> 'success_with_rows'
+               ) AS stp_incomplete
         FROM switch_collection_runs
         WHERE source_id = ? AND started_at >= ? AND started_at < ?
           AND (status IN ('success', 'partial') OR (status = 'failed' AND error_class <> 'stale_snapshot'))
@@ -299,8 +305,13 @@ def _read_source(
             fdb_reason = "no_vlan_observations"
     stp_observed = _timestamp(device["stp_observed_at"])
     stp_status = "unavailable"
+    stp_reason = None
     if _in_window(stp_observed, since, until):
         stp_status = "recent"
+        if any(poll["stp_incomplete"] and _timestamp(poll["started_at"]) > stp_observed
+               for poll in recent_polls):
+            stp_status = "insufficient"
+            stp_reason = "failed_stp_poll"
     elif stp_observed is not None and stp_observed < since:
         stp_status = "stale"
     coverage = {
@@ -318,6 +329,7 @@ def _read_source(
             "events_read": len(stp_events),
             "truncated": stp_truncated,
             "scope": "switch",
+            **({"reason": stp_reason} if stp_reason else {}),
         },
     }
     findings = _find_reversals(events, _stp_changes(stp_events, since, until), since, until)

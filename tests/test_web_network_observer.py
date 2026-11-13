@@ -2938,7 +2938,7 @@ def test_loop_panel_shows_port_broadcast_as_context(tmp_path, monkeypatch, reaso
                 "first_observed_at": interval["since"], "last_observed_at": interval["until"]}
     device = {"source": "switch-1", "status": "mac_flapping",
               "coverage": {"fdb": {"status": "insufficient", "reason": reason},
-                           "stp": {"status": "unavailable"},
+                           "stp": {"status": "insufficient", "reason": "failed_stp_poll"},
                            "broadcast": {"status": "recent", "sampled_ports": 2, "valid_intervals": 1}},
               "unclassified_mac_movements": [movement],
               "evidence": [{"ports": ["ether1", "ether2"], "vlan_id": 20, "mac": "00:11:22:33:44:55",
@@ -2949,6 +2949,7 @@ def test_loop_panel_shows_port_broadcast_as_context(tmp_path, monkeypatch, reaso
     api = client.get("/api/v1/network/diagnostics/loops?source=switch-1", headers=headers)
     report = api.json()["data"]["result"]["sources"][0]
     assert report["coverage"]["fdb"]["reason"] == reason
+    assert report["coverage"]["stp"]["reason"] == "failed_stp_poll"
     assert report["evidence"][0]["broadcast_intervals"] == [interval]
     assert report["unclassified_mac_movements"] == [movement]
     csrf = login(client)
@@ -2959,6 +2960,7 @@ def test_loop_panel_shows_port_broadcast_as_context(tmp_path, monkeypatch, reaso
     assert "Широковещание" in panel.text and "12.5 / 4.0 пак/с" in " ".join(panel.text.split())
     assert "Обнаружено повторное перемещение MAC" in panel.text
     assert f"FDB · {label}" in panel.text
+    assert "STP · новый опрос не подтвердил сохранённое состояние" in panel.text
     assert "Перемещения MAC без VLAN · 1" in panel.text
     assert "ether3 ↔ ether4" in panel.text
 

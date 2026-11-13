@@ -372,6 +372,29 @@ def test_failed_fdb_poll_interrupts_coverage_until_three_successful_polls(databa
     assert read(conn)["status"] == "no_evidence"
 
 
+def test_newer_failed_stp_poll_invalidates_current_coverage_until_recovery(database):
+    conn, _ = database
+    add_source(conn, 1, "switch")
+    add_event(conn, 1, "2026-11-12T12:00:00Z", PORT_A, PORT_B)
+    add_collection(conn, 1, "2026-11-12T12:05:00Z")
+    add_collection(conn, 1, "2026-11-12T12:10:00Z")
+    add_stp_sample(conn, 1, "2026-11-12T12:10:00Z", 5)
+    assert read(conn)["status"] == "no_evidence"
+
+    add_collection(conn, 1, "2026-11-12T12:15:00Z", status="partial",
+                   outcomes='{"fdb":"success_with_rows","stp_protocol":"timeout"}')
+    [switch] = read(conn)["sources"]
+    assert switch["status"] == "insufficient_data"
+    assert switch["coverage"]["fdb"]["status"] == "recent"
+    assert switch["coverage"]["stp"]["status"] == "insufficient"
+    assert switch["coverage"]["stp"]["reason"] == "failed_stp_poll"
+    assert switch["coverage"]["stp"]["last_observed_at"] == "2026-11-12T12:10:00Z"
+
+    add_collection(conn, 1, "2026-11-12T12:20:00Z")
+    add_stp_sample(conn, 1, "2026-11-12T12:20:00Z", 5)
+    assert read(conn)["status"] == "no_evidence"
+
+
 @pytest.mark.parametrize("outcomes, expected", [
     ('{"fdb":"success_with_rows","qbridge_fdb_rejected_rows":"parse_error"}', "insufficient_data"),
     ('{"fdb":"success_with_rows","if_hc_in_broadcast_packets":"timeout"}', "no_evidence"),
