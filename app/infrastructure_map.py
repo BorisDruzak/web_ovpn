@@ -2464,7 +2464,38 @@ def _attachment_probe_location(check: dict) -> dict:
                if key in check}}
 
 
-def _service_attachment_paths(service: dict, guests: dict) -> list[dict]:
+def _windows_client_attachments(nodes: dict, links: list[dict]) -> dict:
+    stations = defaultdict(set)
+    pairs = defaultdict(lambda: defaultdict(dict))
+    for edge in links:
+        if not edge["confirmed"]:
+            continue
+        a, b = edge["a"], edge["b"]
+        if (edge["kind"] == "Источник проверки" and nodes[a]["kind"] == "Рабочая станция"
+                and nodes[b]["kind"] == "Сервис"):
+            stations[b].add(a)
+        if edge["kind"] != "Сетевое соединение":
+            continue
+        for station_side, switch_side in (("a", "b"), ("b", "a")):
+            station, switch = edge[station_side], edge[switch_side]
+            if nodes[station]["kind"] != "Рабочая станция" or nodes[switch]["kind"] != NETWORK_KINDS[0]:
+                continue
+            for report in edge["portEvidence"]:
+                adapter = report.get("windowsAdapter")
+                if report.get("pairEvidence") != "current" or report["source"] != ENDPOINT_PAIR_SOURCE or not adapter:
+                    continue
+                station_port, switch_port = report[station_side], report[switch_side]
+                key = (station_port, switch, switch_port, adapter["ifIndex"])
+                candidates = pairs[station][adapter["checkedAt"]]
+                if key not in candidates or report["at"] > candidates[key]["checkedAt"]:
+                    candidates[key] = {"stationId": station, "stationPort": station_port, "switchId": switch,
+                                       "switchPort": switch_port, "source": ENDPOINT_PAIR_SOURCE, "checkedAt": report["at"]}
+    return {service: {stamp: next(iter(candidates.values())) for stamp, candidates in pairs[next(iter(sources))].items()
+                      if len(candidates) == 1}
+            for service, sources in stations.items() if len(sources) == 1}
+
+
+def _service_attachment_paths(service: dict, guests: dict, client_attachments: dict | None = None) -> list[dict]:
     addresses = defaultdict(list)
     neighbors = defaultdict(list)
     for guest in guests.values():
@@ -2523,11 +2554,13 @@ def _service_attachment_paths(service: dict, guests: dict) -> list[dict]:
         if len(observations) != 1:
             continue
         observation, = observations
+        client = (client_attachments or {}).get(check["checkedAt"]) if windows else None
         paths.append({**_attachment_probe_location(check), "addressCheckedAt": address_at,
                       "guestId": guest["guest"]["id"], "guestPort": adapter["guestPort"], "bridge": adapter["bridge"],
                       "hypervisorId": guest["hypervisor"]["id"], "switchId": observation["switch"]["id"],
                       "physicalPair": observation["physicalPair"],
                       **({"source": WINDOWS_PROBE_SOURCE, **({"via": check["via"]} if check.get("via") else {})} if windows else {}),
+                      **({"clientAttachment": client} if client else {}),
                       **({"localListener": True} if check.get("localListener") else {}),
                       **({"localNeighbor": adapter["localNeighbor"]} if vlan else {}),
                       **({"gateway": gateway} if gateway else {})})
@@ -2757,9 +2790,10 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime, *, endpoint_
             service_hosts[service].add(host)
             if host in guests:
                 service_guests[service][host] = guests[host]
+    client_attachments = _windows_client_attachments(nodes, links)
     service_paths = {
         service: paths for service, targets in service_guests.items()
-        if len(targets) <= 12 and (paths := _service_attachment_paths(nodes[service], targets))
+        if len(targets) <= 12 and (paths := _service_attachment_paths(nodes[service], targets, client_attachments.get(service)))
     }
     management = _management_port_paths(nodes, links)
     observed_ports = _observed_management_ports(links, nodes)
@@ -2979,7 +3013,7 @@ def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
         if "probeTransition" in anchor:
             detail["probeTransition"] = anchor["probeTransition"]
     if anchor and anchor["kind"] == "Сервис" and len(guest_ids) <= 12:
-        detail["servicePaths"] = _service_attachment_paths(anchor, guests)
+        detail["servicePaths"] = _service_attachment_paths(anchor, guests, _windows_client_attachments(nodes, links).get(node_id))
         if len(targets) == 1 and len(host_ids) == 1:
             detail["servicePaths"].extend(_management_service_paths(
                 anchor, host_ids[0], _management_port_paths(nodes, links), _observed_management_ports(links, nodes),

@@ -1184,6 +1184,16 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       for (const reading of readings) {
         if (reading) row.append(make('small', reading));
       }
+      for (const probe of probes) {
+        const client = probe.clientAttachment;
+        if (!client) continue;
+        const station = byId.get(client.stationId)?.name ?? client.stationId;
+        const sw = byId.get(client.switchId)?.name ?? client.switchId;
+        const line = make('small', 'Клиентский порт · ');
+        line.append(portPairEndpoint(client.stationId, station, client.stationPort), ' ↔ ',
+          switchPortButton(client.switchId, sw, client.switchPort), ` · ${client.source} · ${formatTime(client.checkedAt)}`);
+        row.append(line);
+      }
       if (path.lacpAttachment) {
         const {switchId, aggregate, checkedAt, members, aggregateState} = path.lacpAttachment;
         const device = byId.get(switchId)?.name ?? switchId;

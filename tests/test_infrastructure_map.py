@@ -7641,8 +7641,26 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
 
     raw["nodes"][0]["serviceChecks"].append({**check, "source": WINDOWS_PROBE_SOURCE, "method": "HTTP",
                                             "port": 80, "supplemental": True, "via": "192.0.2.1"})
+    raw["nodes"].append({"id": "pc", "name": "Windows", "kind": "Рабочая станция"})
+    raw["links"].extend([
+        {"a": "pc", "b": "directum", "kind": "Источник проверки", "confirmed": True},
+        {"a": "snr", "b": "pc", "kind": "Сетевое соединение", "confirmed": True, "portEvidence": [
+            {"a": "ge20", "b": "Ethernet", "source": "SNMP + Windows", "at": stamp, "confirmed": True,
+             "windowsAdapter": {"ifIndex": 10, "checkedAt": stamp, "switchCheckedAt": stamp}},
+        ]},
+    ])
     windows = next((path for path in read()["servicePaths"] if path.get("source") == WINDOWS_PROBE_SOURCE), None)
     assert windows and windows["physicalPair"] == match["physicalPair"] and windows["via"] == "192.0.2.1"
+    assert windows["clientAttachment"] == {"stationId": "pc", "stationPort": "Ethernet", "switchId": "snr",
+                                            "switchPort": "ge20", "source": "SNMP + Windows", "checkedAt": stamp}
+    evidence = raw["links"].pop()["portEvidence"][0]
+    older = (datetime.fromisoformat(stamp) - timedelta(seconds=1)).isoformat()
+    evidence.update(at=older, windowsAdapter={"ifIndex": 10, "checkedAt": older, "switchCheckedAt": stamp})
+    raw["links"].append({"a": "snr", "b": "pc", "kind": "Сетевое соединение", "confirmed": True,
+                         "portEvidence": [evidence]})
+    assert not any("clientAttachment" in path for path in read()["servicePaths"])
+    del raw["links"][-2:]
+    raw["nodes"].pop()
     raw["nodes"][0]["serviceChecks"].pop()
     adapter["virtual"]["switchPorts"].append({"id": "snr", "port": "ge12", "at": stamp, "vlan": 1})
     ambiguous = read()
