@@ -3658,10 +3658,13 @@ def test_shared_lldp_ports_publish_paths_and_require_live_port_and_unique_chassi
     fdb_only = next(row for row in combined_audit["pending"] if row["b"] == "one")
     assert [reading["source"] for reading in fdb_only["observedPaths"]] == ["netctl FDB"]
     assert fdb_only["portB"] == "" and fdb_only["inventoryPeerPorts"] == inventory_peer_ports
+    candidate, = fdb_only["unconfirmedLldpCandidates"]
+    assert (candidate["portId"], candidate["chassisId"], candidate["checkedAt"]) == ("bridge/ether3", first, at)
     combined_row = next(row for row in combined_audit["pending"] if row["b"] == "two")
     assert [reading["source"] for reading in combined_row["observedPaths"]] == ["netctl FDB", "LLDP · общий порт"]
     assert combined_row["lldpPeers"] == rows_by_peer["two"]["lldpPeers"]
     assert combined_row["portB"] == "" and combined_audit["currentPairTotal"] == 0
+    assert "unconfirmedLldpCandidates" not in combined_row
     shared_port, = combined_audit["sharedPorts"]
     assert shared_port == {"switchId": "switch", "port": proof["a"], "peerTotal": 2,
                            "peerIds": ["one", "two"], "liveLldpPeerIds": ["two"]}

@@ -1902,6 +1902,13 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
         if declared := shared_inventory.get(key):
             row["inventoryPeerPorts"] = [declared[peer] for peer in sorted(declared)[:8]]
         pending[row["a"], row["b"], row["portA"], ""] = row
+    shared_lldp_ports = {
+        (node_id, port_label_key(port["name"])): port
+        for node_id, node in nodes.items() for port in node["ports"]
+        if (node_id, port_label_key(port["name"])) in shared_port_keys
+        and port["state"] == "up" and not port["stale"] and port.get("lldpCheckedAt")
+    }
+    device_names = Counter(node["name"].casefold() for node in nodes.values())
     verified_pairs = [
         {**pair, "evidence": [{"source": source, "checkedAt": at} for source, at in sorted(sources.items())]}
         for _, (pair, sources) in sorted(current_pairs.items())
@@ -1911,6 +1918,17 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
         for side, field in (("a", "portA"), ("b", "portB")):
             by_port[pair[side], port_key(pair[side], pair[field])].append(pair)
     for row in pending.values():
+        if row.get("sharedPort") and not any(path["source"] == SHARED_LLDP_SOURCE for path in row["observedPaths"]):
+            port = shared_lldp_ports.get((row["a"], port_key(row["a"], row["portA"])), {})
+            name = row["nameB"].casefold()
+            candidates = [
+                {**neighbor, "checkedAt": port["lldpCheckedAt"]}
+                for neighbor in port.get("lldpNeighbors", [])
+                if device_names[name] == 1 and neighbor.get("systemName", "").casefold() == name
+                and neighbor.get("inventoryDeviceId", row["b"]) == row["b"]
+            ]
+            if candidates:
+                row["unconfirmedLldpCandidates"] = candidates[:8]
         multi_mac_sides = [side for side, port in row.get("portObservations", {}).items()
                            if port.get("fdbLearned", {}).get("learnedMacCount", 0) > 1]
         if multi_mac_sides:
