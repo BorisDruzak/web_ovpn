@@ -3048,7 +3048,8 @@ def load_infrastructure_map(
                  "lldpPortIds": sorted({peer["portId"] for peers in row.get("lldpPeers", {}).values()
                                         for peer in peers if peer.get("portId")}),
                  "portObservations": {
-                     side: {key: port[key] for key in ("name", "state", "speedBps", "checkedAt", "rxSilence") if key in port}
+                     side: {key: port[key] for key in ("name", "state", "speedBps", "checkedAt", "rxSilence",
+                                                       "fdbLearned", "lldpPort") if key in port}
                      for side, port in row.get("portObservations", {}).items()
                  },
                  **{key: row[key] for key in ("archivedPortSides", "inventoryPortSides", "lldpPeers") if key in row}}

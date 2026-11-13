@@ -2145,6 +2145,9 @@ def test_lldp_neighbor_count_on_ports_and_declared_links_uses_current_poll(tmp_p
     assert "private" not in json.dumps(details) and "192.0.2.90" not in json.dumps(details)
     pending, = summarize_topology(public)["topologyAudit"]["pending"]
     assert pending["portObservations"]["a"]["lldpPort"] == expected_status
+    browser_pair, = load_infrastructure_map(path, now, include_guest_attachments=True)["pendingPortPairs"]
+    assert browser_pair["portObservations"]["a"]["lldpPort"] == expected_status
+    assert "lldpPort" not in browser_pair["portObservations"]["b"]
     assert pending["lldpObservations"] == {"a": {"checkedAt": stamp, "neighbors": details}}
     assert pending["missingPortSides"] == [] and pending["identifiedPeerSides"] == ["a"]
     aged = load_infrastructure_map(path, now + timedelta(hours=1))

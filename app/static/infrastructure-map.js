@@ -203,12 +203,25 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       item.append(make('small', 'Сосед опознан со стороны ' + observers.join(', ')));
     }
     for (const path of stpPaths) item.append(make('small', stpPathLabel(path)));
-    for (const port of Object.values(portObservations)) {
-      const reading = [port.name, portLabels[port.state], formatPortSpeed(port.speedBps), formatTime(port.checkedAt)];
+    for (const [side, port] of Object.entries(portObservations)) {
+      const label = `${side === 'a' ? nameA : nameB} ${port.name}`;
+      const reading = [label, portLabels[port.state], formatPortSpeed(port.speedBps), formatTime(port.checkedAt)];
       if (port.rxSilence) reading.push(formatRxSilence(port.rxSilence));
       item.append(make('small', reading.filter(Boolean).join(' · ')));
+      if (port.fdbLearned) {
+        const {learnedMacCount, partial, checkedAt} = port.fdbLearned;
+        item.append(make('small', [label, `Изучено MAC ${learnedMacCount}`, partial ? 'неполный опрос' : '',
+          formatTime(checkedAt)].filter(Boolean).join(' · ')));
+      }
+      if (port.lldpPort?.delta) {
+        item.append(make('small', `${label} · ${formatLldpDelta(port.lldpPort.delta)} · ${formatTime(port.lldpPort.checkedAt)}`));
+      }
     }
     return item;
+  }
+  function formatLldpDelta({intervalSeconds, rxFrames, txFrames}) {
+    return [`LLDP за ${Math.round(intervalSeconds)} с`, `получено кадров ${rxFrames.toLocaleString('ru-RU')}`,
+      `отправлено кадров ${txFrames.toLocaleString('ru-RU')}`].join(' · ');
   }
   function stpPathLabel({deviceId, localPort, bridgeDeviceId, designatedBridgeMac, designatedPortId,
     designatedPortName, checkedAt}) {
@@ -1395,13 +1408,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
             .filter(([, value]) => value !== undefined)
             .map(([direction, value]) => direction + ' кадров ' + value.toLocaleString('ru-RU'));
           row.append(make('small', ['LLDP', modes[admin], ...counters, formatTime(checkedAt)].join(' · ')));
-          if (delta) {
-            row.append(make('small', [
-              'LLDP за ' + Math.round(delta.intervalSeconds) + ' с',
-              'получено кадров ' + delta.rxFrames.toLocaleString('ru-RU'),
-              'отправлено кадров ' + delta.txFrames.toLocaleString('ru-RU'),
-            ].join(' · ')));
-          }
+          if (delta) row.append(make('small', formatLldpDelta(delta)));
         }
         if (selectedPort && port.lldpNeighbors?.length) {
           const observed = make('details');
