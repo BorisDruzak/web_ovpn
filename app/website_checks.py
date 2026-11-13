@@ -32,6 +32,9 @@ HOSTS = {urlsplit(url).hostname for url in SITES}
 LOGIN_HOSTS = {"account.mail.ru", "login.vk.com", "id.vk.com", "auth.pgs.gosuslugi.ru", "esia.gosuslugi.ru"}
 STATE = Path("/var/lib/openvpn-web/website-checks.json")
 NSPD_CA = Path("/etc/openvpn-web/nspd-website-ca.pem")
+PGS_OPENSSL_CONFIG = Path("/etc/openvpn-web/pgs-gost-openssl.cnf")
+PGS_CA = Path("/etc/openvpn-web/pgs-gost-ca.pem")
+PGS_HOSTS = {"pgs.gosuslugi.ru", "auth.pgs.gosuslugi.ru"}
 INTERVAL_MINUTES = 5
 BODY_LIMIT = 2 * 1024 * 1024
 HISTORY_LIMIT = 288
@@ -103,15 +106,23 @@ def fetch(url: str, address) -> tuple[dict, bytes, int]:
     host = parts.hostname
     port = 443 if parts.scheme == "https" else 80
     ip = f"[{address}]" if address.version == 6 else str(address)
-    ca_args = ["--cacert", str(NSPD_CA)] if parts.scheme == "https" and host == "nspd.gov.ru" and NSPD_CA.is_file() else []
+    tls_args = []
+    env = None
+    if parts.scheme == "https":
+        if host in PGS_HOSTS and PGS_OPENSSL_CONFIG.is_file() and PGS_CA.is_file():
+            env = {**os.environ, "OPENSSL_CONF": str(PGS_OPENSSL_CONFIG)}
+            tls_args = ["--cacert", str(PGS_CA), "--tlsv1.2", "--tls-max", "1.2",
+                        "--ciphers", "GOST2012-KUZNYECHIK-KUZNYECHIKOMAC:GOST2012-MAGMA-MAGMAOMAC"]
+        elif host == "nspd.gov.ru" and NSPD_CA.is_file():
+            tls_args = ["--cacert", str(NSPD_CA)]
     with NamedTemporaryFile() as body:
         result = subprocess.run([
             "/usr/bin/curl", "--disable", "--globoff", "--noproxy", "*", "--proto", f"={parts.scheme}",
             "--connect-timeout", "4", "--max-time", "10", "--max-filesize", str(BODY_LIMIT),
             "--silent", "--output", body.name, "--write-out", "%{json}",
-            *ca_args,
+            *tls_args,
             *(["--resolve", f"{host}:{port}:{ip}"] if host != str(address) else []), "--url", url,
-        ], capture_output=True, timeout=12, check=False)
+        ], capture_output=True, timeout=12, check=False, env=env)
         return json.loads(result.stdout or b"{}"), body.read(BODY_LIMIT), result.returncode
 
 

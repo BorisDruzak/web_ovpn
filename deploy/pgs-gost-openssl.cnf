@@ -1,0 +1,12 @@
+openssl_conf = openssl_init
+
+[openssl_init]
+engines = engines
+
+[engines]
+gost = gost_config
+
+[gost_config]
+engine_id = gost
+dynamic_path = /usr/lib/x86_64-linux-gnu/engines-3/gost.so
+default_algorithms = ALL

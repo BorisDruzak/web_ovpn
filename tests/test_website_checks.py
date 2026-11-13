@@ -53,6 +53,35 @@ def test_fetch_uses_nspd_ca_only_for_https_nspd(tmp_path, monkeypatch):
     assert all("--cacert" not in command for command in commands[1:])
 
 
+def test_gost_configuration_is_limited_to_pgs_https(tmp_path, monkeypatch):
+    from subprocess import CompletedProcess
+
+    config = tmp_path / "openssl.cnf"
+    ca = tmp_path / "ca.pem"
+    config.touch()
+    ca.touch()
+    monkeypatch.setattr(checks, "PGS_OPENSSL_CONFIG", config, raising=False)
+    monkeypatch.setattr(checks, "PGS_CA", ca, raising=False)
+    monkeypatch.delenv("OPENSSL_CONF", raising=False)
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append((args, kwargs.get("env") or {}))
+        return CompletedProcess(args, 0, stdout=b"{}")
+
+    monkeypatch.setattr(checks.subprocess, "run", run)
+    address = ipaddress.ip_address("82.202.191.39")
+    for url in ("https://pgs.gosuslugi.ru/", checks.PGS_LOGIN,
+                "http://pgs.gosuslugi.ru/", "https://example.org/"):
+        checks.fetch(url, address)
+    for args, env in calls[:2]:
+        assert env["OPENSSL_CONF"] == str(config)
+        assert args[args.index("--cacert") + 1] == str(ca)
+    for args, env in calls[2:]:
+        assert "OPENSSL_CONF" not in env
+        assert "--ciphers" not in args
+
+
 def test_https_failure_keeps_tcp_success_and_identifies_tls_stage(monkeypatch):
     address = ipaddress.ip_address("82.202.191.39")
     monkeypatch.setattr(checks, "resolve_public", lambda _: [address])
