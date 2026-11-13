@@ -2501,8 +2501,8 @@ def test_route_history_filters_by_profile_and_time_in_api_and_ui(tmp_path, monke
 
 
 def test_network_diagnostics_shows_latest_scheduled_result_per_profile(tmp_path, monkeypatch):
-    client, _ = make_client(tmp_path, monkeypatch)
-    from app import main
+    client, headers = make_client(tmp_path, monkeypatch)
+    from app import api, main
     from app.db import get_sessionmaker
     from app.network_route_history import persist_route_run
 
@@ -2517,6 +2517,7 @@ def test_network_diagnostics_shows_latest_scheduled_result_per_profile(tmp_path,
         "throughput": [], "https_speed": [], "capture": [],
     }
     monkeypatch.setattr(main, "probe_catalog", lambda: catalog)
+    monkeypatch.setattr(api, "probe_catalog", lambda: catalog)
     now = datetime.now(timezone.utc)
     with get_sessionmaker()() as db:
         for owner, profile, age, status, digest in (
@@ -2532,6 +2533,21 @@ def test_network_diagnostics_shows_latest_scheduled_result_per_profile(tmp_path,
                 ]},
             })
         db.commit()
+
+    endpoint = "/api/v1/network/diagnostics/route-overview"
+    assert client.get(endpoint).status_code == 401
+    response = client.get(endpoint, headers=headers)
+    assert response.status_code == 200
+    profiles = response.json()["data"]["profiles"]
+    assert [(profile["id"], profile["fresh"]) for profile in profiles] == [
+        ("main", True), ("archive", False), ("missing", False),
+    ]
+    assert profiles[0]["run"]["status"] == "reachable"
+    assert profiles[0]["run"]["configuration_status"] == "current"
+    assert set(profiles[0]["run"]) == {"id", "checked_at", "status", "configuration_status"}
+    assert profiles[1]["run"]["status"] == "timeout"
+    assert profiles[1]["run"]["configuration_status"] == "changed"
+    assert profiles[2]["run"] is None
 
     login(client)
     page = client.get("/network/diagnostics")

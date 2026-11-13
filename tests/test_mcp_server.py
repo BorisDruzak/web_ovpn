@@ -31,6 +31,17 @@ def test_route_availability_mcp_uses_existing_http_check_and_history(monkeypatch
     assert "https_speed" in schema["properties"]["check"]["enum"]
 
 
+def test_route_overview_mcp_reads_scheduled_profiles(monkeypatch):
+    from mcp import openvpn_mcp_server as server
+
+    calls = []
+    monkeypatch.setattr(server, "api_request", lambda *args: calls.append(args))
+    name = "openvpn_network_route_overview"
+    assert server.TOOLS[name]["inputSchema"]["properties"] == {}
+    server.call_tool(name, {})
+    assert calls == [("GET", "/api/v1/network/diagnostics/route-overview")]
+
+
 def test_complete_workflow_reference_and_tool_help_use_original_job():
     import mcp.openvpn_mcp_server as server
     tools=server.TOOLS
