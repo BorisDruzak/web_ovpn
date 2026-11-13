@@ -267,7 +267,7 @@
   {% endif %}
   {% for run in route_runs %}
   <details>
-    <summary>{{ run.result.label }} · {{ route_status(run.status, run.result.probes, status_labels) }} · {{ 'По расписанию' if run.trigger == 'scheduled' else 'Вручную' }}{% if run.result.path_changes %} · Сменился первый узел{% endif %}{% if run.result.probe_changes %} · Изменились статусы проб{% endif %} · <time datetime="{{ run.checked_at }}">{{ run.checked_at }}</time></summary>
+    <summary>{{ run.result.label }} · {{ route_status(run.status, run.result.probes, status_labels) }} · {{ 'По расписанию' if run.trigger == 'scheduled' else 'Вручную' }}{% if run.configuration_status == 'changed' %} · Конфигурация изменилась{% elif run.configuration_status == 'unconfirmed' %} · Конфигурация не подтверждена{% endif %}{% if run.result.path_changes %} · Сменился первый узел{% endif %}{% if run.result.probe_changes %} · Изменились статусы проб{% endif %} · <time datetime="{{ run.checked_at }}">{{ run.checked_at }}</time></summary>
     {% for change in run.result.path_changes %}
     <p>{{ change.probe_id }} · первый узел {{ change.from }} → {{ change.to }}</p>
     {% endfor %}

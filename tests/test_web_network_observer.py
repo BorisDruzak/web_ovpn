@@ -2500,6 +2500,39 @@ def test_route_history_filters_by_profile_and_time_in_api_and_ui(tmp_path, monke
     assert client.get(ui, params={**params, "until": params["since"]}).status_code == 422
 
 
+def test_route_history_marks_changed_configuration(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, monkeypatch)
+    from app import main
+    from app.db import get_sessionmaker
+    from app.network_route_history import persist_route_run
+
+    monkeypatch.setattr(main, "probe_catalog", lambda: {
+        "routes": [{"id": "wan", "label": "WAN", "probes": [{"id": "gateway", "config_digest": "a" * 64}]}],
+        "throughput": [], "https_speed": [], "capture": [],
+    })
+    with get_sessionmaker()() as db:
+        for i, digest in enumerate(("a" * 64, "b" * 64, None)):
+            probe = {
+                "id": "gateway", "origin": "router", "target": "192.0.2.1", "protocol": "icmp",
+                "status": "reachable", "expected_path": "WAN", "evidence": {},
+            }
+            if digest:
+                probe["config_digest"] = digest
+            persist_route_run(db, owner="schedule:", result={
+                "check": "route_availability", "target": "wan", "status": "reachable",
+                "checked_at": (datetime.now(timezone.utc) - timedelta(minutes=i)).isoformat(),
+                "result": {"label": f"Запуск {i}", "probes": [probe]},
+            })
+        db.commit()
+    login(client)
+    page = client.get("/network/diagnostics", params={"profile": "wan"})
+    assert page.status_code == 200
+    summaries = {line.strip() for line in page.text.splitlines() if "<summary>Запуск" in line}
+    assert any("Запуск 1" in line and "Конфигурация изменилась" in line for line in summaries)
+    assert any("Запуск 2" in line and "Конфигурация не подтверждена" in line for line in summaries)
+    assert any("Запуск 0" in line and "Конфигурация" not in line for line in summaries)
+
+
 def test_network_active_check_uses_shared_throttle(tmp_path, monkeypatch):
     client, headers = make_client(tmp_path, monkeypatch)
     from app import network_checks

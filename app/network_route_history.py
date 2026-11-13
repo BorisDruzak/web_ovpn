@@ -143,6 +143,14 @@ def list_route_runs(
     ]
 
 
+def route_run_configuration_status(run: dict, current: dict[str, str] | None) -> str:
+    probes = run["result"].get("probes", [])
+    if current is None or any(not probe.get("config_digest") for probe in probes):
+        return "unconfirmed"
+    saved = {probe["id"]: probe["config_digest"] for probe in probes}
+    return "current" if saved == current and len(saved) == len(probes) else "changed"
+
+
 def run_scheduled_route_probes(db: Session, *, now: datetime | None = None) -> int:
     now = now or utcnow()
     _purge_route_runs(db, now)

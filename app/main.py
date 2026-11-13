@@ -50,7 +50,7 @@ from .network_checks import (
     interface_history_args, list_network_check_runs, run_audited_network_check,
 )
 from .network_probe_profiles import PROFILE_ID_PATTERN, probe_catalog
-from .network_route_history import MAX_ROUTE_RUN_LIST, list_route_runs, route_history_window
+from .network_route_history import MAX_ROUTE_RUN_LIST, list_route_runs, route_history_window, route_run_configuration_status
 from .endpoint_agent_network import (
     attach_endpoint_agent_statuses,
     endpoint_agent_refresh_status,
@@ -2589,6 +2589,12 @@ def render_network_checks(request: Request, db: Session, *, result=None, values=
             until=end.strftime("%Y-%m-%dT%H:%M") if end else None,
         )
     history_profiles = {row["id"]: row["label"] for row in catalog["routes"]}
+    current_digests = {
+        row["id"]: {probe["id"]: probe["config_digest"] for probe in row["probes"]}
+        for row in catalog["routes"]
+    }
+    for run in route_runs:
+        run["configuration_status"] = route_run_configuration_status(run, current_digests.get(run["target"]))
     if profile and not history_error:
         history_profiles.setdefault(profile, profile)
     return render(request, "network_checks.html", {
