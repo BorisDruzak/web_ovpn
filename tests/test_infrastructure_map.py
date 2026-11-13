@@ -6500,6 +6500,8 @@ def test_attachment_view_includes_physical_service_hosts_and_distinguishes_port_
     ]
     learned_row = browser_graph["pendingPortPairs"][0]
     assert learned_row["observedSources"] == ["netctl FDB"]
+    assert learned_row["identifiedPeerSides"] == ["a"]
+    assert learned_row["observedSourceTimes"] == {"netctl FDB": stamp}
     assert learned_row["lldpPortIds"] == ["bridgeLocal/ether2"]
     configured_row = browser_graph["pendingPortPairs"][1]
     assert configured_row["portObservations"]["a"] == {

@@ -162,15 +162,23 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     summary.textContent = 'Пары портов без подтверждения · ' + pendingPortPairTotal;
     if (lacpPartnerInterfaceGapTotal) summary.append(' · Интерфейсы LACP · ' + lacpPartnerInterfaceGapTotal);
     const pending = pendingPortPairs.map(({a, b, nameA, nameB, portA, portB, observedSources = [], lldpPortIds = [],
-      archivedPortSides = [], inventoryPortSides = [], portObservations = {}}) => {
+      observedSourceTimes = {}, identifiedPeerSides = [], archivedPortSides = [], inventoryPortSides = [],
+      portObservations = {}}) => {
       const item = make('li');
       const provenance = key => archivedPortSides.includes(key) ? ' (по архиву)' :
         inventoryPortSides.includes(key) ? ' (по инвентарю)' : '';
       item.append(portPairEndpoint(a, nameA, portA), provenance('a'), ' ↔ ',
         portPairEndpoint(b, nameB, portB), provenance('b'));
-      const evidence = observedSources.map(source => source === 'netctl FDB' ? 'MAC на порту' : source);
-      if (lldpPortIds.length) evidence.push('LLDP Port ID ' + lldpPortIds.join(', '));
-      if (evidence.length) item.append(make('small', evidence.join(' · ')));
+      for (const source of observedSources) {
+        const label = source === 'netctl FDB' ? 'MAC на порту' : source;
+        const checkedAt = observedSourceTimes[source];
+        item.append(make('small', checkedAt ? `${label} · ${formatTime(checkedAt)}` : label));
+      }
+      if (lldpPortIds.length) item.append(make('small', 'LLDP Port ID ' + lldpPortIds.join(', ')));
+      if (identifiedPeerSides.length) {
+        const observers = identifiedPeerSides.map(side => side === 'a' ? nameA : nameB);
+        item.append(make('small', 'Сосед опознан со стороны ' + observers.join(', ')));
+      }
       for (const port of Object.values(portObservations)) {
         const reading = [port.name, portLabels[port.state], formatPortSpeed(port.speedBps), formatTime(port.checkedAt)];
         if (port.rxSilence) reading.push(formatRxSilence(port.rxSilence));

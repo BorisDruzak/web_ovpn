@@ -3018,6 +3018,12 @@ def load_infrastructure_map(
             pendingPortPairs=[
                 {**{key: row[key] for key in ("a", "b", "nameA", "nameB", "portA", "portB")},
                  "observedSources": sorted({reading["source"] for reading in row["observedPaths"]}),
+                 "observedSourceTimes": {
+                     reading["source"]: reading["checkedAt"]
+                     for reading in sorted(row["observedPaths"], key=lambda item: item["checkedAt"] or "")
+                     if reading["checkedAt"]
+                 },
+                 "identifiedPeerSides": row["identifiedPeerSides"],
                  "lldpPortIds": sorted({peer["portId"] for peers in row.get("lldpPeers", {}).values()
                                         for peer in peers if peer.get("portId")}),
                  "portObservations": {
