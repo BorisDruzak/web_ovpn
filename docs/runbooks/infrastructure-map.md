@@ -335,6 +335,8 @@
 | Карточка | Путь | `content_type` | `body_contains` |
 | --- | --- | --- | --- |
 | `pbs-web` | `/js/proxmox-backup-gui.js` | `application/javascript` | `pbs_documentation_index` |
+| `pbs-web` | `/extjs/ext-all.js` | `application/javascript` | `Ext.util` |
+| `pbs-web` | `/widgettoolkit/proxmoxlib.js` | `application/javascript` | `Proxmox.Utils` |
 | `vipnet-coordinator-web` | `/localizer.js` | `application/x-javascript` | `function getCookieParam` |
 | `pbs-ipmi-web`, `pve3-ipmi-web` | `/js/utils.js` | `text/javascript` | `ReadCookie("language")` |
 
