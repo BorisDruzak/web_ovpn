@@ -439,6 +439,17 @@ def test_observer_disk_measurements_publish_units_and_reported_warning_threshold
     snapshot.write_text(json.dumps(with_threshold), encoding="utf-8")
     memory = read()["windows_memory_available_percent"]
     assert (memory["status"], memory["required"], memory["warningThreshold"]) == ("warn", True, 5)
+    linux_report = {"freshness": "current", "targets": [{
+        "role": "nextcloud", "status": "ok", "observed_at": stamp, "checks": [
+            {"name": "linux_memory_available_percent", "status": "ok", "observed": 4.5},
+        ],
+    }]}
+    linux_config = {"roles": {"nextcloud": {"linux_memory_warning_percent": 5}}}
+    linux_graph = build_graph({}, {}, linux_report, {}, linux_config, now)
+    linux_graph["serverObserverAt"] = stamp
+    snapshot.write_text(json.dumps(linux_graph), encoding="utf-8")
+    memory = read()["linux_memory_available_percent"]
+    assert (memory["status"], memory["required"], memory["warningThreshold"]) == ("warn", True, 5)
     snapshot.write_text(json.dumps(graph), encoding="utf-8")
     assert checks["data_disk_free"]["observed"] is None
     assert "warningThreshold" not in checks["data_disk_free"]

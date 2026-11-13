@@ -2368,9 +2368,11 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                           for check in target_checks]
         configured_checks = configured.get("required_observer_checks", [])
         required_checks = list(configured_checks) if isinstance(configured_checks, list) else []
-        memory_warning = configured.get("windows_memory_warning_percent")
-        if type(memory_warning) in (int, float) and 0 < memory_warning <= 100:
-            memory_check = "windows_memory_available_percent"
+        for platform in ("windows", "linux"):
+            memory_warning = configured.get(f"{platform}_memory_warning_percent")
+            if type(memory_warning) not in (int, float) or not 0 < memory_warning <= 100:
+                continue
+            memory_check = f"{platform}_memory_available_percent"
             required_checks.append(memory_check)
             for check in item["checks"]:
                 if check["name"] != memory_check or check["status"] != "ok":
