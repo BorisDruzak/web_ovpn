@@ -1295,12 +1295,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         : [`${guest} ${path.guestPort}`, path.bridge, `${host} ${hostPort}`].join(' → ');
       row.append(make('small', connection),
         switchPortButton(path.switchId, target, switchPort));
-      for (const [side, link] of Object.entries(path.uplinkPortLinks ?? {})) {
-        const label = side === 'host' ? `${host} ${hostPort}` : `${target} ${switchPort}`;
-        row.append(make('small', [label, portLabels[link.state], formatPortSpeed(link.speedBps),
-          link.source ?? (side === 'switch' ? 'SNMP' : ''),
-          formatTime(link.speedCheckedAt ?? link.checkedAt)].filter(Boolean).join(' · ')));
-      }
+      appendUplinkPortLinks(row, path.uplinkPortLinks, `${host} ${hostPort}`, `${target} ${switchPort}`);
       const uplinkTelemetry = path.switchPortTelemetry;
       if (uplinkTelemetry) {
         const rates = [['RX', uplinkTelemetry.rxBps], ['TX', uplinkTelemetry.txBps]]
@@ -1410,6 +1405,15 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     return panel;
   }
 
+  function appendUplinkPortLinks(row, links, hostLabel, switchLabel) {
+    for (const [side, link] of Object.entries(links ?? {})) {
+      const label = side === 'host' ? hostLabel : switchLabel;
+      row.append(make('small', [label, portLabels[link.state], formatPortSpeed(link.speedBps),
+        link.source ?? (side === 'switch' ? 'SNMP' : ''),
+        formatTime(link.speedCheckedAt ?? link.checkedAt)].filter(Boolean).join(' · ')));
+    }
+  }
+
   function renderGuestAttachment(attachment) {
     if (!attachment?.interfaces.length) return null;
     const panel = make('details', null, 'map-port-panel');
@@ -1466,8 +1470,12 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const vlan = observation.vlan ?? iface.vlan;
         row.append(make('small', [labels[basis], vlan && 'VLAN ' + vlan, formatTime(checkedAt)].filter(Boolean).join(' · ')));
         if (basis === 'bridge_uplink') row.append(make('small', 'MAC гостя на коммутаторе не подтверждён'));
-        if (physicalPair) row.append(make('small',
-          ['Физическая пара подтверждена', physicalPair.source, formatTime(physicalPair.checkedAt)].join(' · ')));
+        if (physicalPair) {
+          row.append(make('small',
+            ['Физическая пара подтверждена', physicalPair.source, formatTime(physicalPair.checkedAt)].join(' · ')));
+          appendUplinkPortLinks(row, observation.uplinkPortLinks,
+            `${attachment.hypervisor.name} ${physicalPair.hostPort}`, `${target.name} ${targetPort}`);
+        }
         if (vlanMemberships) {
           const modes = {tagged: 'с тегом', untagged: 'без тега'};
           for (const [side, reading] of Object.entries(vlanMemberships.ports)) {
