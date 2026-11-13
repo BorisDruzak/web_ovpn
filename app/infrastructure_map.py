@@ -2834,10 +2834,11 @@ def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
     guests = _guest_attachments(nodes, links, sorted(guest_ids)[:12])
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
     detail = {}
-    if anchor and anchor["kind"] == "Сервис":
+    if anchor:
         detail["checks"] = anchor["checks"]
         detail["serviceChecks"] = anchor["serviceChecks"]
         detail["reachability"] = anchor["reachability"]
+    if anchor and anchor["kind"] == "Сервис":
         dependency_ids = sorted({edge["b"] for edge in links
                                  if edge["a"] == node_id and edge["confirmed"]
                                  and edge["kind"] in SERVICE_LINKS and nodes[edge["b"]]["kind"] == "Сервис"})
@@ -2859,7 +2860,10 @@ def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
         detail["servicePorts"] = graph.get("servicePorts", attachments["servicePorts"]).get(node_id, [])
         if paths := attachments["servicePaths"].get(node_id):
             detail["servicePaths"] = paths
-    elif anchor and anchor["guest"]:
+    elif anchor and not anchor["guest"]:
+        if paths := _management_service_paths(anchor, node_id, {}, _observed_management_ports(links, nodes)):
+            detail["servicePaths"] = paths
+    if anchor and anchor["kind"] not in ("Сервис", CLUSTER_KIND):
         service_hosts = defaultdict(set)
         for edge in links:
             if (_is_service_attachment(edge) and nodes[edge["a"]]["kind"] != "Сервис"
@@ -2868,16 +2872,20 @@ def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
         service_ids = sorted(key for key, hosts in service_hosts.items() if node_id in hosts)
         detail["serviceTotal"] = len(service_ids)
         detail["services"] = []
+        management_ports = _observed_management_ports(links, nodes) if service_ids and not anchor["guest"] else {}
+        management_paths = _management_port_paths(nodes, links) if service_ids and not anchor["guest"] else {}
         for key in service_ids[:24]:
             service = nodes[key]
+            paths = []
+            if service_hosts[key] == {node_id}:
+                if anchor["guest"]:
+                    paths = _service_attachment_paths(service, guests)
+                else:
+                    paths = _management_service_paths(service, node_id, management_paths, management_ports)
             detail["services"].append({
                 "node": _attachment_node(service), "checks": service["checks"],
-                "serviceChecks": service["serviceChecks"],
-                "servicePaths": _service_attachment_paths(service, guests) if service_hosts[key] == {node_id} else [],
+                "serviceChecks": service["serviceChecks"], "servicePaths": paths,
             })
-    elif anchor:
-        if paths := _management_service_paths(anchor, node_id, {}, _observed_management_ports(links, nodes)):
-            detail["servicePaths"] = paths
     return {**metadata, "attachment": {"node": _attachment_node(anchor) if anchor else None,
                                        "guestTotal": len(guest_ids), "guests": list(guests.values()),
                                        "physicalHostTotal": len(host_ids),

@@ -6348,7 +6348,11 @@ def test_skipped_service_shows_arp_from_its_host_and_same_address(tmp_path, monk
     assert attachment["serviceChecks"] == [matching, other]
     assert attachment["servicePaths"] == []
     assert attachment["physicalHosts"][0]["host"]["id"] == "server"
-    assert "serviceChecks" not in summarize_guest_attachment(loaded, "server")["attachment"]
+    server = summarize_guest_attachment(loaded, "server")["attachment"]
+    assert server["serviceChecks"] == next(node["serviceChecks"] for node in loaded["nodes"] if node["id"] == "server")
+    assert server["serviceTotal"] == 1
+    assert server["services"] == [{"node": attachment["node"], "checks": attachment["checks"],
+                                    "serviceChecks": [matching, other], "servicePaths": []}]
 
 
 def test_icmp_via_expected_router_keeps_route_evidence_separate_from_echo(monkeypatch):
