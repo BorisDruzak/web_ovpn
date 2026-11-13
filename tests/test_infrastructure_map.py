@@ -6468,7 +6468,9 @@ def test_ipmi_lan_requires_a_matching_rmcp_pong_with_ipmi_support(monkeypatch):
     assert (result["method"], result["state"], result["target"], result["port"]) == (
         "IPMI LAN (UDP)", "reachable", address, 623,
     )
-    assert check()["reason"] == "timeout"
+    assert 0 <= result["roundTripMs"] <= 3000
+    timed_out = check()
+    assert timed_out["reason"] == "timeout" and "roundTripMs" not in timed_out
     responses.extend([(1, 0x81), (0, 0x01)])
     assert check()["reason"] == "unexpected_response"
     assert check(port=443)["state"] == "unknown"

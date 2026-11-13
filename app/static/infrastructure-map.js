@@ -2096,6 +2096,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
             row.append(make('small', [
               [probe.method, probe.localListener ? '' : probe.transport].filter(Boolean).join(' '),
               `${address}${probe.port ? ':' + probe.port : ''}${probe.path ?? ''}`, ...states,
+              probe.roundTripSamplesMs?.length && `RTT ${probe.roundTripSamplesMs.map(value =>
+                value.toLocaleString('ru-RU', {maximumFractionDigits: 3})).join(', ')} мс`,
               probe.responseCodes?.length && `Ответ ${probe.responseCodes.join(', ')}`,
               probe.rdpSecurityModes?.join(', '),
               ...(probe.zabbixVersions ?? []).map(version => `Zabbix ${version}`),

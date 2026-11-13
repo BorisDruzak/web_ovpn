@@ -673,10 +673,12 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         else:
             result.update(state="unknown", stale=True)
     icmp = identified_icmp or result["method"] in ("ICMP", "ICMP адреса из инвентаря", "ICMP · VLAN", PPPOE_INTERNET_METHOD)
-    if icmp:
+    if icmp or (result["method"] == "IPMI LAN (UDP)" and result["source"] == "UI_VPN"
+                and result["state"] == "reachable" and not result["stale"]):
         round_trip = check.get("roundTripMs")
         if type(round_trip) in (int, float) and 0 <= round_trip <= 3000:
             result["roundTripMs"] = round_trip
+    if icmp:
         if reason in ("icmp_no_echo_reply", "icmp_reply_unconfirmed", "icmp_unreachable", "icmp_probe_error",
                       "icmp_source_ssh_unavailable",
                       "icmp_route_unconfirmed", "icmp_route_mismatch"):
@@ -2434,6 +2436,8 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime, *, endpoint_
             })
             count = {"reachable": "passed", "unreachable": "failed"}.get(check["state"], "unconfirmed")
             probe[count] += 1
+            if method == "IPMI LAN (UDP)" and "roundTripMs" in check:
+                probe.setdefault("roundTripSamplesMs", []).append(check["roundTripMs"])
             code = check.get("httpStatus") or check.get("responseCode") or check.get("rtspStatus") or check.get("ftpReply")
             if code is not None:
                 codes = probe.setdefault("responseCodes", [])

@@ -1057,13 +1057,14 @@ def _ipmi_lan(spec: dict) -> dict:
             error_option = _enable_udp_error_queue(connection, family)
             connection.connect((str(ip), IPMI_PORT))
             try:
+                started = monotonic()
                 connection.sendall(request)
-                deadline = monotonic() + TIMEOUT
+                deadline = started + TIMEOUT
                 while (remaining := deadline - monotonic()) > 0:
                     connection.settimeout(remaining)
                     response = connection.recv(64)
                     if len(response) == 28 and response.startswith(reply_prefix) and response[20] & 0x80:
-                        return {"state": "reachable"}
+                        return {"state": "reachable", "roundTripMs": round((monotonic() - started) * 1000, 3)}
                     result["reason"] = "unexpected_response"
             except TimeoutError:
                 return result
