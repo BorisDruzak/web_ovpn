@@ -2,23 +2,27 @@
 
 import ipaddress
 import json
+import os
 import re
+import secrets
 import socket
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field
 from .website_receipts import MAX_AGE as WINDOWS_MAX_AGE, WINDOWS_SITES, WINDOWS_STATE, store
 
+PGS_LOGIN = "https://auth.pgs.gosuslugi.ru/auth/realms/DigitalgovTorkndProd1Auth/protocol/openid-connect/auth"
 SITES = (
     "https://www.gosuslugi.ru/",
     "https://frgu3.gosuslugi.ru/",
     "https://pos.gosuslugi.ru/admin/login",
     "https://pgs.gosuslugi.ru/",
+    PGS_LOGIN,
     "https://digital.gov74.ru/",
     "https://e.mail.ru/inbox",
     "https://app.workspace.vk.ru/mail",
@@ -27,6 +31,7 @@ SITES = (
 HOSTS = {urlsplit(url).hostname for url in SITES}
 LOGIN_HOSTS = {"account.mail.ru", "login.vk.com", "id.vk.com", "auth.pgs.gosuslugi.ru", "esia.gosuslugi.ru"}
 STATE = Path("/var/lib/openvpn-web/website-checks.json")
+NSPD_CA = Path("/etc/openvpn-web/nspd-website-ca.pem")
 INTERVAL_MINUTES = 5
 BODY_LIMIT = 2 * 1024 * 1024
 HISTORY_LIMIT = 288
@@ -98,11 +103,13 @@ def fetch(url: str, address) -> tuple[dict, bytes, int]:
     host = parts.hostname
     port = 443 if parts.scheme == "https" else 80
     ip = f"[{address}]" if address.version == 6 else str(address)
+    ca_args = ["--cacert", str(NSPD_CA)] if parts.scheme == "https" and host == "nspd.gov.ru" and NSPD_CA.is_file() else []
     with NamedTemporaryFile() as body:
         result = subprocess.run([
             "/usr/bin/curl", "--disable", "--globoff", "--noproxy", "*", "--proto", f"={parts.scheme}",
             "--connect-timeout", "4", "--max-time", "10", "--max-filesize", str(BODY_LIMIT),
             "--silent", "--output", body.name, "--write-out", "%{json}",
+            *ca_args,
             *(["--resolve", f"{host}:{port}:{ip}"] if host != str(address) else []), "--url", url,
         ], capture_output=True, timeout=12, check=False)
         return json.loads(result.stdout or b"{}"), body.read(BODY_LIMIT), result.returncode
@@ -112,6 +119,51 @@ def trace(address) -> dict:
     from .network_checks import trace_address
 
     return trace_address(address)
+
+
+def ping(address) -> dict:
+    try:
+        result = subprocess.run(
+            ["/usr/bin/ping", f"-{address.version}", "-n", "-c", "3", "-W", "1", str(address)],
+            capture_output=True, text=True, timeout=5, check=False, env={**os.environ, "LC_ALL": "C"},
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {"status": "unavailable"}
+    stats = re.search(r"(\d+) packets transmitted, (\d+) (?:packets )?received, ([\d.]+)% packet loss", result.stdout)
+    if stats is None:
+        return {"status": "unavailable"}
+    sent, received, loss = stats.groups()
+    rtt = re.search(r"= [\d.]+/([\d.]+)/[\d.]+/[\d.]+ ms", result.stdout)
+    return {"status": "reply" if int(received) else "no_reply", "sent": int(sent), "received": int(received),
+            "loss_percent": float(loss), "avg_ms": float(rtt[1]) if rtt else None}
+
+
+def probe_path(address, port: int) -> dict:
+    from .network_checks import lookup_linux_route
+
+    route = lookup_linux_route(address, tcp_port=port)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending_ping = pool.submit(ping, address)
+        traced = trace(address)
+    return {"route": route, "trace": traced, "ping": pending_ping.result()}
+
+
+def certificate_summary(info: dict) -> dict | None:
+    certs = info.get("certs")
+    if not isinstance(certs, str):
+        return None
+    leaf = certs.split("-----END CERTIFICATE-----", 1)[0]
+    fields = {"Subject": "subject", "Issuer": "issuer", "Start date": "not_before", "Expire date": "not_after"}
+    summary = {}
+    for line in leaf.splitlines():
+        label, _, value = line.partition(":")
+        if label in fields:
+            summary[fields[label]] = value.strip()[:512]
+    return summary or None
+
+
+def elapsed_ms(seconds) -> int | None:
+    return round(seconds * 1000) if isinstance(seconds, (int, float)) and seconds > 0 else None
 
 
 def _approved_redirect(url: str) -> bool:
@@ -142,8 +194,14 @@ def manual_check(db, actor: str, url: str) -> dict:
 
 def check_site(url: str, *, manual: bool = False) -> dict:
     url = public_url(url)
-    row = {"url": url, "checked_at": datetime.now(UTC).isoformat(), "redirects": []}
+    row = {"url": url, "origin": "vpn-server", "checked_at": datetime.now(UTC).isoformat(), "redirects": []}
     current = url
+    if current == PGS_LOGIN:
+        current += "?" + urlencode({
+            "response_type": "code", "scope": "openid", "client_id": "DigitalgovTorkndProd1Auth-Proxy",
+            "redirect_uri": "https://pgs.gosuslugi.ru/openid-connect-auth/redirect_uri",
+            "state": secrets.token_hex(16), "nonce": secrets.token_hex(16),
+        })
     for _ in range(3 if manual else 4):
         row["dns"] = []
         try:
@@ -153,7 +211,8 @@ def check_site(url: str, *, manual: bool = False) -> dict:
         eligible = [ip for ip in addresses if is_public(ip)]
         if not eligible or (manual and len(eligible) != len(addresses)):
             row.update(status="non_public_address" if addresses else "dns_error", address=None, http_status=None, tls="unconfirmed",
-                       content_type=None, body_bytes=0, total_ms=None, first_byte_ms=None)
+                       failure_stage="dns", content_type=None, body_bytes=0, total_ms=None, first_byte_ms=None,
+                       tcp_ms=None, tls_ms=None, certificate=None, certificate_verify_code=None, source_address=None)
             break
         row["dns"] = [str(ip) for ip in eligible[:16]]
         for address in eligible[:1 if manual else 3]:
@@ -165,13 +224,22 @@ def check_site(url: str, *, manual: bool = False) -> dict:
             if code not in (7, 28):
                 break
         status = info.get("http_code") or None
+        https = urlsplit(current).scheme == "https"
+        tls_ms = elapsed_ms(info.get("time_appconnect"))
+        tcp_ms = elapsed_ms(info.get("time_connect"))
+        tls_error = code in (35, 51, 53, 54, 58, 59, 60, 77, 82, 83, 90, 91, 98)
         row.update(http_status=status, content_type=info.get("content_type"), body_bytes=len(body),
-                   tls=("not_applicable" if urlsplit(current).scheme == "http" else
-                        "verified" if status else "failed" if code in (35, 51, 60, 77, 83, 90, 91) else "unconfirmed"),
-                   total_ms=round(info["time_total"] * 1000) if isinstance(info.get("time_total"), (int, float)) else None,
-                   first_byte_ms=round(info["time_starttransfer"] * 1000) if info.get("time_starttransfer") else None)
+                   tls=("not_applicable" if not https else "failed" if tls_error else
+                        "verified" if status or tls_ms is not None else "unconfirmed"),
+                   certificate=certificate_summary(info) if https else None,
+                   certificate_verify_code=info.get("ssl_verify_result") if https and (status or tls_ms is not None or code == 60) else None,
+                   curl_exit_code=code,
+                   source_address=info.get("local_ip") or None, tcp_ms=tcp_ms, tls_ms=tls_ms,
+                   total_ms=elapsed_ms(info.get("time_total")), first_byte_ms=elapsed_ms(info.get("time_starttransfer")))
         if code:
             row["status"] = {28: "timeout", 63: "body_limit"}.get(code, "tls_error" if row["tls"] == "failed" else "connection_error")
+            row["failure_stage"] = ("tls" if tls_error else "http" if status or tls_ms is not None else
+                                    "tcp" if tcp_ms is None else "tls" if https else "http")
             break
         redirect = info.get("redirect_url")
         if status and 300 <= status < 400 and redirect:
@@ -179,6 +247,7 @@ def check_site(url: str, *, manual: bool = False) -> dict:
                 redirect = public_url(redirect)
             except (ValueError, UnicodeError):
                 row["status"] = "redirect_outside_catalog"
+                row["failure_stage"] = "http"
                 break
             if urlsplit(redirect).hostname in LOGIN_HOSTS and urlsplit(redirect).scheme == "https":
                 row["redirects"].append(urlsplit(redirect).hostname)
@@ -187,16 +256,22 @@ def check_site(url: str, *, manual: bool = False) -> dict:
             if (manual and urlsplit(current).scheme == "https" and urlsplit(redirect).scheme != "https"
                     or not manual and not _approved_redirect(redirect)):
                 row["status"] = "redirect_outside_catalog"
+                row["failure_stage"] = "http"
                 break
             row["redirects"].append(urlsplit(redirect).hostname)
             current = redirect
             continue
         row["status"] = page_status(status or 0, row["content_type"] or "", body)
+        if row["status"] != "ok":
+            row["failure_stage"] = "http"
         break
     else:
         row["status"] = "redirect_limit"
+        row["failure_stage"] = "http"
     if row.get("address"):
-        row["trace"] = trace(ipaddress.ip_address(row["address"]))
+        row.update(probe_path(ipaddress.ip_address(row["address"]), 443 if https else 80))
+        if not row["source_address"]:
+            row["source_address"] = row.get("route", {}).get("result", {}).get("prefsrc")
     return row
 
 
@@ -215,7 +290,7 @@ def report() -> dict:
         "sites": [rows.get(url, {"url": url, "status": "pending"}) for url in SITES],
         "history": [
             {"checked_at": run["checked_at"],
-             "sites": [{key: site.get(key) for key in ("url", "status", "http_status", "total_ms")}
+             "sites": [{key: site.get(key) for key in ("url", "status", "http_status", "total_ms", "failure_stage")}
                        for site in run["sites"]]}
             for run in history[:12]
         ],

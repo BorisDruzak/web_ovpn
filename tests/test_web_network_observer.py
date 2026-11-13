@@ -3175,7 +3175,8 @@ def test_scheduled_websites_are_available_in_panel_and_api(tmp_path, monkeypatch
     endpoint = "/api/v1/network/websites"
     assert client.get(endpoint).status_code == 401
     data = client.get(endpoint, headers=headers).json()["data"]
-    assert len(data["sites"]) == 8 and data["stale"]
+    assert [site["url"] for site in data["sites"]] == list(website_checks.SITES)
+    assert data["stale"]
     run = endpoint + "/check"
     monkeypatch.setattr(website_checks, "check_site", lambda url, *, manual: {"url": url, "status": "ok"})
     assert client.post(run, headers=headers, json={"url": "http://127.0.0.1/"}).status_code == 422

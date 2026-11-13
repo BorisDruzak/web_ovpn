@@ -10,6 +10,7 @@
   'body_limit': 'Превышен размер ответа', 'pending': 'Ожидается проверка',
   'login_redirect': 'Переход к странице входа', 'non_public_address': 'DNS вернул непубличный адрес'
 } %}
+{% set stages = {'dns': 'DNS', 'tcp': 'TCP', 'tls': 'TLS', 'http': 'HTTP/HTML'} %}
 {% if can_check %}
 <section class="card">
   <h2>Разовая проверка</h2>
@@ -27,17 +28,20 @@
 <section class="card">
   {% if sites == report.sites %}
   <h2>Плановые проверки</h2>
-  <p>Источник — VPN-сервер. Интервал — {{ report.interval_minutes }} мин.</p>
+  <p>Источник — OpenVPN-шлюз. Интервал — {{ report.interval_minutes }} мин.</p>
   {% if report.checked_at %}<p>Последний цикл <time>{{ report.checked_at }}</time>{% if report.stale %} · данные устарели{% endif %}</p>{% endif %}
   {% endif %}
   <div class="table-wrap">
     <table>
-      <thead><tr><th>Сайт</th><th>Результат</th><th>DNS и TLS</th><th>Трассировка</th></tr></thead>
+      <thead><tr><th>Сайт</th><th>Результат</th><th>DNS и сертификат</th><th>Маршрут и пинг</th></tr></thead>
       <tbody>
       {% for site in sites %}
         <tr>
-          <td><a href="{{ site.url }}">{{ site.url }}</a></td>
+          <td><a href="{{ site.url }}">{% if '/DigitalgovTorkndProd1Auth/protocol/openid-connect/auth' in site.url %}ПГС · вход (auth.pgs.gosuslugi.ru){% else %}{{ site.url }}{% endif %}</a></td>
           <td>{{ labels.get(site.status, site.status) }}{% if site.http_status %} · HTTP {{ site.http_status }}{% endif %}
+            {% if site.failure_stage %}<br>Сбой на этапе {{ stages.get(site.failure_stage, site.failure_stage) }}{% endif %}
+            {% if site.tcp_ms is defined and site.tcp_ms is not none %}<br>TCP {{ site.tcp_ms }} мс{% endif %}
+            {% if site.tls_ms is defined and site.tls_ms is not none %} · TLS {{ site.tls_ms }} мс{% endif %}
             {% if site.total_ms is not none and site.total_ms is defined %}<br>{{ site.total_ms }} мс{% endif %}
             {% if site.first_byte_ms is defined and site.first_byte_ms is not none %} · первый байт {{ site.first_byte_ms }} мс{% endif %}
             {% if site.body_bytes %}<br>{{ site.content_type or 'Тип ответа не указан' }} · {{ site.body_bytes }} Б{% endif %}
@@ -46,15 +50,30 @@
           <td>{% if site.dns %}{{ site.dns | join(', ') }}{% else %}—{% endif %}
             {% if site.address %}<br>Проверен {{ site.address }}{% endif %}
             {% if site.tls == 'verified' %}<br>TLS подтверждён{% elif site.tls == 'failed' %}<br>TLS не прошёл{% endif %}
+            {% if site.certificate_verify_code is defined and site.certificate_verify_code %} · код проверки {{ site.certificate_verify_code }}{% endif %}
+            {% if site.certificate %}
+            <details><summary>Сертификат</summary>
+              {% if site.certificate.subject %}<p>{{ site.certificate.subject }}</p>{% endif %}
+              {% if site.certificate.issuer %}<p>Издатель {{ site.certificate.issuer }}</p>{% endif %}
+              {% if site.certificate.not_after %}<p>Действует до {{ site.certificate.not_after }}</p>{% endif %}
+            </details>
+            {% endif %}
           </td>
-          <td>{% if site.trace %}
+          <td>{% if site.source_address %}Источник {{ site.source_address }}<br>{% endif %}
+            {% if site.route and site.route.result.gateway %}Шлюз {{ site.route.result.gateway }}<br>{% endif %}
+            {% if site.ping %}
+              {% if site.ping.sent is defined %}Пинг {{ site.ping.received }}/{{ site.ping.sent }} · потери {{ site.ping.loss_percent }}%
+                {% if site.ping.avg_ms is not none %} · {{ site.ping.avg_ms }} мс{% endif %}
+              {% else %}Пинг недоступен{% endif %}
+            {% endif %}
+            {% if site.trace %}
             <details><summary>{{ {'reached': 'Цель достигнута', 'partial': 'Частичная', 'failed': 'Ошибка', 'unavailable': 'Недоступна'}.get(site.trace.status, site.trace.status) }}</summary>
               {% if site.trace.result.hops %}<ul>{% for hop in site.trace.result.hops %}
                 <li>{{ hop.hop }} · {{ hop.address or 'Нет ответа' }}{% if hop.rtt_ms is not none %} · {{ hop.rtt_ms }} мс{% endif %}</li>
               {% endfor %}</ul>{% endif %}
               {% if site.trace.result.timed_out %}<p>Истёк срок трассировки.</p>{% endif %}
             </details>
-          {% else %}—{% endif %}</td>
+          {% elif not site.ping %}—{% endif %}</td>
         </tr>
       {% endfor %}
       </tbody>
@@ -78,7 +97,7 @@
   <h2>Последние циклы</h2>
   {% for cycle in report.history %}
   <details><summary>{{ cycle.checked_at }}</summary>
-    <ul>{% for site in cycle.sites %}<li>{{ site.url }} · {{ labels.get(site.status, site.status) }}{% if site.http_status %} · HTTP {{ site.http_status }}{% endif %}</li>{% endfor %}</ul>
+    <ul>{% for site in cycle.sites %}<li>{{ site.url }} · {{ labels.get(site.status, site.status) }}{% if site.http_status %} · HTTP {{ site.http_status }}{% endif %}{% if site.failure_stage %} · {{ stages.get(site.failure_stage, site.failure_stage) }}{% endif %}</li>{% endfor %}</ul>
   </details>
   {% endfor %}
 </section>

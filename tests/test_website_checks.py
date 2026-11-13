@@ -32,13 +32,64 @@ def test_redirect_to_unapproved_host_is_not_fetched(monkeypatch):
     assert calls == ["https://www.gosuslugi.ru/"]
 
 
+def test_fetch_uses_nspd_ca_only_for_https_nspd(tmp_path, monkeypatch):
+    from subprocess import CompletedProcess
+
+    ca = tmp_path / "nspd.pem"
+    ca.touch()
+    monkeypatch.setattr(checks, "NSPD_CA", ca, raising=False)
+    commands = []
+
+    def run(args, **kwargs):
+        commands.append(args)
+        return CompletedProcess(args, 0, stdout=b"{}")
+
+    monkeypatch.setattr(checks.subprocess, "run", run)
+    address = ipaddress.ip_address("2.63.246.71")
+    checks.fetch("https://nspd.gov.ru/map", address)
+    checks.fetch("https://pgs.gosuslugi.ru/", address)
+    checks.fetch("http://nspd.gov.ru/", address)
+    assert commands[0][commands[0].index("--cacert") + 1] == str(ca)
+    assert all("--cacert" not in command for command in commands[1:])
+
+
+def test_https_failure_keeps_tcp_success_and_identifies_tls_stage(monkeypatch):
+    address = ipaddress.ip_address("82.202.191.39")
+    monkeypatch.setattr(checks, "resolve_public", lambda _: [address])
+    monkeypatch.setattr(checks, "fetch", lambda url, ip: (
+        {"time_connect": 0.042, "time_appconnect": 0, "ssl_verify_result": 1,
+         "local_ip": "192.168.100.30"}, b"", 35))
+    monkeypatch.setattr(checks, "probe_path", lambda ip, port: {
+        "ping": {"status": "no_reply"}, "trace": {"status": "partial"}})
+    result = checks.check_site("https://pgs.gosuslugi.ru/")
+    assert result["status"] == "tls_error"
+    assert result["failure_stage"] == "tls"
+    assert result["tcp_ms"] == 42
+    assert result["source_address"] == "192.168.100.30"
+    assert result["ping"]["status"] == "no_reply"
+    assert result["certificate"] is None
+
+
+def test_pgs_login_does_not_store_oidc_state(monkeypatch):
+    calls = []
+    monkeypatch.setattr(checks, "resolve_public", lambda _: [ipaddress.ip_address("82.202.191.51")])
+    monkeypatch.setattr(checks, "fetch", lambda url, ip: (calls.append(url) or {}, b"", 35))
+    monkeypatch.setattr(checks, "probe_path", lambda ip, port: {})
+    assert checks.check_site(checks.PGS_LOGIN)["url"] == checks.PGS_LOGIN
+    assert checks.check_site(checks.PGS_LOGIN)["url"] == checks.PGS_LOGIN
+    assert calls[0].startswith(checks.PGS_LOGIN + "?")
+    assert "client_id=DigitalgovTorkndProd1Auth-Proxy" in calls[0]
+    assert calls[0] != calls[1]
+
+
 def test_history_retains_recent_runs(tmp_path, monkeypatch):
     monkeypatch.setattr(checks, "STATE", tmp_path / "checks.json")
     monkeypatch.setattr(checks, "check_site", lambda url: {"url": url, "status": "ok"})
     checks.run()
     checks.run()
     report = checks.report()
-    assert len(report["sites"]) == 8 and len(report["history"]) == 2
+    assert [site["url"] for site in report["sites"]] == list(checks.SITES)
+    assert len(report["history"]) == 2
     assert not report["stale"]
 
 
