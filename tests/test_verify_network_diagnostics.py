@@ -216,6 +216,38 @@ def test_capture_cli_reports_failed_verification(monkeypatch, capsys):
     assert "capture_verification_failed" in capsys.readouterr().out
 
 
+def test_interface_report_distinguishes_zero_from_missing_and_rejects_drift():
+    now = datetime(2026, 11, 13, 2, 15, tzinfo=UTC)
+    points = [
+        {"observed_at": "2026-11-13T02:09:00Z", "in_errors_delta": 0, "out_discards_delta": 3},
+        {"observed_at": "2026-11-13T02:14:00Z", "in_errors_delta": 0, "out_discards_delta": None},
+    ]
+    api = {"source": {"id": 1}, "selected": {"key": "wan"}, "points": points}
+    mcp = {**api, "until": now.isoformat(), "available_points": 2}
+    report = verifier.interface_report(api, mcp, now, timedelta(minutes=10))
+    assert report["api_matches"] and report["fresh"]
+    assert report["counters"]["in_errors_delta"] == {"intervals": 2, "total": 0}
+    assert report["counters"]["out_errors_delta"] == {"intervals": 0, "total": None}
+    assert report["counters"]["out_discards_delta"] == {"intervals": 1, "total": 3}
+    drifted = {**mcp, "points": [{**points[0], "in_errors_delta": 5}, points[1]]}
+    assert not verifier.interface_report(api, drifted, now, timedelta(minutes=10))["api_matches"]
+    assert not verifier.interface_report(api, mcp, now + timedelta(minutes=12), timedelta(minutes=10))["fresh"]
+
+
+def test_interface_report_uses_common_tail_when_mcp_limits_history(monkeypatch):
+    now = datetime(2026, 11, 13, 2, 15, tzinfo=UTC)
+    monkeypatch.setattr(verifier, "MCP_INTERFACE_LIMIT", 1)
+    points = [
+        {"observed_at": "2026-11-13T02:09:00Z", "in_errors_delta": 5},
+        {"observed_at": "2026-11-13T02:14:00Z", "in_errors_delta": 0},
+    ]
+    api = {"source": {"id": 1}, "selected": {"key": "wan"}, "points": points}
+    mcp = {**api, "points": points[-1:], "available_points": 2}
+    report = verifier.interface_report(api, mcp, now, timedelta(minutes=10))
+    assert report["api_matches"] and report["points"] == 1 and report["available_points"] == 2
+    assert report["counters"]["in_errors_delta"] == {"intervals": 1, "total": 0}
+
+
 @pytest.mark.parametrize("fresh,matches,api_matches,strict,expected", [
     (True, True, True, False, 0),
     (True, True, True, True, 2),

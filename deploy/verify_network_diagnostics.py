@@ -35,6 +35,8 @@ ROUTE_EVIDENCE_FIELDS = {
     "gateway_arp": ("status", "state", "resolved"),
     "ipsec": ("status", "reason", "phase2_count", "local_sa_address_status"),
 }
+INTERFACE_COUNTERS = ("in_errors_delta", "out_errors_delta", "in_discards_delta", "out_discards_delta")
+MCP_INTERFACE_LIMIT = 300
 
 
 def route_report(
@@ -190,6 +192,46 @@ def verify_capture(script: Path, capture_id: UUID) -> dict:
     return capture_report(receipt, download, payload, Path.home() / ".codex" / "network-captures")
 
 
+def interface_report(api: dict, mcp: dict, now: datetime, max_age: timedelta) -> dict:
+    points = api["points"][-MCP_INTERFACE_LIMIT:]
+    latest = points[-1]["observed_at"] if points else None
+    counters = {}
+    for field in INTERFACE_COUNTERS:
+        values = [point[field] for point in points if type(point.get(field)) is int and point[field] >= 0]
+        counters[field] = {"intervals": len(values), "total": sum(values) if values else None}
+    return {
+        "selected": api["selected"],
+        "points": len(points),
+        "available_points": len(api["points"]),
+        "latest_observation": latest,
+        "fresh": latest is not None and timedelta(0) <= now - datetime.fromisoformat(latest) <= max_age,
+        "api_matches": (
+            bool(api["source"] and api["selected"])
+            and bool(mcp["source"]) and api["source"]["id"] == mcp["source"]["id"]
+            and api["selected"] == mcp["selected"]
+            and len(api["points"]) == mcp["available_points"] and points == mcp["points"]
+        ),
+        "counters": counters,
+    }
+
+
+def verify_interfaces(script: Path, selections: list[list[str]], max_age: timedelta) -> list[dict]:
+    reports = []
+    for source, interface in selections:
+        args = {"source": source, "interface": interface}
+        path = f"{API}/interfaces?{urlencode(args)}"
+        for _ in range(2):
+            mcp = mcp_data(mcp_requests(script, [
+                mcp_call("openvpn_network_interface_history", {**args, "limit": MCP_INTERFACE_LIMIT}),
+            ])[0])["diagnostics"]
+            api = bridge.api_request("GET", path)["data"]["diagnostics"]
+            report = interface_report(api, mcp, datetime.now(UTC), max_age)
+            if report["api_matches"]:
+                break
+        reports.append({**args, **report})
+    return reports
+
+
 def verify(script: Path, max_age: timedelta) -> dict:
     spec = bridge.api_request("GET", "/openapi.json")
     paths = spec["paths"]
@@ -260,6 +302,10 @@ def main() -> int:
         help="require recent VLAN-aware FDB and STP observations on every switch",
     )
     parser.add_argument("--capture-id", type=UUID, help="verify a nonempty PCAP owned by the current actor")
+    parser.add_argument(
+        "--interface", action="append", nargs=2, metavar=("SOURCE", "NAME"),
+        help="verify recent interface telemetry in REST and MCP; repeat to check multiple interfaces",
+    )
     args = parser.parse_args()
     if args.max_age_minutes < 1:
         parser.error("--max-age-minutes must be positive")
@@ -286,6 +332,14 @@ def main() -> int:
         for probe in dns_probes
     )
     report["dns_transports"] = {"configured": len(dns_probes), "confirmed": confirmed_dns}
+    if args.interface:
+        try:
+            report["interfaces"] = verify_interfaces(
+                args.mcp_script, args.interface, timedelta(minutes=args.max_age_minutes),
+            )
+        except (OSError, LookupError, RuntimeError, TypeError, ValueError, subprocess.SubprocessError):
+            report["interfaces"] = []
+            report["interface_error"] = "interface_verification_failed"
     if args.capture_id is not None:
         try:
             report["capture"] = verify_capture(args.mcp_script, args.capture_id)
@@ -294,6 +348,10 @@ def main() -> int:
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 1
     print(json.dumps(report, ensure_ascii=False, indent=2))
+    if args.interface and (
+        not report["interfaces"] or any(not (row["fresh"] and row["api_matches"]) for row in report["interfaces"])
+    ):
+        return 1
     if any(not (route["fresh"] and route["profile_matches"] and route["api_matches"]) for route in routes):
         return 1
     if (args.require_expected_first_hop and not configured_hops) or (args.require_dns_transport and not dns_probes):
