@@ -2347,6 +2347,39 @@ def _current_physical_port_pairs(links: list[dict]) -> dict:
             if len(choices) == 1 and len(peers[next(iter(choices))]) == 1}
 
 
+def _attach_management_vlan_observations(nodes: dict, links: list[dict], now: datetime) -> None:
+    physical = _current_physical_port_pairs(links)
+    observations = defaultdict(dict)
+    for edge in links:
+        if not edge["confirmed"] or edge["kind"] not in {"Сетевое соединение", "Путь по MAC-таблице"}:
+            continue
+        for report in edge["portEvidence"]:
+            if (not report["confirmed"] or not (address := report.get("managementAddress"))
+                    or report["source"] != "netctl FDB + Proxmox" or not (vlan := report.get("vlan"))
+                    or not observation_is_fresh(report["at"], now, max_age=VLAN_AUDIT_MAX_AGE)):
+                continue
+            side, peer = ("a", "b") if nodes[edge["a"]]["kind"] == NETWORK_KINDS[0] else ("b", "a")
+            key = edge[side], port_label_key(report[side])
+            pair = physical.get(key)
+            if not pair or pair["hostId"] != edge[peer] or port_label_key(pair["hostPort"]) != port_label_key(report[peer]):
+                continue
+            stamps = observations[*key, vlan]
+            stamps[address] = max(stamps.get(address, ""), report["at"])
+    if not observations:
+        return
+    for edge in links:
+        side, peer = ("a", "b") if nodes[edge["a"]]["kind"] == NETWORK_KINDS[0] else ("b", "a")
+        for report in edge["portEvidence"]:
+            for vlan in report.get("vlanAudit", []):
+                key = edge[side], port_label_key(report[side])
+                candidates = observations.get((*key, vlan["id"]), {})
+                pair = physical.get(key)
+                if (len(candidates) == 1 and pair and pair["hostId"] == edge[peer]
+                        and port_label_key(pair["hostPort"]) == port_label_key(report[peer])):
+                    (address, checked_at), = candidates.items()
+                    vlan["managementObservation"] = {"address": address, "switchSide": side, "checkedAt": checked_at}
+
+
 def _observed_management_ports(links: list[dict]) -> dict:
     candidates = defaultdict(dict)
     physical = _current_physical_port_pairs(links)
@@ -3339,32 +3372,15 @@ def load_infrastructure_map(
                 confirmed = confirmed and observation_is_fresh(row["observedAt"], now)
             alerts = []
             if confirmed and edge["kind"] == "Сетевое соединение":
-                management_vlans = defaultdict(dict)
                 for report in evidence:
                     if report["confirmed"]:
                         comparison = _compare_link_ports(report.get("portStates", {}))
                         if comparison:
                             report["portComparison"] = comparison
-                    if (report.get("pairEvidence") == "current" and (address := report.get("managementAddress"))
-                            and (vlan := report.get("vlan"))
-                            and observation_is_fresh(report["at"], now, max_age=VLAN_AUDIT_MAX_AGE)
-                            and not any(port["state"] in {"down", "disabled"} for port in report.get("portStates", {}).values())):
-                        pair = tuple(port_label_key(report[side]) for side in ("a", "b"))
-                        previous = management_vlans[pair, vlan].get(address, "")
-                        management_vlans[pair, vlan][address] = max(previous, report["at"])
-                if management_vlans:
-                    switch_side = "a" if nodes[edge["a"]]["kind"] == NETWORK_KINDS[0] else "b"
-                    for report in evidence:
-                        pair = tuple(port_label_key(report[side]) for side in ("a", "b"))
-                        for vlan in report.get("vlanAudit", []):
-                            observations = management_vlans.get((pair, vlan["id"]), {})
-                            if len(observations) == 1:
-                                (address, checked_at), = observations.items()
-                                vlan["managementObservation"] = {"address": address, "switchSide": switch_side,
-                                                                 "checkedAt": checked_at}
                 alerts = _link_port_alerts(evidence)
             links.append({**edge, "confirmed": confirmed, "portEvidence": evidence,
                           **({"portAlerts": alerts} if alerts else {})})
+    _attach_management_vlan_observations(nodes, links, now)
     if db is not None and endpoint_keys and now - stamp <= MAX_AGE:
         _attach_endpoint_presence(db, endpoint_keys, nodes, now)
     _attach_address_aliases(nodes, links)

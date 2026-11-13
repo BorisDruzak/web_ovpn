@@ -3878,6 +3878,18 @@ def test_proxmox_management_port_joins_unique_fdb_and_active_bridge(tmp_path):
     aged, = load(now + timedelta(minutes=11))
     assert all("managementObservation" not in vlan for row in aged["portEvidence"] for vlan in row.get("vlanAudit", []))
     snapshot = json.loads(path.read_text(encoding="utf-8"))
+    direct = next(link for link in snapshot["links"] if {link["a"], link["b"]} == {"pve3", "sw"})
+    management_report = next(row for row in direct["portEvidence"] if "managementAddress" in row)
+    direct["portEvidence"].remove(management_report)
+    direct["portEvidence"].append({key: value for key, value in management_report.items()
+                                   if key not in {"managementAddress", "vlan"}})
+    snapshot["links"].append({**direct, "kind": "Путь по MAC-таблице", "portEvidence": [management_report]})
+    path.write_text(json.dumps(snapshot), encoding="utf-8")
+    split = next(link for link in load_infrastructure_map(path, now)["links"]
+                 if link["kind"] == "Сетевое соединение")
+    assert next(row["vlanAudit"] for row in split["portEvidence"] if "vlanAudit" in row) == audit
+    snapshot["links"].pop()
+    direct["portEvidence"][-1] = management_report
     snapshot["nodes"].append({"id": "management", "name": "Management", "kind": "Сервис", "serviceChecks": [
         {"source": "UI_VPN", "method": "HTTPS", "target": address, "port": 8006, "checkedAt": at, "state": "reachable"},
         {"source": "UI_VPN", "method": "HTTPS", "target": "192.0.2.99", "port": 8006, "checkedAt": at, "state": "reachable"},
