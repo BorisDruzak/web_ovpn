@@ -2758,6 +2758,7 @@ def _summarize_agent_audit(nodes: dict, keys: dict, conflicts: set[str], identit
 def load_infrastructure_map(
     path: Path, now: datetime | None = None, *, db: Session | None = None,
     agent_identities: list[dict] | None = None, include_guest_attachments: bool = False,
+    include_service_ports: bool = False,
     load_agent_presence: Callable[[], list[dict]] | None = None,
     load_agent_profiles: Callable[[UUID, tuple[str, ...]], dict] | None = None,
     agent_node_id: str | None = None,
@@ -2766,6 +2767,7 @@ def load_infrastructure_map(
     empty = {
         "availability": "missing", "snapshotAt": None, "nodes": [], "links": [],
         "clusterId": "", "nodeOrder": [], "overviewGuests": [], "switchKinds": list(NETWORK_KINDS), "git": "",
+        **({"servicePorts": {}} if include_service_ports else {}),
         **({"guestAttachments": {}, "servicePaths": {}, "servicePorts": {},
             "currentPortPairTotal": 0, "currentPortPairs": [],
             "pendingPortPairTotal": 0, "pendingPortPairs": [],
@@ -3077,6 +3079,8 @@ def load_infrastructure_map(
             lacpPartnerInterfaceGapTotal=len(lacp_gaps),
             lacpPartnerInterfaceGaps=lacp_gaps[:64],
         )
+    elif include_service_ports:
+        attachments["servicePorts"] = _map_attachments(nodes, links, now)["servicePorts"]
     return {
         **empty, "availability": "stale" if now - stamp > MAX_AGE else "ready",
         "snapshotAt": stamp.isoformat(), "nodes": list(nodes.values()), "links": links,

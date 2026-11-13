@@ -645,11 +645,20 @@ def test_mcp_infrastructure_port_scope_preserves_evidence_and_guest_observations
             {"a": "vmbr2", "b": "net2", "confirmed": False, "virtual": {"switchUplink": uplink}},
         ]},
     ]}
-    monkeypatch.setattr(server, "api_request", lambda *_: {"status": "ok", "infrastructure": graph})
+    service = {"id": "svc", "name": "SMB", "mapStatus": "ok"}
+    graph["servicePorts"] = {"sw": [{"port": live["name"], "total": 1, "services": [service]},
+                                    {"port": "Gi1/0/2", "total": 1, "services": [{"id": "elsewhere"}]}]}
+
+    def api(method, path):
+        assert (method, path) == ("GET", "/api/v1/network/infrastructure?include_service_ports=true")
+        return {"status": "ok", "infrastructure": graph}
+
+    monkeypatch.setattr(server, "api_request", api)
     tool = "openvpn_network_infrastructure"
     assert "port_name" in server.TOOLS[tool]["inputSchema"]["properties"]
     result = server.call_tool(tool, {"node_id": "sw", "port_name": " gi 1/0/22 "})["infrastructure"]
     assert result["ports"] == [live]
+    assert result["servicePorts"] == [graph["servicePorts"]["sw"][0]]
     assert result["links"] == [{**graph["links"][0], "portEvidence": [port]}]
     assert result["neighbors"] == [{"id": "other", "name": "Peer"}]
     assert "ports" not in result["node"]

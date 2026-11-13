@@ -6891,6 +6891,11 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     ]
     switch = client.get(url + "&node_id=snr", headers=headers).json()["infrastructure"]["attachment"]
     assert switch["servicePorts"] == switch_ports
+    port_api = client.get("/api/v1/network/infrastructure?include_service_ports=true", headers=headers)
+    assert port_api.status_code == 200
+    port_graph = port_api.json()["infrastructure"]
+    assert port_graph["servicePorts"]["snr"] == switch_ports
+    assert "guestAttachments" not in port_graph and "pendingPortPairs" not in port_graph
     http = {**check, "method": "HTTP", "port": 8787}
     raw["nodes"][0]["serviceChecks"] = [
         {**http, "path": "/api/session", "httpStatus": 200},

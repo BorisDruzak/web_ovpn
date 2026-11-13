@@ -178,7 +178,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         "Read the map. Use view=services for service checks, view=topology for port confirmation gaps, "
         "view=agents for Proxmox agent matches (node_id for guest health), "
         "view=attachment for VM-to-switch coverage (node_id for VM, host, or service paths), "
-        "query to search, or node_id and optional port_name to inspect.",
+        "query to search, or node_id and optional port_name to inspect links, guests and service checks on a port.",
         {
             "query": {"type": "string", "minLength": 1, "maxLength": 160},
             "node_id": {"type": "string", "minLength": 1, "maxLength": 160},
@@ -579,7 +579,7 @@ def _port_key(name: str) -> str:
 
 
 def _infrastructure_port(graph: dict, node: dict | None, port_name: str) -> dict:
-    result = {"portName": port_name.strip(), "ports": [], "links": [], "guestObservations": []}
+    result = {"portName": port_name.strip(), "ports": [], "links": [], "guestObservations": [], "servicePorts": []}
     if node is None:
         return result
     node_id = node["id"]
@@ -590,6 +590,8 @@ def _infrastructure_port(graph: dict, node: dict | None, port_name: str) -> dict
         if port_key in keys:
             result["ports"].append(port)
             port_keys.update(keys)
+    result["servicePorts"] = [row for row in graph.get("servicePorts", {}).get(node_id, [])
+                              if _port_key(row["port"]) in port_keys]
     physical_host_port = next((port for port in result["ports"]
                                if port.get("source") == "Proxmox" and port.get("stale") is False), None)
     by_id = {item["id"]: item for item in graph["nodes"]}
@@ -656,7 +658,10 @@ def _infrastructure_snapshot(node_id: str | None, query: str | None, port_name: 
     if port_name is not None and (node_id is None or not isinstance(port_name, str)
                                   or not port_name.strip() or len(port_name) > 64):
         raise ValueError("port_name requires node_id and must be a non-empty string of at most 64 characters")
-    response = api_request("GET", "/api/v1/network/infrastructure")
+    path = "/api/v1/network/infrastructure"
+    if port_name is not None:
+        path += "?include_service_ports=true"
+    response = api_request("GET", path)
     graph = response.get("infrastructure")
     if not isinstance(graph, dict) or (node_id is None and query is None):
         return response

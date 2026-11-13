@@ -1055,6 +1055,7 @@ def api_network_dashboard(actor: str = Depends(require_api_actor)):
 def api_network_infrastructure(
     view: Literal["topology", "agents", "services", "attachment"] | None = None,
     node_id: str | None = Query(default=None, min_length=1, max_length=160),
+    include_service_ports: bool = False,
     actor: str = Depends(require_api_actor),
     db: Session = Depends(get_db),
 ):
@@ -1064,7 +1065,7 @@ def api_network_infrastructure(
     if view == "agents":
         graph = load_infrastructure_agent_audit(path, node_id=node_id)
     else:
-        graph = load_infrastructure_map(path, db=db)
+        graph = load_infrastructure_map(path, db=db, include_service_ports=include_service_ports and view is None)
         if view == "services":
             graph = summarize_services(graph)
         elif view == "topology":
