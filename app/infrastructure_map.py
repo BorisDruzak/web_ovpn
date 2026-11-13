@@ -2484,7 +2484,9 @@ def _service_attachment_paths(service: dict, guests: dict) -> list[dict]:
 
     paths = []
     for check in _attachment_service_checks(service):
-        if check["source"] != "UI_VPN" or not check["checkedAt"] or check["stale"] or check.get("skipped"):
+        windows = check["source"] == WINDOWS_PROBE_SOURCE and check["method"] == "HTTP" and check.get("supplemental")
+        if (not (check["source"] == "UI_VPN" or windows) or not check["checkedAt"]
+                or check["stale"] or check.get("skipped") or (windows and check["state"] == "unknown")):
             continue
         target = check.get("target")
         vlan = check.get("vlanTransit")
@@ -2525,6 +2527,7 @@ def _service_attachment_paths(service: dict, guests: dict) -> list[dict]:
                       "guestId": guest["guest"]["id"], "guestPort": adapter["guestPort"], "bridge": adapter["bridge"],
                       "hypervisorId": guest["hypervisor"]["id"], "switchId": observation["switch"]["id"],
                       "physicalPair": observation["physicalPair"],
+                      **({"source": WINDOWS_PROBE_SOURCE, **({"via": check["via"]} if check.get("via") else {})} if windows else {}),
                       **({"localListener": True} if check.get("localListener") else {}),
                       **({"localNeighbor": adapter["localNeighbor"]} if vlan else {}),
                       **({"gateway": gateway} if gateway else {})})

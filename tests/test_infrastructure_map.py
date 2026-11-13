@@ -7637,6 +7637,13 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
                             "state": "reachable",
                             "guestId": "vm", "guestPort": "net0", "bridge": "vmbr1", "hypervisorId": "pve",
                             "switchId": "snr", "physicalPair": match["physicalPair"], "addressCheckedAt": stamp}
+    from app.infrastructure_map import WINDOWS_PROBE_SOURCE
+
+    raw["nodes"][0]["serviceChecks"].append({**check, "source": WINDOWS_PROBE_SOURCE, "method": "HTTP",
+                                            "port": 80, "supplemental": True, "via": "192.0.2.1"})
+    windows = next((path for path in read()["servicePaths"] if path.get("source") == WINDOWS_PROBE_SOURCE), None)
+    assert windows and windows["physicalPair"] == match["physicalPair"] and windows["via"] == "192.0.2.1"
+    raw["nodes"][0]["serviceChecks"].pop()
     adapter["virtual"]["switchPorts"].append({"id": "snr", "port": "ge12", "at": stamp, "vlan": 1})
     ambiguous = read()
     assert ambiguous["guests"][0]["interfaces"][0]["ambiguousSwitchPorts"]

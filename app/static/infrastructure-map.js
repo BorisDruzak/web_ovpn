@@ -1178,7 +1178,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const smb = probe.smbDialect && smbNegotiationLabel(probe.smbDialect, probe.smbSigningRequired);
         const postgres = postgresqlTlsLabel(probe.postgresqlTls, probe.tlsVersion);
         const redfish = probe.redfishVersion && `Redfish ${probe.redfishVersion}`;
-        readings.add([probe.path, question, outcome, code, rdp, tls, zabbix, redfish, smb, postgres, ntpLabel(probe.ntp), responseFrom, rtt,
+        readings.add([probe.source, probe.via && `через ${probe.via}`, probe.path, question, outcome, code, rdp, tls, zabbix, redfish, smb, postgres, ntpLabel(probe.ntp), responseFrom, rtt,
           probe.state && formatTime(probe.checkedAt)].filter(Boolean).join(' · '));
       }
       for (const reading of readings) {
