@@ -4624,6 +4624,34 @@ def test_downstream_local_probe_requires_unique_observed_address_and_mac(monkeyp
     assert not probes and device == {"mac": mac}
 
 
+def test_downstream_rtsp_checks_only_configured_fresh_identity(monkeypatch):
+    from app import infrastructure_collect as collector
+    from app.infrastructure_map import _public_downstream
+
+    now = datetime.now(timezone.utc)
+    ip, mac = "192.0.2.113", "02:00:00:00:00:04"
+    device = {"ip": ip, "mac": mac, "identityCheckedAt": now.isoformat()}
+    other = {"ip": "192.0.2.114", "mac": "02:00:00:00:00:06", "identityCheckedAt": now.isoformat()}
+    downstream = {"upstreamId": "upstream", "port": "ge1", "checkedAt": now.isoformat(),
+                  "devices": [device, other]}
+    nodes = [{"id": "poe", "downstream": downstream}]
+    probes = []
+
+    def rtsp(spec):
+        probes.append(spec)
+        return {"state": "reachable", "rtspStatus": 200}
+
+    monkeypatch.setattr(collector, "_rtsp_options", rtsp)
+    collector._check_downstream_rtsp(nodes, {"poe": {ip: mac, other["ip"]: "02:00:00:00:00:05"}}, now)
+    assert probes == [{"ip": ip, "port": 554, "path": "/"}]
+    published_at = datetime.now(timezone.utc)
+    devices = _public_downstream(downstream, [], {}, published_at)["devices"]
+    assert devices[0]["rtsp"]["rtspStatus"] == 200
+    assert devices[0]["rtsp"]["state"] == "reachable"
+    assert "rtsp" not in devices[1]
+    assert "rtsp" not in _public_downstream(downstream, [], {}, published_at + timedelta(minutes=6))["devices"][0]
+
+
 def test_direct_probe_waits_for_neighbor_revalidation_when_required(monkeypatch):
     from app import infrastructure_collect as collector
 

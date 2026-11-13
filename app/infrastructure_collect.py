@@ -63,7 +63,7 @@ from .infrastructure_map import (
 from .infrastructure_port_ssh import collect_proxmox_port_states
 from .infrastructure_redfish import collect_redfish_power
 from .infrastructure_endpoint_ports import collect_endpoint_dns, collect_endpoint_http, confirm_endpoint_ports
-from .infrastructure_service_probes import _local_arp_diagnostic, apply_service_probes, probe_icmp
+from .infrastructure_service_probes import _local_arp_diagnostic, _rtsp_options, apply_service_probes, probe_icmp
 from .netctl_client import NetctlError, run_netctl
 from .server_health_view import build_server_health_view
 
@@ -1569,6 +1569,33 @@ def _check_downstream_addresses(nodes: list[dict], network: dict, now: datetime)
                 if observation:
                     for entry in checks[pair]:
                         entry.update(ip=pair[0], identityCheckedAt=observation["checkedAt"], reachability=observation)
+
+
+def _check_downstream_rtsp(nodes: list[dict], configured: object, now: datetime) -> None:
+    if not isinstance(configured, dict):
+        return
+    targets = {}
+    for node in nodes:
+        downstream = node.get("downstream", {})
+        allowed = configured.get(node["id"])
+        if not isinstance(allowed, dict) or not observation_is_fresh(downstream.get("checkedAt"), now):
+            continue
+        for device in downstream.get("devices", []):
+            address = device.get("ip")
+            if (address and allowed.get(address) == device["mac"]
+                    and observation_is_fresh(device.get("identityCheckedAt"), now)):
+                targets.setdefault(address, []).append(device)
+
+    def probe(address):
+        return {**_rtsp_options({"ip": address, "port": 554, "path": "/"}),
+                "checkedAt": datetime.now(timezone.utc).isoformat()}
+
+    addresses = sorted(targets)[:16]
+    if addresses:
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            for address, result in zip(addresses, pool.map(probe, addresses)):
+                for device in targets[address]:
+                    device["rtsp"] = result
 
 
 def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings: dict, now: datetime,
@@ -3742,6 +3769,7 @@ def main() -> int:
             downstream = pool.submit(_check_downstream_addresses, nodes, network, now)
             apply_service_probes(nodes, probes)
             downstream.result()
+        _check_downstream_rtsp(nodes, bindings.get("downstream_rtsp"), datetime.now(timezone.utc))
         if credentials and isinstance(redfish := bindings.get("redfish_power"), dict):
             collect_redfish_power(graph, redfish, Path(credentials), datetime.now(timezone.utc))
         if isinstance(endpoint_ports := bindings.get("endpoint_ports"), dict) and endpoint_ports:

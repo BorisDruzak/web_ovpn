@@ -1134,6 +1134,11 @@ def _public_downstream(row: object, ports: list[dict], stp_path: dict, now: date
         if ip and "/" not in ip and observation_is_fresh(identity_at, now):
             device = {"mac": mac, "ip": ip, "identityCheckedAt": _time(identity_at).isoformat(),
                       "reachability": _public_reachability(entry.get("reachability"), now)}
+            if isinstance(rtsp := entry.get("rtsp"), dict) and observation_is_fresh(
+                    rtsp.get("checkedAt"), now, max_age=SERVICE_PROBE_MAX_AGE):
+                check = _public_service_check({**rtsp, "source": "UI_VPN", "method": "RTSP OPTIONS",
+                                               "port": 554, "path": "/"}, now)
+                device["rtsp"] = {key: check[key] for key in ("state", "checkedAt", "rtspStatus", "reason") if key in check}
         else:
             device = {"mac": mac, "reachability": _public_reachability(None, now)}
         if isinstance(switch_port := entry.get("switchPort"), dict):
