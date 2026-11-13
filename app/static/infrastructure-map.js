@@ -122,6 +122,28 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       ([...list.querySelectorAll('a')].find(link => link.href === activeLink) ?? summary).focus({preventScroll: true});
     }
   }
+  function renderPortRxSilenceSummary() {
+    const panel = root.querySelector('#map-port-rx-silence');
+    const summary = panel.querySelector('summary');
+    const list = panel.querySelector('ul');
+    const more = panel.querySelector('small');
+    const activeLink = list.contains(document.activeElement) ? document.activeElement.href : '';
+    const {total = 0, ports = []} = data.portRxSilenceAudit ?? {};
+    panel.hidden = !total;
+    summary.textContent = `Порты с передачей и без приёма · ${total}`;
+    list.replaceChildren(...ports.map(({deviceId, deviceName, port, configuredLabel, rxSilence}) => {
+      const row = make('li');
+      const link = make('a', [deviceName, port, configuredLabel?.text].filter(Boolean).join(' · '));
+      link.href = '?' + new URLSearchParams({node: deviceId, port});
+      row.append(link, make('small', formatRxSilence(rxSilence)));
+      return row;
+    }));
+    more.hidden = ports.length >= total;
+    more.textContent = `Показано ${ports.length} из ${total}`;
+    if (activeLink && !panel.hidden) {
+      ([...list.querySelectorAll('a')].find(link => link.href === activeLink) ?? summary).focus({preventScroll: true});
+    }
+  }
   function portPairEndpoint(id, name, port) {
     if (port && byId.get(id)?.ports?.some(item => portKeys(item).includes(portKey(port)))) {
       return switchPortButton(id, name, port);
@@ -241,6 +263,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     }
     showAvailability();
     renderPortCounterSummary();
+    renderPortRxSilenceSummary();
     root.querySelector('#map-port-alert-legend').hidden = !data.links.some(edge => edge.portAlerts?.length);
     for (const section of ['.map-views', '.map-legend', '#map-search']) {
       root.querySelector(section).hidden = !data.nodes.length;

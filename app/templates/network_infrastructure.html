@@ -25,6 +25,11 @@
     <summary>Ошибки и отбросы на портах</summary>
     <ul></ul>
   </details>
+  <details id="map-port-rx-silence" class="map-port-summary" hidden>
+    <summary>Порты с передачей и без приёма</summary>
+    <ul></ul>
+    <small hidden></small>
+  </details>
   <nav class="map-views" aria-label="Раздел карты">
     <button type="button" data-view="overview" aria-pressed="true">Общая карта</button>
     <button type="button" data-view="cluster" aria-pressed="false">Кластер Proxmox</button>
@@ -52,5 +57,5 @@
 <script id="infrastructure-data" type="application/json">{{ graph | tojson }}</script>
 {% endblock %}
 {% block page_scripts %}
-<script type="module" src="{{ url_for('static', path='infrastructure-map.js') }}?v=live-189"></script>
+<script type="module" src="{{ url_for('static', path='infrastructure-map.js') }}?v=live-190"></script>
 {% endblock %}

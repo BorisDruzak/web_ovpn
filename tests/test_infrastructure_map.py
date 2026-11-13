@@ -4779,10 +4779,14 @@ def test_switch_rx_silence_requires_continuous_64_bit_samples_on_the_current_por
     assert graph()["nodes"][0]["ports"][0]["rxSilence"] == silence
     pending, = summarize_topology(graph())["topologyAudit"]["pending"]
     assert pending["portObservations"]["a"]["rxSilence"] == silence
+    audit = graph()["portRxSilenceAudit"]
+    assert audit == {"total": 1, "ports": [{"deviceId": "sw", "deviceName": "SNR", "port": "xe1", "rxSilence": silence}]}
+    assert summarize_topology(graph())["topologyAudit"]["portRxSilenceAudit"] == audit
     later = now + timedelta(seconds=1)
     raw_port["linkCheck"] = {"state": "down", "checkedAt": later.isoformat()}
     port = graph(later)["nodes"][0]["ports"][0]
     assert port["state"] == "down" and "rxSilence" not in port
+    assert graph(later)["portRxSilenceAudit"] == {"total": 0, "ports": []}
 
 
 def test_rx_error_diagnostics_poll_only_matching_affected_ports(monkeypatch):

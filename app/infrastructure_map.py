@@ -1582,6 +1582,17 @@ def _summarize_port_counters(nodes: dict) -> dict:
     return {"measuredPorts": measured, "affectedPorts": len(affected), "ports": affected[:64]}
 
 
+def _summarize_port_rx_silence(nodes: dict) -> dict:
+    ports = [
+        {"deviceId": node["id"], "deviceName": node["name"], "port": port["name"], "rxSilence": port["rxSilence"],
+         **({"configuredLabel": port["configuredLabel"]} if "configuredLabel" in port else {})}
+        for node in nodes.values() if node["kind"] == NETWORK_KINDS[0]
+        for port in node["ports"] if "rxSilence" in port
+    ]
+    ports.sort(key=lambda row: (-row["rxSilence"]["txBytes"], row["deviceId"], row["port"]))
+    return {"total": len(ports), "ports": ports[:64]}
+
+
 def _topology_port_pairs(nodes: dict, links: list[dict], host_ids: set[str] | None = None) -> tuple:
     if host_ids is not None:
         links = [link for link in links if link["a"] in host_ids or link["b"] in host_ids]
@@ -1816,6 +1827,7 @@ def summarize_topology(graph: dict) -> dict:
                                         "inventoryPairs": inventory_pairs[:64],
                                         "portAlertTotal": len(alerts), "portAlerts": alerts[:64],
                                         "portCounterAudit": graph.get("portCounterAudit") or _summarize_port_counters(nodes),
+                                        "portRxSilenceAudit": graph.get("portRxSilenceAudit") or _summarize_port_rx_silence(nodes),
                                         "stpRootPaths": stp, "stpRoots": roots, "vlanAudits": vlan_audits[:64],
                                         "lacpHealth": lacp[:64],
                                         "lacpPartnerInterfaceGapTotal": len(lacp_gaps),
@@ -3190,6 +3202,7 @@ def load_infrastructure_map(
         **empty, "availability": "stale" if now - stamp > MAX_AGE else "ready",
         "snapshotAt": stamp.isoformat(), "nodes": list(nodes.values()), "links": links,
         "portCounterAudit": _summarize_port_counters(nodes),
+        "portRxSilenceAudit": _summarize_port_rx_silence(nodes),
         "clusterId": cluster_id, "nodeOrder": node_ids("nodeOrder"),
         "overviewGuests": node_ids("overviewGuests"),
         "git": revision if re.fullmatch(r"[0-9a-f]{40}", revision) else "",
