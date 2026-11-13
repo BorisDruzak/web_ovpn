@@ -58,6 +58,43 @@ def _router_rates(current: sqlite3.Row, previous: sqlite3.Row, elapsed: float) -
     return metrics
 
 
+def current_router_port_telemetry(conn: sqlite3.Connection) -> dict:
+    result = {}
+    rows = conn.execute("""
+        SELECT s.name AS source, i.name AS port_name, i.last_seen_at, newest.*, older.id AS previous_id
+        FROM network_interfaces AS i
+        JOIN network_sources AS s ON s.id = i.source_id
+        JOIN router_interface_counter_samples AS newest ON newest.source_id = i.source_id
+            AND newest.interface_name = i.name AND newest.observed_at = i.last_seen_at
+        JOIN router_interface_counter_samples AS older ON older.id = (
+            SELECT p.id FROM router_interface_counter_samples AS p
+            WHERE p.source_id = i.source_id AND p.interface_name = i.name AND p.observed_at < newest.observed_at
+            ORDER BY p.observed_at DESC LIMIT 1
+        )
+        WHERE s.enabled = 1 AND s.driver IN ('mikrotik_api', 'mikrotik_ssh') AND i.type = 'ether'
+            AND i.running = 1 AND i.disabled = 0 AND newest.running = 1
+    """)
+    for current in rows:
+        previous = conn.execute("SELECT * FROM router_interface_counter_samples WHERE id = ?", (current["previous_id"],)).fetchone()
+        try:
+            elapsed = (datetime.fromisoformat(current["observed_at"]) - datetime.fromisoformat(previous["observed_at"])).total_seconds()
+            if not 0 < elapsed <= MAX_INTERVAL_SECONDS or ("link_downs" in current.keys()
+                    and current["link_downs"] != previous["link_downs"]):
+                continue
+            rates = _router_rates(current, previous, elapsed)
+        except (ValueError, TypeError, OverflowError):
+            continue
+        metrics = {public: rates[key] for key, public in (
+            ("rx_bps", "rxBps"), ("tx_bps", "txBps"), ("in_errors_delta", "rxErrors"), ("out_errors_delta", "txErrors"),
+            ("in_discards_delta", "rxDiscards"), ("out_discards_delta", "txDiscards"),
+        ) if key in rates}
+        if metrics:
+            result[current["source"], current["port_name"]] = {
+                "checkedAt": current["last_seen_at"], "intervalSeconds": elapsed, **metrics,
+            }
+    return result
+
+
 def _switch_rates(current: sqlite3.Row, previous: sqlite3.Row, elapsed: float) -> dict:
     if current["if_index"] != previous["if_index"]:
         return {}

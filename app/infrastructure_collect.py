@@ -29,6 +29,7 @@ from netctl.context import load_context_bytes, load_schema, validate_context
 from netctl.db import list_sources, read_context_snapshot
 from netctl.drivers import legacy_driver_for
 from netctl.drivers.mikrotik_ssh import RouterOSSshTransportError
+from netctl.network_diagnostics import current_router_port_telemetry
 from netctl.snmp.fdb import read_learned_fdb_port
 from netctl.snmp.interfaces import (
     read_bridge_stp_ports, read_interface_link, read_interface_rx_error_counters,
@@ -1814,6 +1815,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                  {1: "up", 0: "down"}.get(interface.get("running"), "unknown"))
         router_ports.setdefault(interface["source"], []).append({
             "name": name, "source": "RouterOS", "state": state, "checkedAt": interface.get("last_seen_at"),
+            **({"telemetry": sample} if (sample := network.get("router_port_telemetry", {}).get((interface["source"], name))) else {}),
         })
     for reading in network.get("router_neighbors", []):
         interfaces = reading.get("interface")
@@ -3376,6 +3378,7 @@ def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | N
             ORDER BY s.name, i.name
             """
         )]
+        data["router_port_telemetry"] = current_router_port_telemetry(connection)
         if transit_sources:
             data["router_bridge_hosts"] = [dict(row) for row in connection.execute(
                 """

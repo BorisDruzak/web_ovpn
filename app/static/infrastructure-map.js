@@ -1202,12 +1202,16 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       }
       const attachment = path.routerAttachment ?? path.switchAttachment;
       if (attachment) {
-        const {routerId, switchId, port, source, checkedAt, physicalPair, archivedPeer, lldpPeers = []} = attachment;
+        const {routerId, switchId, port, source, checkedAt, physicalPair, archivedPeer, telemetry, lldpPeers = []} = attachment;
         const deviceId = routerId ?? switchId;
         const device = byId.get(deviceId)?.name ?? deviceId;
         const evidence = switchId ? 'ARP + FDB коммутатора' : source;
         row.append(make('small', [evidence, formatTime(checkedAt)].join(' · ')),
           switchPortButton(deviceId, device, port));
+        if (telemetry && telemetry.rxBps !== undefined && telemetry.txBps !== undefined) {
+          const rate = value => observerNumber.format(value / 1000) + ' кбит/с';
+          row.append(make('small', `RouterOS · RX ${rate(telemetry.rxBps)} · TX ${rate(telemetry.txBps)} · ${formatTime(telemetry.checkedAt)}`));
+        }
         for (const peer of lldpPeers) {
           const label = formatLldpPortId(peer.portId, peer.portIdSubtype);
           row.append(make('small', `Объявление LLDP · ${label} · ${formatTime(peer.checkedAt)}`));

@@ -2670,8 +2670,11 @@ def _observed_management_ports(links: list[dict], nodes: dict) -> dict:
             key = (device, port_label_key(port))
             if key not in ports or ports[key][field]["checkedAt"] < report["at"]:
                 attachment = {id_key: device, "port": port, "source": report["source"], "checkedAt": report["at"]}
-                if field == "routerAttachment" and not report["b"] and (archived := _archived_router_peer(edge)):
-                    attachment["archivedPeer"] = archived
+                if field == "routerAttachment":
+                    if not report["b"] and (archived := _archived_router_peer(edge)):
+                        attachment["archivedPeer"] = archived
+                    if telemetry := report["portStates"][side].get("telemetry"):
+                        attachment["telemetry"] = telemetry
                 if field == "switchAttachment":
                     peers = [peer for peer in report.get("lldpPeers", {}).get(side, [])
                              if peer.get("chassisId") == endpoint["mac"] and peer.get("portId")]

@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from subprocess import CompletedProcess
 
 from netctl.db import connect
-from netctl.network_diagnostics import read_diagnostics
+from netctl.network_diagnostics import current_router_port_telemetry, read_diagnostics
 from netctl.store import save_collection
 
 
@@ -30,6 +30,12 @@ def test_router_history_uses_valid_deltas_and_leaves_a_gap_after_reset(tmp_path,
                 "name": "wan", "type": "ether", "running": True,
                 "rx_bytes": rx, "tx_bytes": tx,
             }]}, observed_at)
+            current = current_router_port_telemetry(conn)
+            if minute == 5:
+                assert current["router", "wan"] == {"checkedAt": observed_at, "intervalSeconds": 300,
+                                                    "rxBps": 8, "txBps": 16}
+            else:
+                assert not current
         result = read_diagnostics(conn, "router", "wan", now=datetime(2026, 11, 12, 12, 16, tzinfo=UTC))
 
     assert result["interfaces"][0]["key"] == "wan"

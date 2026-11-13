@@ -5507,6 +5507,8 @@ def test_transit_port_requires_direct_route_running_ethernet_and_neighbor_arp(tm
         "routes": [{"source": "main", "dst_address": "192.0.2.0/30", "gateway": "ether8", "immediate_gateway": "ether8",
                     "routing_table": "main", "active": 1, "disabled": 0, "dynamic": 1, "route_type": "unicast", "last_seen_at": at}],
         "router_interfaces": [{"source": "main", "name": "ether8", "type": "ether", "running": 1, "disabled": 0, "last_seen_at": at}],
+        "router_port_telemetry": {("main", "ether8"): {"checkedAt": at, "intervalSeconds": 60,
+                                                        "rxBps": 1200, "txBps": 2400}},
         "arp": [{"ip": "192.0.2.2", "mac": "02:00:00:00:00:08", "source": "main", "interface": "ether8", "last_seen_at": at}],
     }
 
@@ -5538,6 +5540,7 @@ def test_transit_port_requires_direct_route_running_ethernet_and_neighbor_arp(tm
     path, = detail["servicePaths"]
     assert path["routerAttachment"] == {
         "routerId": "rb", "port": "ether8", "source": "MikroTik · ARP", "checkedAt": at,
+        "telemetry": {"checkedAt": at, "intervalSeconds": 60, "rxBps": 1200, "txBps": 2400},
         "archivedPeer": {"nodeId": "coordinator", "port": "eth2", "checkedAt": inventory_stamp,
                          "inventorySources": sources},
     }
