@@ -45,6 +45,7 @@ def route_report(
     api_runs: list[dict], expected_hops: dict[str, str | None],
     expected_dns: dict[str, tuple[str, bool]] | None = None,
     expected_interfaces: dict[str, str] | None = None,
+    expected_ipsec: set[str] | None = None,
 ) -> dict:
     row = next((run for run in runs if run["trigger"] == "scheduled"), None)
     if row is None:
@@ -63,6 +64,13 @@ def route_report(
             details = (probe if name == "ipsec" else evidence).get(name)
             if isinstance(details, dict):
                 summary[name] = {field: details[field] for field in fields if details.get(field) is not None}
+        if "ipsec" in summary:
+            policy = summary["ipsec"]
+            phase2 = policy.get("phase2_count")
+            summary["ipsec_policy_confirmed"] = (
+                policy.get("status") == "established" and type(phase2) is int and phase2 > 0
+                and policy.get("local_sa_address_status") != "missing"
+            )
         if probe.get("expected_first_hop"):
             summary.update(
                 expected_first_hop=probe["expected_first_hop"],
@@ -109,6 +117,7 @@ def route_report(
             reported_hops == expected_hops and len(probes) == len(expected_hops)
             and reported_transports == expected_transports
             and reported_interfaces == (expected_interfaces or {})
+            and {probe["id"] for probe in probes if "ipsec" in probe} == (expected_ipsec or set())
         ),
         "probes": probes,
     }
@@ -342,6 +351,7 @@ def verify(script: Path, max_age: timedelta) -> dict:
             expected_interfaces={
                 probe["id"]: probe["expected_kernel_interface"] for probe in probes if probe.get("expected_kernel_interface")
             },
+            expected_ipsec={probe["id"] for probe in probes if probe.get("ipsec")},
         )
     return {
         "contracts": "ok",
@@ -356,6 +366,10 @@ def main() -> int:
     parser.add_argument("--mcp-script", type=Path, default=MCP_SCRIPT)
     parser.add_argument("--max-age-minutes", type=int, default=10)
     parser.add_argument("--require-reachable", action="store_true")
+    parser.add_argument(
+        "--require-ipsec", action="store_true",
+        help="require an established IPsec policy with Phase 2 and a reachable target for each IPsec probe",
+    )
     parser.add_argument(
         "--require-expected-first-hop", action="store_true",
         help="require confirmation for every configured first hop",
@@ -405,6 +419,14 @@ def main() -> int:
     ]
     confirmed_interfaces = sum(probe["kernel_interface_matches"] for probe in interface_probes)
     report["expected_kernel_interfaces"] = {"configured": len(interface_probes), "confirmed": confirmed_interfaces}
+    ipsec_probes = [probe for route in routes for probe in route["probes"] if "ipsec_policy_confirmed" in probe]
+    ipsec_confirmed = sum(probe["ipsec_policy_confirmed"] and probe["status"] == "reachable" for probe in ipsec_probes)
+    report["ipsec_probes"] = {
+        "configured": len(ipsec_probes),
+        "policies_confirmed": sum(probe["ipsec_policy_confirmed"] for probe in ipsec_probes),
+        "targets_reachable": sum(probe["status"] == "reachable" for probe in ipsec_probes),
+        "confirmed": ipsec_confirmed,
+    }
     dns_probes = [probe for route in routes for probe in route["probes"] if probe.get("dns_transport")]
     confirmed_dns = sum(
         probe["status"] == "reachable"
@@ -452,6 +474,8 @@ def main() -> int:
         return 1
     if args.require_expected_kernel_interface and not interface_probes:
         return 1
+    if args.require_ipsec and not ipsec_probes:
+        return 1
     if args.require_loop_coverage:
         coverage = report["loop_diagnostics"]["coverage"]
         if not coverage["total"]:
@@ -463,6 +487,8 @@ def main() -> int:
     if args.require_expected_kernel_interface and confirmed_interfaces != len(interface_probes):
         return 2
     if args.require_dns_transport and confirmed_dns != len(dns_probes):
+        return 2
+    if args.require_ipsec and ipsec_confirmed != len(ipsec_probes):
         return 2
     return 2 if args.require_reachable and any(route["status"] != "reachable" for route in routes) else 0
 

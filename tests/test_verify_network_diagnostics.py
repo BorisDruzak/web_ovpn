@@ -114,6 +114,7 @@ def test_route_report_keeps_wan_and_ipsec_failure_evidence():
     report = route_report(
         [run], now, timedelta(minutes=10), api_runs=[run],
         expected_hops={"gateway": None, "tunnel": None, "remote": None},
+        expected_ipsec={"tunnel", "remote"},
     )
     gateway, tunnel, remote = report["probes"]
     assert gateway["reason"] == "icmp_unreachable"
@@ -123,6 +124,48 @@ def test_route_report_keeps_wan_and_ipsec_failure_evidence():
     assert "ignored" not in gateway
     assert tunnel["ipsec"] == {"status": "inactive", "phase2_count": 0, "local_sa_address_status": "missing"}
     assert remote["ipsec"] == {"status": "unavailable", "reason": "collector_timeout"}
+    assert report["profile_matches"]
+    assert tunnel["ipsec_policy_confirmed"] is False
+    assert remote["ipsec_policy_confirmed"] is False
+    changed = route_report(
+        [run], now, timedelta(minutes=10), api_runs=[run],
+        expected_hops={"gateway": None, "tunnel": None, "remote": None}, expected_ipsec={"tunnel"},
+    )
+    assert not changed["profile_matches"]
+
+
+@pytest.mark.parametrize("policy,status,expected", [
+    (None, "reachable", 1),
+    (True, "reachable", 0),
+    (True, "timeout", 2),
+    (False, "reachable", 2),
+])
+def test_require_ipsec_checks_policy_and_reachability(monkeypatch, policy, status, expected):
+    monkeypatch.setattr(sys, "argv", ["verifier", "--require-ipsec"])
+    probes = [] if policy is None else [{"status": status, "ipsec_policy_confirmed": policy}]
+    monkeypatch.setattr(verifier, "verify", lambda *_: {"routes": {
+        "ipsec": {"fresh": True, "profile_matches": True, "api_matches": True, "probes": probes},
+    }})
+    assert verifier.main() == expected
+
+
+@pytest.mark.parametrize("phase2,address,confirmed", [
+    (1, "assigned", True), (1, None, True), (0, "assigned", False),
+    (True, "assigned", False), (1, "missing", False),
+])
+def test_ipsec_policy_confirmation_requires_positive_phase2(phase2, address, confirmed):
+    now = datetime(2026, 11, 13, 2, 15, tzinfo=UTC)
+    run = {
+        "id": 7, "trigger": "scheduled", "checked_at": now.isoformat(), "status": "timeout",
+        "result": {"probes": [{"id": "tunnel", "status": "timeout", "ipsec": {
+            "status": "established", "phase2_count": phase2, "local_sa_address_status": address,
+        }}]},
+    }
+    report = route_report(
+        [run], now, timedelta(minutes=10), api_runs=[run],
+        expected_hops={"tunnel": None}, expected_ipsec={"tunnel"},
+    )
+    assert report["probes"][0]["ipsec_policy_confirmed"] is confirmed
 
 
 @pytest.mark.parametrize("session,route,confirmed", [
