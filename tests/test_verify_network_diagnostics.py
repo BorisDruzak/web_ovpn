@@ -60,6 +60,33 @@ def test_route_report_rejects_a_different_result_for_the_same_id():
         assert not report["api_matches"]
 
 
+def test_route_report_checks_configured_dns_transport_and_preserves_evidence():
+    now = datetime(2026, 11, 13, 2, 15, tzinfo=UTC)
+    run = {
+        "id": 7, "trigger": "scheduled", "checked_at": now.isoformat(), "status": "reachable",
+        "result": {"probes": [{
+            "id": "dns", "status": "reachable", "dns_transport": "tcp",
+            "evidence": {"dns_transport": "UDP", "dns_rcode": "NOERROR", "dns_answers_match": True},
+        }]},
+    }
+    report = route_report(
+        [run], now, timedelta(minutes=10), api_runs=[run], expected_hops={"dns": None},
+        expected_dns={"dns": ("tcp", True)},
+    )
+    assert report["profile_matches"]
+    assert report["probes"][0] == {
+        "id": "dns", "status": "reachable", "dns_transport": "tcp", "observed_dns_transport": "UDP",
+        "dns_rcode": "NOERROR", "dns_answers_match": True, "dns_answers_required": True,
+    }
+    changed = route_report(
+        [run], now, timedelta(minutes=10), api_runs=[run], expected_hops={"dns": None},
+        expected_dns={"dns": ("udp", True)},
+    )
+    assert not changed["profile_matches"]
+    removed = route_report([run], now, timedelta(minutes=10), api_runs=[run], expected_hops={"dns": None})
+    assert not removed["profile_matches"]
+
+
 def test_loop_report_preserves_per_source_coverage_without_copying_findings():
     coverage = {
         "fdb": {"status": "recent", "truncated": False},
@@ -117,3 +144,27 @@ def test_expected_first_hop_is_verified_independently_of_target_status(
                             "observed_path": observed, "path_status": path_status}]},
     }})
     assert verifier.main() == exit_code
+
+
+@pytest.mark.parametrize("transport,observed,status,rcode,required,answers,expected", [
+    ("tcp", "TCP", "reachable", "NOERROR", True, True, 0),
+    ("udp", "UDP", "reachable", "NOERROR", False, None, 0),
+    ("tcp", "UDP", "reachable", "NOERROR", True, True, 2),
+    ("tcp", None, "reachable", "NOERROR", True, True, 2),
+    ("tcp", "TCP", "unreachable", "NOERROR", True, True, 2),
+    ("tcp", "TCP", "reachable", "NXDOMAIN", True, True, 2),
+    ("tcp", "TCP", "reachable", "NOERROR", True, False, 2),
+    ("tcp", "TCP", "reachable", "NOERROR", True, None, 2),
+    (None, "TCP", "reachable", "NOERROR", True, True, 1),
+])
+def test_strict_dns_transport_checks_the_response(
+    monkeypatch, transport, observed, status, rcode, required, answers, expected,
+):
+    monkeypatch.setattr(sys, "argv", ["verifier", "--require-dns-transport"])
+    monkeypatch.setattr(verifier, "verify", lambda *_: {"routes": {
+        "lan": {"fresh": True, "profile_matches": True, "api_matches": True, "status": status,
+                "probes": [{"id": "dns", "status": status, "dns_transport": transport,
+                            "observed_dns_transport": observed, "dns_rcode": rcode,
+                            "dns_answers_required": required, "dns_answers_match": answers}]},
+    }})
+    assert verifier.main() == expected

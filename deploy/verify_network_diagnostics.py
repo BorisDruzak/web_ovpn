@@ -30,12 +30,14 @@ MCP_TOOLS = {
 def route_report(
     runs: list[dict], now: datetime, max_age: timedelta, *,
     api_runs: list[dict], expected_hops: dict[str, str | None],
+    expected_dns: dict[str, tuple[str, bool]] | None = None,
 ) -> dict:
     row = next((run for run in runs if run["trigger"] == "scheduled"), None)
     if row is None:
         return {"status": "missing", "fresh": False, "run_id": None, "api_matches": False,
                 "profile_matches": False, "probes": []}
     checked_at = datetime.fromisoformat(row["checked_at"])
+    expected_dns = expected_dns or {}
     probes = []
     for probe in row["result"]["probes"]:
         summary = {"id": probe["id"], "status": probe["status"]}
@@ -45,15 +47,29 @@ def route_report(
                 observed_path=probe.get("observed_path"),
                 path_status=probe.get("path_status", "unconfirmed"),
             )
+        if probe.get("dns_transport"):
+            evidence = probe.get("evidence", {})
+            summary.update(
+                dns_transport=probe["dns_transport"],
+                observed_dns_transport=evidence.get("dns_transport"),
+                dns_rcode=evidence.get("dns_rcode"),
+                dns_answers_match=evidence.get("dns_answers_match"),
+                dns_answers_required=expected_dns.get(probe["id"], (None, False))[1],
+            )
         probes.append(summary)
     reported_hops = {probe["id"]: probe.get("expected_first_hop") for probe in probes}
+    reported_transports = {probe["id"]: probe["dns_transport"] for probe in probes if "dns_transport" in probe}
+    expected_transports = {probe_id: transport for probe_id, (transport, _) in expected_dns.items()}
     return {
         "status": row["status"],
         "run_id": row["id"],
         "checked_at": row["checked_at"],
         "fresh": bool(probes) and timedelta(0) <= now - checked_at <= max_age,
         "api_matches": row in api_runs,
-        "profile_matches": reported_hops == expected_hops and len(probes) == len(expected_hops),
+        "profile_matches": (
+            reported_hops == expected_hops and len(probes) == len(expected_hops)
+            and reported_transports == expected_transports
+        ),
         "probes": probes,
     }
 
@@ -129,10 +145,7 @@ def verify(script: Path, max_age: timedelta) -> dict:
     if CHECKS - {entry["check"] for entry in catalog["checks"]}:
         raise ValueError("Diagnostic checks missing")
     profiles = catalog["profiles"]
-    scheduled = {
-        profile["id"]: {probe["id"]: probe.get("expected_first_hop") for probe in profile["probes"]}
-        for profile in profiles["routes"] if profile["scheduled"]
-    }
+    scheduled = {profile["id"]: profile["probes"] for profile in profiles["routes"] if profile["scheduled"]}
     if not scheduled:
         raise ValueError("No scheduled route profiles")
 
@@ -142,11 +155,16 @@ def verify(script: Path, max_age: timedelta) -> dict:
     ])
     now = datetime.now(UTC)
     routes = {}
-    for (profile, expected), reply in zip(scheduled.items(), history, strict=True):
+    for (profile, probes), reply in zip(scheduled.items(), history, strict=True):
         query = urlencode({"profile": profile, "limit": 100})
         api_runs = bridge.api_request("GET", f"{API}/route-runs?{query}")["data"]["runs"]
         routes[profile] = route_report(
-            mcp_data(reply)["runs"], now, max_age, api_runs=api_runs, expected_hops=expected,
+            mcp_data(reply)["runs"], now, max_age, api_runs=api_runs,
+            expected_hops={probe["id"]: probe.get("expected_first_hop") for probe in probes},
+            expected_dns={
+                probe["id"]: (probe["dns_transport"], bool(probe.get("expected_dns_answers")))
+                for probe in probes if probe.get("dns_transport")
+            },
         )
     return {
         "contracts": "ok",
@@ -165,6 +183,10 @@ def main() -> int:
         "--require-expected-first-hop", action="store_true",
         help="require confirmation for every configured first hop",
     )
+    parser.add_argument(
+        "--require-dns-transport", action="store_true",
+        help="require successful DNS responses on each explicitly configured transport",
+    )
     args = parser.parse_args()
     if args.max_age_minutes < 1:
         parser.error("--max-age-minutes must be positive")
@@ -182,14 +204,24 @@ def main() -> int:
         for probe in configured_hops
     )
     report["expected_first_hops"] = {"configured": len(configured_hops), "confirmed": confirmed_hops}
+    dns_probes = [probe for route in routes for probe in route["probes"] if probe.get("dns_transport")]
+    confirmed_dns = sum(
+        probe["status"] == "reachable"
+        and probe["observed_dns_transport"] == probe["dns_transport"].upper()
+        and probe["dns_rcode"] == "NOERROR"
+        and (not probe["dns_answers_required"] or probe["dns_answers_match"] is True)
+        for probe in dns_probes
+    )
+    report["dns_transports"] = {"configured": len(dns_probes), "confirmed": confirmed_dns}
     print(json.dumps(report, ensure_ascii=False, indent=2))
     if any(not (route["fresh"] and route["profile_matches"] and route["api_matches"]) for route in routes):
         return 1
-    if args.require_expected_first_hop:
-        if not configured_hops:
-            return 1
-        if confirmed_hops != len(configured_hops):
-            return 2
+    if (args.require_expected_first_hop and not configured_hops) or (args.require_dns_transport and not dns_probes):
+        return 1
+    if args.require_expected_first_hop and confirmed_hops != len(configured_hops):
+        return 2
+    if args.require_dns_transport and confirmed_dns != len(dns_probes):
+        return 2
     return 2 if args.require_reachable and any(route["status"] != "reachable" for route in routes) else 0
 
 
