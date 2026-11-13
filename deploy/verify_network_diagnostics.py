@@ -252,6 +252,38 @@ def loop_report(result: dict) -> dict:
     }
 
 
+def loopback_vlan_report(loops: dict, source: str, vlan: int, now: datetime, max_age: timedelta) -> dict:
+    switch = next((row for row in loops.get("source_coverage", ()) if row["source"] == source), None)
+    detector = switch["coverage"].get("loopback_detection", {}) if switch else {}
+    status = detector.get("status", "unavailable")
+    timestamp = detector.get("last_observed_at")
+    try:
+        checked_at = datetime.fromisoformat(timestamp) if isinstance(timestamp, str) else None
+    except ValueError:
+        checked_at = None
+    detected = None
+    if switch is None:
+        reason = "unknown_source"
+    elif status != "vlan_mode":
+        reason = status
+    elif checked_at is None or checked_at.tzinfo is None:
+        reason = "unavailable"
+    elif not timedelta(0) <= now - checked_at <= max_age:
+        reason = "stale"
+    elif vlan not in detector["enabled_vlans"]:
+        reason = "coverage_truncated" if detector["truncated"] else "vlan_not_covered"
+    else:
+        reason = "confirmed"
+        if vlan in detector["detected_vlans"]:
+            detected = True
+        elif not detector["truncated"]:
+            detected = False
+    return {
+        "source": source, "vlan": vlan, "last_observed_at": timestamp, "reason": reason,
+        "confirmed": reason == "confirmed", "detected": detected,
+    }
+
+
 def mcp_requests(script: Path, requests: list[tuple[str, dict]]) -> list[dict]:
     messages = [
         {"jsonrpc": "2.0", "id": number, "method": method, "params": params}
@@ -576,6 +608,10 @@ def main() -> int:
         "--require-broadcast-coverage", action="store_true",
         help="require recent usable broadcast intervals on every switch",
     )
+    parser.add_argument(
+        "--require-loopback-vlan", action="append", nargs=2, metavar=("SOURCE", "VLAN"),
+        help="require fresh loopback-detector coverage of a specific switch VLAN; repeat to check more VLANs",
+    )
     parser.add_argument("--capture-id", type=UUID, help="verify a nonempty PCAP owned by the current actor")
     parser.add_argument("--require-capture-filter", action="store_true", help="verify all PCAP packets with local tcpdump")
     parser.add_argument(
@@ -593,6 +629,11 @@ def main() -> int:
         parser.error("--max-age-minutes must be positive")
     if any(check not in {"iperf3", "https_speed"} for check, _, _ in args.speed or ()):
         parser.error("--speed CHECK must be iperf3 or https_speed")
+    loopback_vlans = []
+    for source, value in args.require_loopback_vlan or ():
+        if not value.isascii() or not value.isdecimal() or len(value) > 4 or not 1 <= int(value) <= 4094:
+            parser.error("--require-loopback-vlan VLAN must be between 1 and 4094")
+        loopback_vlans.append((source, int(value)))
     try:
         report = verify(args.mcp_script, timedelta(minutes=args.max_age_minutes), args.route_profile)
     except (OSError, LookupError, RuntimeError, TypeError, ValueError, subprocess.SubprocessError):
@@ -659,6 +700,12 @@ def main() -> int:
         except (OSError, LookupError, RuntimeError, TypeError, ValueError, subprocess.SubprocessError):
             report["speed"] = []
             report["speed_error"] = "speed_verification_failed"
+    if loopback_vlans:
+        now = datetime.now(UTC)
+        report["loopback_vlan_checks"] = [
+            loopback_vlan_report(report["loop_diagnostics"], source, vlan, now, timedelta(minutes=args.max_age_minutes))
+            for source, vlan in loopback_vlans
+        ]
     print(json.dumps(report, ensure_ascii=False, indent=2))
     if args.capture_id is not None and "error" in report["capture"]:
         return 1
@@ -676,6 +723,11 @@ def main() -> int:
         return 1
     if report.get("loop_diagnostics", {}).get("api_matches") is False:
         return 1
+    loopback_checks = report.get("loopback_vlan_checks", ())
+    if any(check["reason"] == "unknown_source" for check in loopback_checks):
+        return 1
+    if any(not check["confirmed"] for check in loopback_checks):
+        return 2
     if args.require_fresh_push_receipts:
         receipts = [receipt for route in routes for receipt in route.get("push_origins", {}).values()]
         if not receipts:

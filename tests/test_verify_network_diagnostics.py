@@ -580,6 +580,36 @@ def test_require_broadcast_coverage(monkeypatch, broadcast, truncated, expected)
     assert verifier.main() == expected
 
 
+@pytest.mark.parametrize("source,vlan,mode,age,truncated,detected,expected,reason", [
+    ("unknown", "1", "vlan_mode", 0, False, [], 1, "unknown_source"),
+    ("dgs", "20", "vlan_mode", 0, False, [], 2, "vlan_not_covered"),
+    ("dgs", "20", "vlan_mode", 0, True, [], 2, "coverage_truncated"),
+    ("dgs", "1", "vlan_mode", 0, True, [], 0, "confirmed"),
+    ("dgs", "1", "vlan_mode", 11, False, [], 2, "stale"),
+    ("dgs", "1", "disabled", 0, False, [], 2, "disabled"),
+    ("dgs", "1", "vlan_mode", 0, False, [1], 0, "confirmed"),
+])
+def test_require_loopback_vlan_checks_fresh_detector_coverage(
+    monkeypatch, capsys, source, vlan, mode, age, truncated, detected, expected, reason,
+):
+    now = datetime.now(UTC)
+    detector = {
+        "status": mode, "last_observed_at": (now - timedelta(minutes=age)).isoformat(),
+        "enabled_vlans": [1], "detected_vlans": detected, "truncated": truncated,
+    }
+    monkeypatch.setattr(sys, "argv", ["verifier", "--require-loopback-vlan", source, vlan])
+    monkeypatch.setattr(verifier, "verify", lambda *_: {
+        "routes": {},
+        "loop_diagnostics": {"api_matches": True, "source_coverage": [
+            {"source": "dgs", "coverage": {"loopback_detection": detector}},
+        ]},
+    })
+    assert verifier.main() == expected
+    [check] = json.loads(capsys.readouterr().out)["loopback_vlan_checks"]
+    assert check["reason"] == reason
+    assert check["detected"] is (bool(detected) if reason == "confirmed" and (detected or not truncated) else None)
+
+
 @pytest.mark.parametrize("change,passed", [
     ("none", True), ("bytes", False), ("count", False), ("empty", False),
     ("path", False), ("size", False),
