@@ -6489,6 +6489,9 @@ def test_controller_warns_for_errors_on_its_unambiguous_management_switch_port(t
     assert "physicalPair" not in location and location["portLink"]["state"] == "up"
     assert node["managementPortErrors"] == {"switchId": "sw", "port": "ge4", "source": "netctl FDB",
                                             "checkedAt": at, "telemetry": telemetry}
+    counters = {"checkedAt": at, "ifInErrors": 3145919, "fcsErrors": 0}
+    port["rxErrorCounters"] = counters
+    assert read()["managementPortErrors"]["rxErrorCounters"] == counters
     port["fdbLearned"]["learnedMacCount"] = 2
     node = read()
     assert node["mapStatus"] == "ok" and node["managementSwitchPort"]["port"] == "ge4"

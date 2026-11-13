@@ -3142,6 +3142,8 @@ def _attach_management_ports(nodes: dict, links: list[dict]) -> None:
                 and learned.get("checkedAt") == telemetry["checkedAt"]
                 and abs(_time(attachment["checkedAt"]) - _time(telemetry["checkedAt"])) <= timedelta(seconds=30)):
             node["managementPortErrors"] = {**location, "telemetry": telemetry}
+            if counters := attachment.get("rxErrorCounters"):
+                node["managementPortErrors"]["rxErrorCounters"] = counters
 
 
 def _management_service_paths(service: dict, host: str, management: dict, observed_ports: dict,

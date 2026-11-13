@@ -1648,13 +1648,14 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       }
     }
     if (node.managementPortErrors) {
-      const {switchId, port, telemetry} = node.managementPortErrors;
+      const {switchId, port, telemetry, rxErrorCounters} = node.managementPortErrors;
       const upstream = byId.get(switchId);
       if (upstream) {
         const link = make('a', `${upstream.name} · ${port}`);
         link.href = '?' + new URLSearchParams({node: switchId, port});
         const row = make('dd');
         row.append(link, make('small', formatPortCounterChanges(telemetry)));
+        if (rxErrorCounters) appendRxErrorCounters(row, rxErrorCounters);
         properties.append(make('dt', 'Ошибки на порту управления'), row);
       }
     }
@@ -1789,6 +1790,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           const port = switchPortButton(upstream.id, upstream.name, errors.port);
           const reading = make('div');
           reading.append(port, make('small', formatPortCounterChanges(errors.telemetry)));
+          if (errors.rxErrorCounters) appendRxErrorCounters(reading, errors.rxErrorCounters);
           panel.append(reading);
         }
       }
