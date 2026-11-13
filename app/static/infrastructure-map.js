@@ -177,7 +177,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   }
   function pendingPortPairRow({a, b, nameA, nameB, portA, portB, observedSources = [], lldpPortIds = [],
       observedSourceTimes = {}, identifiedPeerSides = [], archivedPortSides = [], inventoryPortSides = [],
-      portObservations = {}, stpPaths = []}) {
+      portObservations = {}, stpPaths = [], lldpPeers = {}}) {
     const item = make('li');
     const provenance = key => archivedPortSides.includes(key) ? ' (по архиву)' :
       inventoryPortSides.includes(key) ? ' (по инвентарю)' : '';
@@ -188,7 +188,16 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       const checkedAt = observedSourceTimes[source];
       item.append(make('small', checkedAt ? `${label} · ${formatTime(checkedAt)}` : label));
     }
-    if (lldpPortIds.length) item.append(make('small', 'LLDP Port ID ' + lldpPortIds.join(', ')));
+    for (const [side, peers] of Object.entries(lldpPeers)) {
+      const [observer, neighbor] = side === 'a' ? [nameA, nameB] : [nameB, nameA];
+      for (const {localPort, portId, chassisId, checkedAt} of peers) {
+        const identity = portId ? `Port ID ${portId}` : chassisId;
+        item.append(make('small', `LLDP · ${observer} ${localPort} → ${neighbor} · ${identity} · ${formatTime(checkedAt)}`));
+      }
+    }
+    if (!Object.keys(lldpPeers).length && lldpPortIds.length) {
+      item.append(make('small', 'LLDP Port ID ' + lldpPortIds.join(', ')));
+    }
     if (identifiedPeerSides.length) {
       const observers = identifiedPeerSides.map(side => side === 'a' ? nameA : nameB);
       item.append(make('small', 'Сосед опознан со стороны ' + observers.join(', ')));

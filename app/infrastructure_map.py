@@ -3051,7 +3051,7 @@ def load_infrastructure_map(
                      side: {key: port[key] for key in ("name", "state", "speedBps", "checkedAt", "rxSilence") if key in port}
                      for side, port in row.get("portObservations", {}).items()
                  },
-                 **{key: row[key] for key in ("archivedPortSides", "inventoryPortSides") if key in row}}
+                 **{key: row[key] for key in ("archivedPortSides", "inventoryPortSides", "lldpPeers") if key in row}}
                 for row in pending[:64]
             ],
             lacpPartnerInterfaceGapTotal=len(lacp_gaps),
