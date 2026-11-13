@@ -4229,6 +4229,7 @@ def load_infrastructure_map(
             "lacpPartnerInterfaceGaps": []} if include_port_pairs else {}),
         **({"guestAttachments": {}, "servicePaths": {}, "servicePorts": {}, "inventoryPairs": [],
             "currentPortPairTotal": 0, "currentPortPairs": [],
+            "currentPairMeasurementGapTotal": 0, "currentPairMeasurementGaps": [],
             "pendingPortPairTotal": 0, "pendingPortPairs": [], "pendingPortPairLinkCounts": {},
             "lacpPartnerInterfaceGapTotal": 0, "lacpPartnerInterfaceGaps": []} if include_guest_attachments else {}),
     }
@@ -4557,6 +4558,7 @@ def load_infrastructure_map(
             inventoryPairs=inventory_pairs,
             currentPortPairTotal=len(current_pairs),
             currentPortPairs=current_pairs[:64],
+            **_summarize_pair_measurement_gaps(current_pairs),
             sharedPorts=_summarize_shared_ports(pending),
             pendingPortPairTotal=len(pending),
             pendingPortPairLinkCounts=dict(Counter(row["linkHealth"]["state"] for row in pending)),

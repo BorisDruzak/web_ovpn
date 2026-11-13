@@ -293,13 +293,14 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   }
   function renderConfirmedPortPairs() {
     const panel = root.querySelector('#map-confirmed-port-pairs');
-    const {currentPortPairTotal = 0, currentPortPairs = []} = data;
+    const {currentPortPairTotal = 0, currentPortPairs = [], currentPairMeasurementGapTotal = 0} = data;
     panel.hidden = view !== 'switches' || !currentPortPairTotal;
     if (panel.hidden) return;
     const summary = panel.querySelector('summary');
     const list = panel.querySelector('ul');
     const more = panel.querySelector('small');
     summary.textContent = 'Подтверждённые пары портов · ' + currentPortPairTotal;
+    if (currentPairMeasurementGapTotal) summary.append(' · Без полного замера: ' + currentPairMeasurementGapTotal);
     list.replaceChildren(...currentPortPairs.map(confirmedPortPairRow));
     more.hidden = currentPortPairs.length >= currentPortPairTotal;
     more.textContent = `Показано ${currentPortPairs.length} из ${currentPortPairTotal}`;

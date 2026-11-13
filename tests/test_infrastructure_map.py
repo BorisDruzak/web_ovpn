@@ -3737,6 +3737,8 @@ def test_topology_port_alerts_require_confirmed_pairs_and_fresh_states(tmp_path)
             assert audit["currentPairMeasurementGaps"] == [
                 {"a": "a", "b": "b", "portA": "ge1", "portB": "ge2", "missingSides": ["a", "b"]},
             ]
+        browser = load_infrastructure_map(path, now, include_guest_attachments=True)
+        assert browser["currentPairMeasurementGapTotal"] == audit["currentPairMeasurementGapTotal"]
         assert summarize_topology(graph, node_id="a", port_name="ge99")["topologyAudit"]["portAlerts"] == []
         return alerts
 
