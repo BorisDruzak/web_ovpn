@@ -3109,7 +3109,7 @@ def _observed_management_ports(links: list[dict], nodes: dict) -> dict:
     return {key: next(iter(ports.values())) for key, ports in candidates.items() if len(ports) == 1}
 
 
-def _attach_management_ports(nodes: dict, links: list[dict]) -> None:
+def _attach_management_ports(nodes: dict, links: list[dict], switch_history: dict) -> None:
     paths = defaultdict(list)
     for (host, address), path in sorted(_observed_management_ports(links, nodes).items()):
         if attachment := path.get("routerAttachment"):
@@ -3144,6 +3144,11 @@ def _attach_management_ports(nodes: dict, links: list[dict]) -> None:
             node["managementPortErrors"] = {**location, "telemetry": telemetry}
             if counters := attachment.get("rxErrorCounters"):
                 node["managementPortErrors"]["rxErrorCounters"] = counters
+            source = nodes[switch]["properties"].get("Источник сбора", "")
+            keys = switch_history.get(switch, {}).get(ports[0]["name"], [])
+            if (re.fullmatch(r"[A-Za-z0-9._-]{1,128}", source)
+                    and len(keys) == 1 and re.fullmatch(r"(?:ifindex|physical):[1-9][0-9]{0,9}", keys[0])):
+                node["managementPortErrors"]["history"] = {"source": source, "interface": keys[0]}
 
 
 def _management_service_paths(service: dict, host: str, management: dict, observed_ports: dict,
@@ -4116,6 +4121,7 @@ def load_infrastructure_map(
     agent_enrollments = {}
     hypervisor_evidence = {}
     lacp_expectations = {}
+    switch_history = {}
     for row in _rows(raw.get("nodes"), 600):
         node = _public_node(row, now)
         if node["id"] and node["name"] and node["id"] not in nodes:
@@ -4123,6 +4129,12 @@ def load_infrastructure_map(
             if expected := _rows(row.get("lacpExpectations"), 8):
                 lacp_expectations[node["id"]] = expected
             port_rows = _rows(row.get("ports"), 500)
+            if node["kind"] == NETWORK_KINDS[0]:
+                keys_by_name = defaultdict(list)
+                for port in port_rows:
+                    if observation_is_fresh(port.get("checkedAt"), now):
+                        keys_by_name[_text(port.get("name"), 64)].append(_text(port.get("key")))
+                switch_history[node["id"]] = keys_by_name
             if node["kind"] in (*NETWORK_KINDS[:2], "Гипервизор", "Контроллер управления"):
                 port_states[node["id"]] = index_port_states(port_rows, now)
             elif node["kind"] == "Рабочая станция":
@@ -4367,7 +4379,7 @@ def load_infrastructure_map(
     _attach_guest_observer_measurements(nodes, links)
     _attach_acti_backup_job(nodes, links)
     _attach_backup_scope(nodes)
-    _attach_management_ports(nodes, links)
+    _attach_management_ports(nodes, links, switch_history)
     _map_statuses(nodes, links)
     lacp_services = defaultdict(set)
     for edge in links:

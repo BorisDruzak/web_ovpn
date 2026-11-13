@@ -6492,6 +6492,13 @@ def test_controller_warns_for_errors_on_its_unambiguous_management_switch_port(t
     counters = {"checkedAt": at, "ifInErrors": 3145919, "fcsErrors": 0}
     port["rxErrorCounters"] = counters
     assert read()["managementPortErrors"]["rxErrorCounters"] == counters
+    switch["properties"] = {"Источник сбора": "snr-s5210g-254"}
+    port["key"] = "ifindex:5004"
+    assert read()["managementPortErrors"]["history"] == {
+        "source": "snr-s5210g-254", "interface": "ifindex:5004",
+    }
+    port["key"] = "invalid&interface=other"
+    assert "history" not in read()["managementPortErrors"]
     port["fdbLearned"]["learnedMacCount"] = 2
     node = read()
     assert node["mapStatus"] == "ok" and node["managementSwitchPort"]["port"] == "ge4"

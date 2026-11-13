@@ -151,6 +151,17 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       .map(([key, label]) => `${label} ${telemetry[key].toLocaleString('ru-RU')}`);
     return counts.length ? [...counts, `${telemetry.intervalSeconds} с`, formatTime(telemetry.checkedAt)].join(' · ') : '';
   }
+  function appendManagementPortErrors(row, errors) {
+    row.append(make('small', formatPortCounterChanges(errors.telemetry)));
+    if (errors.rxErrorCounters) appendRxErrorCounters(row, errors.rxErrorCounters);
+    if (errors.history) {
+      const history = make('a', 'История порта за 24 часа');
+      history.href = '/network/interfaces?' + new URLSearchParams(errors.history) + '#interface-history-chart';
+      const line = make('small');
+      line.append(history);
+      row.append(line);
+    }
+  }
   function renderPortCounterSummary() {
     const panel = root.querySelector('#map-port-counters');
     const summary = panel.querySelector('summary');
@@ -1648,14 +1659,14 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       }
     }
     if (node.managementPortErrors) {
-      const {switchId, port, telemetry, rxErrorCounters} = node.managementPortErrors;
+      const {switchId, port} = node.managementPortErrors;
       const upstream = byId.get(switchId);
       if (upstream) {
         const link = make('a', `${upstream.name} · ${port}`);
         link.href = '?' + new URLSearchParams({node: switchId, port});
         const row = make('dd');
-        row.append(link, make('small', formatPortCounterChanges(telemetry)));
-        if (rxErrorCounters) appendRxErrorCounters(row, rxErrorCounters);
+        row.append(link);
+        appendManagementPortErrors(row, node.managementPortErrors);
         properties.append(make('dt', 'Ошибки на порту управления'), row);
       }
     }
@@ -1789,8 +1800,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         if (upstream) {
           const port = switchPortButton(upstream.id, upstream.name, errors.port);
           const reading = make('div');
-          reading.append(port, make('small', formatPortCounterChanges(errors.telemetry)));
-          if (errors.rxErrorCounters) appendRxErrorCounters(reading, errors.rxErrorCounters);
+          reading.append(port);
+          appendManagementPortErrors(reading, errors);
           panel.append(reading);
         }
       }
