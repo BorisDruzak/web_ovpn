@@ -59,6 +59,11 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     return element;
   };
   const formatTime = value => new Intl.DateTimeFormat('ru-RU', { timeZone:'Asia/Yekaterinburg', dateStyle:'short', timeStyle:'short' }).format(new Date(value));
+  const portObservationTime = new Intl.DateTimeFormat('ru-RU', {
+    timeZone: 'Asia/Yekaterinburg', hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+  const formatWindowsPortEvidence = ({ifIndex, checkedAt, switchCheckedAt}) =>
+    `Windows (ifIndex ${ifIndex}) · ${portObservationTime.format(new Date(checkedAt))} · SNMP · ${portObservationTime.format(new Date(switchCheckedAt))} ЕКБ`;
   const formatPortSpeed = bps => bps ? (bps / 1e6).toLocaleString('ru-RU') + ' Мбит/с' : '';
   const portLabels = {up: 'линк поднят', down: 'линк опущен', disabled: 'порт отключён'};
   const formatUptime = seconds => {
@@ -200,8 +205,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   function confirmedPortPairRow({a, b, nameA, nameB, portA, portB, evidence}) {
     const row = make('li');
     row.append(portPairEndpoint(a, nameA, portA), ' ↔ ', portPairEndpoint(b, nameB, portB));
-    for (const {source, checkedAt} of evidence) {
+    for (const {source, checkedAt, windowsAdapter} of evidence) {
       row.append(make('small', source + ' · ' + formatTime(checkedAt)));
+      if (windowsAdapter) row.append(make('small', formatWindowsPortEvidence(windowsAdapter)));
     }
     return row;
   }
@@ -2154,6 +2160,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
                          verified_inventory: ' · пара по подтверждённой записи инвентаря'}[evidence.pairEvidence] ?? '';
           const unverified = evidence.confirmed ? '' : ' · ' + pending.toLocaleLowerCase('ru-RU');
           li.append(make('small', ports + vlan + ' · ' + source + time + proof + unverified));
+          if (evidence.windowsAdapter) li.append(make('small', formatWindowsPortEvidence(evidence.windowsAdapter)));
           if (evidence.learnedEndpoint) {
             const {switchId, mac} = evidence.learnedEndpoint;
             const switchPort = edge.a === switchId ? evidence.a : evidence.b;
