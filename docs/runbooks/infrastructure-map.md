@@ -358,6 +358,8 @@
 
 Проверка `zabbix_api` вызывает `apiinfo.version` без учётных данных. В `path` укажите путь к `api_jsonrpc.php` конкретной установки. Результат показывает доступность API Zabbix.
 
+На ВМ Zabbix (108) карточки `zabbix-agent-tcp` и `zabbix-server-tcp` отдельно проверяют открытие TCP-соединения на портах 10050 и 10051 после сверки адреса с MAC ВМ. Получение метрик агентом и обработка данных сервером требуют отдельных проверок. [Инвентарь Zabbix](https://github.com/BorisDruzak/network_configuration/blob/main/docs/compliance/fstec-117/linux-server/2026-09-27/zabbix-baseline.md)
+
 Для Zabbix, SonarQube, Sentry и Реестровой системы рядом с проверкой API включён обязательный HTTP-компонент страницы входа. Сборщик выполняет GET на том же подтверждённом IP и порту, сверяет HTTP 200, тип `text/html` и ожидаемый фрагмент ответа. HTTPS использует то же имя сервера и CA, что и проверка API.
 
 | Служба | Страница |
