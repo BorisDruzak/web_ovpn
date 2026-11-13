@@ -1945,6 +1945,18 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
                 arp_diagnostics[side] = [readings[address] for address in sorted(readings)[:4]]
         if arp_diagnostics:
             row["arpDiagnostics"] = arp_diagnostics
+        gaps = []
+        if row.get("missingPortSides"):
+            gaps.append("missing_port_name")
+        if row.get("archivedPortSides"):
+            gaps.append("archived_port")
+        if row.get("sharedPort"):
+            gaps.append("shared_switch_port")
+        if row.get("multiMacPortSides"):
+            gaps.append("multiple_learned_macs")
+        if not row["observedPaths"] and not row.get("identifiedPeerSides"):
+            gaps.append("no_live_peer_identity")
+        row["confirmationGaps"] = gaps or ["physical_pair_unconfirmed"]
     return counts, inventory_pairs, alerts, [pending[key] for key in sorted(pending)], verified_pairs
 
 
@@ -2027,6 +2039,7 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
             "currentPairTotal": len(current), "currentPairs": current[:64],
             "inventoryPairs": [row for row in inventory_pairs if matches(row)][:64],
             "pendingTotal": len(gaps), "pending": gaps[:64],
+            "confirmationGapCounts": dict(Counter(reason for row in gaps for reason in row["confirmationGaps"])),
             "stpRelatedPendingTotal": len(stp_related_gaps), "stpRelatedPending": stp_related_gaps[:64],
             "portAlertTotal": len(port_alerts), "portAlerts": port_alerts[:64],
             "portCounterAudit": _summarize_port_counters(scoped_nodes),
@@ -2054,6 +2067,8 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
         for check in node["serviceChecks"] if check["method"] == SNMP_COLLECTION_METHOD and check["state"] != "reachable"
     ]
     return {**metadata, "topologyAudit": {"directLinks": counts, "pendingTotal": len(pending),
+                                        "confirmationGapCounts": dict(Counter(
+                                            reason for row in pending for reason in row["confirmationGaps"])),
                                         "currentPairTotal": len(current_pairs), "currentPairs": current_pairs[:64],
                                         "inventoryPairs": inventory_pairs[:64],
                                         "portAlertTotal": len(alerts), "portAlerts": alerts[:64],

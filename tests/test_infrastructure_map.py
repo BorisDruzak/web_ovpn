@@ -3609,6 +3609,7 @@ def test_shared_lldp_ports_publish_paths_and_require_live_port_and_unique_chassi
     audit = summarize_topology(snapshot())["topologyAudit"]
     row, = audit["pending"]
     assert row["sharedPort"] is True
+    assert "shared_switch_port" in row["confirmationGaps"]
     assert (row["basis"], row["a"], row["portA"], row["b"], row["portB"]) == (
         "shared_lldp", "switch", proof["a"], "one", "",
     )
@@ -8042,6 +8043,8 @@ def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_pa
     assert browser_graph["currentPortPairs"] == audit["currentPairs"]
     assert audit["pendingTotal"] == 3
     pending, mismatch, recorder = audit["pending"]
+    assert "missing_port_name" in recorder["confirmationGaps"]
+    assert "no_live_peer_identity" not in recorder["confirmationGaps"]
     scoped = client.get("/api/v1/network/infrastructure?view=topology&node_id=snr&port_name=GE15", headers=headers)
     assert scoped.status_code == 200
     port_audit = scoped.json()["infrastructure"]["topologyAudit"]
