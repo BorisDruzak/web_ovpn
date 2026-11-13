@@ -2576,12 +2576,18 @@ def _guest_attachments(nodes: dict, links: list[dict], guest_ids: list[str], now
                         observation["physicalPair"] = {
                             field: pair[field] for field in ("hostPort", "switchPort", "source", "checkedAt")
                         }
-                        if port_links := {
+                        port_links = {
                             side: {field: port[field] for field in
                                    ("state", "speedBps", "checkedAt", "speedCheckedAt", "source") if field in port}
                             for side, port in pair["portStates"].items() if port.get("state") == "up"
-                        }:
+                        }
+                        if port_links:
                             observation["uplinkPortLinks"] = port_links
+                        comparison = _compare_link_ports({
+                            side: port_links[end] for side, end in (("a", "host"), ("b", "switch"))
+                            if end in port_links
+                        })
+                        observation["uplinkLinkHealth"] = comparison or {"state": "unconfirmed"}
                         if vlans := _attachment_vlan_memberships(interface, match, pair["portStates"], now):
                             observation["vlanMemberships"] = vlans
                         if telemetry := pair["portStates"]["switch"].get("telemetry"):
@@ -2861,6 +2867,7 @@ def _service_attachment_paths(service: dict, guests: dict, client_attachments: d
             path["switchPortTelemetry"] = telemetry
         if port_links := observation.get("uplinkPortLinks"):
             path["uplinkPortLinks"] = port_links
+        path["uplinkLinkHealth"] = observation["uplinkLinkHealth"]
         path.update({"addressCheckedAt": address_at,
                       "guestId": guest["guest"]["id"], "guestPort": adapter["guestPort"], "bridge": adapter["bridge"],
                       "hypervisorId": guest["hypervisor"]["id"], "switchId": observation["switch"]["id"],
@@ -3529,6 +3536,7 @@ def _confirmed_guest_uplinks(guests: dict, *, switch_id: str | None = None, port
         confirmed_uplinks.append({
             "switch": first["switch"], "hypervisor": first["hypervisor"], **first["physicalPair"],
             **({"uplinkPortLinks": first["uplinkPortLinks"]} if "uplinkPortLinks" in first else {}),
+            "uplinkLinkHealth": first["uplinkLinkHealth"],
             "guestTotal": len({guest_id for guest_id, _ in interfaces}),
             "interfaceTotal": len(interfaces),
             "interfaces": [interfaces[key] for key in sorted(interfaces)[:64]],

@@ -8098,6 +8098,7 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
         "switch": {"state": "up", "speedBps": 10**10, "checkedAt": stamp},
     }
     assert match["uplinkPortLinks"] == port_links
+    assert match["uplinkLinkHealth"] == {"state": "both_up", "checkedAt": stamp}
     cable_reports = raw["links"][2]["portEvidence"]
     for conflict in ({"b": "eno1"}, {"a": "xe4"}):
         cable_reports.append({**cable_reports[0], **conflict})
@@ -8105,6 +8106,7 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
         assert observation["basis"] == "guest_mac"
         assert "physicalPair" not in observation and "vlanMemberships" not in observation
         assert "uplinkPortLinks" not in observation
+        assert "uplinkLinkHealth" not in observation
         cable_reports.pop()
     assert read()["guests"] == [guest]
 
@@ -8146,7 +8148,16 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
                             "state": "reachable",
                             "guestId": "vm", "guestPort": "net0", "bridge": "vmbr1", "hypervisorId": "pve",
                             "switchId": "snr", "physicalPair": match["physicalPair"], "addressCheckedAt": stamp,
-                            "destinationVlan": vlan_evidence, "uplinkPortLinks": port_links}
+                            "destinationVlan": vlan_evidence, "uplinkPortLinks": port_links,
+                            "uplinkLinkHealth": match["uplinkLinkHealth"]}
+    switch_port = vlan_ports["switch"]
+    speed = switch_port["speedBps"]
+    switch_port["speedBps"] = 10**9
+    assert read()["servicePaths"][0]["uplinkLinkHealth"] == {"state": "speed_mismatch", "checkedAt": stamp}
+    switch_port["speedBps"] = speed
+    switch_port["checkedAt"] = (datetime.fromisoformat(stamp) - timedelta(minutes=3)).isoformat()
+    assert read()["servicePaths"][0]["uplinkLinkHealth"] == {"state": "unconfirmed"}
+    switch_port["checkedAt"] = stamp
     telemetry = {"checkedAt": stamp, "intervalSeconds": 300, "rxBps": 1024, "txBps": 2048, "rxDiscards": 3}
     vlan_ports["switch"]["telemetry"] = telemetry
     measured = read()["servicePaths"][0]
@@ -8230,6 +8241,7 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     assert uplink["hypervisor"] == guest["hypervisor"] and uplink["hostPort"] == "ens7"
     assert uplink["guestTotal"] == uplink["interfaceTotal"] == 1
     assert uplink["uplinkPortLinks"] == port_links
+    assert uplink["uplinkLinkHealth"] == match["uplinkLinkHealth"]
     assert uplink["interfaces"] == [
         {"guest": guest["guest"], "guestPort": "net0", "bridge": "vmbr1", "basis": "guest_mac"},
     ]
@@ -8520,7 +8532,7 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
                             "guestId": "vm", "guestPort": "net0", "bridge": "vmbr1", "hypervisorId": "pve",
                             "switchId": "snr", "physicalPair": interface["switchObservations"][0]["physicalPair"],
                             "addressCheckedAt": stamp, "localNeighbor": interface["localNeighbor"],
-                            "uplinkPortLinks": port_links}
+                            "uplinkPortLinks": port_links, "uplinkLinkHealth": {"state": "both_up", "checkedAt": stamp}}
     audit = read_audit()
     assert audit["interfaceCounts"]["local_neighbor_with_physical_pair"] == 1 and audit["gapTotal"] == 0
     raw["nodes"][0]["serviceChecks"][0]["vlanTransit"]["peer"]["state"] = "mismatch"
