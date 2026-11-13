@@ -2111,6 +2111,26 @@ def _lacp_partner_interface_gaps(nodes: dict) -> list[dict]:
     ]
 
 
+def _summarize_shared_ports(pending: list[dict]) -> list[dict]:
+    groups = defaultdict(list)
+    for row in pending:
+        if row.get("sharedPort"):
+            groups[row["a"], port_label_key(row["portA"])].append(row)
+    result = []
+    for (switch_id, _), rows in sorted(groups.items()):
+        peers = sorted({row["b"] for row in rows})
+        lldp_peers = sorted({row["b"] for row in rows if any(
+            path["source"] == SHARED_LLDP_SOURCE for path in row["observedPaths"]
+        )})
+        fdb_peers = sorted({row["b"] for row in rows if any(
+            path["source"] == "netctl FDB" and path.get("learnedEndpoint", {}).get("deviceId") == row["b"]
+            for path in row["observedPaths"]
+        )})
+        result.append({"switchId": switch_id, "port": rows[0]["portA"], "peerTotal": len(peers),
+                       "peerIds": peers[:64], "liveLldpPeerIds": lldp_peers[:64], "liveFdbPeerIds": fdb_peers[:64]})
+    return result
+
+
 def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: str | None = None) -> dict:
     nodes = {node["id"]: node for node in graph["nodes"]}
     counts, inventory_pairs, alerts, pending, current_pairs = _topology_port_pairs(nodes, graph["links"])
@@ -2134,18 +2154,7 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
         {"a": link["a"], "b": link["b"], "portA": report["a"], "portB": report["b"], "vlans": report["vlanAudit"]}
         for link in graph["links"] for report in link["portEvidence"] if report.get("vlanAudit")
     ]
-    shared_groups = defaultdict(list)
-    for row in pending:
-        if row.get("sharedPort"):
-            shared_groups[row["a"], port_label_key(row["portA"])].append(row)
-    shared_ports = []
-    for (switch_id, _), rows in sorted(shared_groups.items()):
-        peers = sorted({row["b"] for row in rows})
-        lldp_peers = sorted({row["b"] for row in rows if any(
-            reading["source"] == SHARED_LLDP_SOURCE for reading in row["observedPaths"]
-        )})
-        shared_ports.append({"switchId": switch_id, "port": rows[0]["portA"], "peerTotal": len(peers),
-                             "peerIds": peers[:64], "liveLldpPeerIds": lldp_peers[:64]})
+    shared_ports = _summarize_shared_ports(pending)
     if node_id is not None:
         node = nodes.get(node_id)
         keys = {port_label_key(port_name)} if port_name else set()
@@ -4046,6 +4055,7 @@ def load_infrastructure_map(
             inventoryPairs=inventory_pairs,
             currentPortPairTotal=len(current_pairs),
             currentPortPairs=current_pairs[:64],
+            sharedPorts=_summarize_shared_ports(pending),
             pendingPortPairTotal=len(pending),
             pendingPortPairs=[
                 {**{key: row[key] for key in ("a", "b", "nameA", "nameB", "portA", "portB")},

@@ -3811,7 +3811,8 @@ def test_shared_lldp_ports_publish_paths_and_require_live_port_and_unique_chassi
     assert "unconfirmedLldpCandidates" not in combined_row
     shared_port, = combined_audit["sharedPorts"]
     assert shared_port == {"switchId": "switch", "port": proof["a"], "peerTotal": 2,
-                           "peerIds": ["one", "two"], "liveLldpPeerIds": ["two"]}
+                           "peerIds": ["one", "two"], "liveLldpPeerIds": ["two"],
+                           "liveFdbPeerIds": ["one", "two"]}
     assert firmware()["two"] == {**provenance, "product": "RouterOS", "version": "7.19.6"}
     neighbors[0]["last_seen_at"] = (now - timedelta(hours=1)).isoformat()
     assert not read()["two"]["confirmed"]

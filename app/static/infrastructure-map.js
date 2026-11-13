@@ -1655,6 +1655,12 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       if (observedPorts) propertiesSection.append(observedPorts);
     }
     if (node.kind !== 'Сервис' && !node.guest) {
+      const shared = chosenPort && (data.sharedPorts ?? []).find(row =>
+        row.switchId === node.id && portKeys(chosenPort).includes(portKey(row.port)));
+      if (shared) {
+        const summary = make('p', `Общий порт · узлов: ${shared.peerTotal} · MAC: ${shared.liveFdbPeerIds.length} · LLDP: ${shared.liveLldpPeerIds.length}`);
+        propertiesSection.append(summary);
+      }
       for (const pending of [false, true]) {
         const pairs = renderHostPortPairs(node, pending, chosenPort);
         if (pairs) propertiesSection.append(pairs);
