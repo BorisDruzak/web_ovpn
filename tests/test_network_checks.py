@@ -35,7 +35,7 @@ def test_trace_retains_hops_on_timeout(monkeypatch):
     })
 
     def timeout(argv, **kwargs):
-        assert argv == ["/usr/bin/tracepath", "-4", "-n", "-m", "12", "192.0.2.20"]
+        assert argv == ["/usr/bin/stdbuf", "-oL", "/usr/bin/tracepath", "-4", "-n", "-m", "12", "192.0.2.20"]
         assert kwargs["timeout"] == 18
         raise TimeoutExpired(argv, 18, output=b"1?: [LOCALHOST] pmtu 1500\n1: 192.0.2.1 0.415ms\n2: no reply\n")
 

@@ -257,7 +257,8 @@ def trace_address(destination: ipaddress.IPv4Address | ipaddress.IPv6Address) ->
     returncode = 0
     try:
         completed = subprocess.run(
-            [TRACEPATH_PATH, f"-{destination.version}", "-n", "-m", str(TRACE_MAX_HOPS), address],
+            ["/usr/bin/stdbuf", "-oL", TRACEPATH_PATH, f"-{destination.version}",
+             "-n", "-m", str(TRACE_MAX_HOPS), address],
             capture_output=True, text=True, timeout=TRACE_TIMEOUT_SECONDS, check=False,
             env={**os.environ, "LC_ALL": "C"},
         )
