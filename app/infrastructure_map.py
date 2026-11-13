@@ -89,6 +89,12 @@ CURRENT_PORT_PAIR_SOURCES = {
     "netctl", "LLDP UI_VPN", "LLDP · двустороннее", "netctl FDB + Proxmox",
     "SNMP · двусторонний FDB", "SNMP · порты STP", REDFISH_PAIR_SOURCE, ENDPOINT_PAIR_SOURCE,
 }
+PORT_EVIDENCE_MAX_AGE = {
+    PPPOE_SOURCE: SERVICE_PROBE_MAX_AGE,
+    "SNMP · порты STP": STP_ROOT_PATH_MAX_AGE,
+    REDFISH_PAIR_SOURCE: REDFISH_PAIR_MAX_AGE,
+    ENDPOINT_PAIR_SOURCE: ENDPOINT_PAIR_MAX_AGE,
+}
 SHARED_LLDP_KIND = "Путь через общий порт"
 SHARED_LLDP_SOURCE = "LLDP · общий порт"
 LLDP_FIRMWARE_MAX_AGE = timedelta(minutes=10)
@@ -1838,7 +1844,8 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
             ))
             source, at = report["source"], report["at"]
             if source not in sources or at > sources[source]["checkedAt"]:
-                sources[source] = {"source": source, "checkedAt": at}
+                expires = _time(at) + PORT_EVIDENCE_MAX_AGE.get(source, MAX_AGE)
+                sources[source] = {"source": source, "checkedAt": at, "expiresAt": expires.isoformat()}
                 if "windowsAdapter" in report:
                     sources[source]["windowsAdapter"] = report["windowsAdapter"]
         for report in current + inventory + lacp_members:
@@ -3808,9 +3815,7 @@ def load_infrastructure_map(
             for report in _rows(row.get("portEvidence"), 24):
                 observed = _time(report.get("at"))
                 source = _text(report.get("source"), 48)
-                max_age = {PPPOE_SOURCE: SERVICE_PROBE_MAX_AGE, "SNMP · порты STP": STP_ROOT_PATH_MAX_AGE,
-                           REDFISH_PAIR_SOURCE: REDFISH_PAIR_MAX_AGE,
-                           ENDPOINT_PAIR_SOURCE: ENDPOINT_PAIR_MAX_AGE}.get(source, MAX_AGE)
+                max_age = PORT_EVIDENCE_MAX_AGE.get(source, MAX_AGE)
                 evidence.append({
                     "a": _text(report.get("a"), 64), "b": _text(report.get("b"), 64), "source": source,
                     "at": observed.isoformat() if observed else None,

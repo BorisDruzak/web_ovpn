@@ -205,8 +205,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   function confirmedPortPairRow({a, b, nameA, nameB, portA, portB, evidence}) {
     const row = make('li');
     row.append(portPairEndpoint(a, nameA, portA), ' ↔ ', portPairEndpoint(b, nameB, portB));
-    for (const {source, checkedAt, windowsAdapter} of evidence) {
-      row.append(make('small', source + ' · ' + formatTime(checkedAt)));
+    for (const {source, checkedAt, expiresAt, windowsAdapter} of evidence) {
+      const expiry = expiresAt ? ` · актуально до ${formatTime(expiresAt)}` : '';
+      row.append(make('small', source + ' · ' + formatTime(checkedAt) + expiry));
       if (windowsAdapter) row.append(make('small', formatWindowsPortEvidence(windowsAdapter)));
     }
     return row;

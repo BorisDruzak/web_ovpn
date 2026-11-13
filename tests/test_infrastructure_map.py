@@ -163,6 +163,8 @@ def test_redfish_management_pair_requires_matching_current_switch_evidence(tmp_p
         audit = summarize_topology(load_infrastructure_map(snapshot, when))["topologyAudit"]
         assert audit["currentPairTotal"] == current
         assert audit["inventoryOnlyPairTotal"] == 1 - current
+        if current:
+            assert audit["currentPairs"][0]["evidence"][0]["expiresAt"] == (now + timedelta(minutes=10)).isoformat()
 
 
 @pytest.mark.parametrize(("status", "headers", "state", "reason"), [
@@ -4646,7 +4648,8 @@ def test_inventory_pair_corroborated_by_exact_stp_ports(tmp_path):
     def current_pairs(when):
         return summarize_topology(load_infrastructure_map(snapshot, when))["topologyAudit"]["currentPairs"]
 
-    assert current_pairs(now)[0]["evidence"] == [{"source": "SNMP · порты STP", "checkedAt": stamp}]
+    assert current_pairs(now)[0]["evidence"] == [{"source": "SNMP · порты STP", "checkedAt": stamp,
+                                                 "expiresAt": (now + timedelta(minutes=5)).isoformat()}]
     assert not current_pairs(now + timedelta(minutes=6))
     path["designatedPortName"] = "ge19"
     assert not reports()
@@ -8382,8 +8385,10 @@ def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_pa
     assert audit["currentPairTotal"] == 1
     assert audit["currentPairs"] == [{"a": "snr", "b": "pve", "nameA": "SNR", "nameB": "pve1",
                                      "portA": "xe3", "portB": "ens7f1", "evidence": [
-                                         {"source": "LLDP · двустороннее", "checkedAt": now},
-                                         {"source": "netctl FDB + Proxmox", "checkedAt": now},
+                                         {"source": "LLDP · двустороннее", "checkedAt": now,
+                                          "expiresAt": (datetime.fromisoformat(now) + timedelta(minutes=25)).isoformat()},
+                                         {"source": "netctl FDB + Proxmox", "checkedAt": now,
+                                          "expiresAt": (datetime.fromisoformat(now) + timedelta(minutes=25)).isoformat()},
                                      ]}]
     from app.infrastructure_map import load_infrastructure_map
 
