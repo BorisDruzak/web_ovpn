@@ -19,17 +19,17 @@ def matrix_config():
     }
 
 
-def test_schedule_accepts_six_profiles_with_at_most_four_remote_origins():
+def test_schedule_accepts_seven_profiles_with_at_most_four_remote_origins():
     local = {"id": "gateway", "expected_path": "local", "target": "192.0.2.1", "protocol": "icmp"}
     remote = {**local, "router_source": "router"}
     profiles = {
         f"path-{i}": {"label": f"Path {i}", "scheduled": True, "probes": [remote if i < 4 else local]}
-        for i in range(6)
+        for i in range(7)
     }
-    assert len(network_probe_profiles.ProbeProfiles.model_validate({"routes": profiles}).routes) == 6
+    assert len(network_probe_profiles.ProbeProfiles.model_validate({"routes": profiles}).routes) == 7
     with pytest.raises(ValidationError):
         network_probe_profiles.ProbeProfiles.model_validate({
-            "routes": {**profiles, "path-6": {"label": "Extra", "scheduled": True, "probes": [local]}},
+            "routes": {**profiles, "path-7": {"label": "Extra", "scheduled": True, "probes": [local]}},
         })
     profiles["path-4"]["probes"] = [{**local, "agent_origin": "probe-host"}]
     with pytest.raises(ValidationError):
