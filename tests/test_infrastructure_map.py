@@ -8052,6 +8052,7 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     assert uplink["switch"]["id"] == "snr" and uplink["switchPort"] == "xe3"
     assert uplink["hypervisor"] == guest["hypervisor"] and uplink["hostPort"] == "ens7"
     assert uplink["guestTotal"] == uplink["interfaceTotal"] == 1
+    assert uplink["uplinkPortLinks"] == port_links
     assert uplink["interfaces"] == [
         {"guest": guest["guest"], "guestPort": "net0", "bridge": "vmbr1", "basis": "guest_mac"},
     ]

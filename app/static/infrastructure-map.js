@@ -1718,10 +1718,11 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const panel = make('details', null, 'map-port-panel');
         panel.append(make('summary', `Аплинки запущенных ВМ · ${uplinks.length}`));
         const list = make('ul', null, 'map-detail-list');
-        for (const {hypervisor, hostPort, switchPort, guestTotal, interfaceTotal, checkedAt} of uplinks) {
+        for (const {hypervisor, hostPort, switchPort, guestTotal, interfaceTotal, checkedAt, uplinkPortLinks} of uplinks) {
           const row = make('li');
           row.append(switchPortButton(node.id, node.name, switchPort),
             make('small', `${hypervisor.name} ${hostPort} · ВМ: ${guestTotal} · адаптеров: ${interfaceTotal} · ${formatTime(checkedAt)}`));
+          appendUplinkPortLinks(row, uplinkPortLinks, `${hypervisor.name} ${hostPort}`, `${node.name} ${switchPort}`);
           list.append(row);
         }
         panel.append(list);

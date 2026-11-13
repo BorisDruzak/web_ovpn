@@ -3329,6 +3329,7 @@ def _confirmed_guest_uplinks(guests: dict, *, switch_id: str | None = None, port
         } for row in rows}
         confirmed_uplinks.append({
             "switch": first["switch"], "hypervisor": first["hypervisor"], **first["physicalPair"],
+            **({"uplinkPortLinks": first["uplinkPortLinks"]} if "uplinkPortLinks" in first else {}),
             "guestTotal": len({guest_id for guest_id, _ in interfaces}),
             "interfaceTotal": len(interfaces),
             "interfaces": [interfaces[key] for key in sorted(interfaces)[:64]],
