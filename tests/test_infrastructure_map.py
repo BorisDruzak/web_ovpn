@@ -1674,6 +1674,40 @@ def test_postgresql_probe_requires_protocol_response(monkeypatch):
     assert public()["reason"] == "unexpected_response"
 
 
+def test_inventory_observer_service_probes_only_the_confirmed_vm(monkeypatch):
+    from app.infrastructure_collect import build_graph
+    from app import infrastructure_service_probes as probes
+
+    now = datetime.now(timezone.utc)
+    mac, address = "02:00:00:00:00:03", "192.0.2.10"
+    context = {"devices": [{"id": "directumrx", "name": "DirectumServer", "kind": "server"}],
+               "services": [{"id": "gateway-dns", "name": "DNS"}]}
+    bindings = {"roles": {"directum": {"asset": "directumrx", "vmid": 103, "mac": mac}},
+                "guests": {"103": {"asset": "directumrx", "mac": mac}},
+                "guest_probe_ips": {"103": address},
+                "asset_services": {"gateway-dns": {"asset": "gateway", "used_by": ["role:directum"]}}}
+    pve = {"cluster": [], "nodes": [],
+           "guests": [{"vmid": 103, "node": "pve1", "type": "qemu", "status": "running"}],
+           "configs": {"103": {"net0": f"virtio={mac},bridge=vmbr1"}}}
+    arp = {"ip": address, "mac": mac, "last_seen_at": now.isoformat()}
+    calls = []
+    monkeypatch.setattr(probes, "_http_probe", lambda spec: calls.append(spec["ip"]) or {"state": "reachable"})
+
+    def check(network):
+        graph = build_graph(context, network, {}, pve, bindings, now)
+        item = next(node for node in graph["nodes"] if node["id"] == "role:directum")
+        assert any(edge["a"] == item["id"] and edge["b"] == "gateway-dns"
+                   and edge["kind"] == "Зависимость сервиса" for edge in graph["links"])
+        probes.apply_service_probes([item], {item["id"]: [{"type": "http", "ip": address, "port": 80}]})
+        return item["serviceChecks"][0]
+
+    assert check({})["reason"] == "probe_target_unconfirmed"
+    assert check({"arp": [arp]})["identityCheckedAt"] == now.isoformat()
+    bindings["guests"] = {}
+    assert check({"arp": [arp]})["reason"] == "probe_target_unconfirmed"
+    assert calls == [address]
+
+
 def test_observer_service_attaches_to_the_vm_with_the_expected_mac(monkeypatch):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import _map_statuses, _public_node

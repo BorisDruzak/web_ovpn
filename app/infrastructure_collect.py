@@ -2373,7 +2373,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 item["reachability"] = _observation(state, "Server Observer", method, checked_at)
         if host:
             edge(host, item["id"], "Цель проверки", "Настройки карты")
-        elif type(configured.get("vmid")) is int:
+        if type(configured.get("vmid")) is int:
             item["probeTargetIP"] = None
             guest_services.setdefault(str(configured["vmid"]), []).append((item, configured))
 
@@ -2389,6 +2389,9 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
     for role, spec in roles.items():
         if spec.get("asset") in nodes:
             service_dependencies("role:" + role, spec)
+    for service_id, spec in asset_services.items():
+        if nodes.get(service_id, {}).get("kind") == "Сервис":
+            service_dependencies(service_id, spec)
     for services in guest_services.values():
         for service, spec in services:
             service_dependencies(service["id"], spec)
@@ -2532,15 +2535,17 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                                 "stopped", "Proxmox", "Состояние ВМ", pve_at,
                             )
                 for service, spec in guest_services.get(str(vmid), []):
-                    if service["id"] in inventory_service_hosts and (
-                        not matched or inventory_service_hosts[service["id"]] != key
-                    ):
-                        continue
+                    service_id = service["id"]
+                    role_has_asset = service_id.startswith("role:") and bool(spec.get("asset"))
+                    if service_id in inventory_service_hosts or role_has_asset:
+                        expected_host = inventory_service_hosts.get(service_id, spec.get("asset"))
+                        if not matched or expected_host != key:
+                            continue
                     mac = str(spec.get("mac") or "").lower()
                     if (guest_ids[vmid] != 1 or not observation_is_fresh(pve_at, now)
                             or mac_counts[mac] != 1 or mac not in guest_macs.get(str(vmid), set())):
                         continue
-                    edge(key, service["id"], "Размещение", "Proxmox", at=pve_at)
+                    edge(key, service_id, "Цель проверки" if role_has_asset else "Размещение", "Proxmox", at=pve_at)
                     if stopped:
                         service["reachability"] = _observation("stopped", "Proxmox", "Состояние ВМ", pve_at)
                     address = bindings.get("guest_probe_ips", {}).get(str(vmid))
@@ -3577,7 +3582,7 @@ def main() -> int:
             guest_ids = set(bindings.get("guests", {}))
             guest_ids.update(str(service["vmid"]) for service in bindings.get("guest_services", {}).values())
             guest_ids.update(str(role["vmid"]) for role in bindings.get("roles", {}).values()
-                             if type(role.get("vmid")) is int and not role.get("asset"))
+                             if type(role.get("vmid")) is int)
             backup = bindings.get("proxmox_backup_monitor")
             backup_options = {"backup_storage": backup["storage"]} if backup_policy(backup) else {}
             try:
