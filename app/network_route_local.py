@@ -23,6 +23,7 @@ from .infrastructure_service_probes import _http_path, _valid_http_hostname
 
 PROBE_TIMEOUT = 3.0
 ROUTE_TIMEOUT = 2.0
+_WINDOWS = os.name == "nt"
 ROUTE_FIELDS = (
     "dst",
     "gateway",
@@ -65,7 +66,55 @@ def _run_local(argv: list[str], timeout: float) -> subprocess.CompletedProcess:
     )
 
 
+def _windows_route(target: str, source_address: str | None) -> dict:
+    # The caller validates both addresses as canonical IPv4 literals.
+    source = f" -LocalIPAddress '{source_address}'" if source_address else ""
+    command = (
+        f"Find-NetRoute -RemoteIPAddress '{target}'{source} -ErrorAction Stop | "
+        "Select-Object IPAddress, InterfaceIndex, DestinationPrefix, NextHop, RouteMetric | "
+        "ConvertTo-Json -Compress"
+    )
+    executable = os.path.join(
+        os.environ.get("SystemRoot", r"C:\Windows"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe",
+    )
+    failure = {"status": "failed", "result": {}}
+    try:
+        argv = [executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command]
+        completed = _run_local(argv, ROUTE_TIMEOUT)
+        if completed.returncode:
+            return failure
+        rows = json.loads(completed.stdout)
+        if not isinstance(rows, list) or len(rows) != 2 or not all(isinstance(row, dict) for row in rows):
+            return failure
+        local, route = rows
+        address, index = local.get("IPAddress"), local.get("InterfaceIndex")
+        gateway, metric = route.get("NextHop"), route.get("RouteMetric")
+        _ipv4(address)
+        prefix = ipaddress.IPv4Network(route["DestinationPrefix"])
+        if (
+            (source_address is not None and address != source_address)
+            or type(index) is not int or not 0 < index <= 0xFFFFFFFF
+            or type(route.get("InterfaceIndex")) is not int or index != route["InterfaceIndex"]
+            or ipaddress.IPv4Address(target) not in prefix
+            or type(metric) is not int or not 0 <= metric <= 0xFFFFFFFF
+        ):
+            return failure
+        result = {"dst": target, "from": address, "dev": f"ifindex-{index}", "metric": metric}
+        if gateway != "0.0.0.0":
+            _ipv4(gateway)
+            result["gateway"] = gateway
+    except subprocess.TimeoutExpired:
+        return {"status": "timeout", "result": {}}
+    except OSError:
+        return {"status": "unavailable", "result": {}}
+    except (KeyError, TypeError, ValueError, RecursionError):
+        return failure
+    return {"status": "route_found", "result": result}
+
+
 def _kernel_route(target: str, source_address: str | None) -> dict:
+    if _WINDOWS:
+        return _windows_route(target, source_address)
     argv = ["/usr/sbin/ip", "-j", "-4", "route", "get", target]
     if source_address is not None:
         argv.extend(("from", source_address))
@@ -514,7 +563,7 @@ def probe_local_route(
     except OSError as error:
         status, evidence["reason"] = _transport_error(error)
     evidence["duration_ms"] = round((monotonic() - started) * 1000, 2)
-    if status in ("timeout", "unreachable"):
+    if not _WINDOWS and status in ("timeout", "unreachable"):
         neighbor = _linux_neighbor(route)
         if neighbor is not None:
             evidence["linux_neighbor"] = neighbor

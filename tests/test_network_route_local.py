@@ -10,11 +10,17 @@ import dns.rcode
 import dns.rrset
 import pytest
 
+from app import network_route_local
 from app.network_route_local import probe_local_route
 
 
 TARGET = "192.0.2.10"
 SOURCE = "192.0.2.20"
+
+
+@pytest.fixture(autouse=True)
+def linux_probe_backend(monkeypatch):
+    monkeypatch.setattr(network_route_local, "_WINDOWS", False)
 
 
 def _route_result(argv):
@@ -29,6 +35,30 @@ def _route_result(argv):
 @pytest.fixture
 def routed(monkeypatch):
     monkeypatch.setattr(subprocess, "run", lambda argv, **kwargs: _route_result(argv))
+
+
+@pytest.mark.parametrize("gateway", ["192.0.2.1", "0.0.0.0"])
+def test_windows_kernel_route_uses_bound_ipv4_and_matching_interface(monkeypatch, gateway):
+    rows = [
+        {"IPAddress": SOURCE, "InterfaceIndex": 10},
+        {"DestinationPrefix": "192.0.2.0/24", "InterfaceIndex": 10, "NextHop": gateway, "RouteMetric": 3},
+    ]
+
+    def run(argv, timeout):
+        assert argv[0].endswith("powershell.exe")
+        assert f"-RemoteIPAddress '{TARGET}' -LocalIPAddress '{SOURCE}'" in argv[-1]
+        assert timeout == network_route_local.ROUTE_TIMEOUT
+        return subprocess.CompletedProcess(argv, 0, json.dumps(rows).encode(), b"")
+
+    monkeypatch.setattr(network_route_local, "_WINDOWS", True)
+    monkeypatch.setattr(network_route_local, "_run_local", run)
+    route = network_route_local._kernel_route(TARGET, SOURCE)
+    expected = {"dst": TARGET, "from": SOURCE, "dev": "ifindex-10", "metric": 3}
+    if gateway != "0.0.0.0":
+        expected["gateway"] = gateway
+    assert route == {"status": "route_found", "result": expected}
+    rows[1]["InterfaceIndex"] = 11
+    assert network_route_local._kernel_route(TARGET, SOURCE) == {"status": "failed", "result": {}}
 
 
 @pytest.mark.parametrize(
