@@ -372,6 +372,8 @@
 
 Карточка `vlan20-ldap-discovery-tcp` сверяет записи PDC и Global Catalog на `10.10.10.1:53` по TCP. Сборщик запускает запросы из UI_VPN после сверки маршрута через `192.168.100.1`. Проверка UDP и адреса её ответа остаётся в карточке `vlan20-dns`. [Инвентарь интерфейсов OPNsense](https://github.com/BorisDruzak/network_configuration/blob/main/docs/devices/opnsense-adguard-unbound.md)
 
+Карточка `vlan20-kerberos-discovery-tcp` использует тот же шлюз, адрес DNS и TCP. В `asset_services` привяжите её к `opnsense-adguard-unbound` с `gateway_segment: vlan20-pc`. В `service_probes` задайте основной SRV-запрос `_kerberos._tcp.dc._msdcs.sosnadmin.local.` с портом 88 в `expected_srv_records` и обязательный компонент `_kpasswd._tcp.sosnadmin.local.` с портом 464. В обеих записях ожидаются `ad-main.sosnadmin.local.` и `directumserver.sosnadmin.local.`. Карточка показывает обнаружение служб через DNS из UI_VPN. Порты контроллеров проверяют карточки `ad-main-kerberos-tcp` и `ad-directum-kerberos-tcp`.
+
 Если API сообщает об отказе в JSON-ответе с HTTP 200, задайте `json_unavailable` вместе с `json_fields`. Совпадение всех полей `json_unavailable` означает недоступность и имеет приоритет над полями успешного ответа. Например, SonarQube сообщает `status: DOWN` в `/api/system/status`.
 
 Для HTTPS с внутренним CA укажите абсолютный путь `tls_ca_file`. Параметр `tls_server_name` задаёт имя для проверки сертификата и заголовка Host, а TCP-соединение по-прежнему открывается к проверенному `ip`. Эти параметры используются отдельно от `tls_sha256`. Обновлённый сертификат проходит проверку, если его имя совпадает и цепочка ведёт к доверенному CA.
