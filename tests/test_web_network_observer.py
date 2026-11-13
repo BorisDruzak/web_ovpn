@@ -2448,7 +2448,7 @@ def test_route_availability_catalog_execution_and_history(tmp_path, monkeypatch)
     csrf = login(client)
     response = client.post("/network/diagnostics/checks", data={"csrf_token": csrf, **payload})
     assert response.status_code == 200
-    assert "Путь не подтверждён" in response.text and "mikrotik-main" in response.text
+    assert "Путь не подтверждён" not in response.text and "mikrotik-main" in response.text
     assert "ARP шлюза · reachable" in response.text
     assert "Изменение RTT 0.5 мс · пар 2" in response.text
     assert "Изменились статусы проб" in response.text and "→ Цель ответила" in response.text
@@ -2607,6 +2607,8 @@ def test_route_availability_exposes_linux_neighbor_in_api_and_ui(
     page = client.post("/network/diagnostics/checks", data={"csrf_token": csrf, **payload})
     assert page.status_code == 200
     assert label in page.text and route_label in page.text
+    assert "Путь не подтверждён" not in page.text
+    assert "Первый переход не подтверждён" not in page.text
     if reason == "kernel_gateway_mismatch":
         assert data["result"]["probes"][0]["expected_kernel_gateway"] == "192.0.2.1"
         assert "Ожидаемый шлюз 192.0.2.1" in page.text
