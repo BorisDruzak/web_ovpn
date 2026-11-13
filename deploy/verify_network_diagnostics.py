@@ -43,6 +43,7 @@ def route_report(
     runs: list[dict], now: datetime, max_age: timedelta, *,
     api_runs: list[dict], expected_hops: dict[str, str | None],
     expected_dns: dict[str, tuple[str, bool]] | None = None,
+    expected_interfaces: dict[str, str] | None = None,
 ) -> dict:
     row = next((run for run in runs if run["trigger"] == "scheduled"), None)
     if row is None:
@@ -75,10 +76,28 @@ def route_report(
                 dns_answers_match=evidence.get("dns_answers_match"),
                 dns_answers_required=expected_dns.get(probe["id"], (None, False))[1],
             )
+        session = evidence.get("openvpn_session")
+        if session is not None:
+            summary["openvpn_session"] = session
+        if interface := probe.get("expected_kernel_interface"):
+            route = probe.get("kernel_route") or {}
+            observed = route.get("result", {}).get("dev")
+            summary.update(
+                expected_kernel_interface=interface,
+                observed_kernel_interface=observed,
+                kernel_route_status=route.get("status", "not_run"),
+                kernel_interface_matches=(
+                    route.get("status") == "route_found" and observed == interface
+                    and (not probe.get("openvpn_client") or session == "connected")
+                ),
+            )
         probes.append(summary)
     reported_hops = {probe["id"]: probe.get("expected_first_hop") for probe in probes}
     reported_transports = {probe["id"]: probe["dns_transport"] for probe in probes if "dns_transport" in probe}
     expected_transports = {probe_id: transport for probe_id, (transport, _) in expected_dns.items()}
+    reported_interfaces = {
+        probe["id"]: probe["expected_kernel_interface"] for probe in probes if "expected_kernel_interface" in probe
+    }
     return {
         "status": row["status"],
         "run_id": row["id"],
@@ -88,6 +107,7 @@ def route_report(
         "profile_matches": (
             reported_hops == expected_hops and len(probes) == len(expected_hops)
             and reported_transports == expected_transports
+            and reported_interfaces == (expected_interfaces or {})
         ),
         "probes": probes,
     }
@@ -275,6 +295,9 @@ def verify(script: Path, max_age: timedelta) -> dict:
                 probe["id"]: (probe["dns_transport"], bool(probe.get("expected_dns_answers")))
                 for probe in probes if probe.get("dns_transport")
             },
+            expected_interfaces={
+                probe["id"]: probe["expected_kernel_interface"] for probe in probes if probe.get("expected_kernel_interface")
+            },
         )
     return {
         "contracts": "ok",
@@ -292,6 +315,10 @@ def main() -> int:
     parser.add_argument(
         "--require-expected-first-hop", action="store_true",
         help="require confirmation for every configured first hop",
+    )
+    parser.add_argument(
+        "--require-expected-kernel-interface", action="store_true",
+        help="require the kernel to confirm the expected interface for every configured probe",
     )
     parser.add_argument(
         "--require-dns-transport", action="store_true",
@@ -323,6 +350,11 @@ def main() -> int:
         for probe in configured_hops
     )
     report["expected_first_hops"] = {"configured": len(configured_hops), "confirmed": confirmed_hops}
+    interface_probes = [
+        probe for route in routes for probe in route["probes"] if probe.get("expected_kernel_interface")
+    ]
+    confirmed_interfaces = sum(probe["kernel_interface_matches"] for probe in interface_probes)
+    report["expected_kernel_interfaces"] = {"configured": len(interface_probes), "confirmed": confirmed_interfaces}
     dns_probes = [probe for route in routes for probe in route["probes"] if probe.get("dns_transport")]
     confirmed_dns = sum(
         probe["status"] == "reachable"
@@ -356,6 +388,8 @@ def main() -> int:
         return 1
     if (args.require_expected_first_hop and not configured_hops) or (args.require_dns_transport and not dns_probes):
         return 1
+    if args.require_expected_kernel_interface and not interface_probes:
+        return 1
     if args.require_loop_coverage:
         coverage = report["loop_diagnostics"]["coverage"]
         if not coverage["total"]:
@@ -363,6 +397,8 @@ def main() -> int:
         if not coverage["complete"]:
             return 2
     if args.require_expected_first_hop and confirmed_hops != len(configured_hops):
+        return 2
+    if args.require_expected_kernel_interface and confirmed_interfaces != len(interface_probes):
         return 2
     if args.require_dns_transport and confirmed_dns != len(dns_probes):
         return 2

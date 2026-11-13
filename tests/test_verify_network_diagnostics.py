@@ -125,6 +125,50 @@ def test_route_report_keeps_wan_and_ipsec_failure_evidence():
     assert remote["ipsec"] == {"status": "unavailable", "reason": "collector_timeout"}
 
 
+@pytest.mark.parametrize("session,route,confirmed", [
+    ("not_connected", None, False),
+    ("connected", {"status": "route_found", "result": {"dev": "tun0"}}, True),
+    ("connected", {"status": "route_found", "result": {"dev": "ens18"}}, False),
+    ("connected", {"status": "failed", "result": {"dev": "tun0"}}, False),
+    ("address_mismatch", {"status": "route_found", "result": {"dev": "tun0"}}, False),
+])
+def test_route_report_requires_kernel_evidence_for_expected_interface(session, route, confirmed):
+    now = datetime(2026, 11, 13, 2, 15, tzinfo=UTC)
+    run = {
+        "id": 7, "trigger": "scheduled", "checked_at": now.isoformat(), "status": "partial",
+        "result": {"probes": [{
+            "id": "tunnel", "status": "not_connected" if session == "not_connected" else "timeout",
+            "expected_kernel_interface": "tun0", "openvpn_client": "router",
+            "evidence": {"openvpn_session": session}, "kernel_route": route,
+        }]},
+    }
+    inputs = {"api_runs": [run], "expected_hops": {"tunnel": None}}
+    report = route_report(
+        [run], now, timedelta(minutes=10), **inputs, expected_interfaces={"tunnel": "tun0"},
+    )
+    probe = report["probes"][0]
+    assert report["profile_matches"]
+    assert probe["openvpn_session"] == session
+    assert probe["kernel_interface_matches"] is confirmed
+    changed = route_report(
+        [run], now, timedelta(minutes=10), **inputs, expected_interfaces={"tunnel": "tun1"},
+    )
+    assert not changed["profile_matches"]
+
+
+@pytest.mark.parametrize("probes,code", [
+    ([], 1),
+    ([{"expected_kernel_interface": "tun0", "kernel_interface_matches": False}], 2),
+    ([{"expected_kernel_interface": "tun0", "kernel_interface_matches": True}], 0),
+])
+def test_require_expected_kernel_interface(monkeypatch, probes, code):
+    monkeypatch.setattr(sys, "argv", ["verifier", "--require-expected-kernel-interface"])
+    monkeypatch.setattr(verifier, "verify", lambda *_: {"routes": {
+        "vpn": {"fresh": True, "profile_matches": True, "api_matches": True, "probes": probes},
+    }})
+    assert verifier.main() == code
+
+
 def test_loop_report_preserves_per_source_coverage_without_copying_findings():
     coverage = {
         "fdb": {"status": "recent", "truncated": False},
