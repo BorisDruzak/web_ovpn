@@ -1493,6 +1493,11 @@ def _map_statuses(nodes: dict, links: list[dict]) -> None:
             if memory := capacity.get("memoryHeadroom"):
                 checks.append(memory["status"])
         checks.extend(report["status"] for report in node.get("lacpHealth", []))
+        if coverage := node.get("backupScope", {}).get("running"):
+            if coverage["notScheduled"]:
+                checks.append("warn")
+            elif coverage["unknown"]:
+                checks.append("unknown")
         if node["kind"] == CLUSTER_KIND:
             cluster = {check["method"]: check["state"] for check in node["serviceChecks"]}
             checks.extend(check_state.get(cluster.get(method), "unknown") for method in CLUSTER_HEALTH_METHODS)

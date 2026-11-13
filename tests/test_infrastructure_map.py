@@ -3044,24 +3044,29 @@ def test_guest_backup_coverage_is_scoped_and_failures_apply_to_the_right_guest(t
         node = next(node for node in graph["nodes"] if node["id"] == "proxmox-pbs-backups")
         audit = next(row for row in summarize_services(graph)["serviceAudit"]["services"] if row["id"] == node["id"])
         assert audit["backupScope"] == node["backupScope"]
-        return node["backupScope"]
+        assert audit["status"] == node["mapStatus"]
+        return node["backupScope"], node["mapStatus"]
 
+    pve["backup"]["results"][102]["successful"] = True
     pve["backup"].pop("incomplete")
-    scope = read_scope()
+    scope, status = read_scope()
+    assert status == "warn"
     assert scope["running"] == {"total": 3, "scheduled": 2, "notScheduled": 1, "unknown": 0}
     assert scope["runningGaps"] == [{"id": "pve-guest:103", "name": "vm-103", "vmid": 103,
                                      "state": "not_scheduled"}]
     pve["guests"][1]["status"] = "stopped"
-    scope = read_scope()
+    scope, status = read_scope()
+    assert status == "ok"
     assert scope["notScheduled"] == 1 and scope["running"]["notScheduled"] == 0
     assert scope["runningGaps"] == []
     pve["guests"][1]["status"] = "running"
     pve["backup"]["incomplete"] = True
-    scope = read_scope()
+    scope, status = read_scope()
+    assert status == "unknown"
     assert scope["running"] == {"total": 3, "scheduled": 2, "notScheduled": 0, "unknown": 1}
     assert scope["runningGaps"][0]["state"] == "unknown"
     pve["backup"]["checkedAt"] = (now - timedelta(minutes=6)).isoformat()
-    assert read_scope()["unknown"] == 3
+    assert read_scope()[0]["unknown"] == 3
 
 
 def test_proxmox_port_observer_verifies_target_and_only_updates_inventory_ports(tmp_path, monkeypatch):
