@@ -8126,6 +8126,19 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
                         headers=headers).json()["infrastructure"]
     assert legacy["guestSwitchAttachments"]["snr"] == [row]
     assert guests_on_port("ge12") == []
+    def guests_on_host_port(port):
+        response = client.get("/api/v1/network/infrastructure", params={
+            "view": "topology", "node_id": "pve", "port_name": port,
+        }, headers=headers)
+        assert response.status_code == 200
+        return response.json()["infrastructure"]["topologyAudit"]
+
+    host_audit = guests_on_host_port("ENS7")
+    assert host_audit["guestAttachmentTotal"] == 1
+    assert host_audit["guestAttachments"] == [row]
+    assert host_audit["confirmedUplinks"][0]["switchPort"] == "xe3"
+    unrelated = guests_on_host_port("eno1")
+    assert unrelated["guestAttachmentTotal"] == unrelated["confirmedUplinkTotal"] == 0
     vlan_evidence = match["vlanMemberships"]
     assert vlan_evidence == {"id": 1, "basis": "guest_mac", "ports": {
         "host": {"egress": "untagged", "pvid": True, "source": "Proxmox · sysfs", "checkedAt": stamp},

@@ -2357,11 +2357,18 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
         )]
         attached_guests = []
         uplinks = {}
-        if node and node["kind"] == NETWORK_KINDS[0]:
+        if node and node["kind"] in (NETWORK_KINDS[0], "Гипервизор"):
             guests = _guest_attachments(nodes, graph["links"], [key for key, item in nodes.items() if item["guest"]])
-            attached_guests = [row for row in _guest_switch_attachments(guests).get(node_id, [])
-                               if not port_name or port_label_key(row["switchPort"]) in keys]
-            uplinks = _confirmed_guest_uplinks(guests, switch_id=node_id, port_keys=keys if port_name else None)
+            by_switch = _guest_switch_attachments(guests)
+            if node["kind"] == "Гипервизор":
+                attached_guests = [row for rows in by_switch.values() for row in rows
+                                   if row["hypervisor"]["id"] == node_id and (
+                                       not port_name or port_label_key(row["physicalPair"]["hostPort"]) in keys)]
+                uplinks = _confirmed_guest_uplinks(guests, hypervisor_id=node_id, port_keys=keys if port_name else None)
+            else:
+                attached_guests = [row for row in by_switch.get(node_id, [])
+                                   if not port_name or port_label_key(row["switchPort"]) in keys]
+                uplinks = _confirmed_guest_uplinks(guests, switch_id=node_id, port_keys=keys if port_name else None)
         scoped_nodes = {node_id: {**node, "ports": ports}} if node else {}
         return {**metadata, "topologyAudit": {
             "node": _attachment_node(node) if node else None, "portName": port_name, "ports": ports,
@@ -3513,16 +3520,20 @@ def summarize_guest_attachment_audit(graph: dict) -> dict:
                                             **_running_without_network(nodes, guests)}}
 
 
-def _confirmed_guest_uplinks(guests: dict, *, switch_id: str | None = None, port_keys: set[str] | None = None) -> dict:
+def _confirmed_guest_uplinks(guests: dict, *, switch_id: str | None = None, hypervisor_id: str | None = None,
+                             port_keys: set[str] | None = None) -> dict:
     running = {key: guest for key, guest in guests.items() if guest["power"] == "running"}
     uplink_groups = defaultdict(list)
     for device_id, attachments in _guest_switch_attachments(running).items():
         if switch_id is not None and device_id != switch_id:
             continue
         for row in attachments:
+            if hypervisor_id is not None and row["hypervisor"]["id"] != hypervisor_id:
+                continue
             pair = row["physicalPair"]
             port = port_label_key(pair["switchPort"])
-            if port_keys is not None and port not in port_keys:
+            scoped_port = port_label_key(pair["hostPort"]) if hypervisor_id is not None else port
+            if port_keys is not None and scoped_port not in port_keys:
                 continue
             key = (device_id, port, row["hypervisor"]["id"],
                    port_label_key(pair["hostPort"]))
