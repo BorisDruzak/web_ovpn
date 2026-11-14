@@ -3099,6 +3099,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           wan_gateway: 'Шлюз WAN на этом порту',
           switch_mac: 'Адрес проверен по ARP и FDB', lldp_peer: 'Сосед по LLDP',
           redfish_interface: 'Интерфейс BMC подтверждён по Redfish',
+          device_management_port: 'Порт устройства в подтверждённой паре',
           endpoint_mac: 'MAC станции подтверждён на порту'};
         const priority = {critical: 0, warn: 1, unknown: 2, ok: 3};
         const ordered = [...serviceGroup.services].sort((a, b) =>

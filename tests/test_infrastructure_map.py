@@ -7088,8 +7088,14 @@ def test_management_path_includes_both_ports_only_for_unique_current_cable(tmp_p
             port, = graph["servicePorts"]["upstream"]
             probe, = next(row for row in port["services"] if row["id"] == "host")["probeEndpoints"]
             assert probe["method"] == "ICMP · LLDP + ARP" and probe["passed"] == 1
+            far_port, = graph["servicePorts"]["host"]
+            assert far_port["port"] == "Gi1/0/47"
+            assert {row["id"]: row["probeEndpoints"] for row in far_port["services"]} == {
+                row["id"]: row["probeEndpoints"] for row in port["services"]
+            }
         else:
             assert host_paths == []
+            assert "host" not in graph["servicePorts"]
         return service["switchAttachment"]
 
     direct = cable("host", "LLDP · двустороннее")
