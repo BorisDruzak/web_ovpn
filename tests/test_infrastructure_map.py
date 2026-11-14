@@ -3879,7 +3879,9 @@ def test_topology_port_alerts_require_confirmed_pairs_and_fresh_states(tmp_path)
             assert audit["currentPairLinkCounts"][expected_state] == 1
             assert scoped["currentPairMeasurementGaps"] == ([
                 {"a": "a", "b": "b", "portA": "ge1", "portB": "ge2", "missingSides": ["a"],
-                 "missingReasons": {"a": "stale_port_sample"}},
+                 "nameA": pair["nameA"], "nameB": pair["nameB"],
+                 "missingReasons": {"a": "stale_port_sample"},
+                 "portStates": pair["portStates"], "evidence": pair["evidence"]},
             ] if expected_state == "port_down" else [])
             assert pair["portStates"]["b"]["state"] == b["ports"][0]["state"]
             expected_speed = b["ports"][0]["speedBps"] if b["ports"][0]["state"] == "up" else None
@@ -3890,6 +3892,8 @@ def test_topology_port_alerts_require_confirmed_pairs_and_fresh_states(tmp_path)
             assert scoped["currentPairs"][0]["linkHealth"] == {"state": "unconfirmed"}
             assert audit["currentPairMeasurementGaps"] == [
                 {"a": "a", "b": "b", "portA": "ge1", "portB": "ge2", "missingSides": ["a", "b"],
+                 "nameA": scoped["currentPairs"][0]["nameA"], "nameB": scoped["currentPairs"][0]["nameB"],
+                 "portStates": {}, "evidence": scoped["currentPairs"][0]["evidence"],
                  "missingReasons": {"a": "stale_port_sample", "b": "stale_port_sample"}},
             ]
         browser = load_infrastructure_map(path, now, include_guest_attachments=True)

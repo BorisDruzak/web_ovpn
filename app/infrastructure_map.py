@@ -2626,10 +2626,11 @@ def _summarize_shared_ports(pending: list[dict]) -> list[dict]:
 def _summarize_pair_measurement_gaps(pairs: list[dict]) -> dict:
     gaps = []
     for pair in pairs:
-        missing = sorted({"a", "b"} - pair.get("portStates", {}).keys())
+        states = pair.get("portStates", {})
+        missing = sorted({"a", "b"} - states.keys())
         if missing:
-            gaps.append({**{key: pair[key] for key in ("a", "b", "portA", "portB")},
-                         "missingSides": missing, "missingReasons": pair["missingReasons"]})
+            gaps.append({**{key: pair[key] for key in ("a", "b", "nameA", "nameB", "portA", "portB", "evidence")},
+                         "missingSides": missing, "missingReasons": pair["missingReasons"], "portStates": states})
     return {"currentPairMeasurementGapTotal": len(gaps), "currentPairMeasurementGaps": gaps[:64]}
 
 
