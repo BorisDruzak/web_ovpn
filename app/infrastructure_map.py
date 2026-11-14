@@ -1756,6 +1756,8 @@ def _attach_lacp_health(nodes: dict, expectations: dict, links: list[dict], port
                     if (port.get("state") == "up" and port.get("speedBps")
                             and observation_is_fresh(at, now, max_age=LACP_HEALTH_MAX_AGE)):
                         member.update(speedBps=port["speedBps"], linkCheckedAt=at)
+                        if "stateSince" in port:
+                            member["stateSince"] = port["stateSince"]
                     members.append(member)
                 else:
                     members.append({"name": name, "status": "unknown"})
@@ -1766,7 +1768,7 @@ def _attach_lacp_health(nodes: dict, expectations: dict, links: list[dict], port
             aggregate_link = {"state": "unknown"}
             if (aggregate_port.get("state") in {"up", "down", "disabled"}
                     and observation_is_fresh(aggregate_port.get("checkedAt"), now, max_age=LACP_HEALTH_MAX_AGE)):
-                aggregate_link = {key: aggregate_port[key] for key in ("state", "checkedAt", "speedBps")
+                aggregate_link = {key: aggregate_port[key] for key in ("state", "checkedAt", "speedBps", "stateSince")
                                   if aggregate_port.get(key) is not None}
             fault = aggregate_link["state"] in {"down", "disabled"}
             states.add(aggregate_link["state"])

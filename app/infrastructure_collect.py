@@ -400,7 +400,9 @@ async def _collect_switch_port_diagnostics(network: dict, now: datetime) -> tupl
             {name: observation for name, observation in lldp if observation})
 
 
-async def _check_declared_switch_ports(context: dict, network: dict, pve: dict, now: datetime) -> None:
+async def _check_declared_switch_ports(
+    context: dict, network: dict, pve: dict, now: datetime, *, lacp_links: list[dict] | None = None,
+) -> None:
     host_ports = {(host, port["name"]) for host, ports in pve.get("physicalPorts", {}).items()
                   for port in ports if port.get("source") == "Proxmox · sysfs"}
     devices = {row["id"]: row for row in context.get("devices", [])}
@@ -479,6 +481,16 @@ async def _check_declared_switch_ports(context: dict, network: dict, pve: dict, 
         wanted = checks.setdefault(address, {})
         new_ports = [(index, row) for index, row in rows.items() if index not in wanted]
         wanted.update(new_ports[:8])
+
+    addresses_by_source = {source["name"]: address for address, source in sources.items()}
+    for spec in lacp_links or []:
+        address = addresses_by_source.get(spec["source"])
+        if address is None:
+            continue
+        wanted = checks.setdefault(address, {})
+        for name in (spec["aggregate"], *spec["members"]):
+            if row := candidates.get(address, {}).get(port_label_key(name)):
+                wanted.setdefault(row["if_index"], row)
 
     async def check(source, wanted):
         try:
@@ -3866,7 +3878,9 @@ def main() -> int:
         else:
             start_stage("switch and router observations")
             _refresh_conflicting_asset_arp(context, network, bindings, datetime.now(timezone.utc))
-            asyncio.run(_check_declared_switch_ports(context, network, pve, datetime.now(timezone.utc)))
+            asyncio.run(_check_declared_switch_ports(
+                context, network, pve, datetime.now(timezone.utc), lacp_links=lacp_links,
+            ))
             network["pppoe"] = _collect_pppoe(context, network["sources"], bindings.get("pppoe_internet_checks"))
             if lacp_links:
                 network["lacp"] = asyncio.run(_collect_lacp(network, lacp_links, datetime.now(timezone.utc)))

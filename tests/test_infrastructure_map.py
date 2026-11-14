@@ -2951,7 +2951,7 @@ def test_live_snmp_poll_rechecks_ifindex_name_for_declared_ports(monkeypatch):
     from netctl.snmp.outcomes import SnmpOutcome
 
     now = datetime.now(timezone.utc)
-    names = {5: b"xe1", 6: b"reused-index", 7: b"xe3"}
+    names = {5: b"xe1", 6: b"reused-index", 7: b"xe3", 8: b"ge6"}
     calls = []
 
     class Transport:
@@ -2984,12 +2984,15 @@ def test_live_snmp_poll_rechecks_ifindex_name_for_declared_ports(monkeypatch):
     network = {
         "sources": [{"name": "observer", "host": "192.0.2.1", "driver": "snmp_switch", "enabled": True}],
         "ports": [{"source": "observer", "name": f"xe{i}", "if_index": i + 4, "collector_run_id": 1,
-                   "last_seen_at": now.isoformat()} for i in (1, 2, 3)],
+                   "last_seen_at": now.isoformat()} for i in (1, 2, 3)]
+                 + [{"source": "observer", "name": "ge6", "if_index": 8, "collector_run_id": 1,
+                     "last_seen_at": now.isoformat()}],
     }
     pve = {"physicalPorts": {"host": [{"name": f"eth{i}", "source": "Proxmox · sysfs"}
                                     for i in (1, 2, 3)]}}
-    asyncio.run(collector._check_declared_switch_ports(context, network, pve, now))
-    first, second, third = network["ports"]
+    lacp_links = [{"source": "observer", "aggregate": "xe1", "members": ["ge6"]}]
+    asyncio.run(collector._check_declared_switch_ports(context, network, pve, now, lacp_links=lacp_links))
+    first, second, third, member = network["ports"]
     assert first["linkCheck"]["state"] == "up" and first["linkCheck"]["speedBps"] == 10**10
     assert "linkCheck" not in second and third["linkCheck"]["state"] == "up"
     assert first["linkCheck"]["stateAgeSeconds"] == 20
@@ -2998,7 +3001,8 @@ def test_live_snmp_poll_rechecks_ifindex_name_for_declared_ports(monkeypatch):
     public = index_port_states([first, third], observed + timedelta(seconds=1))
     assert public["xe1"]["stateSince"] == (observed - timedelta(seconds=20)).isoformat()
     assert "stateSince" not in public["xe3"]
-    assert [oid for oid in calls if oid[:-1] == IF_NAME] == [IF_NAME + (index,) for index in (5, 6, 7)]
+    assert member["linkCheck"]["state"] == "up"
+    assert [oid for oid in calls if oid[:-1] == IF_NAME] == [IF_NAME + (index,) for index in (5, 6, 7, 8)]
 
 
 def test_declared_switch_port_checks_cover_unverified_sides_and_exclude_retired_paths(monkeypatch):
@@ -4411,6 +4415,15 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
     assert [member["partnerInterfaceState"] for member in health["members"]] == ["unconfirmed"] * 2
     assert [member["speedBps"] for member in health["members"]] == [10**9] * 2
     assert [member["linkCheckedAt"] for member in health["members"]] == [at] * 2
+    for port in (ports[0], ports[2]):
+        port["linkCheck"] = {"state": "up", "speedBps": port["speed_bps"],
+                             "checkedAt": (now + timedelta(seconds=1)).isoformat(), "stateAgeSeconds": 42}
+    _, measured = read(now + timedelta(seconds=2))
+    state_since = (now - timedelta(seconds=41)).isoformat()
+    assert measured["members"][0]["stateSince"] == measured["aggregateLink"]["stateSince"] == state_since
+    assert "stateSince" not in measured["members"][1]
+    for port in (ports[0], ports[2]):
+        port.pop("linkCheck")
     assert [member["history"] for member in health["members"]] == [
         {"source": "switch", "interface": f"ifindex:{index}"} for index in (5006, 5007)
     ]

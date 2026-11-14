@@ -1158,19 +1158,22 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       if (link) {
         row.append(make('small', [`Агрегат ${aggregate}`, labels[link.state], formatPortSpeed(link.speedBps),
           link.checkedAt && `SNMP · ${formatTime(link.checkedAt)}`].filter(Boolean).join(' · ')));
+        appendPortStateChange(row, link, aggregate);
       }
       const appendPort = port => {
         const target = sw.ports?.find(item => portKeys(item).includes(portKey(port)));
         if (target && !selectedKeys.includes(portKey(port))) row.append(switchPortButton(switchId, sw.name, target.name));
       };
       appendPort(aggregate);
-      for (const {name: port, status, checkedAt, partnerPort, partnerInterfaceState, speedBps, linkCheckedAt, history} of members) {
+      for (const member of members) {
+        const {name: port, status, checkedAt, partnerPort, partnerInterfaceState, speedBps, linkCheckedAt, history} = member;
         appendPort(port);
         const fields = [port, labels[status], speedBps && `${formatPortSpeed(speedBps)} · ${formatTime(linkCheckedAt)}`,
           partnerPort && `порт партнёра LACP №${partnerPort}`,
           partnerInterfaceState === 'unconfirmed' && 'Имя интерфейса не сверено',
           checkedAt && `SNMP · ${formatTime(checkedAt)}`];
         row.append(make('small', fields.filter(Boolean).join(' · ')));
+        appendPortStateChange(row, member, port);
         if (history) row.append(portHistoryLink(history, `История порта ${port}`));
       }
       if (hostedServices.length) {
@@ -1397,11 +1400,14 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           const {state, speedBps, checkedAt: observedAt} = aggregateState;
           const details = [portLabels[state], formatPortSpeed(speedBps), 'SNMP', formatTime(observedAt)];
           row.append(make('small', `Агрегат ${aggregate}: ${details.filter(Boolean).join(' · ')}`));
+          appendPortStateChange(row, aggregateState, aggregate);
         }
-        for (const {name, partnerPort, partnerInterfaceState, speedBps, linkCheckedAt, history} of members) {
+        for (const member of members) {
+          const {name, partnerPort, partnerInterfaceState, speedBps, linkCheckedAt, history} = member;
           const gap = partnerInterfaceState === 'unconfirmed' ? ' · Имя интерфейса не подтверждено' : '';
           const speed = speedBps ? ` · ${formatPortSpeed(speedBps)} · SNMP · ${formatTime(linkCheckedAt)}` : '';
           row.append(switchPortButton(switchId, device, name), make('small', `Порт партнёра LACP ${partnerPort}${gap}${speed}`));
+          appendPortStateChange(row, member, name);
           if (history) row.append(portHistoryLink(history, `История порта ${name}`));
         }
         list.append(row);
