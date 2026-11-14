@@ -6078,6 +6078,12 @@ def test_transit_port_requires_direct_route_running_ethernet_and_neighbor_arp(tm
 
     detail = attachment("transit:transit")
     path, = detail["servicePaths"]
+    for host_id in ("rb", "coordinator"):
+        service, = attachment(host_id)["services"]
+        assert service["node"]["id"] == "transit:transit"
+        assert service["servicePaths"] == [path]
+        stale_service, = attachment(host_id, now + timedelta(hours=1))["services"]
+        assert stale_service["servicePaths"] == []
     assert path["routerAttachment"] == {
         "routerId": "rb", "port": "ether8", "source": "MikroTik · ARP", "checkedAt": at,
         "portLink": {"state": "up", "speedBps": 10**9, "checkedAt": at, "speedCheckedAt": at,

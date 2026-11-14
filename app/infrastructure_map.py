@@ -3672,6 +3672,8 @@ def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
                     paths = _service_attachment_paths(service, guests)
                 else:
                     paths = _management_service_paths(service, node_id, management_paths, management_ports, nodes)
+            elif not anchor["guest"]:
+                paths = _transit_service_paths(service, service_hosts[key], management_ports)
             detail["services"].append({
                 "node": _attachment_node(service), "checks": service["checks"],
                 "serviceChecks": service["serviceChecks"], "servicePaths": paths,
