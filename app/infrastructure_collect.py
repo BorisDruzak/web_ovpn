@@ -57,7 +57,7 @@ from .infrastructure_map import (
     PPPOE_INTERNET_METHOD, PPPOE_METHOD, PPPOE_SOURCE, PVE_DISK_DEVICE, PVE_STORAGE_ID, RECIPROCAL_MAC_SOURCE,
     RX_SILENCE_MAX_INTERVALS, RX_SILENCE_MAX_WINDOW, SERVICE_PROBE_MAX_AGE, SHARED_LLDP_KIND, SHARED_LLDP_SOURCE,
     SNMP_COLLECTION_METHOD, STP_ROOT_PATH_MAX_AGE,
-    TRANSCEIVER_MAX_AGE, WINDOWS_PROBE_SOURCE,
+    TRANSCEIVER_MAX_AGE, WAN_GATEWAY_MAX_AGE, WAN_GATEWAY_METHOD, WAN_GATEWAY_SOURCE, WINDOWS_PROBE_SOURCE,
     _public_service_check, _service_reachability, index_port_states, inventory_link_sources,
     _public_resource_capacity, _summarize_agent_audit,
     observation_is_fresh, port_label_key, public_probe_transition,
@@ -1059,6 +1059,34 @@ def _pppoe_wans(context: dict) -> list[dict]:
     return [wan for wan in context.get("wan", []) if wan.get("gateway") == "pppoe_peer"
             and isinstance(wan.get("interface"), str) and INTERFACE_NAME.fullmatch(wan["interface"])
             and wan.get("device")]
+
+
+def _wan_gateway_check(network: dict, source: str, port: dict, gateway: str, table: str,
+                       now: datetime) -> tuple[str, str]:
+    def fresh(row):
+        return row.get("source") == source and observation_is_fresh(
+            row.get("last_seen_at"), now, max_age=WAN_GATEWAY_MAX_AGE,
+        )
+
+    if not port or not observation_is_fresh(port.get("checkedAt"), now, max_age=WAN_GATEWAY_MAX_AGE):
+        return "unknown", now.isoformat()
+    if port["state"] in ("down", "disabled"):
+        return "unreachable", port["checkedAt"]
+    name = port["name"]
+    routes = [row for row in network.get("routes", []) if fresh(row)
+              and row.get("routing_table") == table and row.get("dst_address") == "0.0.0.0/0"
+              and row.get("active") == 1 and row.get("disabled") == 0]
+    if (port["state"] != "up" or len(routes) != 1 or routes[0].get("route_type") != "unicast"
+            or routes[0].get("gateway") != gateway or routes[0].get("immediate_gateway") != f"{gateway}%{name}"):
+        return "unknown", now.isoformat()
+    neighbors = [row for row in network.get("arp", []) if fresh(row) and row.get("ip") == gateway]
+    if len(neighbors) != 1 or neighbors[0].get("interface") != name or not MAC.fullmatch(
+        str(neighbors[0].get("mac") or "").lower(),
+    ):
+        return "unknown", now.isoformat()
+    return "reachable", min(datetime.fromisoformat(stamp) for stamp in (
+        port["checkedAt"], routes[0]["last_seen_at"], neighbors[0]["last_seen_at"],
+    )).isoformat()
 
 
 def _collect_router_link_modes(network: dict, configured: object) -> dict:
@@ -2211,6 +2239,35 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                         })
         item["serviceChecks"] = [check, *internet]
         item["reachability"] = _observation(check["state"], "Проверка сервиса", PPPOE_METHOD, check["checkedAt"])
+    wan_sources = bindings.get("wan_gateway_sources", {})
+    for wan in context.get("wan", []):
+        wan_id, router, interface, table = (wan.get(key) for key in ("id", "device", "interface", "routing_table"))
+        if (not isinstance(wan_sources, dict) or not isinstance(wan_id, str) or not isinstance(router, str)
+                or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", wan_id)
+                or not all(isinstance(value, str) and INTERFACE_NAME.fullmatch(value) for value in (interface, table))
+                or nodes.get(router, {}).get("kind") != NETWORK_KINDS[1]
+                or not isinstance(source_name := wan_sources.get(wan_id), str)):
+            continue
+        try:
+            gateway = ipaddress.IPv4Address(wan.get("gateway"))
+            local = ipaddress.IPv4Interface(wan.get("local_address"))
+        except (ValueError, TypeError):
+            continue
+        if (gateway == local.ip or gateway not in local.network or local.network.prefixlen < 31
+                and gateway in (local.network.network_address, local.network.broadcast_address)):
+            continue
+        item = node(f"wan:{wan_id}", f"Шлюз WAN · {wan_id.upper()}", "Сервис", nodes[router]["site"], "UI_VPN")
+        item["properties"].update({"Интерфейс MikroTik": interface, "Таблица маршрутизации": table})
+        edge(router, item["id"], "Размещение", "GitHub")
+        ports = [port for port in router_ports.get(source_name, []) if port["name"] == interface
+                 and source_nodes.get(source_name) == router]
+        state, checked_at = _wan_gateway_check(network, source_name, ports[0] if len(ports) == 1 else {},
+                                               str(gateway), table, now)
+        item["serviceChecks"] = [{**_observation(state, "UI_VPN", WAN_GATEWAY_METHOD, checked_at),
+                                  "target": str(gateway), "required": True}]
+        item["reachability"] = _observation(state, "Проверка сервиса", WAN_GATEWAY_METHOD, checked_at)
+        if state != "unknown":
+            edge(router, item["id"], "Цель проверки", WAN_GATEWAY_SOURCE, ports=(interface, ""), at=checked_at)
     features = {item["id"]: item for item in context.get("features", []) if item.get("kind") == "policy_based_ipsec"}
     segments = {item["id"]: item["cidr"] for item in context.get("segments", []) if item.get("cidr")}
     for feature_id, spec in bindings.get("ipsec_links", {}).items():
@@ -3896,6 +3953,8 @@ def main() -> int:
             collect_proxmox_port_states(context, pve, Path(credentials))
         guest_macs = {mac for config in pve.get("configs", {}).values() for mac in _guest_macs(config)}
         route_sources = {item["source"] for item in bindings.get("route_evidence", {}).values() if item.get("source")}
+        if isinstance(wan_sources := bindings.get("wan_gateway_sources"), dict):
+            route_sources.update(name for name in wan_sources.values() if isinstance(name, str) and name)
         lacp_links = bindings.get("lacp_links", [])
         transit_links = bindings.get("transit_links", {})
         transit_sources = {spec["source"] for spec in transit_links.values()}

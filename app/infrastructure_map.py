@@ -60,6 +60,9 @@ SNMP_COLLECTION_METHOD = "Сбор данных SNMP"
 PPPOE_INTERNET_METHOD = "ICMP через PPPoE"
 PPPOE_SOURCE = "RouterOS · PPPoE"
 PPPOE_PARENT_LINK_MAX_AGE = timedelta(minutes=10)
+WAN_GATEWAY_METHOD = "Шлюз WAN · маршрут и ARP"
+WAN_GATEWAY_SOURCE = "RouterOS · WAN"
+WAN_GATEWAY_MAX_AGE = timedelta(minutes=10)
 RESOURCE_CAPACITY_MAX_AGE = timedelta(minutes=5)
 GUEST_IO_MAX_AGE = timedelta(minutes=5)
 GUEST_NETWORK_RATE_FIELDS = ("networkInBytesPerSecond", "networkOutBytesPerSecond")
@@ -96,6 +99,7 @@ CURRENT_PORT_PAIR_SOURCES = {
 }
 PORT_EVIDENCE_MAX_AGE = {
     PPPOE_SOURCE: SERVICE_PROBE_MAX_AGE,
+    WAN_GATEWAY_SOURCE: WAN_GATEWAY_MAX_AGE,
     "SNMP · порты STP": STP_ROOT_PATH_MAX_AGE,
     REDFISH_PAIR_SOURCE: REDFISH_PAIR_MAX_AGE,
     ENDPOINT_PAIR_SOURCE: ENDPOINT_PAIR_MAX_AGE,
@@ -630,6 +634,8 @@ def _public_service_check(check: dict, now: datetime) -> dict:
     windows_probe = check.get("source") == WINDOWS_PROBE_SOURCE and check.get("method") in ("DNS", "HTTP")
     max_age = (ROUTE_RECEIPT_MAX_AGE if windows_probe else SERVICE_PROBE_MAX_AGE
                if backup or pbs_storage or local_storage or current_probe else MAX_AGE)
+    if check.get("method") == WAN_GATEWAY_METHOD and check.get("source") == "UI_VPN":
+        max_age = WAN_GATEWAY_MAX_AGE
     result = {
         **_public_reachability(check, now, max_age=max_age),
         "port": port if type(port) is int and 1 <= port <= 65535 else None,
@@ -3652,6 +3658,15 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime, *, endpoint_
         port_services[switch][key][service].add(basis)
 
     for edge in links:
+        if edge["confirmed"] and edge["source"] == WAN_GATEWAY_SOURCE and edge["kind"] == "Цель проверки":
+            router, service = edge["a"], edge["b"]
+            if nodes[router]["kind"] == NETWORK_KINDS[1] and nodes[service]["kind"] == "Сервис":
+                for report in edge["portEvidence"]:
+                    if report["confirmed"] and report["source"] == WAN_GATEWAY_SOURCE and report["a"] and not report["b"]:
+                        record(router, report["a"], service, "wan_gateway")
+                        path_checks[router, port_label_key(report["a"]), service].update(
+                            check_key(check) for check in nodes[service]["serviceChecks"] if check["method"] == WAN_GATEWAY_METHOD
+                        )
         if not edge["confirmed"] or edge["kind"] != "Сетевое соединение":
             continue
         for side, peer in (("a", "b"), ("b", "a")):
@@ -4980,6 +4995,8 @@ def load_infrastructure_map(
             confirmed = row.get("confirmed") is True
             if edge["source"] == PPPOE_SOURCE:
                 confirmed = confirmed and observation_is_fresh(row.get("observedAt"), now, max_age=SERVICE_PROBE_MAX_AGE)
+            elif edge["source"] == WAN_GATEWAY_SOURCE:
+                confirmed = confirmed and observation_is_fresh(row.get("observedAt"), now, max_age=WAN_GATEWAY_MAX_AGE)
             elif edge["source"] == "SNMP LACP + ARP":
                 confirmed = confirmed and any(report["confirmed"] for report in evidence)
             elif edge["source"] in {"netctl", "LLDP UI_VPN", "LLDP · двустороннее", "netctl FDB",

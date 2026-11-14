@@ -7383,6 +7383,56 @@ def test_pppoe_internet_probe_requires_configured_public_targets_and_active_sess
     assert len(calls) == 1
 
 
+def test_static_wan_requires_fresh_matching_route_arp_and_port(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    context = {"devices": [{"id": "rb", "name": "Router", "kind": "router"}],
+               "wan": [{"id": "isp", "device": "rb", "interface": "ether9", "gateway": "192.0.2.1",
+                        "local_address": "192.0.2.2/24", "routing_table": "isp-table"}]}
+    binding = {"wan_gateway_sources": {"isp": "main"}}
+    interface = {"source": "main", "name": "ether9", "type": "ether", "running": 1,
+                 "disabled": 0, "last_seen_at": at}
+    route = {"source": "main", "dst_address": "0.0.0.0/0", "gateway": "192.0.2.1", "routing_table": "isp-table",
+             "immediate_gateway": "192.0.2.1%ether9", "route_type": "unicast", "active": 1, "disabled": 0,
+             "last_seen_at": at}
+    arp = {"source": "main", "ip": "192.0.2.1", "mac": "02:00:00:00:00:01", "interface": "ether9", "last_seen_at": at}
+    network = {"sources": [{"name": "main", "driver": "mikrotik_api", "enabled": 1,
+                            "driver_options": {"intent_stable_id": "rb"}}], "router_interfaces": [interface],
+               "routes": [route], "arp": [arp]}
+    path = tmp_path / "map.json"
+
+    def read(public_at=now):
+        path.write_text(json.dumps(build_graph(context, network, {}, {}, binding, now)), encoding="utf-8")
+        result = load_infrastructure_map(path, public_at, include_service_ports=True)
+        return next(n for n in result["nodes"] if n["id"] == "wan:isp"), result
+
+    service, result = read()
+    assert service["mapStatus"] == "ok"
+    check, = service["serviceChecks"]
+    assert (check["target"], check["method"], check["checkedAt"]) == ("192.0.2.1", "Шлюз WAN · маршрут и ARP", at)
+    port, = result["servicePorts"]["rb"]
+    assert port["port"] == "ether9"
+    endpoint, = port["services"][0]["probeEndpoints"]
+    assert endpoint["target"] == "192.0.2.1" and endpoint["passed"] == 1
+    assert not result.get("currentPortPairs")
+    stale, _ = read(now + timedelta(minutes=11))
+    assert stale["mapStatus"] == "unknown"
+    for row, key, bad in ((route, "routing_table", "main"), (route, "immediate_gateway", "192.0.2.1%ether8"),
+                          (arp, "interface", "ether8"), (arp, "last_seen_at", (now - timedelta(minutes=11)).isoformat())):
+        original = row[key]
+        row[key] = bad
+        assert read()[0]["mapStatus"] == "unknown"
+        row[key] = original
+    network["routes"].append({**route, "gateway": "192.0.2.254"})
+    assert read()[0]["mapStatus"] == "unknown"
+    network["routes"].pop()
+    interface["running"] = 0
+    assert read()[0]["mapStatus"] == "critical"
+
+
 def test_pppoe_wan_uses_live_session_and_keeps_physical_confirmation_separate(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map
