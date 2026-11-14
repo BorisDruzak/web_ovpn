@@ -3912,7 +3912,17 @@ def summarize_guest_attachment_audit(graph: dict) -> dict:
                         state = "local_neighbor"
             interface_counts[state] += 1
             if state not in {"guest_mac_with_physical_pair", "local_neighbor_with_physical_pair", "inactive"}:
-                incomplete.append({"guestPort": interface["guestPort"], "bridge": interface["bridge"], "state": state})
+                observations = [
+                    {"switchId": row["switch"]["id"], "port": row["switchPort"], "basis": row["basis"],
+                     "checkedAt": row["checkedAt"],
+                     **({"physicalPair": row["physicalPair"]} if "physicalPair" in row else {})}
+                    for row in interface["switchObservations"][:8]
+                ]
+                incomplete.append({
+                    "guestPort": interface["guestPort"], "bridge": interface["bridge"], "state": state,
+                    "bridgeActive": interface["bridgeActive"], "uplinks": interface["uplinks"],
+                    **({"switchObservations": observations} if observations else {}),
+                })
                 if state == "ambiguous_switch_port":
                     incomplete[-1]["switchPorts"] = interface["ambiguousSwitchPorts"]
                 if "arpDiagnostic" in interface:

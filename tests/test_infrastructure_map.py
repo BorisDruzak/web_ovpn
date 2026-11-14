@@ -8857,9 +8857,12 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     assert ambiguous["interfaceCounts"]["ambiguous_switch_port"] == 1
     assert ambiguous["confirmedUplinkTotal"] == 0 and ambiguous["confirmedUplinks"] == []
     gap, = ambiguous["gaps"]
-    assert gap["interfaces"] == [{"guestPort": "net0", "bridge": "vmbr1", "state": "ambiguous_switch_port",
-                                  "switchPorts": [{"switchId": "snr", "port": "ge12"},
-                                                  {"switchId": "snr", "port": "xe3"}]}]
+    ambiguous_interface, = gap["interfaces"]
+    assert ambiguous_interface["state"] == "ambiguous_switch_port"
+    assert ambiguous_interface["switchPorts"] == [
+        {"switchId": "snr", "port": "ge12"}, {"switchId": "snr", "port": "xe3"},
+    ]
+    assert {row["port"] for row in ambiguous_interface["switchObservations"]} == {"ge12", "xe3"}
     virtual["switchPorts"].pop()
     read()
     browser_endpoint = "/network/infrastructure/snapshot"
@@ -9113,7 +9116,11 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     gap, = audit["gaps"]
     assert gap["guest"]["id"] == "vm"
     assert gap["networkTraffic"] == traffic
-    assert gap["interfaces"] == [{"guestPort": "net0", "bridge": "vmbr1", "state": "guest_mac"}]
+    assert gap["interfaces"] == [{
+        "guestPort": "net0", "bridge": "vmbr1", "state": "guest_mac",
+        "bridgeActive": True, "uplinks": ["eno1"],
+        "switchObservations": [{"switchId": "snr", "port": "xe3", "basis": "guest_mac", "checkedAt": stamp}],
+    }]
     raw["links"][1]["portEvidence"][0]["virtual"]["uplinks"] = ["ens7"]
     guest_port = raw["links"][1]["portEvidence"][0]
     virtual = guest_port["virtual"]
