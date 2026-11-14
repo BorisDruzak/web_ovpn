@@ -4208,6 +4208,14 @@ def test_shared_lldp_ports_publish_paths_and_require_live_port_and_unique_chassi
     assert fdb_only["portB"] == "" and fdb_only["inventoryPeerPorts"] == inventory_peer_ports
     candidate, = fdb_only["unconfirmedLldpCandidates"]
     assert (candidate["portId"], candidate["chassisId"], candidate["checkedAt"]) == ("bridge/ether3", first, at)
+    assert "differentFdbMacs" not in candidate
+    mismatched_report = combined["links"][-2]["portEvidence"][0]
+    mismatched_report["learnedEndpoint"]["mac"] = "02:00:00:00:00:99"
+    mismatched = summarize_topology(combined, node_id="switch", port_name="Gi1/0/48")["topologyAudit"]
+    mismatched_peer = next(row for row in mismatched["pending"] if row["b"] == "one")
+    assert mismatched_peer["unconfirmedLldpCandidates"] == [{**candidate, "differentFdbMacs": ["02:00:00:00:00:99"]}]
+    assert mismatched_peer["portB"] == "" and mismatched["currentPairTotal"] == 0
+    mismatched_report["learnedEndpoint"]["mac"] = first
     raw = json.loads(path.read_text(encoding="utf-8"))
     raw_declaration = next(link for link in raw["links"] if link["b"] == "one")
     raw_declaration["confirmed"] = False

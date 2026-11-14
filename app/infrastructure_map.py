@@ -2481,6 +2481,17 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
                 and neighbor.get("inventoryDeviceId", row["b"]) == row["b"]
             ]
             if candidates:
+                fdb_macs = sorted({
+                    endpoint["mac"] for path in row["observedPaths"]
+                    if path["source"] == "netctl FDB"
+                    and port_key(row["a"], path["portA"]) == port_key(row["a"], row["portA"])
+                    and (endpoint := path.get("learnedEndpoint"))
+                    and endpoint["switchId"] == row["a"] and endpoint["deviceId"] == row["b"]
+                })
+                for candidate in candidates:
+                    chassis = candidate.get("chassisId", "")
+                    if fdb_macs and re.fullmatch(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}", chassis) and chassis not in fdb_macs:
+                        candidate["differentFdbMacs"] = fdb_macs
                 row["unconfirmedLldpCandidates"] = candidates[:8]
         multi_mac_sides = [side for side, port in row.get("portObservations", {}).items()
                            if port.get("fdbLearned", {}).get("learnedMacCount", 0) > 1]

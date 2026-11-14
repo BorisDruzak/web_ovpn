@@ -495,8 +495,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         make('small', formatTime(checkedAt)), list);
       item.append(details);
     }
-    for (const {systemName, portId, portIdSubtype, chassisId, checkedAt} of unconfirmedLldpCandidates) {
-      const evidence = [systemName, portId && formatLldpPortId(portId, portIdSubtype), chassisId, formatTime(checkedAt)];
+    for (const {systemName, portId, portIdSubtype, chassisId, checkedAt, differentFdbMacs} of unconfirmedLldpCandidates) {
+      const evidence = [systemName, portId && formatLldpPortId(portId, portIdSubtype), chassisId,
+        differentFdbMacs?.length && 'MAC в FDB отличается: ' + differentFdbMacs.join(', '), formatTime(checkedAt)];
       item.append(make('small', ['Возможный сосед LLDP', ...evidence.filter(Boolean)].join(' · ')));
     }
     for (const {port, inventorySources} of inventoryPeerPorts) {
