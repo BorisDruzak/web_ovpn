@@ -498,7 +498,7 @@
 
 В `ucm6302-pbx-sip` параметр `transport: tcp` у `type: sip_options` включает проверку ответа SIP по TCP/5060. Используйте тот же `route_via`, что у UDP. TCP остаётся дополнительной проверкой, пока UDP задан как обязательный транспорт. Оба результата отображаются отдельно. [RFC 3261, формат сообщений SIP](https://datatracker.ietf.org/doc/html/rfc3261#section-18.3)
 
-Карточка `ucm6302-sip-tls-certificate` проверяет TCP/5061 после сверки адреса по ARP и FDB. Проверка срока сертификата на том же порту обязательна и задана с `component: true`. При доступном TCP и просроченном сертификате карточка жёлтая. Обмен SIP проверяется отдельной карточкой.
+Карточка `ucm6302-sip-tls-certificate` использует `tls_handshake` на TCP/5061 после сверки адреса по ARP и FDB. Обязательный компонент `tls_certificate` с `component: true` проверяет срок закреплённого сертификата. Дополнительный `tcp_connect` с `supplemental: true` показывает, принимает ли порт соединения. При успешном рукопожатии и просроченном сертификате карточка жёлтая. Ответ SIP OPTIONS проверяется отдельно на порту 5060. [Параметры SIP UCM630x](https://documentation.grandstream.com/knowledge-base/ucm630x-series-user-manual/)
 
 Для `ht814-web` и `ht818-web` добавьте обязательный компонент GET `/` с `content_type: text/html` и `body_contains: '<form action="/cgi-bin/dologin" method="post"'`. Используйте IP и порт существующей проверки заголовка страницы, сохраняя сверку адреса по ARP и FDB. Компонент проверяет выдачу формы входа без её отправки. Для SIP OPTIONS у обоих шлюзов есть отдельные карточки.
 
