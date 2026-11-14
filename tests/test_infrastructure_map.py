@@ -799,6 +799,20 @@ def test_cluster_health_distinguishes_quorum_members_and_api(tmp_path):
     assert summarize_guest_attachment(load_infrastructure_map(path, now), healthy["id"])[
         "attachment"]["clusterResourceAlerts"] == degraded["clusterResourceAlerts"]
     assert all(check["state"] == "reachable" for check in degraded["serviceChecks"])
+    snapshot = json.loads(path.read_text(encoding="utf-8"))
+    for key, name, state in (("management", "Management", "reachable"), ("dns", "DNS", "unreachable")):
+        snapshot["nodes"].append({"id": key, "name": name, "kind": "Сервис",
+                                  "reachability": {"state": state, "checkedAt": now.isoformat()}})
+    snapshot["links"].extend([
+        {"a": "pve1", "b": "management", "kind": "Размещение", "confirmed": True},
+        {"a": "management", "b": "dns", "kind": "Зависимость сервиса", "confirmed": True},
+    ])
+    path.write_text(json.dumps(snapshot), encoding="utf-8")
+    attachment = summarize_guest_attachment(load_infrastructure_map(path, now), healthy["id"])["attachment"]
+    assert attachment["clusterServiceAlerts"] == [{
+        "nodeId": "pve1", "serviceId": "management", "state": "degraded",
+        "dependencies": [{"serviceId": "dns", "state": "unavailable"}],
+    }]
     capacity.clear()
     cluster["quorate"] = 0
     no_quorum = read()

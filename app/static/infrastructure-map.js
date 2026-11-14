@@ -2722,6 +2722,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     }
     if (node.clusterMemberHealth) {
       const list = make('ul', null, 'map-detail-list');
+      const serviceStates = {unavailable: 'Недоступен', degraded: 'Есть сбои', unknown: 'Нет подтверждения'};
       for (const [state, label] of [['critical', 'Недоступен'], ['warn', 'Есть предупреждения'],
                                     ['unknown', 'Нет подтверждения'], ['ok', 'В норме']]) {
         for (const member of node.clusterMemberHealth[state] ?? []) {
@@ -2738,6 +2739,24 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
               'порог ' + observerNumber.format(alert.thresholdPercent) + '%',
               alert.source, formatTime(alert.checkedAt),
             ].join(' · ')));
+          }
+          for (const alert of node.clusterServiceAlerts ?? []) {
+            if (alert.nodeId !== member) continue;
+            const line = make('small', serviceStates[alert.state] + ' · ');
+            const service = make('a', byId.get(alert.serviceId)?.name ?? alert.serviceId);
+            service.href = '?' + new URLSearchParams({node: alert.serviceId});
+            line.append(service);
+            row.append(line);
+            for (const dependency of alert.dependencies) {
+              const detail = make('small', serviceStates[dependency.state] + ' · ');
+              const target = byId.get(dependency.serviceId);
+              const link = make('a', target?.name ?? dependency.serviceId);
+              link.href = '?' + new URLSearchParams({node: dependency.serviceId});
+              detail.append(link);
+              const check = target?.serviceChecks?.find(item => item.required && !item.stale && item.state === 'unreachable');
+              if (check?.dns?.rcode) detail.append(' · ' + check.dns.rcode);
+              row.append(detail);
+            }
           }
           list.append(row);
         }

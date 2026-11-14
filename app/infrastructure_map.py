@@ -1635,7 +1635,20 @@ def _map_statuses(nodes: dict, links: list[dict]) -> None:
         health = {state: sorted(member for member in members if nodes[member]["mapStatus"] == state) for state in STATES}
         cluster["clusterMemberHealth"] = health
         alerts = []
+        service_alerts = []
         for member in sorted(members):
+            availability = nodes[member]["serviceAvailability"]
+            for state in ("unavailable", "degraded", "unknown"):
+                for service_id in availability[state]:
+                    dependencies = nodes[service_id]["serviceAvailability"]
+                    service_alerts.append({
+                        "nodeId": member, "serviceId": service_id, "state": state,
+                        "dependencies": [
+                            {"serviceId": key, "state": dependency_state}
+                            for dependency_state in ("unavailable", "degraded", "unknown")
+                            for key in dependencies[dependency_state]
+                        ][:8],
+                    })
             capacity = nodes[member].get("resourceCapacity", {})
             for resource, field, amount, threshold in (
                 ("root", "root", "availableBytes", "rootFreePercent"),
@@ -1654,6 +1667,8 @@ def _map_statuses(nodes: dict, links: list[dict]) -> None:
                 })
         if alerts:
             cluster["clusterResourceAlerts"] = alerts
+        if service_alerts:
+            cluster["clusterServiceAlerts"] = service_alerts[:64]
         if cluster["reachability"]["state"] == "reachable":
             if health["warn"] or health["critical"]:
                 cluster["status"] = cluster["mapStatus"] = "warn"
@@ -3728,7 +3743,8 @@ def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
             host_ids = sorted({edge["b"] for edge in links if edge["a"] == node_id and edge["confirmed"]
                                and edge["kind"] == "Узел кластера" and nodes[edge["b"]]["kind"] == "Гипервизор"})
         detail.update({key: anchor[key] for key in (
-            "resourceCapacity", "hardwareDisks", "zfsPools", "lvmThinPools", "clusterMemberHealth", "clusterResourceAlerts",
+            "resourceCapacity", "hardwareDisks", "zfsPools", "lvmThinPools", "clusterMemberHealth",
+            "clusterResourceAlerts", "clusterServiceAlerts",
         ) if key in anchor})
         members = set(host_ids)
         candidates = {edge["b"] for edge in links if edge["a"] in members
