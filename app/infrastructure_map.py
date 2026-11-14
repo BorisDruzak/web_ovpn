@@ -872,6 +872,9 @@ def _public_service_check(check: dict, now: datetime) -> dict:
             result["tlsVersion"] = version
         if tls_state == "failed" and reason == "postgresql_tls_handshake":
             result["reason"] = reason
+    if (result["method"] in ("RDP Negotiation", "SMB2", "WinRM HTTP")
+            and result.get("reason") == "timeout" and check.get("timeoutStage") in ("connect", "protocol")):
+        result["timeoutStage"] = check["timeoutStage"]
     if result["method"] == "SMB2":
         dialect = check.get("smbDialect")
         if dialect in ("2.0.2", "2.1", "3.0", "3.0.2") and type(check.get("smbSigningRequired")) is bool:
@@ -3156,7 +3159,7 @@ def _attachment_probe_location(check: dict) -> dict:
             **{key: check[key] for key in ("reason", "errorSource", "roundTripMs", "httpStatus", "responseCode", "rtspStatus", "dns", "ntp",
                                            "rdpSecurity", "rdpFailureCode", "tlsExpiresAt", "tlsVersion", "zabbixVersion",
                                            "smbDialect", "smbSigningRequired", "postgresqlTls", "redfishVersion", "ftpReply",
-                                           "sshTcpConnected", "localRoute", "httpAuthChallenge")
+                                           "sshTcpConnected", "localRoute", "httpAuthChallenge", "timeoutStage")
                if key in check}}
 
 
@@ -4091,7 +4094,7 @@ def summarize_services(graph: dict, *, host_id: str | None = None, service_ids: 
                                             "pppoe", "rtspStatus", "ftpReply", "tlsExpiresAt", "tlsVersion",
                                             "dns", "ntp", "localRoute", "vlanTransit", "identityCheckedAt", "errorSource",
                                             "responseCode", "attempts", "firstAttemptReason", "ipsecPolicy", "configuredPort", "localUdpSocket",
-                                            "sessionCount", "daemonReady", "arpDiagnostic", "sshTcpConnected")
+                                            "sessionCount", "daemonReady", "arpDiagnostic", "sshTcpConnected", "timeoutStage")
                 if key in check and check[key] is not None and check[key] != ""}}
             for check in node["serviceChecks"] if check.get("required") or (
                 state == "unknown" and check.get("supplemental") and check["state"] != "reachable"

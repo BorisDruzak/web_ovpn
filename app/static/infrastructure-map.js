@@ -1391,6 +1391,12 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     wireguard_handshake_unconfirmed: 'Нет свежего handshake с однозначно определённым пиром',
   };
 
+  function serviceCheckReason(check) {
+    if (check.timeoutStage === 'connect') return 'Тайм-аут подключения TCP';
+    if (check.timeoutStage === 'protocol') return 'Тайм-аут протокола после подключения TCP';
+    return serviceCheckReasons[check.reason];
+  }
+
   function renderServicePaths(paths) {
     if (!paths?.length) return null;
     const panel = make('section');
@@ -1419,7 +1425,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const rtt = probe.roundTripMs === undefined ? '' :
           `RTT ${probe.roundTripMs.toLocaleString('ru-RU', {maximumFractionDigits: 3})} мс`;
         const outcome = probe.localListener ? 'Открыт локально' :
-          (probe.state !== 'reachable' && serviceCheckReasons[probe.reason]) || result[probe.state];
+          (probe.state !== 'reachable' && serviceCheckReason(probe)) || result[probe.state];
         const dns = probe.dns;
         const question = dns && [dns.transport, dns.record, dns.name].filter(Boolean).join(' ');
         const responder = dns?.unexpectedResponder;
@@ -2662,7 +2668,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         }[pppoe.state];
         const result = sessionState ?? (check.reason === 'pve_storage_excluded' ? 'Отключено по конфигурации' : check.skipped ? 'Не запущена' :
           ({reachable:confirmed, unreachable:'Сбой проверки'}[check.state] ?? 'Нет подтверждения'));
-        const reason = check.responseCode ? 'SIP ' + check.responseCode : serviceCheckReasons[check.reason];
+        const reason = check.responseCode ? 'SIP ' + check.responseCode : serviceCheckReason(check);
         const errorSource = check.errorSource ? ' от ' + check.errorSource : '';
         const gatewayLabel = check.method === 'Маршрут' && check.state !== 'reachable' ? 'ожидаемый шлюз' : 'через';
         let gateway = check.via ? ' · ' + gatewayLabel + ' ' + check.via : '';

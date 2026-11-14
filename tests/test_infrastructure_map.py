@@ -247,6 +247,9 @@ def test_winrm_probe_checks_the_authentication_challenge(monkeypatch, status, he
         def __init__(self, host, port, timeout):
             assert (host, port, timeout) == ("192.0.2.91", 5985, probes.TIMEOUT)
 
+        def connect(self):
+            pass
+
         def request(self, method, path, body, headers):
             assert (method, path) == ("POST", "/wsman")
             assert b"Identify" in body
@@ -267,6 +270,34 @@ def test_winrm_probe_checks_the_authentication_challenge(monkeypatch, status, he
             check["path"], check["httpStatus"], check["reason"]) == (
         "WinRM HTTP", state, spec["ip"], 5985, "/wsman", status, reason,
     )
+
+
+@pytest.mark.parametrize("method,port", [("rdp_negotiation", 3389), ("smb", 445), ("winrm", 5985)])
+@pytest.mark.parametrize("stage", ["connect", "protocol"])
+def test_windows_service_timeout_preserves_probe_stage(monkeypatch, method, port, stage):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from app import infrastructure_service_probes as probes
+    from app.infrastructure_map import _public_service_check
+
+    def expire(*args, **kwargs):
+        raise TimeoutError
+
+    if method == "winrm":
+        connection = SimpleNamespace(connect=expire if stage == "connect" else lambda: None,
+                                     request=lambda *args, **kwargs: None,
+                                     getresponse=expire, close=lambda: None)
+        monkeypatch.setattr(probes.http.client, "HTTPConnection", lambda *args, **kwargs: connection)
+    else:
+        connection = SimpleNamespace(sendall=lambda data: None, settimeout=lambda value: None,
+                                     makefile=lambda mode: nullcontext(SimpleNamespace(read=expire)), recv=expire)
+        monkeypatch.setattr(probes.socket, "create_connection",
+                            expire if stage == "connect" else lambda *args, **kwargs: nullcontext(connection))
+    spec = {"type": method, "ip": "192.0.2.91", "port": port}
+    node = {"id": "windows", "kind": "Сервис", "probeTargetIP": spec["ip"]}
+    probes.apply_service_probes([node], {node["id"]: [spec]})
+    check = _public_service_check(node["serviceChecks"][0], datetime.now(timezone.utc))
+    assert (check["state"], check["reason"], check["timeoutStage"]) == ("unknown", "timeout", stage)
 
 
 def test_tcp_connect_probe_reports_transport_without_sending_data(monkeypatch):

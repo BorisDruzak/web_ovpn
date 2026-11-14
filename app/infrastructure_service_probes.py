@@ -744,12 +744,14 @@ def _smb(spec: dict) -> dict:
     struct.pack_into("<H", header, 14, 1)
     request = bytes(header) + struct.pack("<HHHHI16sQ4H", 36, len(dialects), 1, 0, 0, uuid.uuid4().bytes, 0, *dialects)
     unexpected = {"state": "unknown", "reason": "unexpected_response"}
+    timeout_stage = "connect"
     try:
         ip = str(ipaddress.ip_address(spec["ip"]))
         port = spec["port"]
         if type(port) is not int or not 1 <= port <= 65535:
             return {"state": "unknown"}
         with socket.create_connection((ip, port), timeout=TIMEOUT) as connection:
+            timeout_stage = "protocol"
             connection.sendall(len(request).to_bytes(4, "big") + request)
             deadline = monotonic() + TIMEOUT
 
@@ -774,7 +776,7 @@ def _smb(spec: dict) -> dict:
                 return unexpected
             response = read_exact(length)
     except TimeoutError:
-        return {"state": "unknown", "reason": "timeout"}
+        return {"state": "unknown", "reason": "timeout", "timeoutStage": timeout_stage}
     except (ConnectionRefusedError, ConnectionResetError):
         return {"state": "unreachable", "reason": "transport_error"}
     except OSError:
@@ -1803,13 +1805,16 @@ def _winrm(spec: dict) -> dict:
         b'</s:Body></s:Envelope>'
     )
     connection = http.client.HTTPConnection(address, 5985, timeout=TIMEOUT)
+    timeout_stage = "connect"
     try:
+        connection.connect()
+        timeout_stage = "protocol"
         connection.request("POST", "/wsman", body=identify, headers={"Content-Type": "application/soap+xml; charset=UTF-8"})
         response = connection.getresponse()
         status = response.status
         headers = response.getheaders()
     except TimeoutError:
-        return {"state": "unknown", "reason": "timeout"}
+        return {"state": "unknown", "reason": "timeout", "timeoutStage": timeout_stage}
     except ConnectionRefusedError:
         return {"state": "unreachable", "reason": "http_connection_refused"}
     except http.client.HTTPException:
@@ -1894,8 +1899,10 @@ def _rdp_negotiation(spec: dict) -> dict:
     # X.224 Connection Request with TLS and CredSSP; close after the server's selection.
     request = bytes.fromhex("03000013 0ee00000000000 0100080003000000")
     unexpected = {"state": "unknown", "reason": "unexpected_response"}
+    timeout_stage = "connect"
     try:
         with socket.create_connection((ip, port), timeout=TIMEOUT) as connection:
+            timeout_stage = "protocol"
             connection.sendall(request)
             with connection.makefile("rb") as stream:
                 if stream.read(4) != b"\x03\x00\x00\x13":
@@ -1904,7 +1911,7 @@ def _rdp_negotiation(spec: dict) -> dict:
     except ConnectionRefusedError:
         return {"state": "unreachable", "reason": "tcp_connection_refused"}
     except TimeoutError:
-        return {"state": "unknown", "reason": "timeout"}
+        return {"state": "unknown", "reason": "timeout", "timeoutStage": timeout_stage}
     except OSError:
         return {"state": "unknown", "reason": "network_error"}
     if len(confirm) != 15 or confirm[:4] != b"\x0e\xd0\x00\x00" or confirm[6] != 0:
