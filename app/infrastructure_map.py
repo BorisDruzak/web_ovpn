@@ -2458,7 +2458,12 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
         attach_history(row)
         ports = row.get("portObservations", {})
         row["linkHealth"] = _compare_link_ports(ports) or _link_ports_down(ports) or {"state": "unconfirmed"}
-        if any(path["source"] == RECIPROCAL_MAC_SOURCE for path in row["observedPaths"]):
+        if any(
+            path["source"] == RECIPROCAL_MAC_SOURCE
+            and all(port_key(row[side], path[field]) == port_key(row[side], row[field])
+                    for side, field in (("a", "portA"), ("b", "portB")))
+            for path in row["observedPaths"]
+        ):
             if traffic := _compare_port_traffic(ports):
                 row["trafficComparison"] = traffic
             if row["linkHealth"]["state"] == "both_up":

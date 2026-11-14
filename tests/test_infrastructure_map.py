@@ -9674,6 +9674,13 @@ def test_reciprocal_mac_path_shows_fresh_stp_evidence_without_confirming_cable(t
     assert comparison["trafficComparison"]["aToB"] == {"txBps": 1000, "rxBps": 1000, "differencePercent": 0}
     assert comparison["trafficComparison"]["bToA"]["differencePercent"] == 5
     assert comparison_graph["pendingPortPairs"][0]["trafficComparison"] == comparison["trafficComparison"]
+    raw["links"][1]["portEvidence"][0]["a"] = "Port14"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    mismatched_graph = load_infrastructure_map(path, now, include_guest_attachments=True)
+    mismatched_pair, = summarize_topology(mismatched_graph)["topologyAudit"]["pending"]
+    assert "trafficComparison" not in mismatched_pair
+    assert "stateChangeGapSeconds" not in mismatched_pair
+    assert "trafficComparison" not in mismatched_graph["pendingPortPairs"][0]
     upstream = summarize_topology(graph, node_id="root", port_name="GE21")["topologyAudit"]
     assert upstream["currentPairs"] == [confirmed] and upstream["pendingTotal"] == 0
     assert upstream["pendingPairLinkCounts"] == {}
