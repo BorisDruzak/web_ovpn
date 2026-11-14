@@ -273,14 +273,16 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       ([...list.querySelectorAll('a')].find(link => link.href === activeLink) ?? summary).focus({preventScroll: true});
     }
   }
-  function portPairEndpoint(id, name, port) {
+  function portPairEndpoint(id, name, port, confirmed = false) {
     if (port && byId.get(id)?.ports?.some(item => portKeys(item).includes(portKey(port)))) {
       return switchPortButton(id, name, port);
     }
     const label = name + ' · ' + (port || 'порт неизвестен');
     if (!byId.has(id)) return make('span', label);
     const link = make('a', label);
-    link.href = '?' + new URLSearchParams({node: id});
+    const params = new URLSearchParams({node: id});
+    if (confirmed && port) params.set('port', port);
+    link.href = '?' + params;
     return link;
   }
   const linkComparisonLabels = {
@@ -311,7 +313,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   function confirmedPortPairRow({a, b, nameA, nameB, portA, portB, evidence, portStates = {}, portHistory = {}, linkHealth,
     missingReasons = {}}) {
     const row = make('li');
-    row.append(portPairEndpoint(a, nameA, portA), ' ↔ ', portPairEndpoint(b, nameB, portB));
+    row.append(portPairEndpoint(a, nameA, portA, true), ' ↔ ', portPairEndpoint(b, nameB, portB, true));
     const missingPorts = [['a', nameA, portA], ['b', nameB, portB]].filter(([side]) => !portStates[side]);
     if (!missingPorts.length || linkHealth?.state !== 'unconfirmed') {
       appendLinkComparison(row, linkHealth);
@@ -1797,7 +1799,11 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     selected = id;
     const node = byId.get(id);
     const chosenPort = port ? node.ports?.find(item => portKeys(item).includes(portKey(port))) : null;
-    selectedPort = chosenPort?.name ?? null;
+    const observedPair = port && !chosenPort && (data.currentPortPairs ?? []).find(pair =>
+      pairUsesPort(pair, id, [portKey(port)]));
+    const observedPort = observedPair ? (observedPair.a === id ? observedPair.portA : observedPair.portB) : null;
+    selectedPort = chosenPort?.name ?? observedPort;
+    const portScope = chosenPort ?? (observedPort ? {name: observedPort} : null);
     updateNodeUrl(id, selectedPort);
     details.replaceChildren();
     const button = buttons.get(id);
@@ -1846,6 +1852,17 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const columns = make('div', null, 'map-detail-columns');
     const propertiesSection = make('section');
     propertiesSection.append(make('h3', 'Доступность'), properties);
+    if (observedPort) {
+      const side = observedPair.a === id ? 'a' : 'b';
+      const reason = portMeasurementGapLabels[observedPair.missingReasons?.[side]] ?? 'Нет свежего замера';
+      const notice = make('section');
+      notice.dataset.section = 'observed-port';
+      const reset = make('button', 'Все порты', 'map-close');
+      reset.type = 'button';
+      reset.addEventListener('click', () => renderSelection(id, false));
+      notice.append(make('h3', `Порт ${observedPort}`), make('p', reason), reset);
+      propertiesSection.append(notice);
+    }
     for (const {address, routerId, port, source, checkedAt, portLink, archivedPeer} of node.managementRouterPaths ?? []) {
       const router = byId.get(routerId);
       if (!router) continue;
@@ -2102,14 +2119,17 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         }
       }
       for (const pending of [false, true]) {
-        const pairs = renderHostPortPairs(node, pending, chosenPort);
-        if (pairs) propertiesSection.append(pairs);
+        const pairs = renderHostPortPairs(node, pending, portScope);
+        if (pairs) {
+          pairs.open = Boolean(observedPort && !pending);
+          propertiesSection.append(pairs);
+        }
       }
       if (node.kind === 'Коммутатор') {
-        const relatedStpPairs = renderRelatedStpPairs(node, chosenPort);
+        const relatedStpPairs = renderRelatedStpPairs(node, portScope);
         if (relatedStpPairs) propertiesSection.append(relatedStpPairs);
       }
-      const inventoryPairs = renderInventoryPortPairs(node, chosenPort);
+      const inventoryPairs = renderInventoryPortPairs(node, portScope);
       if (inventoryPairs) propertiesSection.append(inventoryPairs);
     }
     const guestAttachment = renderGuestAttachment(data.guestAttachments?.[resourceHost.id]);
@@ -2425,7 +2445,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       list.append(row);
       propertiesSection.append(make('h3', 'Корневой порт STP'), list);
     }
-    if (node.ports?.length) {
+    if (!observedPort && node.ports?.length) {
       const panel = make('details', null, 'map-port-panel');
       panel.dataset.section = 'ports';
       panel.open = selectedPort !== null;
@@ -2762,8 +2782,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     }
     columns.append(propertiesSection);
     details.append(heading, columns);
-    const links = chosenPort ? linksForPort(id, chosenPort) : incident.get(id);
-    if (links.length || selectedPort) {
+    const links = portScope ? linksForPort(id, portScope) : incident.get(id);
+    if (links.length || chosenPort) {
       const list = make('ul',null,'map-detail-list');
       const observations = make('ul',null,'map-detail-list');
       const pairOf = edge => edgeKey(edge.a, edge.b);
