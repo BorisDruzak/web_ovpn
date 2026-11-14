@@ -5878,7 +5878,11 @@ def test_switch_rx_silence_requires_continuous_64_bit_samples_on_the_current_por
     assert summarize_topology(graph())["topologyAudit"]["portRxSilenceAudit"] == audit
     assert summarize_topology(graph(), node_id="sw")["topologyAudit"]["portRxSilenceAudit"] == audit
     assert summarize_topology(graph(), node_id="sw", port_name="XE1")["topologyAudit"]["portRxSilenceAudit"] == audit
-    assert summarize_topology(graph(), node_id="pbs")["topologyAudit"]["portRxSilenceAudit"] == {"total": 0, "ports": []}
+    pbs = summarize_topology(graph(), node_id="pbs")["topologyAudit"]
+    assert pbs["portRxSilenceAudit"] == {"total": 0, "ports": []}
+    assert pbs["relatedPortRxSilenceAudit"] == audit
+    assert summarize_topology(graph(), node_id="pbs", port_name="eth1")[
+        "topologyAudit"]["relatedPortRxSilenceAudit"] == {"total": 0, "ports": []}
     raw["links"][0]["portEvidence"][0]["a"] = "xe2"
     assert "pendingPeers" not in graph()["portRxSilenceAudit"]["ports"][0]
     later = now + timedelta(seconds=1)

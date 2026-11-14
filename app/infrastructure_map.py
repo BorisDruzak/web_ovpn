@@ -1948,7 +1948,7 @@ def _summarize_port_counters(nodes: dict, topology_pairs: tuple | None, *,
     return {"measuredPorts": measured, "affectedPorts": len(affected), "ports": ports}
 
 
-def _summarize_port_rx_silence(nodes: dict, pending: list[dict]) -> dict:
+def _summarize_port_rx_silence(nodes: dict, pending: list[dict], *, related_to: str | None = None) -> dict:
     ports = [
         {"deviceId": node["id"], "deviceName": node["name"], "port": port["name"], "rxSilence": port["rxSilence"],
          **({"configuredLabel": port["configuredLabel"]} if "configuredLabel" in port else {})}
@@ -1971,6 +1971,8 @@ def _summarize_port_rx_silence(nodes: dict, pending: list[dict]) -> dict:
                 peers.update(peers_by_port.get((node["id"], port_label_key(name)), {}))
             if peers:
                 row["pendingPeers"] = [peers[key] for key in sorted(peers)[:8]]
+    if related_to is not None:
+        ports = [row for row in ports if row["deviceId"] != related_to and row.get("pendingPeers")]
     ports.sort(key=lambda row: (-row["rxSilence"]["txBytes"], row["deviceId"], row["port"]))
     return {"total": len(ports), "ports": ports[:64]}
 
@@ -2669,6 +2671,7 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
             "portCounterAudit": _summarize_port_counters(
                 nodes, topology_pairs, port_nodes=scoped_nodes, service_ports=graph.get("servicePorts")),
             "portRxSilenceAudit": _summarize_port_rx_silence(scoped_nodes, pending),
+            "relatedPortRxSilenceAudit": _summarize_port_rx_silence(nodes, gaps, related_to=node_id),
             "vlanAudits": [row for row in vlan_audits if matches(row)][:64],
             "downstreamSwitches": [row for row in downstream if (
                 row["id"] == node_id and not port_name or row["upstreamId"] == node_id
