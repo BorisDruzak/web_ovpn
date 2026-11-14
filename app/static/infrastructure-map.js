@@ -1986,6 +1986,21 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       if (observedPorts) propertiesSection.append(observedPorts);
     }
     if (node.kind !== 'Сервис' && !node.guest) {
+      if (!chosenPort) {
+        for (const shared of data.sharedPorts ?? []) {
+          const peer = shared.peerObservations?.find(item => item.id === node.id);
+          if (!peer) continue;
+          const row = make('p', 'Наблюдается через общий порт · ');
+          row.append(portPairEndpoint(shared.switchId, byId.get(shared.switchId)?.name ?? shared.switchId, shared.port));
+          const evidence = [
+            peer.fdbCheckedAt && 'MAC-таблица ' + formatTime(peer.fdbCheckedAt),
+            peer.lldpCheckedAt && 'LLDP ' + formatTime(peer.lldpCheckedAt),
+            peer.lldpCandidateCheckedAt && 'Кандидат LLDP ' + formatTime(peer.lldpCandidateCheckedAt),
+          ].filter(Boolean);
+          if (evidence.length) row.append(' · ' + evidence.join(' · '));
+          propertiesSection.append(row);
+        }
+      }
       const shared = chosenPort && (data.sharedPorts ?? []).find(row =>
         row.switchId === node.id && portKeys(chosenPort).includes(portKey(row.port)));
       if (shared) {

@@ -4172,6 +4172,12 @@ def test_shared_lldp_ports_publish_paths_and_require_live_port_and_unique_chassi
     assert combined_row["portB"] == "" and combined_audit["currentPairTotal"] == 0
     assert "unconfirmedLldpCandidates" not in combined_row
     shared_port, = combined_audit["sharedPorts"]
+    assert summarize_topology(combined, node_id="one")["topologyAudit"]["observedViaSharedPorts"] == [
+        {"switchId": "switch", "port": proof["a"], "peerTotal": 2,
+         "observation": shared_port["peerObservations"][0]},
+    ]
+    assert summarize_topology(combined, node_id="one", port_name="ether1")[
+        "topologyAudit"]["observedViaSharedPorts"] == []
     assert shared_port == {"switchId": "switch", "port": proof["a"], "peerTotal": 2,
                            "peerIds": ["one", "two"], "liveLldpPeerIds": ["two"],
                            "liveFdbPeerIds": ["one", "two"], "peerObservations": [

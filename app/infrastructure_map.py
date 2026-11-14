@@ -2675,6 +2675,10 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
             **uplinks,
             "sharedPorts": [row for row in shared_ports if row["switchId"] == node_id
                             and (not port_name or port_label_key(row["port"]) in keys)][:64],
+            "observedViaSharedPorts": [
+                {**{key: row[key] for key in ("switchId", "port", "peerTotal")}, "observation": peer}
+                for row in shared_ports for peer in row["peerObservations"] if peer["id"] == node_id
+            ][:64] if node and not port_name else [],
             "lacpPartnerInterfaceGapTotal": len(partner_gaps), "lacpPartnerInterfaceGaps": partner_gaps[:64],
         }}
     stp = [{"id": node["id"], "name": node["name"], **node["stpRootPath"]}
