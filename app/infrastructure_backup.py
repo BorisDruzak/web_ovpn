@@ -17,7 +17,7 @@ _JOB_HEADER = "INFO: starting new backup job: vzdump "
 _RESULT = re.compile(r"^(INFO: Finished Backup of VM|ERROR: Backup of VM) ([1-9][0-9]{0,8})(?: |$)")
 
 
-def read_pbs_storage_checks(get, nodes: list[str], storage: str) -> dict[str, dict]:
+def read_pbs_storage_checks(get, nodes: list[str], storage: str, *, min_free_percent: int | None = None) -> dict[str, dict]:
     if not PVE_STORAGE_ID.fullmatch(storage):
         return {}
 
@@ -44,6 +44,13 @@ def read_pbs_storage_checks(get, nodes: list[str], storage: str) -> dict[str, di
                     state, reason = "reachable", ""
                     for key, name in (("total", "totalBytes"), ("used", "usedBytes"), ("avail", "availableBytes")):
                         detail[name] = data.get(key)
+                    total, available = detail["totalBytes"], detail["availableBytes"]
+                    if (type(min_free_percent) is int and 1 <= min_free_percent <= 99
+                            and type(total) is int and type(available) is int
+                            and 0 < total <= 2**53 - 1 and 0 <= available <= total):
+                        detail["minFreePercent"] = min_free_percent
+                        if available * 100 < total * min_free_percent:
+                            reason = "pbs_storage_low_space"
         return node, {"source": "Proxmox", "method": PBS_STORAGE_METHOD, "state": state,
                       "reason": reason, "pbsStorage": detail, "checkedAt": datetime.now(timezone.utc).isoformat(),
                       "required": True, "component": True}

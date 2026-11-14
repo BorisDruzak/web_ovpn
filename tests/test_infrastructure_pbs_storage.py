@@ -5,6 +5,23 @@ from app.infrastructure_collect import build_graph
 from app.infrastructure_map import _map_statuses, _public_node, _public_service_check
 
 
+def test_pbs_low_space_warns_without_marking_storage_unreachable():
+    from app.infrastructure_backup import read_pbs_storage_checks
+    from app.infrastructure_map import _service_check_status
+
+    def get(path):
+        return {"type": "pbs", "enabled": 1, "active": 1, "total": 500, "avail": 99, "used": 401}
+
+    raw = read_pbs_storage_checks(get, ["pve1"], "pbs", min_free_percent=20)["pve1"]
+    now = datetime.now(timezone.utc)
+    check = _public_service_check(raw, now)
+    assert check["state"] == "reachable"
+    assert check["reason"] == "pbs_storage_low_space"
+    assert check["pbsStorage"]["minFreePercent"] == 20
+    assert _service_check_status(check) == "warn"
+    assert _public_service_check(raw, now + timedelta(hours=1)).get("reason") != "pbs_storage_low_space"
+
+
 def test_pbs_storage_checks_keep_node_failures_distinct_from_missing_evidence():
     from app.infrastructure_backup import read_pbs_storage_checks
 

@@ -3316,6 +3316,7 @@ class _NoRedirect(HTTPRedirectHandler):
 
 def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: set[str],
                  management_bridges: dict[str, str] | None = None, *, backup_storage: str | None = None,
+                 pbs_min_free_percent: int | None = None,
                  local_stores: object = None) -> dict:
     origin = urlsplit(url)
     if origin.scheme != "https" or not origin.hostname or origin.username or origin.path not in ("", "/") or origin.query or origin.fragment:
@@ -3476,7 +3477,8 @@ def read_proxmox(url: str, token_file: Path, ca_file: Path | None, guests: set[s
     result["localStorageChecks"] = read_local_storage_checks(get, online_nodes, local_stores)
     if backup_storage:
         nodes = [row["node"] for row in result["nodes"]]
-        result["pbsStorageChecks"] = read_pbs_storage_checks(get, nodes, backup_storage)
+        result["pbsStorageChecks"] = read_pbs_storage_checks(get, nodes, backup_storage,
+                                                             min_free_percent=pbs_min_free_percent)
         result["backup"] = read_proxmox_backup(get, nodes,
                                                backup_storage, datetime.now(timezone.utc))
     result["at"] = datetime.now(timezone.utc).isoformat()
@@ -4026,6 +4028,8 @@ def main() -> int:
                              if type(role.get("vmid")) is int)
             backup = bindings.get("proxmox_backup_monitor")
             backup_options = {"backup_storage": backup["storage"]} if backup_policy(backup) else {}
+            if backup_options and "min_free_percent" in backup:
+                backup_options["pbs_min_free_percent"] = backup["min_free_percent"]
             if "proxmox_local_stores" in bindings:
                 backup_options["local_stores"] = bindings["proxmox_local_stores"]
             try:

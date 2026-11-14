@@ -1374,6 +1374,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     pbs_storage_permission: 'У токена коллектора нет права чтения хранилища',
     pbs_storage_disabled: 'Хранилище отключено для этого узла',
     pbs_storage_inactive: 'Хранилище недоступно с этого узла',
+    pbs_storage_low_space: 'Свободное место ниже порога',
     pbs_storage_unconfirmed: 'Proxmox не подтвердил состояние хранилища',
     pve_storage_permission: 'У токена коллектора нет права чтения хранилища',
     pve_storage_excluded: 'Хранилище отключено для этого узла',
@@ -2741,7 +2742,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const tcp = check.sshTcpConnected && check.state !== 'reachable' && check.reason !== 'ssh_closed_before_identification' ? ' · TCP подключён' : '';
         row.append(title, make('small', result + http + rtsp + ftp + certificate + postgresql + smb + tcp + (reason ? ' · ' + reason + errorSource : '') + backup + policy + dns + ntp + rtt + attempts + gateway + egress + management + scope + source + time + identity + (check.stale ? ' · устарело' : '')));
         if (storage?.totalBytes !== undefined) {
-          row.append(make('small', `Свободно ${measurement('bytes', storage.availableBytes)} из ${measurement('bytes', storage.totalBytes)}`));
+          const threshold = storage.minFreePercent ? ` · порог ${storage.minFreePercent}%` : '';
+          row.append(make('small', `Свободно ${measurement('bytes', storage.availableBytes)} из ${measurement('bytes', storage.totalBytes)}${threshold}`));
         }
         if (check.managementInterface) {
           row.append(make('small', `Интерфейс управления ${check.managementInterface.name} · ${check.managementInterface.source}`));

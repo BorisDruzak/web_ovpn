@@ -691,7 +691,11 @@ def _public_service_check(check: dict, now: datetime) -> dict:
                 if (result["state"] == "reachable" and all(type(value) is int for value in (total, used, available))
                         and 0 < total <= 2**53 - 1 and 0 <= used <= total and 0 <= available <= total):
                     result[storage_field].update(totalBytes=total, usedBytes=used, availableBytes=available)
-                if reason in ("pbs_storage_permission", "pbs_storage_disabled", "pbs_storage_inactive", "pbs_storage_unconfirmed"):
+                    threshold = detail.get("minFreePercent")
+                    if pbs_storage and type(threshold) is int and 1 <= threshold <= 99:
+                        result[storage_field]["minFreePercent"] = threshold
+                if pbs_storage and reason in ("pbs_storage_permission", "pbs_storage_disabled", "pbs_storage_inactive",
+                                               "pbs_storage_unconfirmed", "pbs_storage_low_space"):
                     result["reason"] = reason
                 if local_storage and reason in ("pve_storage_permission", "pve_storage_excluded",
                                                 "pve_storage_inactive", "pve_storage_unconfirmed"):
@@ -1559,7 +1563,7 @@ def _attach_backup_scope(nodes: dict) -> None:
 
 
 def _service_check_status(check: dict) -> str:
-    if check.get("reason") == "tls_certificate_expiring":
+    if check.get("reason") in ("tls_certificate_expiring", "pbs_storage_low_space"):
         return "warn"
     return {"reachable": "ok", "unreachable": "critical"}.get(check["state"], "unknown")
 
