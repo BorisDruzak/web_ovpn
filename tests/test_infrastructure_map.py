@@ -8856,10 +8856,17 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     assert (disk["name"], disk["observed"], disk["sourceNodeId"], disk["required"]) == (
         "c_disk_free", 4.53, "directum", False,
     )
+    from app.infrastructure_map import _summarize_guest_observer_coverage
+
+    coverage = _summarize_guest_observer_coverage(load_infrastructure_map(path)["nodes"], "vm")
+    assert coverage == {"running": 1, "withDisk": 1, "withMemory": 0, "withBoth": 0, "withoutMetrics": 0,
+                        "guests": [{"id": "vm", "disk": [{"check": "c_disk_free", "sourceNodeId": "directum",
+                                                        "checkedAt": stamp}], "memory": []}]}
     raw["nodes"].append({"id": "other-vm", "name": "Other", "kind": "Виртуальная машина", "guest": True})
     raw["links"].append({"a": "other-vm", "b": "directum", "kind": "Цель проверки", "confirmed": True})
     read()
     assert client.get(vm_url, headers=headers).json()["infrastructure"]["attachment"]["checks"] == []
+    assert _summarize_guest_observer_coverage(load_infrastructure_map(path)["nodes"], "vm")["withoutMetrics"] == 1
     raw["links"].pop()
     raw["nodes"].pop()
     read()
@@ -9872,6 +9879,7 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
     response = client.get(browser_url)
     assert response.status_code == 200 and response.headers["cache-control"] == "no-store"
     assert response.json()["infrastructure"]["agentAudit"] == result
+    assert response.json()["infrastructure"]["serverObserverCoverage"]["withoutMetrics"] == 5
     assert all(key not in response.text for key in keys)
     assert "nodes" not in response.json()["infrastructure"]
     response = client.get(browser_url + "?node_id=vm:1")
@@ -9879,7 +9887,9 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
     assert browser_detail.pop("ipv4Comparison")["matched"] == ["192.0.2.10"]
     assert browser_detail == detail
     Adapter.unavailable = True
-    assert client.get(browser_url).json()["infrastructure"]["agentAudit"] == {"sourceState": "unavailable"}
+    browser_audit = client.get(browser_url).json()["infrastructure"]
+    assert browser_audit["agentAudit"] == {"sourceState": "unavailable"}
+    assert browser_audit["serverObserverCoverage"]["withoutMetrics"] == 5
     selected = client.get("/api/v1/network/infrastructure?view=agents&node_id=vm:1", headers=headers)
     unavailable = selected.json()["infrastructure"]
     assert unavailable["agentAudit"] == {"sourceState": "unavailable"}

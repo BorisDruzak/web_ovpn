@@ -1444,10 +1444,13 @@ def _public_node(row: dict, now: datetime) -> dict:
     }
 
 
+_OBSERVER_GUEST_DISK = {"c_disk_free", "root_disk_free", "data_disk_free"}
+_OBSERVER_GUEST_MEMORY = {"windows_memory_available_bytes", "windows_memory_available_percent",
+                          "linux_memory_available_bytes", "linux_memory_available_percent"}
+
+
 def _attach_guest_observer_measurements(nodes: dict, links: list[dict]) -> None:
-    metrics = {"c_disk_free", "root_disk_free", "data_disk_free",
-               "windows_memory_available_bytes", "windows_memory_available_percent",
-               "linux_memory_available_bytes", "linux_memory_available_percent"}
+    metrics = _OBSERVER_GUEST_DISK | _OBSERVER_GUEST_MEMORY
     hosts = defaultdict(set)
     for edge in links:
         if (_is_service_attachment(edge) and nodes[edge["b"]]["kind"] == "Сервис"
@@ -4080,6 +4083,33 @@ def _agent_ipv4_comparison(network: dict, attachment: dict) -> dict:
             "observedOnly": sorted(observed.keys() - reported.keys()), **({"matchedPaths": paths} if paths else {})}
 
 
+def _summarize_guest_observer_coverage(nodes: list[dict], node_id: str | None) -> dict:
+    rows = []
+    for node in nodes:
+        if (not node["guest"] or node_id not in (None, node["id"]) or _guest_power(node) != "running"):
+            continue
+        disk, memory = [], []
+        for check in node["checks"]:
+            if check["stale"] or check.get("observed") is None or not check.get("sourceNodeId"):
+                continue
+            if check["name"] in _OBSERVER_GUEST_DISK:
+                metrics = disk
+            elif check["name"] in _OBSERVER_GUEST_MEMORY:
+                metrics = memory
+            else:
+                continue
+            metrics.append({"check": check["name"], "sourceNodeId": check["sourceNodeId"],
+                            "checkedAt": check["checkedAt"]})
+        rows.append({"id": node["id"], "disk": disk, "memory": memory})
+    return {
+        "running": len(rows), "withDisk": sum(bool(row["disk"]) for row in rows),
+        "withMemory": sum(bool(row["memory"]) for row in rows),
+        "withBoth": sum(bool(row["disk"] and row["memory"]) for row in rows),
+        "withoutMetrics": sum(not (row["disk"] or row["memory"]) for row in rows),
+        "guests": sorted(rows, key=lambda row: row["id"])[:128],
+    }
+
+
 def load_infrastructure_agent_audit(path: Path, *, node_id: str | None = None) -> dict:
     adapter = None
     identities = None
@@ -4102,6 +4132,8 @@ def load_infrastructure_agent_audit(path: Path, *, node_id: str | None = None) -
     result = {**{key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph},
               "agentAudit": graph.get("agentAudit", {"sourceState": "unavailable"})}
     node = next((item for item in graph["nodes"] if item["id"] == node_id), None)
+    if node_id is None or (node and node["guest"]):
+        result["serverObserverCoverage"] = _summarize_guest_observer_coverage(graph["nodes"], node_id)
     if node and (node["guest"] or node["kind"] in ("Гипервизор", "Сервис")):
         attachment = summarize_guest_attachment(graph, node_id)["attachment"]
         result["attachment"] = attachment
