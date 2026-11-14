@@ -8611,6 +8611,9 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     traffic = {"networkInBytesPerSecond": 2.3, "networkOutBytesPerSecond": 0,
                "source": "Proxmox", "checkedAt": stamp, "intervalSeconds": 120}
     assert guest["networkTraffic"] == traffic
+    assert guest["resources"] == {"source": "Proxmox", "uptimeSeconds": 300, "checkedAt": stamp}
+    assert guest["diskTraffic"] == {"source": "Proxmox", "diskReadBytesPerSecond": 800,
+                                    "diskWriteBytesPerSecond": 10, "checkedAt": stamp, "intervalSeconds": 120}
     interface, = guest["interfaces"]
     assert (interface["guestPort"], interface["bridge"]) == ("net0", "vmbr1")
     assert interface["bridgeVlanConfig"] == {"mode": "enabled", "source": "Proxmox API", "checkedAt": stamp}

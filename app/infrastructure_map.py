@@ -63,6 +63,7 @@ PPPOE_PARENT_LINK_MAX_AGE = timedelta(minutes=10)
 RESOURCE_CAPACITY_MAX_AGE = timedelta(minutes=5)
 GUEST_IO_MAX_AGE = timedelta(minutes=5)
 GUEST_NETWORK_RATE_FIELDS = ("networkInBytesPerSecond", "networkOutBytesPerSecond")
+GUEST_DISK_RATE_FIELDS = ("diskReadBytesPerSecond", "diskWriteBytesPerSecond")
 LACP_HEALTH_MAX_AGE = timedelta(minutes=5)
 LACP_PARTNER_MAX_AGE = timedelta(minutes=8)
 ROOT_FREE_WARNING_PERCENT = 10
@@ -1059,7 +1060,7 @@ def _public_guest_io(row: object, resources: dict, now: datetime) -> dict:
     if stamp != resources.get("checkedAt") or interval is None or not 30 <= interval <= GUEST_IO_MAX_AGE.total_seconds():
         return {}
     rates = {}
-    for keys in (GUEST_NETWORK_RATE_FIELDS, ("diskReadBytesPerSecond", "diskWriteBytesPerSecond")):
+    for keys in (GUEST_NETWORK_RATE_FIELDS, GUEST_DISK_RATE_FIELDS):
         pair = {key: _number(row.get(key)) for key in keys}
         if all(rate is not None and 0 <= rate < 2**53 for rate in pair.values()):
             rates.update(pair)
@@ -2896,11 +2897,14 @@ def _guest_attachments(nodes: dict, links: list[dict], guest_ids: list[str], now
         if "backupCoverage" in node:
             guest["backupCoverage"] = node["backupCoverage"]
         guests[guest_id] = guest
+        if resources := node.get("resources"):
+            guest["resources"] = {"source": "Proxmox", **resources}
         io = node.get("guestIo", {})
-        if all(key in io for key in GUEST_NETWORK_RATE_FIELDS):
-            guest["networkTraffic"] = {"source": "Proxmox", **{
-                key: io[key] for key in (*GUEST_NETWORK_RATE_FIELDS, "checkedAt", "intervalSeconds")
-            }}
+        for field, keys in (("networkTraffic", GUEST_NETWORK_RATE_FIELDS), ("diskTraffic", GUEST_DISK_RATE_FIELDS)):
+            if all(key in io for key in keys):
+                guest[field] = {"source": "Proxmox", **{
+                    key: io[key] for key in (*keys, "checkedAt", "intervalSeconds")
+                }}
         if len(candidates) != 1:
             continue
         edge, = candidates
