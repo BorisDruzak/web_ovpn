@@ -750,11 +750,12 @@ def _public_service_check(check: dict, now: datetime) -> dict:
             result["arpDiagnostic"] = arp
         return {**result, "target": "", "skipped": True, "reason": reason}
     identified_icmp = result["method"] in ("ICMP · LLDP + ARP", "ICMP · ARP + FDB", "ICMP · LACP + ARP")
-    if identified_icmp or (result["source"] == "UI_VPN" and "identityCheckedAt" in check):
+    if identified_icmp or ((result["source"] == "UI_VPN" or result["method"] == "ARP · L2")
+                           and "identityCheckedAt" in check):
         identity_at = check.get("identityCheckedAt")
         if observation_is_fresh(identity_at, now):
             result["identityCheckedAt"] = _time(identity_at).isoformat()
-        else:
+        elif result["method"] != "ARP · L2":
             result.update(state="unknown", stale=True)
     if result["method"] == "NTP (UDP)" and result["source"] == "UI_VPN" and not result["stale"]:
         ntp = check.get("ntp")
@@ -3506,24 +3507,28 @@ def _management_service_paths(service: dict, host: str, management: dict, observ
                 paths.append({**_attachment_probe_location(check), "via": check["via"], "source": check["source"],
                               "addressCheckedAt": router["checkedAt"], "routerAttachment": router})
             continue
-        if check["source"] != "UI_VPN":
+        arp_probe = (service["kind"] != "Сервис" and check["method"] == "ARP · L2"
+                     and check["state"] == "reachable")
+        if check["source"] != "UI_VPN" and not arp_probe:
             continue
-        if matched := management.get((host, check["target"])):
+        if not arp_probe and (matched := management.get((host, check["target"]))):
             switch, pair = matched
             paths.append({**_attachment_probe_location(check), "addressCheckedAt": pair["checkedAt"],
                           "management": True, "hypervisorId": host, "switchId": switch, "physicalPair": pair})
         elif attachment := observed_ports.get((host, check["target"])):
             observation, = attachment.values()
-            asset_icmp = (service["kind"] != "Сервис" and (check["method"], observation["source"]) in {
+            asset_probe = (service["kind"] != "Сервис" and (check["method"], observation["source"]) in {
                               ("ICMP · ARP + FDB", "netctl FDB"),
                               ("ICMP · LACP + ARP", "SNMP LACP + ARP"),
+                              ("ARP · L2", "netctl FDB"),
                           }
                           and check.get("identityCheckedAt") == observation["checkedAt"])
             service_probe = service["kind"] == "Сервис" and (
                 check["port"] is not None or (check["method"] == "ICMP" and observation["source"] == "MikroTik · ARP")
             )
-            if asset_icmp or service_probe:
+            if asset_probe or service_probe:
                 paths.append({**_attachment_probe_location(check), "addressCheckedAt": observation["checkedAt"],
+                              **({"source": check["source"]} if arp_probe else {}),
                               **attachment})
     return paths
 
@@ -3684,7 +3689,7 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime, *, endpoint_
             route = method == "Маршрут" and check["source"] == "Network Observer"
             if (not target or (number is None and not selected_path)
                     or not method or not checked_at or check["stale"] or check.get("skipped")
-                    or (check["source"] != "UI_VPN" and not route)
+                    or (check["source"] != "UI_VPN" and not route and not (selected_path and method == "ARP · L2"))
                     or not (selected_path or (physical and not local and not route))):
                 continue
             transport = "UDP" if local else transport

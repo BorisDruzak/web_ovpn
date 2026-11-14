@@ -6674,6 +6674,24 @@ def test_configured_asset_fdb_path_is_scoped_and_requires_a_unique_live_port(mon
     assert check["probeEndpoints"] == [{"target": address, "port": None, "method": "ICMP · ARP + FDB",
                                        "passed": 1, "failed": 0, "unconfirmed": 0,
                                        "lastCheckedByOutcome": {"passed": observation["checkedAt"]}}]
+    bindings["asset_mac_probes"] = {"gateway": {"mac": mac, "address": address, "source": "router"}}
+    network["asset_mac_checks"] = {"gateway": {"source": "router", "method": "ARP · L2", "state": "reachable",
+                                             "checkedAt": at, "target": address}}
+    for configured_mac, expected in ((mac, True), ("02:00:00:00:00:24", False)):
+        bindings["asset_mac_probes"]["gateway"]["mac"] = configured_mac
+        graph = build_graph(context, network, {}, {}, bindings, now)
+        snapshot.write_text(json.dumps(graph), encoding="utf-8")
+        public = load_infrastructure_map(snapshot, now, include_service_ports=True)
+        paths = summarize_guest_attachment(public, "gateway")["attachment"].get("servicePaths", [])
+        if expected:
+            probe, = paths
+            assert probe["method"] == "ARP · L2" and probe["source"] == "router"
+            assert probe["switchAttachment"]["port"] == "Gi1/0/23"
+            row, = public["servicePorts"]["observer:access"]
+            endpoint, = row["services"][0]["probeEndpoints"]
+            assert endpoint["method"] == "ARP · L2" and endpoint["passed"] == 1
+        else:
+            assert paths == []
     expired = load_infrastructure_map(snapshot, now + timedelta(hours=1))
     assert not summarize_guest_attachment(expired, "gateway")["attachment"].get("servicePaths")
     stale, = load_infrastructure_map(snapshot, now + timedelta(hours=1))["links"]

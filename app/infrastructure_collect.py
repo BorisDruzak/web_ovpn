@@ -2907,6 +2907,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         for item in identity_services.get(asset, []):
             item.update(probeTargetIP=address, probeTargetIdentityAt=checked,
                         probeTargetManagementInterface=port["name"])
+    asset_arp_path_times = {}
     for asset, switch_source in bindings.get("asset_fdb_paths", {}).items():
         address = address_by_asset.get(asset)
         switch = source_nodes.get(switch_source)
@@ -2945,6 +2946,11 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 checked = min(arp_at, datetime.fromisoformat(max(live)),
                               max(datetime.fromisoformat(row["observed_at"]) for row in observations))
                 checked_at = checked.isoformat()
+                arp_spec = bindings.get("asset_mac_probes", {}).get(asset, {})
+                if identity_matches and not remote_port and arp_spec.get("address") == address and (
+                    str(arp_spec.get("mac", "")).lower() == mac
+                ):
+                    asset_arp_path_times[asset] = checked_at
                 if remote_port:
                     checked = min(checked, datetime.fromisoformat(pve_at))
                 if remote_port or nodes[asset]["kind"] != "Гипервизор":
@@ -3012,7 +3018,12 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                     and observation.get("target") == address_by_asset.get(key)
                     and datetime.fromisoformat(observation["checkedAt"]) > datetime.fromisoformat(current["checkedAt"])):
                 item["reachability"] = observation
-            item.setdefault("serviceChecks", []).append(observation)
+            identity_at = asset_arp_path_times.get(key)
+            check = {**observation, "identityCheckedAt": identity_at} if (
+                identity_at and observation["method"] == "ARP · L2" and observation.get("target") == address_by_asset[key]
+                and observation["source"] == bindings["asset_mac_probes"][key].get("source")
+            ) else observation
+            item.setdefault("serviceChecks", []).append(check)
     _reconcile_fdb_ports(edges.values())
     _corroborate_fdb_ports(edges.values(), nodes, now)
     _corroborate_stp_ports(edges.values(), nodes, shared_ports, now)
