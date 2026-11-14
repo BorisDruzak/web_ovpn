@@ -56,7 +56,7 @@ LDAP_NAMING_CONTEXT = re.compile(r"DC=[a-z0-9-]+(?:,DC=[a-z0-9-]+)+", re.IGNOREC
 
 
 def _http_path(path: object) -> str:
-    if path == "/!dhost.b":
+    if path in ("/!dhost.b", "/!stats.b", "/!igmp.b"):
         return path
     if not isinstance(path, str) or not re.fullmatch(r"/[A-Za-z0-9._/-]{0,159}", path) or path.startswith("//"):
         raise ValueError("invalid service probe path")

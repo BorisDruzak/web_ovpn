@@ -644,7 +644,9 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         **_public_reachability(check, now, max_age=max_age),
         "port": port if type(port) is int and 1 <= port <= 65535 else None,
         "target": _network_address(check.get("target")), "via": _network_address(check.get("via")),
-        "path": path if path == "/!dhost.b" or (re.fullmatch(r"/[A-Za-z0-9._/-]{0,159}", path) and not path.startswith("//")) else "",
+        "path": path if path in ("/!dhost.b", "/!stats.b", "/!igmp.b") or (
+            re.fullmatch(r"/[A-Za-z0-9._/-]{0,159}", path) and not path.startswith("//")
+        ) else "",
     }
     interface = check.get("managementInterface")
     if (result["source"] == "UI_VPN" and not result["stale"] and isinstance(interface, dict)

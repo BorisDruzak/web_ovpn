@@ -2323,10 +2323,13 @@ def test_http_digest_challenge_requires_401_realm_and_nonce(monkeypatch):
     assert _http_probe({**spec, "body": "hello"})["reason"] == "http_configuration"
     response.status = 401
     challenge = 'Digest realm="CSS326-24G-2S+", qop="auth", nonce="token", stale=FALSE'
-    spec["path"] = "/!dhost.b"
-    assert _http_probe(spec) == {"state": "reachable", "httpStatus": 401, "httpAuthChallenge": "Digest"}
-    assert _public_service_check({**check, "path": spec["path"]}, now)["path"] == spec["path"]
-    assert _http_probe({**spec, "path": "/!dhost.b?write=1"})["reason"] == "http_configuration"
+    for path in ("/!dhost.b", "/!stats.b", "/!igmp.b"):
+        spec["path"] = path
+        assert _http_probe(spec) == result
+        assert _public_service_check({**check, "path": path}, now)["path"] == path
+    for path in ("/!dhost.b?write=1", "/!stats.b?write=1", "/!unknown.b"):
+        assert _http_probe({**spec, "path": path})["reason"] == "http_configuration"
+        assert _public_service_check({**check, "path": path}, now)["path"] == ""
 
 
 def test_zabbix_version_checks_matching_json_rpc_response():
