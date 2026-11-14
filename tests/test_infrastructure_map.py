@@ -4222,6 +4222,16 @@ def test_shared_lldp_ports_publish_paths_and_require_live_port_and_unique_chassi
     ]
     assert summarize_topology(combined, node_id="one", port_name="ether1")[
         "topologyAudit"]["observedViaSharedPorts"] == []
+    scoped_peer = summarize_topology(combined, node_id="two", port_name="BRIDGE/ether3")["topologyAudit"]
+    assert scoped_peer["observedViaSharedPorts"] == [
+        {"switchId": "switch", "port": proof["a"], "peerTotal": 2,
+         "observation": shared_port["peerObservations"][1]},
+    ]
+    assert scoped_peer["currentPairTotal"] == 0 and scoped_peer["pendingTotal"] == 0
+    assert summarize_topology(combined, node_id="two", port_name="bridge/ether4")[
+        "topologyAudit"]["observedViaSharedPorts"] == []
+    assert summarize_topology(combined, node_id="one", port_name="bridge/ether3")[
+        "topologyAudit"]["observedViaSharedPorts"] == []
     assert shared_port == {"switchId": "switch", "port": proof["a"], "peerTotal": 2,
                            "peerIds": ["one", "two"], "liveLldpPeerIds": ["two"],
                            "liveFdbPeerIds": ["one", "two"], "peerObservations": [
