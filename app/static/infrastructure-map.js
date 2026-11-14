@@ -92,6 +92,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   };
   const proxmoxUnavailable = () => data.collectionIssues?.includes('proxmox');
   const collectionMessages = {
+    snapshot_delayed: 'Сбор карты задерживается. Последний снимок опубликован более трёх минут назад.',
     proxmox: 'Опрос Proxmox завершился ошибкой. Текущее состояние и размещение ВМ не подтверждены.',
     network_observer: 'Опрос Network Observer завершился ошибкой. Свежие данные SNMP, LLDP и MAC-таблиц недоступны.',
     switch_observer_stale: 'Данные опроса SNMP по части коммутаторов устарели. Сверьте время наблюдений в карточках портов.',

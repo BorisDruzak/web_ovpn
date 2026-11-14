@@ -37,6 +37,7 @@ WINDOWS_ADAPTER_SOURCE = "Windows · физический адаптер"
 
 MAX_SNAPSHOT_BYTES = 1_000_000
 MAX_AGE = timedelta(minutes=25)
+SNAPSHOT_DELAY_AFTER = timedelta(minutes=3)
 MAX_DOWNSTREAM_SWITCHES = 12
 SERVICE_PROBE_MAX_AGE = timedelta(minutes=5)
 PROBE_TRANSITION_MAX_AGE = timedelta(hours=24)
@@ -5062,6 +5063,8 @@ def load_infrastructure_map(
     raw_issues = raw.get("collectionIssues")
     known_issues = ("proxmox", "network_observer", "server_observer_unavailable", "server_observer_stale")
     issues = [name for name in known_issues if isinstance(raw_issues, list) and name in raw_issues]
+    if SNAPSHOT_DELAY_AFTER < now - stamp <= MAX_AGE:
+        issues.insert(0, "snapshot_delayed")
     if "network_observer" not in issues and any(
         check["method"] == SNMP_COLLECTION_METHOD and check["stale"] and check["checkedAt"]
         for node in nodes.values() for check in node["serviceChecks"]

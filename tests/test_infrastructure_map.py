@@ -675,7 +675,23 @@ def test_observer_disk_measurements_publish_units_and_reported_warning_threshold
     assert old["stale"] and old["status"] == "unknown"
     assert old["observed"] == 5.32 and old["checkedAt"] == stamp
     public = load_infrastructure_map(snapshot, now + timedelta(minutes=16))
-    assert public["availability"] == "ready" and public["collectionIssues"] == ["server_observer_stale"]
+    assert public["availability"] == "ready"
+    assert public["collectionIssues"] == ["snapshot_delayed", "server_observer_stale"]
+
+
+def test_snapshot_delay_warns_before_observations_expire(tmp_path):
+    from app.infrastructure_map import load_infrastructure_map, summarize_services
+
+    stamp = datetime.now(timezone.utc)
+    path = tmp_path / "map.json"
+    path.write_text(json.dumps({"schema": 1, "snapshotAt": stamp.isoformat(), "nodes": [], "links": []}), encoding="utf-8")
+    fresh = load_infrastructure_map(path, stamp + timedelta(minutes=3))
+    assert fresh["availability"] == "ready" and "collectionIssues" not in fresh
+    late = load_infrastructure_map(path, stamp + timedelta(minutes=3, seconds=1))
+    assert late["availability"] == "ready" and late["collectionIssues"] == ["snapshot_delayed"]
+    assert summarize_services(late)["collectionIssues"] == ["snapshot_delayed"]
+    stale = load_infrastructure_map(path, stamp + timedelta(minutes=26))
+    assert stale["availability"] == "stale" and "collectionIssues" not in stale
 
 
 def test_qemu_prelaunch_reports_guest_state_backup_lock_and_configured_bridge(tmp_path):
