@@ -4771,7 +4771,7 @@ def load_infrastructure_map(
                      for side, port in row.get("portObservations", {}).items()
                  },
                  **{key: row[key] for key in ("archivedPortSides", "archivedPortAt", "inventoryPortSides", "inventorySources",
-                                             "inventoryPeerPorts", "lldpPeers", "unconfirmedLldpCandidates", "multiMacPortSides",
+                                             "inventoryPeerPorts", "lldpPeers", "lldpObservations", "unconfirmedLldpCandidates", "multiMacPortSides",
                                              "stpBridgeConnections", "stpBridgeMacObservations", "arpDiagnostics",
                                              "trafficComparison", "stoppedEndpoints", "conflictingPortSides",
                                              "logicalPeerInterfaces", "lldpNoRxSides", "portHistory") if key in row}}

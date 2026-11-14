@@ -9300,6 +9300,7 @@ def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_pa
     assert browser_recorder["logicalPeerInterfaces"] == recorder["logicalPeerInterfaces"]
     assert port_audit["confirmationGapCounts"]["logical_lldp_interface"] == 1
     assert len(recorder["lldpObservations"]["a"]["neighbors"]) == 2
+    assert browser_recorder["lldpObservations"] == recorder["lldpObservations"]
     snapshot = client.get("/api/v1/network/infrastructure", headers=headers).json()["infrastructure"]
     edge = next(edge for edge in snapshot["links"] if edge["a"] == "snr" and edge["b"] == "recorder")
     report, = edge["portEvidence"]

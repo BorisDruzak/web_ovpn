@@ -371,7 +371,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       portObservations = {}, stpPaths = [], stpBridgeConnections = [], stpBridgeMacObservations = [], lldpPeers = {},
       archivedPortAt = {}, inventorySources = [], inventoryPeerPorts = [], arpDiagnostics = {}, observedPaths = [],
       multiMacPortSides = [], unconfirmedLldpCandidates = [], confirmationGaps = [], trafficComparison, linkHealth,
-      stoppedEndpoints = {}, logicalPeerInterfaces = {}, lldpNoRxSides = [], portHistory = {}}) {
+      stoppedEndpoints = {}, logicalPeerInterfaces = {}, lldpNoRxSides = [], portHistory = {}, lldpObservations = {}}) {
     const item = make('li');
     const provenance = key => archivedPortSides.includes(key) ? ' (по архиву)' :
       inventoryPortSides.includes(key) ? ' (по инвентарю)' : '';
@@ -430,6 +430,18 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     }
     if (!Object.keys(lldpPeers).length && lldpPortIds.length) {
       item.append(make('small', 'LLDP Port ID ' + lldpPortIds.join(', ')));
+    }
+    for (const [side, {checkedAt, neighbors}] of Object.entries(lldpObservations)) {
+      const observer = side === 'a' ? `${nameA} ${portA}` : `${nameB} ${portB}`;
+      const details = make('details');
+      const list = make('ul', null, 'map-detail-list');
+      for (const {systemName, hostName, chassisId, portId, portIdSubtype} of neighbors) {
+        const fields = [systemName || hostName, chassisId, portId && formatLldpPortId(portId, portIdSubtype)];
+        list.append(make('li', fields.filter(Boolean).join(' · ')));
+      }
+      details.append(make('summary', `Объявления LLDP · ${observer} (${neighbors.length})`),
+        make('small', formatTime(checkedAt)), list);
+      item.append(details);
     }
     for (const {systemName, portId, portIdSubtype, chassisId, checkedAt} of unconfirmedLldpCandidates) {
       const evidence = [systemName, portId && formatLldpPortId(portId, portIdSubtype), chassisId, formatTime(checkedAt)];
