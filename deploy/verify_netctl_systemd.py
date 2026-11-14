@@ -61,6 +61,8 @@ EXPECTED_PROPERTIES = {
         "NoNewPrivileges": "yes",
         "PrivateTmp": "yes",
         "ProtectHome": "yes",
+        "TimeoutStartUSec": "1min 30s",
+        "TimeoutStopUSec": "15s",
     },
     "netctl-retention.timer": {
         "TimersCalendar": "*-*-* 03:17:00",

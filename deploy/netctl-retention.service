@@ -8,4 +8,6 @@ Group=netctl
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
+TimeoutStartSec=90s
+TimeoutStopSec=15s
 ExecStart=/usr/local/sbin/netctl --json retention cleanup --days 30 --apply

@@ -54,6 +54,12 @@ def test_systemd_verifier_expects_the_retention_command() -> None:
         "--apply",
     ]
     assert verifier["EXPECTED_PROPERTIES"]["netctl-retention.timer"]["TimersCalendar"] == "*-*-* 03:17:00"
+    properties = verifier["EXPECTED_PROPERTIES"]["netctl-retention.service"]
+    assert properties["TimeoutStartUSec"] == "1min 30s"
+    assert properties["TimeoutStopUSec"] == "15s"
+    unit = (ROOT / "deploy" / "netctl-retention.service").read_text(encoding="utf-8")
+    assert "TimeoutStartSec=90s" in unit.splitlines()
+    assert "TimeoutStopSec=15s" in unit.splitlines()
 
 
 def test_systemd_verifier_expects_hardened_read_only_availability_recovery() -> None:

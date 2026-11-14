@@ -5,6 +5,12 @@ Observer database. The daily `netctl-retention.timer` normally removes history
 older than 30 days without running `VACUUM`. This runbook permits exactly one
 manual `VACUUM` after a verified backup and successful retention cleanup.
 
+The scheduled service has a 90-second start timeout and a 15-second stop
+timeout to limit collection delays. A timeout aborts an uncommitted cleanup
+transaction. Check the retention journal and the next collection result after
+a timeout. The manual cleanup command in this maintenance procedure runs
+outside that systemd limit.
+
 The procedure changes only the local SQLite database and systemd unit state.
 It does not write to switches, routers, OpenVPN, DNS, DHCP, firewall rules, or
 any other network device. The final collection reads configured sources; it
