@@ -1422,6 +1422,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
             portLink.source ?? (switchId ? 'SNMP' : 'RouterOS'),
             formatTime(portLink.speedCheckedAt ?? portLink.checkedAt)].filter(Boolean).join(' · ');
           row.append(make('small', reading));
+          appendPortStateChange(row, portLink);
         }
         if (telemetry && telemetry.rxBps !== undefined && telemetry.txBps !== undefined) {
           const rate = value => observerNumber.format(value / 1000) + ' кбит/с';
@@ -1818,6 +1819,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const row = make('dd');
         const evidence = physicalPair ? `Пара подтверждена · ${physicalPair.hostPort}` : 'Путь по ARP и MAC-таблице';
         row.append(link, make('small', [evidence, formatPortSpeed(portLink?.speedBps), formatTime(checkedAt)].filter(Boolean).join(' · ')));
+        if (portLink) appendPortStateChange(row, portLink);
         properties.append(make('dt', 'Порт на пути управления'), row);
       }
     }

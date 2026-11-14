@@ -3338,7 +3338,7 @@ def _observed_management_ports(links: list[dict], nodes: dict) -> dict:
             if key not in ports or ports[key][field]["checkedAt"] < report["at"]:
                 attachment = {id_key: device, "port": port, "source": report["source"], "checkedAt": report["at"]}
                 attachment["portLink"] = {key: port_state[key] for key in
-                                          ("state", "speedBps", "checkedAt", "speedCheckedAt", "source", "linkMode")
+                                          ("state", "speedBps", "checkedAt", "speedCheckedAt", "stateSince", "source", "linkMode")
                                           if key in port_state}
                 if telemetry := port_state.get("telemetry"):
                     attachment["telemetry"] = telemetry

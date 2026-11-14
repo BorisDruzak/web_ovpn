@@ -6561,7 +6561,9 @@ def test_asset_service_can_require_current_fdb_and_arp_identity(monkeypatch, tmp
         context["services"] = [{"id": "recorder-web", "name": "Inventory Web", "device": "recorder"}]
     network = {"sources": [{"id": 1, "name": "switch", "driver": "snmp_switch", "enabled": True}],
                "ports": [{"source": "switch", "port_key": "ifindex:15", "name": "ge15", "oper_status": "up",
-                          "last_seen_at": observed}],
+                          "last_seen_at": observed, "linkCheck": {
+                              "state": "up", "checkedAt": now.isoformat(), "stateAgeSeconds": 42, "speedBps": 10**9,
+                          }}],
                "arp": [{"ip": ip, "mac": mac, "last_seen_at": observed}],
                "asset_fdb": [{"source_id": 1, "mac": mac, "port_key": "ifindex:15", "vlan_id": 1,
                               "observed_at": observed}]}
@@ -6598,8 +6600,9 @@ def test_asset_service_can_require_current_fdb_and_arp_identity(monkeypatch, tmp
     assert path["switchAttachment"] == {
         "switchId": "observer:switch", "port": "ge15", "source": "netctl FDB", "checkedAt": observed,
         "history": {"source": "switch", "interface": "ifindex:15"},
-        "portLink": {key: local_port[key] for key in ("state", "speedBps", "checkedAt")},
+        "portLink": {key: local_port[key] for key in ("state", "speedBps", "checkedAt", "stateSince", "source")},
     }
+    assert path["switchAttachment"]["portLink"]["stateSince"] == (now - timedelta(seconds=42)).isoformat()
     assert "physicalPair" not in path and graph["servicePaths"]["recorder-web"] == [path]
     group, = summarize_guest_attachment(graph, "observer:switch")["attachment"]["servicePorts"]
     endpoint, = group["services"][0]["probeEndpoints"]
