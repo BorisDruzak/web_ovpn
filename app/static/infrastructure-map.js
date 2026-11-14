@@ -48,7 +48,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   let byId, incident, connected, networkKinds, primary, anchors, networkDistance;
   const buttons = new Map();
   const graphs = [];
-  const resize = new ResizeObserver(draw);
+  const mapNodeWidth = 136;
+  const mapNodeHeight = 56;
   const viewButtons = Array.from(root.querySelectorAll('[data-view]'));
   let view = 'overview';
   let selected = null;
@@ -85,6 +86,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   };
   const source = root.querySelector('#map-sources');
   const availability = root.querySelector('#map-availability');
+  const navigationHint = make('p', 'Прокручивайте карту, перетаскивайте её за фон или проведите пальцем.');
+  navigationHint.id = 'map-navigation-hint';
+  availability.after(navigationHint);
   const availabilityLabels = {
     missing: 'Снимок инфраструктуры ещё не опубликован.',
     invalid: 'Снимок инфраструктуры недоступен.',
@@ -680,41 +684,109 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     }
     return ranks;
   }
-  function addGraph(title, components) {
+  function enableMapDrag(viewport, graph) {
+    let drag = null;
+    graph.addEventListener('pointerdown', event => {
+      if (event.pointerType !== 'mouse' || event.button !== 0 || event.target.closest('button')) return;
+      if (viewport.scrollWidth <= viewport.clientWidth && viewport.scrollHeight <= viewport.clientHeight) return;
+      event.preventDefault();
+      drag = {x: event.clientX + viewport.scrollLeft, y: event.clientY + viewport.scrollTop};
+      graph.setPointerCapture(event.pointerId);
+      viewport.classList.add('map-dragging');
+    });
+    graph.addEventListener('pointermove', event => {
+      if (drag) viewport.scrollTo(drag.x - event.clientX, drag.y - event.clientY);
+    });
+    graph.addEventListener('lostpointercapture', () => {
+      drag = null;
+      viewport.classList.remove('map-dragging');
+    });
+  }
+
+  function radialLayout(ranks) {
+    const positions = new Map();
+    const rings = [];
+    let radius = 0;
+    for (const row of ranks) {
+      const angles = row.map((_, index) => 2 * Math.PI * index / row.length - Math.PI / 2);
+      if (radius || row.length > 1 || positions.size) {
+        radius += mapNodeWidth + 22;
+        for (let index = 0; index < row.length && row.length > 1; index++) {
+          const angle = angles[index];
+          const next = angles[(index + 1) % row.length];
+          const spacing = Math.max(
+            Math.abs(Math.cos(angle) - Math.cos(next)) / (mapNodeWidth + 16),
+            Math.abs(Math.sin(angle) - Math.sin(next)) / (mapNodeHeight + 16),
+          );
+          radius = Math.max(radius, Math.ceil(1 / spacing));
+        }
+        rings.push(radius);
+      }
+      row.forEach((id, index) => positions.set(id, {
+        x: radius * Math.cos(angles[index]),
+        y: radius * Math.sin(angles[index]),
+      }));
+    }
+    const width = 2 * radius + mapNodeWidth + 40;
+    const height = 2 * radius + mapNodeHeight + 40;
+    for (const point of positions.values()) {
+      point.x += width / 2;
+      point.y += height / 2;
+    }
+    return {positions, rings, width, height};
+  }
+
+  function addGraph(title, components, focus = null, unlinked = []) {
     const section = group(title);
+    const viewport = make('div', null, 'map-viewport');
+    viewport.tabIndex = 0;
+    viewport.setAttribute('role', 'region');
+    viewport.setAttribute('aria-label', title);
+    viewport.setAttribute('aria-describedby', 'map-navigation-hint');
     const graph = make('div', null, 'map-graph');
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.classList.add('map-wires');
-    svg.setAttribute('aria-hidden','true');
-    graph.append(svg);
+    svg.setAttribute('aria-hidden', 'true');
     const ranks = [];
-    for (const component of components) {
+    const layoutComponents = focus ? [traversal(focus, new Set(), new Set(components[0].keys()))] : components;
+    for (const component of layoutComponents) {
       for (const [id, rank] of component) {
         (ranks[rank] ??= []).push(id);
       }
     }
-    graph.style.setProperty('--ranks', ranks.length);
     let previous = new Map();
     for (const row of ranks) {
       const parentIndex = id => Math.min(...connected.get(id).filter(peer => previous.has(peer)).map(peer => previous.get(peer)), Infinity);
-      row.sort((a,b) => parentIndex(a) - parentIndex(b) || nameOrder(a,b));
-      const lane = make('div', null, 'map-rank');
-      lane.append(...row.map(nodeButton));
-      graph.append(lane);
-      previous = new Map(row.map((id,index) => [id,index]));
+      row.sort((a, b) => parentIndex(a) - parentIndex(b) || nameOrder(a, b));
+      previous = new Map(row.map((id, index) => [id, index]));
     }
-    section.append(graph);
-    const members = new Set(components.flatMap(component => [...component.keys()]));
+    if (unlinked.length) ranks.push(unlinked);
+    const {positions, rings, width, height} = radialLayout(ranks);
+    graph.style.width = `${width}px`;
+    graph.style.height = `${height}px`;
+    graph.style.setProperty('--map-node-width', `${mapNodeWidth}px`);
+    graph.style.setProperty('--map-node-height', `${mapNodeHeight}px`);
+    for (const radius of rings) {
+      const guide = make('div', null, 'map-ring');
+      guide.style.width = guide.style.height = `${2 * radius}px`;
+      guide.setAttribute('aria-hidden', 'true');
+      graph.append(guide);
+    }
+    graph.append(svg);
+    for (const [id, {x, y}] of positions) {
+      const button = nodeButton(id);
+      button.title = byId.get(id).name;
+      button.style.left = `${x}px`;
+      button.style.top = `${y}px`;
+      graph.append(button);
+    }
+    section.append(viewport);
+    viewport.append(graph);
+    enableMapDrag(viewport, graph);
     graphs.push({
-      graph, svg, components,
-      edges: data.links.filter(edge => edge.confirmed && members.has(edge.a) && members.has(edge.b)),
+      title, viewport, graph, svg, components, positions, unlinked: Boolean(unlinked.length),
+      edges: unlinked.length ? [] : data.links.filter(edge => edge.confirmed && positions.has(edge.a) && positions.has(edge.b)),
     });
-  }
-  function addGrid(title, ids) {
-    const section = group(title);
-    const grid = make('div', null, 'map-isolated');
-    grid.append(...ids.map(nodeButton));
-    section.append(grid);
   }
   function addGuestGroups(guests) {
     const hosts = new Map();
@@ -723,13 +795,12 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       hosts.get(guest.pveHost).push(guest);
     }
     for (const [host, entries] of hosts) {
-      addGrid((host || 'Размещение не подтверждено') + ' · ВМ и контейнеры (' + entries.length + ')',
+      addGraph((host || 'Размещение не подтверждено') + ' · ВМ и контейнеры (' + entries.length + ')', [], null,
               entries.sort((a,b) => a.vmid - b.vmid).map(node => node.id));
     }
   }
-  function renderView(mode, focus=null) {
+  function renderView(mode, focus=null, scrollPositions = new Map()) {
     if (selected) clearSelection();
-    resize.disconnect();
     graphs.length = 0;
     groups.replaceChildren();
     buttons.clear();
@@ -737,12 +808,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     renderPortPairSummary();
     focusedRanks = focus ? focusedTopology(focus) : null;
     viewButtons.forEach(button => button.setAttribute('aria-pressed', String(button.dataset.view === mode)));
+    navigationHint.hidden = !data.nodes.length;
     if (!data.nodes.length) return;
     if (focusedRanks) {
-      addGraph('Схема связей', [focusedRanks]);
-      const graph = graphs.at(-1).graph;
-      graph.classList.add('map-focused-graph');
-      if (focusedRanks.get(focus) === Math.max(...focusedRanks.values())) graph.classList.add('map-focus-leaf');
+      addGraph('Схема связей', [focusedRanks], focus);
     } else if (mode === 'cluster') {
       if (byId.has(data.clusterId) && data.nodeOrder.length) {
         addGraph('Кластер и узлы', [new Map([[data.clusterId, 0], ...data.nodeOrder.map(id => [id, 1])])]);
@@ -751,7 +820,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       }
       for (const id of data.nodeOrder) {
         const guests = data.nodes.filter(node => node.pveHost === id).sort((a,b) => a.vmid - b.vmid);
-        if (guests.length) addGrid(id + ' · ВМ (' + guests.length + ')', guests.map(node => node.id));
+        if (guests.length) addGraph(id + ' · ВМ (' + guests.length + ')', [], null, guests.map(node => node.id));
         else if (!proxmoxUnavailable()) group(id + ' · ВМ отсутствуют');
       }
       if (proxmoxUnavailable()) addGuestGroups(data.nodes.filter(node => node.guest && !node.pveHost));
@@ -774,28 +843,22 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       if (main) addGraph(isOverview ? 'Сеть и виртуализация' : 'Схема соединений', [main]);
       const other = [...components].filter(([seed]) => seed !== primary).map(([,component]) => component);
       if (other.length) addGraph(isOverview ? 'Серверы и сервисы' : 'Другие подтверждённые соединения', other);
-      if (isolated.length) addGrid('Узлы без подтверждённых связей в этом разделе', isolated.sort(nameOrder));
+      if (isolated.length) addGraph('Узлы без подтверждённых связей в этом разделе', [], null, isolated.sort(nameOrder));
       if (isOverview) {
-        if (byId.has(data.clusterId)) addGrid('Кластер Proxmox', [data.clusterId]);
+        if (byId.has(data.clusterId)) addGraph('Кластер Proxmox', [], null, [data.clusterId]);
         addGuestGroups(data.nodes.filter(node => node.guest && !visible.has(node.id)));
       }
     }
-    for (const {graph} of graphs) resize.observe(graph);
+    for (const {title, viewport, unlinked} of graphs) {
+      const position = scrollPositions.get(title);
+      viewport.scrollTo(position?.left ?? (viewport.scrollWidth - viewport.clientWidth) / 2,
+        position?.top ?? (unlinked ? 0 : (viewport.scrollHeight - viewport.clientHeight) / 2));
+    }
     requestAnimationFrame(draw);
   }
   function draw() {
-    for (const {graph, svg, edges, components} of graphs) {
+    for (const {svg, edges, components, positions} of graphs) {
       const affectedPairs = new Set(edges.filter(edge => edge.portAlerts?.length).map(edge => edgeKey(edge.a, edge.b)));
-      const ranks = Number(graph.style.getPropertyValue('--ranks'));
-      graph.classList.toggle('vertical', graph.clientWidth / ranks < 113);
-      const vertical = graph.classList.contains('vertical');
-      const bounds = graph.getBoundingClientRect();
-      const point = (id, end) => {
-        const box = buttons.get(id).getBoundingClientRect();
-        return vertical
-          ? {x: box.left + box.width / 2 - bounds.left, y:(end ? box.top : box.bottom) - bounds.top}
-          : {x:(end ? box.left : box.right) - bounds.left, y:box.top + box.height / 2 - bounds.top};
-      };
       const drawn = new Set();
       const active = new Set();
       const ranksByNode = components.find(component => component.has(selected));
@@ -814,32 +877,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const pair = edgeKey(edge.a, edge.b);
         if (drawn.has(pair)) continue;
         drawn.add(pair);
-        const aBox = buttons.get(edge.a).getBoundingClientRect();
-        const bBox = buttons.get(edge.b).getBoundingClientRect();
-        const flip = vertical ? aBox.top > bBox.top : aBox.left > bBox.left;
-        const start = point(flip ? edge.b : edge.a, false);
-        const end = point(flip ? edge.a : edge.b, true);
-        const sameRank = vertical ? Math.abs(aBox.top - bBox.top) < 5 : Math.abs(aBox.left - bBox.left) < 5;
-        let d;
-        if (sameRank) {
-          const first = buttons.get(edge.a).getBoundingClientRect();
-          const second = buttons.get(edge.b).getBoundingClientRect();
-          if (vertical) {
-            const y = first.top - bounds.top - 5;
-            d = 'M '+(first.left+first.width/2-bounds.left)+' '+(first.top-bounds.top)+' V '+y+' H '+(second.left+second.width/2-bounds.left)+' V '+(second.top-bounds.top);
-          } else {
-            const x = first.left - bounds.left - 6;
-            d = 'M '+(first.left-bounds.left)+' '+start.y+' H '+x+' V '+end.y+' H '+(second.left-bounds.left);
-          }
-        } else if (vertical) {
-          const mid = (start.y + end.y) / 2;
-          d = 'M '+start.x+' '+start.y+' C '+start.x+' '+mid+', '+end.x+' '+mid+', '+end.x+' '+end.y;
-        } else {
-          const mid = (start.x + end.x) / 2;
-          d = 'M '+start.x+' '+start.y+' C '+mid+' '+start.y+', '+mid+' '+end.y+', '+end.x+' '+end.y;
-        }
+        const start = positions.get(edge.a);
+        const end = positions.get(edge.b);
         const path = document.createElementNS('http://www.w3.org/2000/svg','path');
-        path.setAttribute('d',d);
+        path.setAttribute('d', `M ${start.x} ${start.y} L ${end.x} ${end.y}`);
         if (affectedPairs.has(pair)) path.classList.add('port-alert');
         else if (edge.kind === 'Транзитный сегмент') path.setAttribute('stroke-dasharray', '2 3');
         else if (pathKinds.has(edge.kind)) path.setAttribute('stroke-dasharray', '5 4');
@@ -3280,6 +3321,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       panel => [panel.dataset.section, panel.open]));
     const active = document.activeElement;
     const activeNode = [...buttons].find(([, button]) => button === active)?.[0];
+    const activeViewport = graphs.find(({viewport}) => viewport === active)?.title;
+    const scrollPositions = new Map(graphs.map(({title, viewport}) =>
+      [title, {left: viewport.scrollLeft, top: viewport.scrollTop}]));
     const activePanel = active?.closest('summary')?.parentElement.dataset.section;
     const activePort = active?.dataset.port;
     const inCard = details.contains(active) || related.contains(active);
@@ -3287,7 +3331,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     indexSnapshot();
     renderSnapshotHeader();
     const focus = view === 'overview' && byId.has(wanted) ? wanted : null;
-    renderView(view, focus);
+    renderView(view, focus, scrollPositions);
     if (buttons.has(wanted)) {
       renderSelection(wanted, false, wantedPort);
       for (const panel of details.querySelectorAll('details')) {
@@ -3297,7 +3341,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const summary = activePanel && details.querySelector(`[data-section="${activePanel}"] summary`);
     const portControl = activePort === undefined ? null : [...details.querySelectorAll('button[data-port]')]
       .find(button => button.dataset.port === activePort);
-    const replacement = summary || portControl || buttons.get(activeNode ?? (inCard ? wanted : null));
+    const replacement = summary || portControl || buttons.get(activeNode ?? (inCard ? wanted : null)) ||
+      graphs.find(({title}) => title === activeViewport)?.viewport;
     replacement?.focus({preventScroll: true});
   }
 
@@ -3335,24 +3380,31 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
 
   setupInfrastructureVr(root.querySelector('#map-vr'), root.querySelector('#map-vr-status'), () => {
     draw();
-    const bounds = groups.getBoundingClientRect();
-    const box = element => {
-      const rect = element.getBoundingClientRect();
-      return {x: rect.left - bounds.left, y: rect.top - bounds.top, width: rect.width, height: rect.height};
-    };
-    return {
-      width: bounds.width, height: bounds.height,
-      headings: Array.from(groups.querySelectorAll('h2'), element => ({...box(element), text: element.textContent})),
-      nodes: Array.from(buttons, ([id, element]) => {
+    const width = Math.max(...graphs.map(({graph}) => graph.offsetWidth), 0);
+    const headings = [];
+    const nodes = [];
+    const lines = [];
+    let height = 0;
+    for (const {title, graph, positions, svg} of graphs) {
+      headings.push({x: 0, y: height, height: 24, text: title});
+      height += 24;
+      const left = (width - graph.offsetWidth) / 2;
+      for (const [id, {x, y}] of positions) {
         const node = byId.get(id);
         const availability = availabilityOf(node);
-        return {...box(element), id, text: element.textContent, status: availability.color,
-                name: node.name, state: availability.label};
-      }),
-      lines: graphs.flatMap(({svg}) => Array.from(svg.querySelectorAll('path'), element => ({
-        ...box(svg), path: element.getAttribute('d'), active: element.classList.contains('active'),
-      }))),
-      selected,
+        nodes.push({
+          x: left + x - mapNodeWidth / 2, y: height + y - mapNodeHeight / 2,
+          width: mapNodeWidth, height: mapNodeHeight, id, text: buttons.get(id).textContent,
+          status: availability.color, name: node.name, state: availability.label,
+        });
+      }
+      for (const path of svg.querySelectorAll('path')) {
+        lines.push({x: left, y: height, path: path.getAttribute('d'), active: path.classList.contains('active')});
+      }
+      height += graph.offsetHeight + 12;
+    }
+    return {
+      width, height, headings, nodes, lines, selected,
     };
   });
 })();
