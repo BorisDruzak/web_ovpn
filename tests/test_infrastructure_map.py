@@ -9052,6 +9052,12 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
         ("TCP", "example.test.", "A", 1, 0, 0),
         ("UDP", "example.test.", "A", 0, 1, 0),
     ]
+    dns_checks[0]["dns"]["rcode"] = "NOERROR"
+    dns_checks[1]["dns"]["rcode"] = "NXDOMAIN"
+    read()
+    probes = client.get(browser_endpoint).json()["infrastructure"]["servicePorts"]["snr"][0]["services"][0]["probeEndpoints"]
+    assert [probe.get("dnsResponseCodes") for probe in probes] == [None, ["NOERROR"], ["NXDOMAIN"]]
+    assert probes[-1]["issues"] == [{"state": "unreachable", "reason": "dns_name_not_found"}]
     raw["nodes"][0]["serviceChecks"] = [routed]
     route["state"] = "unreachable"
     assert read()["servicePaths"] == []

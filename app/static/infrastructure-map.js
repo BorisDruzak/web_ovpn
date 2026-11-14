@@ -3073,6 +3073,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
               ...(probe.issues ?? []).map(({reason, errorSource}) => [serviceCheckReasons[reason],
                 errorSource && `Отказ от ${errorSource}`].filter(Boolean).join(' · ')),
               probe.responseCodes?.length && `Ответ ${probe.responseCodes.join(', ')}`,
+              probe.dnsResponseCodes?.length && `Ответ DNS ${probe.dnsResponseCodes.join(', ')}`,
               probe.rdpSecurityModes?.join(', '),
               ...(probe.zabbixVersions ?? []).map(version => `Zabbix ${version}`),
               ...(probe.redfishVersions ?? []).map(version => `Redfish ${version}`),

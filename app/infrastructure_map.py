@@ -3681,6 +3681,10 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime, *, endpoint_
                 codes = probe.setdefault("responseCodes", [])
                 if code not in codes:
                     codes.append(code)
+            if rcode := check.get("dns", {}).get("rcode"):
+                codes = probe.setdefault("dnsResponseCodes", [])
+                if rcode not in codes:
+                    codes.append(rcode)
             if security := check.get("rdpSecurity"):
                 modes = probe.setdefault("rdpSecurityModes", [])
                 if security not in modes:
