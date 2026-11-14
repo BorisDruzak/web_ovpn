@@ -1761,8 +1761,11 @@ def _attach_lacp_health(nodes: dict, expectations: dict, links: list[dict], port
                     members.append(member)
                 else:
                     members.append({"name": name, "status": "unknown"})
-                if port and (history := histories.get(port_label_key(port["name"]))):
-                    members[-1]["history"] = history
+                if port:
+                    if history := histories.get(port_label_key(port["name"])):
+                        members[-1]["history"] = history
+                    if members[-1]["status"] == "forwarding" and (telemetry := port.get("telemetry")):
+                        members[-1]["telemetry"] = telemetry
             states = {member["status"] for member in members}
             aggregate_port = port_states.get(switch_id, {}).get(port_label_key(aggregate), {})
             aggregate_link = {"state": "unknown"}

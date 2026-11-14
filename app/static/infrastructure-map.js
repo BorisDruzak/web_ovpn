@@ -152,6 +152,18 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       .map(([key, label]) => `${label} ${telemetry[key].toLocaleString('ru-RU')}`);
     return counts.length ? [...counts, `${telemetry.intervalSeconds} с`, formatTime(telemetry.checkedAt)].join(' · ') : '';
   }
+  function appendLacpMemberTraffic(row, member) {
+    const {name, telemetry} = member;
+    if (!telemetry) return;
+    const rates = [['RX', telemetry.rxBps], ['TX', telemetry.txBps]]
+      .filter(([, value]) => Number.isFinite(value))
+      .map(([direction, value]) => `${direction} ${observerNumber.format(value / 1000)} кбит/с`);
+    if (rates.length) {
+      row.append(make('small', [name, 'SNMP', ...rates, `${telemetry.intervalSeconds} с`, formatTime(telemetry.checkedAt)].join(' · ')));
+    }
+    const changes = formatPortCounterChanges(telemetry);
+    if (changes) row.append(make('small', `${name} · ${changes}`));
+  }
   function appendManagementPortErrors(row, errors) {
     row.append(make('small', formatPortCounterChanges(errors.telemetry)));
     if (errors.rxErrorCounters) appendRxErrorCounters(row, errors.rxErrorCounters);
@@ -1174,6 +1186,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           checkedAt && `SNMP · ${formatTime(checkedAt)}`];
         row.append(make('small', fields.filter(Boolean).join(' · ')));
         appendPortStateChange(row, member, port);
+        appendLacpMemberTraffic(row, member);
         if (history) row.append(portHistoryLink(history, `История порта ${port}`));
       }
       if (hostedServices.length) {
@@ -1408,6 +1421,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           const speed = speedBps ? ` · ${formatPortSpeed(speedBps)} · SNMP · ${formatTime(linkCheckedAt)}` : '';
           row.append(switchPortButton(switchId, device, name), make('small', `Порт партнёра LACP ${partnerPort}${gap}${speed}`));
           appendPortStateChange(row, member, name);
+          appendLacpMemberTraffic(row, member);
           if (history) row.append(portHistoryLink(history, `История порта ${name}`));
         }
         list.append(row);

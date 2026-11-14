@@ -4424,6 +4424,16 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
     assert "stateSince" not in measured["members"][1]
     for port in (ports[0], ports[2]):
         port.pop("linkCheck")
+    telemetry = {"checkedAt": at, "intervalSeconds": 60, "rxBps": 0, "txBps": 12800, "rxErrors": 2}
+    network["port_telemetry"] = [{
+        "source": "switch", "port_key": "ifindex:5006", "collector_run_id": None,
+        "observed_at": at, "sample_interval_seconds": 60, "rx_bps": 0, "tx_bps": 12800, "in_errors_delta": 2,
+    }]
+    _, with_traffic = read()
+    assert with_traffic["members"][0]["telemetry"] == telemetry
+    assert "telemetry" not in with_traffic["members"][1]
+    network.pop("port_telemetry")
+    read()
     assert [member["history"] for member in health["members"]] == [
         {"source": "switch", "interface": f"ifindex:{index}"} for index in (5006, 5007)
     ]
