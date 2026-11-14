@@ -372,6 +372,8 @@
 
 Для ANTARES используйте ту же привязку ВМ 106 и адрес `192.168.100.4` для `antares-rdp-tcp` и `antares-winrm-http`. На TCP/3389 настройте `tcp_connect` и обязательный компонент `rdp_negotiation`. На TCP/5985 используйте `winrm` для проверки ответа WS-Management. Проверки выполняются без входа в систему.
 
+Для `endpt-w10-192-remote-services` используйте привязку к ВМ 126 через `guest_services` и её подтверждённый адрес из `guest_probe_ips`. В `service_probes` задайте `rdp_negotiation` на 3389, `smb` на 445 и `winrm` на 5985. Карточка показывает результат каждой пробы из UI_VPN. Тайм-аут оставляет результат без подтверждения. Состояние агента Windows доступно отдельно в карточке ВМ и через MCP `view=agents`.
+
 Карточки `serverkuizo-rpc-tcp`, `antares-rpc-tcp` и `fileserver-rpc-tcp` проверяют открытие TCP/135 из UI_VPN. Используйте существующие привязки к ВМ 105, 106 и 116 соответственно. Адрес и MAC сверяются так же, как у других служб этих ВМ. Результат показывает доступность порта RPC Endpoint Mapper. Для проверки конкретной RPC-службы нужна отдельная проверка протокола.
 
 Роли `active_directory` и `file_server` также сверяют адреса по Proxmox и ARP. В `roles` укажите `asset`, `vmid` и `mac` для AD-MAIN (201) и ANTARES (106). Сверка применяется к LDAP и LDAPS на AD-MAIN, а также к SMB и проверке подключённого ресурса `Soft` на ANTARES.
