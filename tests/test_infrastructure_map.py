@@ -4978,10 +4978,24 @@ def test_proxmox_management_port_joins_unique_fdb_and_active_bridge(tmp_path):
     assert management["physicalPair"]["switchPort"] == "ge11"
     assert summarize_guest_attachment(graph, "management")["attachment"]["servicePaths"] == [management]
     assert graph["servicePorts"]["sw"][0]["services"][0]["basis"] == ["host_management"]
+    host = next(node for node in snapshot["nodes"] if node["id"] == "pve3")
+    host.setdefault("serviceChecks", []).append({
+        "source": "UI_VPN", "method": "ICMP · ARP + FDB", "target": address, "state": "reachable",
+        "checkedAt": at, "identityCheckedAt": at, "supplemental": True, "roundTripMs": 0.4,
+    })
+    path.write_text(json.dumps(snapshot), encoding="utf-8")
+    graph = load_infrastructure_map(path, now, include_guest_attachments=True)
+    host_path, = summarize_guest_attachment(graph, "pve3")["attachment"]["servicePaths"]
+    assert host_path["physicalPair"] == management["physicalPair"] and host_path["roundTripMs"] == 0.4
+    assert graph["servicePaths"]["pve3"] == [host_path]
+    port = graph["servicePorts"]["sw"][0]
+    probe, = next(item for item in port["services"] if item["id"] == "pve3")["probeEndpoints"]
+    assert probe["method"] == "ICMP · ARP + FDB" and probe["passed"] == 1
     next(link for link in snapshot["links"] if {link["a"], link["b"]} == {"pve3", "sw"})["kind"] = "Путь по MAC-таблице"
     path.write_text(json.dumps(snapshot), encoding="utf-8")
     graph = load_infrastructure_map(path, now, include_guest_attachments=True)
     assert "management" not in graph["servicePaths"]
+    assert "pve3" not in graph["servicePaths"]
     assert not load(now + timedelta(hours=1))[0]["confirmed"]
     network["attachments"].append({**attachment, "port_key": "ge12"})
     assert not any("managementAddress" in p for link in load() for p in link["portEvidence"])
@@ -6963,13 +6977,16 @@ def test_hypervisor_fdb_path_reports_management_interface_without_claiming_direc
            "management": {"pve1": {"address": address, "port": "enp134s0"}}}
     bindings = {"asset_fdb_paths": {"pve1": "core"}, "asset_services": {
         "pve1-management": {"asset": "pve1", "label": "PVE1", "require_network_identity": True},
-    }}
+    }, "asset_ip_checks": {"pve1": address}}
 
     def proof(identity_at=earlier):
         graph = build_graph(context, network, {}, pve, bindings, now)
         service = next(node for node in graph["nodes"] if node["id"] == "pve1-management")
         assert service["probeTargetIP"] == (address if identity_at else None)
         assert service.get("probeTargetIdentityAt") == identity_at
+        host = next(node for node in graph["nodes"] if node["id"] == "pve1")
+        assert host.get("probeTargetIP") == (address if identity_at else None)
+        assert host.get("probeTargetIdentityAt") == identity_at
         path, = [edge for edge in graph["links"] if edge["a"] == "observer:core"]
         assert path["kind"] == "Путь по MAC-таблице" and path["confirmed"]
         report, = path["portEvidence"]

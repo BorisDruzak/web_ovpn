@@ -3541,8 +3541,11 @@ def _management_service_paths(service: dict, host: str, management: dict, observ
                 continue
         if not arp_probe and (matched := management.get((host, check["target"]))):
             switch, pair = matched
-            paths.append({**_attachment_probe_location(check), "addressCheckedAt": pair["checkedAt"],
-                          "management": True, "hypervisorId": host, "switchId": switch, "physicalPair": pair})
+            if service["kind"] == "Сервис" or (
+                check["method"] == "ICMP · ARP + FDB" and check.get("identityCheckedAt") == pair["checkedAt"]
+            ):
+                paths.append({**_attachment_probe_location(check), "addressCheckedAt": pair["checkedAt"],
+                              "management": True, "hypervisorId": host, "switchId": switch, "physicalPair": pair})
         elif attachment := observed_ports.get((host, check["target"])):
             observation, = attachment.values()
             asset_probe = (service["kind"] != "Сервис" and (check["method"], observation["source"]) in {
@@ -3620,8 +3623,8 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime, *, endpoint_
                 service_paths[service] = paths
         elif paths := _transit_service_paths(nodes[service], hosts, observed_ports):
             service_paths[service] = paths
-    for node_id in sorted({host for host, _ in observed_ports}):
-        if paths := _management_service_paths(nodes[node_id], node_id, {}, observed_ports):
+    for node_id in sorted({host for host, _ in observed_ports} | {host for host, _ in management}):
+        if paths := _management_service_paths(nodes[node_id], node_id, management, observed_ports):
             service_paths[node_id] = paths
     port_services = defaultdict(lambda: defaultdict(lambda: defaultdict(set)))
     port_names = {}
@@ -3891,7 +3894,8 @@ def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
         if paths := attachments["servicePaths"].get(node_id):
             detail["servicePaths"] = paths
     elif anchor and not anchor["guest"]:
-        if paths := _management_service_paths(anchor, node_id, {}, _observed_management_ports(links, nodes)):
+        if paths := _management_service_paths(anchor, node_id, _management_port_paths(nodes, links),
+                                              _observed_management_ports(links, nodes)):
             detail["servicePaths"] = paths
     if anchor and anchor["kind"] not in ("Сервис", CLUSTER_KIND):
         service_hosts = defaultdict(set)

@@ -2959,8 +2959,9 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                 if remote_port or nodes[asset]["kind"] != "Гипервизор":
                     for item in identity_services.get(asset, []):
                         item.update(probeTargetIP=address, probeTargetIdentityAt=checked.isoformat())
-                if identity_matches and asset_ip_checks.get(asset) == address and "probeTargetIdentityAt" not in nodes[asset]:
-                    nodes[asset].update(probeTargetIP=address, probeTargetIdentityAt=checked_at,
+                asset_identity = bool(remote_port) if nodes[asset]["kind"] == "Гипервизор" else identity_matches
+                if asset_identity and asset_ip_checks.get(asset) == address and "probeTargetIdentityAt" not in nodes[asset]:
+                    nodes[asset].update(probeTargetIP=address, probeTargetIdentityAt=checked.isoformat(),
                                         probeTargetIdentityMethod="ICMP · ARP + FDB")
     lacp_identity_sources = set()
     for spec in bindings.get("lacp_links", []):
