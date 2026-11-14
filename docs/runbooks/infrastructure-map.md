@@ -516,6 +516,8 @@
 
 Для библиотек страницы входа PBS создайте карточку `asset_services.pbs-web-libraries` с `asset: pbs` и `used_by: ["pbs-web"]`. Обе HTTPS-проверки в `service_probes.pbs-web-libraries` используют IP, порт и отпечаток TLS карточки PBS Web. Запрос `/extjs/ext-all.js` проверяет `Ext.util`, а `/widgettoolkit/proxmoxlib.js` — `Proxmox.Utils`. Оба ответа должны иметь тип `application/javascript`.
 
+Дополнительные обязательные компоненты `pbs-web-libraries` проверяют `/extjs/charts.js` с маркером `Ext.define` и тему входа в `/extjs/theme-crisp/resources/`. Запрашиваются `theme-crisp-all.css` с маркером `@import` и оба файла темы `theme-crisp-all_1.css` и `theme-crisp-all_2.css` с маркером `.x-`. Для CSS ожидается `text/css`. Проверки используют тот же IP, порт и закреплённый отпечаток TLS.
+
 Для `pbs-web`, `pbs-web-libraries` и `pbs-ssh` в `asset_services` включите `require_network_identity: true`. При настроенном `lacp_links` сборщик сверяет MAC партнёра хотя бы одного работающего участника агрегата с актуальным ARP адреса PBS. Проверки публикуют время сверки. Если подтверждение адреса отсутствует, запрос пропускается. Имена физических интерфейсов PBS требуют отдельных наблюдений.
 
 Для отдельной проверки доступности ОС PBS добавьте его адрес управления из сетевого контекста в `asset_ip_checks.pbs`. При совпадении адреса и свежей сверке по настроенному агрегату карта показывает `ICMP · LACP + ARP`, время сверки и задержку ответа. Имена дальних портов остаются в отдельной проверке топологии.
