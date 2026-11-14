@@ -9508,6 +9508,9 @@ def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_pa
     assert recorder["multiMacPortSides"] == ["a"]
     projected_recorder = next(row for row in browser_graph["pendingPortPairs"] if row["portA"] == "ge15")
     assert projected_recorder["multiMacPortSides"] == ["a"]
+    learned, = [reading for reading in projected_recorder["observedPaths"] if "learnedEndpoint" in reading]
+    assert learned["learnedEndpoint"] == {"switchId": "snr", "deviceId": "recorder", "mac": "02:00:00:00:00:15"}
+    assert learned["checkedAt"] == now
     assert "multiMacPortSides" not in pending
     assert recorder["arpDiagnostics"] == {"b": [{"state": "no_reply", "address": "192.0.2.15",
                                                  "sourceIP": "192.0.2.30", "interface": "ens18", "checkedAt": now}]}

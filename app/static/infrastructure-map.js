@@ -451,6 +451,12 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       item.append(make('small', checkedAt ? `${label} · ${formatTime(checkedAt)}` : label));
     }
     for (const path of observedPaths) {
+      if (path.learnedEndpoint) {
+        const endpoint = path.learnedEndpoint;
+        const name = byId.get(endpoint.deviceId)?.name ?? endpoint.deviceId;
+        item.append(make('small', ['MAC-таблица', name, endpoint.mac,
+          path.checkedAt && formatTime(path.checkedAt)].filter(Boolean).join(' · ')));
+      }
       if (!path.portA || !path.portB) continue;
       const row = make('small', `Наблюдаемый путь · ${path.source} · `);
       row.append(portPairEndpoint(a, nameA, path.portA), ' ↔ ', portPairEndpoint(b, nameB, path.portB));
