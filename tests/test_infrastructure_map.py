@@ -8368,7 +8368,7 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     stamp = datetime.now(timezone.utc).isoformat()
     vlan_ports = {
         "host": {"name": "ens7", "state": "up", "source": "Proxmox · sysfs", "checkedAt": stamp, "speedBps": 10**10},
-        "switch": {"name": "xe3", "state": "up", "checkedAt": stamp, "speedBps": 10**10},
+        "switch": {"name": "xe3", "key": "ifindex:5027", "state": "up", "checkedAt": stamp, "speedBps": 10**10},
     }
     for port in vlan_ports.values():
         port["vlanMemberships"] = {"checkedAt": stamp, "vlans": [
@@ -8386,7 +8386,7 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
                          "checkedAt": stamp, "intervalSeconds": 120},
              "sources": [{"name": "Proxmox", "status": "ok", "label": "Запущена", "at": stamp}]}),
             ("pve", "Гипервизор", {"ports": [vlan_ports["host"]]}),
-            ("snr", "Коммутатор", {"ports": [vlan_ports["switch"]]}),
+            ("snr", "Коммутатор", {"ports": [vlan_ports["switch"]], "properties": {"Источник сбора": "snr"}}),
         )],
         "links": [
             {"a": "vm", "b": "directum", "kind": "Цель проверки", "confirmed": True},
@@ -8423,6 +8423,7 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     assert interface["bridgeVlanConfig"] == {"mode": "enabled", "source": "Proxmox API", "checkedAt": stamp}
     match, = interface["switchObservations"]
     assert match["basis"] == "guest_mac" and match["switchPort"] == "xe3"
+    assert match["switchPortHistory"] == {"source": "snr", "interface": "ifindex:5027"}
     assert match["physicalPair"] == {"hostPort": "ens7", "switchPort": "xe3",
                                       "source": "netctl FDB + Proxmox", "checkedAt": stamp}
     port_links = {
@@ -8439,6 +8440,7 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
         assert "physicalPair" not in observation and "vlanMemberships" not in observation
         assert "uplinkPortLinks" not in observation
         assert "uplinkLinkHealth" not in observation
+        assert "switchPortHistory" not in observation
         cable_reports.pop()
     assert read()["guests"] == [guest]
 
@@ -8494,7 +8496,7 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
                             "guestId": "vm", "guestPort": "net0", "bridge": "vmbr1", "hypervisorId": "pve",
                             "switchId": "snr", "physicalPair": match["physicalPair"], "addressCheckedAt": stamp,
                             "destinationVlan": vlan_evidence, "uplinkPortLinks": port_links,
-                            "uplinkLinkHealth": match["uplinkLinkHealth"]}
+                            "uplinkLinkHealth": match["uplinkLinkHealth"], "switchPortHistory": match["switchPortHistory"]}
     switch_port = vlan_ports["switch"]
     speed = switch_port["speedBps"]
     switch_port["speedBps"] = 10**9
@@ -8923,6 +8925,7 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
                             "guestId": "vm", "guestPort": "net0", "bridge": "vmbr1", "hypervisorId": "pve",
                             "switchId": "snr", "physicalPair": interface["switchObservations"][0]["physicalPair"],
                             "addressCheckedAt": stamp, "localNeighbor": interface["localNeighbor"],
+                            "switchPortHistory": {"source": "snr", "interface": "ifindex:5027"},
                             "uplinkPortLinks": port_links, "uplinkLinkHealth": {"state": "both_up", "checkedAt": stamp}}
     audit = read_audit()
     assert audit["interfaceCounts"]["local_neighbor_with_physical_pair"] == 1 and audit["gapTotal"] == 0

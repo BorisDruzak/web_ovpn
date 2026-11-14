@@ -2743,6 +2743,8 @@ def _guest_attachments(nodes: dict, links: list[dict], guest_ids: list[str], now
     now = now or datetime.now(timezone.utc)
     placements = defaultdict(list)
     physical = _current_physical_port_pairs(links, include_port_states=True)
+    histories = {(node_id, port_label_key(port["name"])): port["history"]
+                 for node_id, node in nodes.items() for port in node["ports"] if "history" in port}
     local_neighbors = defaultdict(list)
     selected_guests = set(guest_ids)
     for edge in links:
@@ -2824,6 +2826,9 @@ def _guest_attachments(nodes: dict, links: list[dict], guest_ids: list[str], now
                         observation["physicalPair"] = {
                             field: pair[field] for field in ("hostPort", "switchPort", "source", "checkedAt")
                         }
+                        switch_name = pair["portStates"]["switch"].get("name", pair["switchPort"])
+                        if history := histories.get((switch_id, port_label_key(switch_name))):
+                            observation["switchPortHistory"] = history
                         port_links = {
                             side: {field: port[field] for field in
                                    ("state", "speedBps", "checkedAt", "speedCheckedAt", "source") if field in port}
@@ -3113,6 +3118,8 @@ def _service_attachment_paths(service: dict, guests: dict, client_attachments: d
         observation, = observations
         if telemetry := observation.get("switchPortTelemetry"):
             path["switchPortTelemetry"] = telemetry
+        if history := observation.get("switchPortHistory"):
+            path["switchPortHistory"] = history
         if port_links := observation.get("uplinkPortLinks"):
             path["uplinkPortLinks"] = port_links
         path["uplinkLinkHealth"] = observation["uplinkLinkHealth"]

@@ -1436,6 +1436,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         : [`${guest} ${path.guestPort}`, path.bridge, `${host} ${hostPort}`].join(' → ');
       row.append(make('small', connection),
         switchPortButton(path.switchId, target, switchPort));
+      if (path.switchPortHistory) row.append(portHistoryLink(path.switchPortHistory, `История порта ${switchPort}`));
       appendLinkComparison(row, path.uplinkLinkHealth);
       appendUplinkPortLinks(row, path.uplinkPortLinks, `${host} ${hostPort}`, `${target} ${switchPort}`);
       const uplinkTelemetry = path.switchPortTelemetry;
@@ -1627,6 +1628,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         if (physicalPair) {
           row.append(make('small',
             ['Физическая пара подтверждена', physicalPair.source, formatTime(physicalPair.checkedAt)].join(' · ')));
+          if (observation.switchPortHistory) row.append(portHistoryLink(observation.switchPortHistory, `История порта ${targetPort}`));
           appendLinkComparison(row, observation.uplinkLinkHealth);
           appendUplinkPortLinks(row, observation.uplinkPortLinks,
             `${attachment.hypervisor.name} ${physicalPair.hostPort}`, `${target.name} ${targetPort}`);
