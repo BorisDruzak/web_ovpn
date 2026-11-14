@@ -4617,6 +4617,24 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
 
     assert service_ports() == [("ge6", ["host_lacp"]), ("ge7", ["host_lacp"]), ("po1", ["host_lacp"])]
     snapshot = json.loads(path.read_text(encoding="utf-8"))
+    pbs = next(node for node in snapshot["nodes"] if node["id"] == "pbs")
+    icmp = {"method": "ICMP · LACP + ARP", "source": "UI_VPN", "target": probe["target"],
+            "checkedAt": at, "identityCheckedAt": at, "state": "reachable", "supplemental": True}
+    pbs.setdefault("serviceChecks", []).append(icmp)
+    path.write_text(json.dumps(snapshot), encoding="utf-8")
+    graph = load_infrastructure_map(path, now, include_guest_attachments=True)
+    path_row, = summarize_guest_attachment(graph, "pbs")["attachment"]["servicePaths"]
+    assert graph["servicePaths"]["pbs"] == [path_row]
+    assert path_row["method"] == icmp["method"] and path_row["port"] is None
+    assert path_row["lacpAttachment"] == probe["lacpAttachment"] and "physicalPair" not in path_row
+    for port in graph["servicePorts"]["snr"]:
+        host_check = next(row for row in port["services"] if row["id"] == "pbs")
+        assert host_check["probeEndpoints"][0]["method"] == icmp["method"]
+    icmp["identityCheckedAt"] = (now - timedelta(seconds=1)).isoformat()
+    path.write_text(json.dumps(snapshot), encoding="utf-8")
+    graph = load_infrastructure_map(path, now, include_guest_attachments=True)
+    assert "pbs" not in graph["servicePaths"]
+    pbs["serviceChecks"].pop()
     snapshot["nodes"].append({"id": "proxmox-pbs-backups", "name": "Backups", "kind": "Сервис", "serviceChecks": [
         {"method": "Копия Proxmox", "source": "Proxmox", "checkedAt": stamp, "state": state,
          "required": True, "backupVmid": vmid, "backupMaxAgeHours": 30}

@@ -3514,8 +3514,10 @@ def _management_service_paths(service: dict, host: str, management: dict, observ
                           "management": True, "hypervisorId": host, "switchId": switch, "physicalPair": pair})
         elif attachment := observed_ports.get((host, check["target"])):
             observation, = attachment.values()
-            asset_icmp = (service["kind"] != "Сервис" and check["method"] == "ICMP · ARP + FDB"
-                          and observation["source"] == "netctl FDB"
+            asset_icmp = (service["kind"] != "Сервис" and (check["method"], observation["source"]) in {
+                              ("ICMP · ARP + FDB", "netctl FDB"),
+                              ("ICMP · LACP + ARP", "SNMP LACP + ARP"),
+                          }
                           and check.get("identityCheckedAt") == observation["checkedAt"])
             service_probe = service["kind"] == "Сервис" and (
                 check["port"] is not None or (check["method"] == "ICMP" and observation["source"] == "MikroTik · ARP")
