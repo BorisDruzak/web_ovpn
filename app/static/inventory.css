@@ -37,7 +37,8 @@
 .inventory-asset-card > summary, .inventory-parent-card > summary { cursor: pointer; font-weight: 700; }
 .inventory-asset-card[open] > summary { padding-bottom: 4px; }
 .inventory-device-photos { display: grid; gap: 10px; padding: 14px; border: 1px solid #d7dde7; border-radius: 12px; background: #fff; }
-.inventory-field-group { display: grid; gap: 10px; margin: 0; padding: 14px; border: 1px solid #d7dde7; border-radius: 10px; }
+.inventory-field-group { display: grid; gap: 10px; min-width: 0; margin: 0; padding: 14px; border: 1px solid #d7dde7; border-radius: 10px; }
+.inventory-field-group label { min-width: 0; }
 .inventory-field-group legend { padding: 0 6px; font-weight: 700; }
 .inventory-form > .button.secondary { width: 100%; }
 .inventory-endpoint { display: grid; gap: 12px; padding: 16px; margin: 12px 0; border: 1px solid #bacce3; border-radius: 12px; background: #f4f8ff; overflow-wrap: anywhere; min-width: 0; }

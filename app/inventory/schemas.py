@@ -43,6 +43,10 @@ class AssetPayload(BaseModel):
     inventory_number: str | None = Field(default=None, max_length=255)
     status: InventoryAssetStatus | None = None
     assigned_person_name: str | None = Field(default=None, max_length=255)
+    assigned_last_name: str | None = Field(default=None, max_length=255)
+    assigned_first_name: str | None = Field(default=None, max_length=255)
+    assigned_patronymic: str | None = Field(default=None, max_length=255)
+    assigned_department: str | None = Field(default=None, max_length=255)
     login_name: str | None = Field(default=None, max_length=255)
     description: str | None = None
     last_verified_at: datetime | None = None

@@ -41,6 +41,7 @@ from .models import (
     InventorySession,
 )
 from .service import InventoryService, InventoryValidationError
+from .assignment import ASSIGNMENT_FIELDS, ASSIGNMENT_LABELS, DEPARTMENTS, NAME_FIELDS, split_legacy_name
 from .search import search_inventory
 from .revision import InventoryRevisionConflict, InventoryRevisionRequired
 from . import form_drafts, lifecycle, network_creation
@@ -92,7 +93,7 @@ DETAIL_FIELD_NAMES = {
 }
 NEW_ASSET_FORM_FIELDS = (
     "custom_name", "manufacturer", "model", "serial_number", "inventory_number", "status",
-    "assigned_person_name", "login_name", "description", "ip_address", "mac_address", "hostname",
+    "assigned_person_name", *ASSIGNMENT_FIELDS, "login_name", "description", "ip_address", "mac_address", "hostname",
     "os_name", "os_version", "cpu_model", "cpu_generation", "ram_type", "ram_gb", "storage_type", "storage_gb",
     "page_counter", "connection_type", "extension", "diagonal_inches", "power_va", "battery_replaced_at", "related_devices_json", "expected_revision", "identifier", "network_confirmation", "network_reason",
 )
@@ -135,6 +136,7 @@ def _render(request: Request, template: str, context: dict[str, Any], db: Sessio
             "settings": get_settings(),
             "flashes": list(request.session.get("flashes", [])),
             "form_draft": getattr(request.state, "form_draft", None),
+            "departments": DEPARTMENTS,
             "can_delete_inventory": user_has_permission(user, "inventory:delete"),
             "can_export_inventory": user_has_permission(user,"inventory:export"),
             "export_operation_key": uuid4().hex,
@@ -211,6 +213,22 @@ async def _new_asset_form_draft(request: Request) -> dict[str, str]:
     return fields
 
 
+def _assignment_form_fields(form: dict[str, str]) -> dict[str, str | None]:
+    fields = {field: form[field] or None for field in ASSIGNMENT_FIELDS if field in form}
+    if "assigned_person_name" in form and not any((fields.get(field) or "").strip() for field in NAME_FIELDS):
+        for field in NAME_FIELDS:
+            fields.pop(field, None)
+        fields["assigned_person_name"] = form["assigned_person_name"] or None
+    return fields
+
+
+def _assignment_form_values(values: dict[str, str], draft: dict[str, str]) -> None:
+    if "assigned_person_name" in draft and not any(field in draft for field in NAME_FIELDS):
+        values.update({field: part or "" for field, part in split_legacy_name(draft["assigned_person_name"]).items()})
+    elif "assigned_person_name" not in draft and any(field in draft for field in NAME_FIELDS):
+        values["assigned_person_name"] = ""
+
+
 @router.post("/inventory/drafts/{draft_id}")
 async def autosave_draft(draft_id: str, request: Request, db: Session = Depends(get_db)):
     user = require_user(request, db)
@@ -281,9 +299,12 @@ def _new_asset_form_context(
         "login_name": str(suggestions.get("login_name") or ""),
         "description": str(suggestions.get("description") or ""),
     }
+    values.update({field: part or "" for field, part in split_legacy_name(values["assigned_person_name"]).items()})
+    values["assigned_department"] = ""
     identifiers = {key: str(suggestions.get(key) or "") for key in ("ip", "mac", "hostname")}
     if draft:
         values.update({field: draft[field] for field in values if field in draft})
+        _assignment_form_values(values, draft)
         identifiers.update({identifier: draft[field] for field, identifier in (("ip_address", "ip"), ("mac_address", "mac"), ("hostname", "hostname")) if field in draft})
         details = {**details, **{field: draft[field] for field in DETAIL_FIELD_NAMES.get(asset_type, ()) if field in draft}}
     related_drafts = []
@@ -792,7 +813,10 @@ def inventory_asset_detail(asset_id: str, request: Request, location_id: str = "
     current_identifiers = service.identifiers_for(db, asset)
     identifiers = {item.identifier_type.value: item.value for item in current_identifiers if item.source == InventoryObservationSource.MANUAL}
     observed_identifiers = [item for item in current_identifiers if item.source == InventoryObservationSource.NETCTL]
-    form_values = {field: str(getattr(asset, field) or "") for field in ("custom_name", "manufacturer", "model", "serial_number", "inventory_number", "assigned_person_name", "login_name", "description")}
+    form_values = {field: str(getattr(asset, field) or "") for field in (
+        "custom_name", "manufacturer", "model", "serial_number", "inventory_number",
+        "assigned_person_name", *ASSIGNMENT_FIELDS, "login_name", "description",
+    )}
     form_values["status"] = asset.status.value if asset.status is not None else ""
     form_values["expected_revision"] = str(process.base_revision)
     details = service.details_for(db, asset)
@@ -801,7 +825,7 @@ def inventory_asset_detail(asset_id: str, request: Request, location_id: str = "
         if draft.get("expected_revision") != str(asset.manual_revision):
             labels = {"custom_name":"Название", "manufacturer":"Производитель", "model":"Модель",
                 "serial_number":"Серийный номер", "inventory_number":"Инвентарный номер", "status":"Состояние",
-                "assigned_person_name":"Пользователь", "login_name":"Логин", "description":"Описание",
+                "assigned_person_name":"Пользователь", **ASSIGNMENT_LABELS, "login_name":"Логин", "description":"Описание",
                 "os_name":"ОС", "os_version":"Версия ОС", "cpu_model":"Процессор", "cpu_generation":"Поколение процессора",
                 "ram_type":"Тип памяти", "ram_gb":"Память, ГБ", "storage_type":"Тип накопителя", "storage_gb":"Накопитель, ГБ",
                 "page_counter":"Счётчик страниц", "connection_type":"Подключение", "extension":"Внутренний номер",
@@ -812,6 +836,7 @@ def inventory_asset_detail(asset_id: str, request: Request, location_id: str = "
             form_values["_comparison"] = [{"label":labels[field], "current":current_facts.get(field), "submitted":draft[field]}
                 for field in labels if field in draft and str(current_facts.get(field) or "") != draft[field]]
         form_values.update({field: draft[field] for field in form_values if field in draft})
+        _assignment_form_values(form_values, draft)
         identifiers.update({identifier: draft[field] for field, identifier in (("ip_address", "ip"), ("mac_address", "mac"), ("hostname", "hostname")) if field in draft})
         details = {**details, **{field: draft[field] for field in DETAIL_FIELD_NAMES.get(asset.asset_type, ()) if field in draft}}
     endpoint_context = None
@@ -823,7 +848,7 @@ def inventory_asset_detail(asset_id: str, request: Request, location_id: str = "
 
 
 @router.post("/inventory/assets")
-async def inventory_create_asset(request: Request, asset_type: InventoryAssetType = Form(), custom_name: str = Form(default=""), manufacturer: str = Form(default=""), model: str = Form(default=""), serial_number: str = Form(default=""), inventory_number: str = Form(default=""), status: str = Form(default=""), assigned_person_name: str = Form(default=""), login_name: str = Form(default=""), description: str = Form(default=""), return_location_id: str = Form(default=""), parent_asset_id: str = Form(default=""), manual_mode: str = Form(default=""), related_devices_json: str = Form(default=""), save_next: str = Form(default=""), db: Session = Depends(get_db)) -> RedirectResponse:
+async def inventory_create_asset(request: Request, asset_type: InventoryAssetType = Form(), custom_name: str = Form(default=""), manufacturer: str = Form(default=""), model: str = Form(default=""), serial_number: str = Form(default=""), inventory_number: str = Form(default=""), status: str = Form(default=""), login_name: str = Form(default=""), description: str = Form(default=""), return_location_id: str = Form(default=""), parent_asset_id: str = Form(default=""), manual_mode: str = Form(default=""), related_devices_json: str = Form(default=""), save_next: str = Form(default=""), db: Session = Depends(get_db)) -> RedirectResponse:
     user = require_user(request, db)
     await verify_csrf(request)
     has_explicit_return = bool(return_location_id)
@@ -854,7 +879,7 @@ async def inventory_create_asset(request: Request, asset_type: InventoryAssetTyp
         form_drafts.claim_for_save(db, process)
         if parent_asset is not None:
             service.claim_revision(db, parent_asset, process.base_revision)
-        common_fields = {"custom_name": custom_name or None, "manufacturer": manufacturer or None, "model": model or None, "serial_number": serial_number or None, "inventory_number": inventory_number or None, "status": _status_form(status), "assigned_person_name": assigned_person_name or None, "login_name": login_name or None, "description": description or None}
+        common_fields = {"custom_name": custom_name or None, "manufacturer": manufacturer or None, "model": model or None, "serial_number": serial_number or None, "inventory_number": inventory_number or None, "status": _status_form(status), "login_name": login_name or None, "description": description or None, **_assignment_form_fields(submitted_draft)}
         drafts = _workplace_drafts(related_devices_json) if asset_type is InventoryAssetType.PC else []
         details = await _detail_form(request, asset_type)
         identifiers = await _identifier_form(request)
@@ -897,7 +922,7 @@ async def inventory_create_asset(request: Request, asset_type: InventoryAssetTyp
 
 
 @router.post("/inventory/assets/{asset_id}")
-async def inventory_update_asset(asset_id: str, request: Request, custom_name: str = Form(default=""), manufacturer: str = Form(default=""), model: str = Form(default=""), serial_number: str = Form(default=""), inventory_number: str = Form(default=""), status: str = Form(default=""), assigned_person_name: str = Form(default=""), login_name: str = Form(default=""), description: str = Form(default=""), return_location_id: str = Form(default=""), db: Session = Depends(get_db)) -> RedirectResponse:
+async def inventory_update_asset(asset_id: str, request: Request, custom_name: str = Form(default=""), manufacturer: str = Form(default=""), model: str = Form(default=""), serial_number: str = Form(default=""), inventory_number: str = Form(default=""), status: str = Form(default=""), login_name: str = Form(default=""), description: str = Form(default=""), return_location_id: str = Form(default=""), db: Session = Depends(get_db)) -> RedirectResponse:
     user = require_user(request, db)
     await verify_csrf(request)
     asset = db.get(InventoryAsset, asset_id)
@@ -919,7 +944,7 @@ async def inventory_update_asset(asset_id: str, request: Request, custom_name: s
         service.claim_revision(db, asset, expected)
         details = await _detail_form(request, asset.asset_type)
         identifiers = await _identifier_form(request)
-        service.update_asset(asset, custom_name=custom_name or None, manufacturer=manufacturer or None, model=model or None, serial_number=serial_number or None, inventory_number=inventory_number or None, status=_status_form(status), assigned_person_name=assigned_person_name or None, login_name=login_name or None, description=description or None)
+        service.update_asset(asset, custom_name=custom_name or None, manufacturer=manufacturer or None, model=model or None, serial_number=serial_number or None, inventory_number=inventory_number or None, status=_status_form(status), login_name=login_name or None, description=description or None, **_assignment_form_fields(submitted_draft))
         service.update_details(db, asset, details)
         service.sync_identifiers(db, asset, identifiers)
         write_audit(db, request, user, "inventory.asset.update", "ok", asset.asset_type.value, target_client=asset.id, commit=False)

@@ -3,6 +3,7 @@ from sqlalchemy import event, inspect, select, text, update
 from sqlalchemy.orm import Session, with_loader_criteria
 
 from ..models import utcnow
+from .assignment import ASSIGNMENT_FIELDS
 from .models import (InventoryAsset, InventoryAssetIdentifier, InventoryAssetRelation, InventoryExternalBinding,
     InventoryExternalBindingStatus, InventoryLocation, InventoryNetctlBinding)
 from .revision import InventoryRevisionConflict, InventoryRevisionRequired
@@ -103,8 +104,9 @@ def restore(db, asset_id, *, expected_revision, actor):
 def migrate_lifecycle(engine):
     if engine.dialect.name != "sqlite":
         return
-    columns = {column["name"] for column in inspect(engine).get_columns("inventory_assets")}
     with engine.begin() as connection:
+        connection.exec_driver_sql("BEGIN IMMEDIATE")
+        columns = {column["name"] for column in inspect(connection).get_columns("inventory_assets")}
         for name, sql_type in (("deleted_at","DATETIME"), ("deleted_by","VARCHAR(120)"),
             ("deletion_reason","TEXT"), ("restored_at","DATETIME"), ("restored_by","VARCHAR(120)")):
             if name not in columns:
@@ -144,8 +146,9 @@ def migrate_lifecycle(engine):
                     SELECT 1 FROM inventory_assets WHERE id=NEW.asset_id AND deleted_at IS NULL)
                 BEGIN SELECT RAISE(ABORT, 'inventory binding contains deleted asset'); END"""))
         fields = ("asset_type", "location_id", "custom_name", "manufacturer", "model", "serial_number",
-            "inventory_number", "status", "assigned_person_name", "login_name", "description", "last_verified_at")
+            "inventory_number", "status", "assigned_person_name", *ASSIGNMENT_FIELDS, "login_name", "description", "last_verified_at")
         changes = " OR ".join(f"OLD.{field} IS NOT NEW.{field}" for field in fields)
+        connection.execute(text("DROP TRIGGER IF EXISTS inventory_deleted_facts_immutable"))
         connection.execute(text(f"""CREATE TRIGGER IF NOT EXISTS inventory_deleted_facts_immutable
             BEFORE UPDATE ON inventory_assets WHEN OLD.deleted_at IS NOT NULL AND ({changes})
             BEGIN SELECT RAISE(ABORT, 'deleted inventory facts are immutable'); END"""))

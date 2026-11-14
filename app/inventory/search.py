@@ -5,13 +5,14 @@ import re
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .assignment import ASSIGNMENT_FIELDS
 from .models import InventoryAsset, InventoryAssetIdentifier, InventoryLocation
 
 
 PAGE_SIZE = 50
 SEARCH_FIELDS = (
     "custom_name", "manufacturer", "model", "serial_number", "inventory_number",
-    "assigned_person_name", "login_name", "description",
+    "assigned_person_name", *ASSIGNMENT_FIELDS, "login_name", "description",
 )
 _MAC = re.compile(r"(?:[0-9a-f]{12}|(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}|(?:[0-9a-f]{4}\.){2}[0-9a-f]{4})\Z")
 

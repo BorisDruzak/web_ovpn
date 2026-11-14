@@ -47,6 +47,36 @@ def test_inventory_mutation_requires_bearer_and_session_csrf(tmp_path, monkeypat
     ).status_code == 400
 
 
+def test_inventory_responsible_fields_and_fixed_department(tmp_path, monkeypatch):
+    client, headers = _client(tmp_path, monkeypatch)
+    url = "/api/v1/inventory/assets"
+    response = client.post(url, headers=headers, json={
+        "asset_type": "PC", "assigned_last_name": "Примеров", "assigned_first_name": "Иван",
+        "assigned_patronymic": "Иванович", "assigned_department": "Отдел информационных технологий",
+    })
+    assert response.status_code == 201, response.text
+    asset = response.json()["data"]
+    assert asset["assigned_person_name"] == "Примеров Иван Иванович"
+    assert asset["assigned_department"] == "Отдел информационных технологий"
+    url += f"/{asset['id']}"
+    rejected = client.patch(url, headers=headers, json={
+        "expected_revision": asset["manual_revision"], "assigned_department": "Произвольный отдел",
+    })
+    assert rejected.status_code == 400, rejected.text
+    assert client.get(url, headers=headers).json()["data"]["manual_revision"] == asset["manual_revision"]
+    updated = client.patch(url, headers=headers, json={
+        "expected_revision": asset["manual_revision"], "assigned_patronymic": None, "assigned_department": None,
+    }).json()["data"]
+    assert updated["assigned_person_name"] == "Примеров Иван"
+    assert updated["assigned_department"] is None
+    legacy = client.patch(url, headers=headers, json={
+        "expected_revision": updated["manual_revision"], "assigned_person_name": "Образцов Пётр",
+    }).json()["data"]
+    assert (legacy["assigned_last_name"], legacy["assigned_first_name"], legacy["assigned_patronymic"]) == (
+        "Образцов", "Пётр", None,
+    )
+
+
 def test_inventory_api_creates_empty_asset_projects_workplace_and_audits(tmp_path, monkeypatch):
     """The API must persist a valid empty asset, then expose exactly one workstation projection."""
     client, headers = _client(tmp_path, monkeypatch)

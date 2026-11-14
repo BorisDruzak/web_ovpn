@@ -23,6 +23,14 @@ asset fields, detail tables, manual identifiers and workplace relationships.
 Observation inserts and telemetry timestamps do not advance manual revisions.
 These SQLite triggers have not been verified on other database engines.
 
+Inventory cards expose `assigned_last_name`, `assigned_first_name`,
+`assigned_patronymic` and `assigned_department` as manual facts. The department
+must match a value in `app/inventory/assignment.py`, or be null. Updates to the
+name parts refresh `assigned_person_name` for existing readers. Writers that
+send only `assigned_person_name` can still use that field. On upgrade, names
+with one to three alphabetic parts populate the separate fields. The migration
+preserves the stored name and leaves department assignments empty.
+
 Server-owned drafts retain their original revision throughout reload and conflict.
 Attaching a newly created peripheral checks its parent's captured revision before
 writing the card or relation. Remaining lifecycle integration is tracked in the

@@ -8,6 +8,7 @@ from sqlalchemy import select,or_,func,cast,String,JSON,LargeBinary
 
 from ..xlsx_export import workbook_bytes,ExportLimit
 from . import models as m
+from .assignment import ASSIGNMENT_FIELDS, ASSIGNMENT_LABELS
 from .endpoint import _safe_fields,endpoint_profile_freshness
 from .network_freshness import source_projection,observation_projection
 from ..config import get_settings
@@ -31,7 +32,8 @@ ASSET_HEADERS = ('ID','Тип','ID помещения','Название','Пр�
     'Инвентарный номер','Состояние','Ответственный','Логин','Описание','Последняя проверка UTC',
     'Ручная ревизия','Создано UTC','Изменено UTC','Удалено UTC','Кем удалено','Причина удаления','Восстановлено UTC','Кем восстановлено',
     'Помещение','Ручные MAC','Ручные IP','Ручные hostname','ОС','Версия ОС','CPU','Поколение CPU','Тип RAM','RAM ГБ',
-    'Тип диска','Диск ГБ','Диагональ','Подключение принтера','Счётчик страниц','Добавочный номер','Мощность ВА','Замена батареи')
+    'Тип диска','Диск ГБ','Диагональ','Подключение принтера','Счётчик страниц','Добавочный номер','Мощность ВА','Замена батареи',
+    *ASSIGNMENT_LABELS.values())
 
 
 def _value(value):
@@ -128,7 +130,7 @@ def inventory_workbook(factory,*,location_id=None,deleted=False):
             for model,fields in DETAILS:
                 detail = details[model].get(asset.id)
                 row += _values(detail,fields) if detail else [None]*len(fields)
-            device_rows.append(row)
+            device_rows.append(row + _values(asset, ASSIGNMENT_FIELDS))
         relation_rows = [[row.id,row.parent_asset_id,scope_label(row.parent_asset_id),
             visible[row.parent_asset_id].custom_name if row.parent_asset_id in visible else None,
             row.child_asset_id,scope_label(row.child_asset_id),

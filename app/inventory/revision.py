@@ -2,6 +2,7 @@
 from sqlalchemy import inspect, text, update
 from sqlalchemy.orm import Session
 
+from .assignment import ASSIGNMENT_FIELDS
 from .models import InventoryAsset
 
 
@@ -29,8 +30,9 @@ def claim_revision(db: Session, asset: InventoryAsset, expected: int | None) -> 
 def migrate_revisions(engine) -> None:
     if engine.dialect.name != "sqlite":
         return  # Current supported deployment uses SQLite, like relation guards.
-    columns = {column["name"] for column in inspect(engine).get_columns("inventory_assets")}
     with engine.begin() as connection:
+        connection.exec_driver_sql("BEGIN IMMEDIATE")
+        columns = {column["name"] for column in inspect(connection).get_columns("inventory_assets")}
         if "manual_revision" not in columns:
             connection.execute(text("ALTER TABLE inventory_assets ADD COLUMN manual_revision INTEGER NOT NULL DEFAULT 1"))
         # Only deliberate relation decisions change manual facts. Background
@@ -50,8 +52,10 @@ def migrate_revisions(engine) -> None:
                     BEGIN UPDATE inventory_assets SET manual_revision=manual_revision+1 WHERE id IN ({ids}); END"""))
         # DB-level guards cover child facts even when written outside the web
         # service. Observations and telemetry are deliberately absent.
-        fields = ("asset_type", "location_id", "custom_name", "manufacturer", "model", "serial_number", "inventory_number", "status", "assigned_person_name", "login_name", "description", "last_verified_at")
+        fields = ("asset_type", "location_id", "custom_name", "manufacturer", "model", "serial_number",
+            "inventory_number", "status", "assigned_person_name", *ASSIGNMENT_FIELDS, "login_name", "description", "last_verified_at")
         changes = " OR ".join(f"OLD.{field} IS NOT NEW.{field}" for field in fields)
+        connection.execute(text("DROP TRIGGER IF EXISTS inventory_manual_asset_revision"))
         connection.execute(text(f"""CREATE TRIGGER IF NOT EXISTS inventory_manual_asset_revision
             AFTER UPDATE OF {','.join(fields)} ON inventory_assets WHEN {changes}
             BEGIN UPDATE inventory_assets SET manual_revision=manual_revision+1 WHERE id=NEW.id; END"""))

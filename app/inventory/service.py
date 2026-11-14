@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .assignment import ASSIGNMENT_FIELDS, DEPARTMENTS, NAME_FIELDS, split_legacy_name
 from .models import (
     InventoryAsset,
     InventoryAssetIdentifier,
@@ -60,6 +61,7 @@ ASSET_FIELDS = frozenset(
         "inventory_number",
         "status",
         "assigned_person_name",
+        *ASSIGNMENT_FIELDS,
         "login_name",
         "description",
         "last_verified_at",
@@ -137,6 +139,7 @@ class InventoryService:
         **fields: Any,
     ) -> InventoryAsset:
         self._validate_asset_fields(fields)
+        self._normalize_assignment(fields)
         asset = InventoryAsset(asset_type=asset_type, location_id=location_id, **fields)
         db.add(asset)
         db.flush()
@@ -144,9 +147,27 @@ class InventoryService:
 
     def update_asset(self, asset: InventoryAsset, **fields: Any) -> InventoryAsset:
         self._validate_asset_fields(fields)
+        self._normalize_assignment(fields, asset)
         for name, value in fields.items():
             setattr(asset, name, value)
         return asset
+
+    @staticmethod
+    def _normalize_assignment(fields: dict[str, Any], asset: InventoryAsset | None = None) -> None:
+        department = fields.get("assigned_department")
+        if department is not None and department not in DEPARTMENTS:
+            raise InventoryValidationError("Выберите отдел из списка")
+        if any(field in fields for field in NAME_FIELDS):
+            parts = {
+                field: (fields.get(field, getattr(asset, field, None)) or "").strip() or None
+                for field in NAME_FIELDS
+            }
+            name = " ".join(part for part in parts.values() if part)
+            if len(name) > 255:
+                raise InventoryValidationError("ФИО должно содержать не более 255 символов")
+            fields.update(parts, assigned_person_name=name or None)
+        elif "assigned_person_name" in fields:
+            fields.update(split_legacy_name(fields["assigned_person_name"]))
 
     def update_details(self, db: Session, asset: InventoryAsset, fields: Mapping[str, Any]) -> dict[str, Any]:
         detail_spec = DETAIL_MODELS.get(asset.asset_type)

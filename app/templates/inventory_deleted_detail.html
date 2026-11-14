@@ -16,6 +16,7 @@
   <h3>Характеристики</h3><dl>
     {% set labels = {'manufacturer':'Производитель','model':'Модель','serial_number':'Серийный номер','inventory_number':'Инвентарный номер','assigned_person_name':'Пользователь','login_name':'Логин','description':'Описание','os_name':'ОС','os_version':'Версия ОС','cpu_model':'Процессор','cpu_generation':'Поколение процессора','ram_type':'Тип памяти','ram_gb':'Память, ГБ','storage_type':'Тип накопителя','storage_gb':'Накопитель, ГБ','diagonal_inches':'Диагональ','page_counter':'Счётчик страниц','connection_type':'Тип подключения','extension':'Внутренний номер','power_va':'Мощность, VA','battery_replaced_at':'Замена батареи'} %}
     {% for field in ['manufacturer','model','serial_number','inventory_number','assigned_person_name','login_name','description'] %}<dt>{{ labels[field] }}</dt><dd>{{ asset[field] or '—' }}</dd>{% endfor %}
+    <dt>Отдел</dt><dd>{{ asset.assigned_department or '—' }}</dd>
     {% for field, value in details.items() %}<dt>{{ labels.get(field, field) }}</dt><dd>{{ value if value is not none else '—' }}</dd>{% endfor %}
   </dl>
   <h3>Идентификаторы</h3>{% for row in identifiers %}<p>{{ row.identifier_type.value }}: {{ row.value }} · {{ 'действующий' if row.is_current else 'исторический' }}</p>{% endfor %}

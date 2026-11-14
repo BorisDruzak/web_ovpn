@@ -184,7 +184,20 @@
     {% if asset_type.value == 'PC' or asset_type.value == 'PHONE' %}
     <fieldset class="inventory-field-group">
       <legend>Пользователь</legend>
-      <label>Ответственный<input name="assigned_person_name" value="{{ form_values.get('assigned_person_name', '') }}" autocomplete="off"></label>
+      {% if form_values.assigned_person_name and not (form_values.assigned_last_name or form_values.assigned_first_name or form_values.assigned_patronymic) %}
+      <p>Прежнее значение ФИО: {{ form_values.assigned_person_name }}</p>
+      <input type="hidden" name="assigned_person_name" value="{{ form_values.assigned_person_name }}">
+      {% endif %}
+      <label>Фамилия<input name="assigned_last_name" value="{{ form_values.assigned_last_name }}" maxlength="255" autocomplete="off"></label>
+      <label>Имя<input name="assigned_first_name" value="{{ form_values.assigned_first_name }}" maxlength="255" autocomplete="off"></label>
+      <label>Отчество<input name="assigned_patronymic" value="{{ form_values.assigned_patronymic }}" maxlength="255" autocomplete="off"></label>
+      <label for="inventory-assigned-department">Отдел</label>
+      <select id="inventory-assigned-department" name="assigned_department">
+        <option value="">Не указан</option>
+        {% for department in departments %}
+        <option value="{{ department }}"{% if department == form_values.assigned_department %} selected{% endif %}>{{ department }}</option>
+        {% endfor %}
+      </select>
       <label>Логин<input name="login_name" value="{{ form_values.get('login_name', '') }}" autocomplete="off"></label>
     </fieldset>
     {% endif %}

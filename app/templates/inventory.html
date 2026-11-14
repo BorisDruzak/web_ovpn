@@ -6,11 +6,11 @@
   <form method="get" action="/inventory" class="inventory-search" role="search">
     <label for="inventory-search">Поиск по всей инвентаризации</label>
     <div class="inventory-search-controls">
-      <input id="inventory-search" name="q" type="search" value="{{ q }}" maxlength="255" placeholder="Устройство, сотрудник, номер, IP или MAC" aria-describedby="inventory-search-help">
+      <input id="inventory-search" name="q" type="search" value="{{ q }}" maxlength="255" placeholder="Устройство, сотрудник, отдел, номер, IP или MAC" aria-describedby="inventory-search-help">
       <button class="button" type="submit">Найти</button>
       {% if q %}<a class="button secondary" href="/inventory">Сбросить</a>{% endif %}
     </div>
-    <small id="inventory-search-help">Локация, название, сотрудник, модель, серийный или инвентарный номер, IP, MAC, hostname. Можно ввести часть текста или несколько слов.</small>
+    <small id="inventory-search-help">Локация, название, сотрудник, отдел, модель, серийный или инвентарный номер, IP, MAC, hostname. Можно ввести часть текста или несколько слов.</small>
   </form>
   {% if q %}
   <section class="inventory-search-results" aria-label="Результаты поиска">
@@ -25,6 +25,7 @@
           <strong>{{ asset.custom_name or asset.model or asset_labels[asset.asset_type] }}</strong>
           <span>{{ asset_labels[asset.asset_type] }} · {{ result.location.name if result.location and result.location.name else 'Без локации' }}</span>
           {% if asset.assigned_person_name %}<span>Сотрудник: {{ asset.assigned_person_name }}</span>{% endif %}
+          {% if asset.assigned_department %}<span>{{ asset.assigned_department }}</span>{% endif %}
           {% if asset.manufacturer or asset.model %}<span>{{ asset.manufacturer or '' }} {{ asset.model or '' }}</span>{% endif %}
           {% if asset.inventory_number or asset.serial_number %}<span>{% if asset.inventory_number %}Инв. № {{ asset.inventory_number }}{% endif %}{% if asset.serial_number %} · Сер. № {{ asset.serial_number }}{% endif %}</span>{% endif %}
           {% if result.identifiers %}<span>{{ result.identifiers|join(' · ') }}</span>{% endif %}

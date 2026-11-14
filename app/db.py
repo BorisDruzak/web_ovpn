@@ -399,6 +399,35 @@ def _migrate_inventory_schema(engine) -> None:
     _migrate_inventory_endpoint_schema(engine)
 
 
+def _migrate_inventory_assignment(engine) -> None:
+    from .inventory.assignment import ASSIGNMENT_FIELDS, split_legacy_name
+
+    with engine.begin() as connection:
+        if engine.dialect.name == "sqlite":
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
+        columns = {column["name"] for column in inspect(connection).get_columns("inventory_assets")}
+        for field in ASSIGNMENT_FIELDS:
+            if field not in columns:
+                connection.execute(text(f"ALTER TABLE inventory_assets ADD COLUMN {field} VARCHAR(255)"))
+        if set(ASSIGNMENT_FIELDS) <= columns:
+            return
+        rows = connection.execute(text(
+            "SELECT id, assigned_person_name FROM inventory_assets WHERE assigned_person_name IS NOT NULL"
+        ))
+        assignments = []
+        for asset_id, legacy_name in rows:
+            parts = split_legacy_name(legacy_name)
+            if any(parts.values()):
+                assignments.append({"asset_id": asset_id, **parts})
+        if assignments:
+            connection.execute(text("""
+                UPDATE inventory_assets SET assigned_last_name = :assigned_last_name,
+                    assigned_first_name = :assigned_first_name, assigned_patronymic = :assigned_patronymic
+                WHERE id = :asset_id AND assigned_last_name IS NULL AND assigned_first_name IS NULL
+                    AND assigned_patronymic IS NULL
+            """), assignments)
+
+
 def init_db() -> None:
     from . import models  # noqa: F401
     from .inventory import models as inventory_models  # noqa: F401
@@ -417,6 +446,7 @@ def init_db() -> None:
         connection.execute(CreateIndex(next(index for index in models.PanelOperation.__table__.indexes
             if index.name == "uq_panel_operations_unresolved_intent"), if_not_exists=True))
     _migrate_inventory_schema(engine)
+    _migrate_inventory_assignment(engine)
     from .inventory.lifecycle import migrate_lifecycle
     migrate_lifecycle(engine)
     from .inventory.revision import migrate_revisions
