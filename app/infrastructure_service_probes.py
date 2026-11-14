@@ -291,9 +291,12 @@ def _http(ip: str, port: int, spec: dict, *, references: _AssetReferences | None
             certificate = connection.sock.getpeercert(binary_form=True)
             if not certificate or hashlib.sha256(certificate).hexdigest() != fingerprint.lower():
                 return {"state": "unknown", "reason": "http_certificate_pin"}
+        request_started = monotonic() if spec.get("measure_headers") is True else None
         connection.request("GET", path, headers=headers)
         response = connection.getresponse()
         observed["httpStatus"] = response.status
+        if request_started is not None:
+            observed["httpHeadersMs"] = round((monotonic() - request_started) * 1000, 2)
         if 500 <= response.status < 600:
             return {**observed, "state": "unreachable", "reason": "http_status"}
         if redirect_port is not None:
@@ -2051,10 +2054,11 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
             elif protocol in {"tcp_connect", "http", "https"}:
                 probe = _tcp_connect if protocol == "tcp_connect" else _http_probe
                 started = monotonic() if protocol != "tcp_connect" else None
-                details = probe(spec)
+                request = spec if started is None else {**spec, "measure_headers": True}
+                details = probe(request)
                 if (spec.get("retry_timeout") is True and details.get("reason") == "timeout"
                         and "attempts" not in details):
-                    details = {**probe(spec), "attempts": 2, "firstAttemptReason": "timeout"}
+                    details = {**probe(request), "attempts": 2, "firstAttemptReason": "timeout"}
                 if started is not None and "httpStatus" in details:
                     details = {**details, "httpDurationMs": round((monotonic() - started) * 1000, 2)}
             elif protocol == "rdp_negotiation":

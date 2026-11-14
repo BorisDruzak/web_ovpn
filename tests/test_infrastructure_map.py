@@ -1755,6 +1755,38 @@ def test_http_probe_duration_reaches_service_and_attachment_until_stale(monkeypa
     assert "httpDurationMs" not in _public_service_check({**raw, "httpDurationMs": True}, now)
 
 
+def test_http_headers_timing_excludes_body_and_reaches_attachment(monkeypatch):
+    from app import infrastructure_service_probes as probes
+    from app.infrastructure_map import _attachment_probe_location, _public_service_check
+
+    class Response:
+        status = 200
+
+        def read(self, limit):
+            return b"Healthy"
+
+    class Connection:
+        def request(self, *args, **kwargs):
+            pass
+
+        def getresponse(self):
+            return Response()
+
+        def close(self):
+            pass
+
+    node = {"id": "service", "kind": "Сервис", "probeTargetIP": "192.0.2.10"}
+    spec = {"type": "http", "ip": "192.0.2.10", "port": 80, "path": "/ready", "body": "Healthy"}
+    clock = iter([10.0, 10.001, 10.008, 10.042])
+    monkeypatch.setattr(probes, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(probes.http.client, "HTTPConnection", lambda *args, **kwargs: Connection())
+    probes.apply_service_probes([node], {"service": [spec]})
+    check = _public_service_check(node["serviceChecks"][0], datetime.now(timezone.utc))
+    assert check["httpHeadersMs"] == 7.0
+    assert check["httpDurationMs"] == 42.0
+    assert _attachment_probe_location(check)["httpHeadersMs"] == 7.0
+
+
 def test_service_probe_list_keeps_all_dns_components(monkeypatch):
     from app import infrastructure_service_probes as probes
     from app.infrastructure_map import _map_statuses, _public_node

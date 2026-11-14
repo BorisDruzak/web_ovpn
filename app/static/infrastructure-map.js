@@ -21,6 +21,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   const observerStates = {ok: 'В норме', warn: 'Отклонение', critical: 'Ошибка', unknown: 'Нет подтверждения'};
   const observerNumber = new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 2});
   const httpDurationLabel = value => Number.isFinite(value) ? `Проверка ${observerNumber.format(value)} мс` : '';
+  const httpHeadersLabel = value => Number.isFinite(value) ? `До заголовков ${observerNumber.format(value)} мс` : '';
   const measurement = (unit, value) => {
     if (!Number.isFinite(value)) return '';
     if (unit === 'percent') return observerNumber.format(value) + '%';
@@ -1444,7 +1445,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const redfish = probe.redfishVersion && `Redfish ${probe.redfishVersion}`;
         const tcp = probe.sshTcpConnected && probe.state !== 'reachable' && probe.reason !== 'ssh_closed_before_identification' && 'TCP подключён';
         readings.add([probe.source, probe.via && `через ${probe.via}`, probe.path, question, tcp, outcome, code,
-          httpDurationLabel(probe.httpDurationMs), rdp, tls, zabbix, redfish, smb, postgres, ntpLabel(probe.ntp), responseFrom, rtt,
+          httpHeadersLabel(probe.httpHeadersMs), httpDurationLabel(probe.httpDurationMs), rdp, tls, zabbix, redfish,
+          smb, postgres, ntpLabel(probe.ntp), responseFrom, rtt,
           probe.state && formatTime(probe.checkedAt)].filter(Boolean).join(' · '));
       }
       for (const reading of readings) {
@@ -2699,6 +2701,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           responder?.matchesExpectedAddresses === true && 'записи совпали с ожидаемыми']
           .filter(Boolean).map(value => ' · ' + value).join('');
         const http = (check.httpStatus ? ' · HTTP ' + check.httpStatus : '')
+          + (check.httpHeadersMs === undefined ? '' : ' · ' + httpHeadersLabel(check.httpHeadersMs))
           + (check.httpDurationMs === undefined ? '' : ' · ' + httpDurationLabel(check.httpDurationMs))
           + (check.httpAuthChallenge ? ' · запрос аутентификации ' + check.httpAuthChallenge : '')
           + (check.redfishVersion ? ' · Redfish ' + check.redfishVersion : '')
