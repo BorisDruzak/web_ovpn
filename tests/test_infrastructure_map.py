@@ -7391,6 +7391,7 @@ def test_transit_peer_management_port_requires_fresh_arp_fdb_and_active_ethernet
 def test_router_neighbor_table_is_scoped_to_one_live_port_and_never_confirms_a_pair(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map
+    from netctl.drivers.mikrotik_api import MikroTikApiDriver
 
     now = datetime.now(timezone.utc)
     at = now.isoformat()
@@ -7415,6 +7416,8 @@ def test_router_neighbor_table_is_scoped_to_one_live_port_and_never_confirms_a_p
             ), 1)
         ],
     }
+    decoded, = MikroTikApiDriver.normalize_neighbor_rows([{"interface-name": "eth0", "board": "CSS326-24G-2S+"}])
+    network["router_neighbors"][0].update(remote_interface=decoded["remote_interface"], board=decoded["board"])
     path = tmp_path / "snapshot.json"
     path.write_text(json.dumps(build_graph(context, network, {}, {}, {}, now)), encoding="utf-8")
     graph = load_infrastructure_map(path, now)
@@ -7422,7 +7425,8 @@ def test_router_neighbor_table_is_scoped_to_one_live_port_and_never_confirms_a_p
     ports = graph["nodes"][0]["ports"]
     assert ports[0]["routerNeighbors"] == {
         "checkedAt": at, "total": 1, "devices": [
-            {"name": "test-neighbor", "platform": "MikroTik", "mac": "02:00:00:00:00:01", "address": "192.0.2.18"},
+            {"name": "test-neighbor", "platform": "MikroTik", "mac": "02:00:00:00:00:01", "address": "192.0.2.18",
+             "remoteInterface": "eth0", "board": "CSS326-24G-2S+"},
         ],
     }
     assert all("routerNeighbors" not in port for port in ports[1:])

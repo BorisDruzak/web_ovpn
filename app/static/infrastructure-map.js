@@ -2583,8 +2583,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           const count = devices.length === total ? total : `${devices.length} из ${total}`;
           observed.append(make('summary', `Соседи RouterOS (${count})`), make('small', formatTime(checkedAt)));
           const neighbors = make('ul', null, 'map-detail-list');
-          for (const {name, platform, mac, address} of devices) {
-            neighbors.append(make('li', [name, platform, mac, address].filter(Boolean).join(' · ')));
+          for (const {name, platform, board, mac, address, remoteInterface} of devices) {
+            const announced = remoteInterface && `Интерфейс по данным соседа ${remoteInterface}`;
+            neighbors.append(make('li', [name, platform, board, mac, address, announced].filter(Boolean).join(' · ')));
           }
           observed.append(neighbors);
           row.append(observed);

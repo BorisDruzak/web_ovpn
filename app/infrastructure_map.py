@@ -421,6 +421,8 @@ def _public_port(row: dict, now: datetime) -> dict:
             device = {"mac": mac}
             device.update({key: value for key in ("name", "platform")
                            if (value := _text(reading.get(key), 64)) and re.fullmatch(r"[\w .:/-]+", value)})
+            device.update({key: value for key in ("remoteInterface", "board")
+                           if (value := _text(reading.get(key), 64)) and re.fullmatch(r"[A-Za-z0-9 ._:/+-]+", value)})
             if (address := _network_address(reading.get("address"))) and "/" not in address:
                 device["address"] = address
             devices.append(device)

@@ -492,8 +492,8 @@ def _save_collection(
         conn.execute(
             """
             INSERT INTO network_neighbors
-              (source_id, address, mac, identity, interface, platform, version, uptime, last_seen_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+              (source_id, address, mac, identity, interface, remote_interface, platform, board, version, uptime, last_seen_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 source_id,
@@ -501,7 +501,9 @@ def _save_collection(
                 item.get("mac"),
                 item.get("identity"),
                 item.get("interface"),
+                item.get("remote_interface"),
                 item.get("platform"),
+                item.get("board"),
                 item.get("version"),
                 item.get("uptime"),
                 observed_at,

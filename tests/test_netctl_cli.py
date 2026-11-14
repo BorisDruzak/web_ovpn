@@ -1251,6 +1251,32 @@ def test_mikrotik_api_driver_parses_arp_and_dhcp_rows():
     assert dhcp[0]["status"] == "bound"
 
 
+def test_router_neighbor_fields_survive_schema_upgrade_and_collection(tmp_path):
+    from netctl.db import connect, get_source, sync_config_sources
+    from netctl.drivers.mikrotik_api import MikroTikApiDriver
+    from netctl.store import save_collection
+
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    config_path = tmp_path / "netctl.yaml"
+    write_mock_source(config_path)
+    with connect(db_url) as conn:
+        conn.execute("ALTER TABLE network_neighbors DROP COLUMN remote_interface")
+        conn.execute("ALTER TABLE network_neighbors DROP COLUMN board")
+        conn.execute("INSERT INTO network_neighbors (identity) VALUES ('legacy')")
+    with connect(db_url) as conn:
+        assert tuple(conn.execute("SELECT identity, remote_interface, board FROM network_neighbors").fetchone()) == (
+            "legacy", None, None,
+        )
+        sync_config_sources(conn, config_path)
+        source = get_source(conn, "mock-main")
+        neighbors = MikroTikApiDriver.normalize_neighbor_rows([
+            {"interface": "ether2,bridge-lan", "interface-name": "eth0", "board": "CSS326-24G-2S+"},
+        ])
+        save_collection(conn, source, {"neighbors": neighbors}, "2026-11-14T06:20:40Z")
+        assert tuple(conn.execute("SELECT interface, remote_interface, board FROM network_neighbors WHERE source_id = ?",
+                                  (source["id"],)).fetchone()) == ("ether2,bridge-lan", "eth0", "CSS326-24G-2S+")
+
+
 def test_mikrotik_snapshot_persists_address_lists_rules_and_update_posture(tmp_path, capsys, monkeypatch):
     from netctl.db import connect, get_source, sync_config_sources
     from netctl.store import save_collection
@@ -2225,7 +2251,7 @@ def test_runtime_assets_status_reports_identity_operational_summary(tmp_path, ca
     summary = data["runtime_identity"]
     assert summary["schema_migration_versions"] == [
         1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
-        20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
+        20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32,
     ]
     assert summary["counts"]["assets"] >= 1
     assert summary["counts"]["interfaces"] >= 1

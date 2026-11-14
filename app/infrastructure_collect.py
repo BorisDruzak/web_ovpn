@@ -2023,6 +2023,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         if len(ports) == 1 and ports[0]["state"] == "up":
             ports[0].setdefault("routerNeighbors", {})[mac] = {
                 "name": reading.get("identity"), "address": reading.get("address"), "platform": reading.get("platform"),
+                "remoteInterface": reading.get("remote_interface"), "board": reading.get("board"),
             }
     for ports in router_ports.values():
         for port in ports:
@@ -3665,7 +3666,7 @@ def read_network(guest_macs: set[str] | None = None, route_sources: set[str] | N
         data["switch_management_fdb"] = _switch_management_fdb(connection, data["sources"])
         data["router_neighbors"] = [dict(row) for row in connection.execute(
             """
-            SELECT s.name AS source, n.identity, n.address, n.mac, n.interface, n.platform, n.last_seen_at
+            SELECT s.name AS source, n.*
             FROM network_neighbors AS n
             JOIN network_sources AS s ON s.id = n.source_id
             WHERE s.enabled = 1 AND s.driver IN ('mikrotik_api', 'mikrotik_ssh')

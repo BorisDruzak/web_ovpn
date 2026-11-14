@@ -223,7 +223,9 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             mac TEXT,
             identity TEXT,
             interface TEXT,
+            remote_interface TEXT,
             platform TEXT,
+            board TEXT,
             version TEXT,
             uptime TEXT,
             last_seen_at TEXT
@@ -310,6 +312,8 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "network_sources", "ssh_identity_file", "TEXT")
     _ensure_column(conn, "network_sources", "ssh_proxy_jump", "TEXT")
     _ensure_column(conn, "network_sources", "ssh_connect_timeout", "INTEGER NOT NULL DEFAULT 8")
+    _ensure_column(conn, "network_neighbors", "remote_interface", "TEXT")
+    _ensure_column(conn, "network_neighbors", "board", "TEXT")
     _ensure_column(conn, "update_posture", "routerboot_current_version", "TEXT")
     _ensure_column(conn, "update_posture", "routerboot_upgrade_version", "TEXT")
     _ensure_column(conn, "context_revisions", "counts_json", "TEXT NOT NULL DEFAULT '{}'")
