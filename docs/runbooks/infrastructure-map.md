@@ -528,6 +528,8 @@
 
 В `service_probes.role:acti` обязательный компонент `tls_certificate` использует те же `ip`, `port`, `tls_server_name` и `tls_ca_file`, что и `/api/v1/health/ready`. Карточка и MCP показывают проверку сертификата отдельной строкой. Запрос проверяет имя и цепочку доверия, поэтому смена сертификата от того же доверенного CA не требует обновлять отпечаток.
 
+У `storage-console-web` два обязательных компонента HTTPS проверяют JavaScript и CSS интерфейса по ссылкам из `/`. Используйте `script_src_prefix: index-`, `script_src_directory: /assets/` для JavaScript и `stylesheet_href_prefix: index-`, `stylesheet_href_directory: /assets/` для CSS. Оба компонента используют имя TLS и доверенный CA из `/ready`. Карточка и MCP показывают фактические пути файлов и подтверждённый аплинк ВМ, если доступны свежие наблюдения.
+
 В `ucm6302-web` добавьте обязательный компонент `type: https` с `component: true`, `path: /SIPml-api.js`, `content_type: text/javascript` и `body_contains: var __b_release_mode`. Используйте тот же IP, порт 8089 и отпечаток TLS, что у проверки страницы `/`. Компонент проверяет выдачу скрипта, на который ссылается веб-панель. Ответ SIP OPTIONS по UDP/5060 проверяет отдельная карточка `ucm6302-pbx-sip`.
 
 Для файлов текущей прошивки UCM6302 задайте два обязательных компонента HTTPS с `path: /`, `script_src_directory: /` и префиксами `script_src_prefix: vendor.` и `script_src_prefix: main.`. Сборщик читает актуальные ссылки из страницы и запрашивает каждый файл по тому же IP, порту и отпечатку TLS. Проверка подтверждает тип JavaScript и наличие содержимого файла.
