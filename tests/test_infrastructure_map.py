@@ -1412,6 +1412,12 @@ def test_http_script_probe_follows_only_the_unique_relative_build_asset(monkeypa
         "httpHost": "directum.example.test",
     }
     assert requests == ["/Client/", "/Client/appStyles_2.0_a1.css"]
+    page = b"""<script>
+        document.write('<link href="appStyles_3.0_b2.css" rel="stylesheet">');
+    </script>"""
+    requests.clear()
+    assert _http_probe(style_spec)["path"] == "/Client/appStyles_3.0_b2.css"
+    assert requests == ["/Client/", "/Client/appStyles_3.0_b2.css"]
     for page in (
         b'<link rel="preload" href="appStyles_2.0_a1.css">',
         b'<link rel="stylesheet" href="//foreign.test/appStyles_2.0_a1.css">',

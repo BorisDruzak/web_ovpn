@@ -67,8 +67,12 @@ def _valid_http_hostname(value: object) -> bool:
 
 
 class _AssetReferences(HTMLParser):
+    _written_link = re.compile(r"""^[ \t]*document\.write\((['"])(<link[ \t][^<>\r\n]*>)\1\);[ \t]*\r?$""", re.M)
+
     def __init__(self, prefix: str, directory: str, *, stylesheet: bool):
         super().__init__()
+        self.prefix = prefix
+        self.directory = directory
         self.stylesheet = stylesheet
         suffix = ".css" if stylesheet else ".js"
         self.filename = re.compile(
@@ -76,11 +80,15 @@ class _AssetReferences(HTMLParser):
         )
         self.matches = []
         self.has_base = False
+        self.inline_script = False
 
     def handle_starttag(self, tag, attrs):
         if tag == "base":
             self.has_base |= any(name == "href" for name, _ in attrs)
         if self.stylesheet:
+            if tag == "script":
+                self.inline_script = not any(name == "src" for name, _ in attrs)
+                return
             if tag != "link" or [value.lower() for name, value in attrs if name == "rel" and value] != ["stylesheet"]:
                 return
             attribute = "href"
@@ -91,6 +99,18 @@ class _AssetReferences(HTMLParser):
         sources = [value for name, value in attrs if name == attribute]
         if len(sources) == 1 and sources[0] and self.filename.fullmatch(sources[0]):
             self.matches.append(sources[0])
+
+    def handle_endtag(self, tag):
+        if tag == "script":
+            self.inline_script = False
+
+    def handle_data(self, data):
+        if self.inline_script:
+            for match in self._written_link.finditer(data):
+                parser = _AssetReferences(self.prefix, self.directory, stylesheet=True)
+                parser.feed(match[2])
+                parser.close()
+                self.matches.extend(parser.matches)
 
 
 def _matches_json_fields(document: dict, fields: dict) -> bool:
