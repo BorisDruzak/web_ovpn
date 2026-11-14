@@ -59,6 +59,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     return element;
   };
   const formatTime = value => new Intl.DateTimeFormat('ru-RU', { timeZone:'Asia/Yekaterinburg', dateStyle:'short', timeStyle:'short' }).format(new Date(value));
+  const portChangeTime = new Intl.DateTimeFormat('ru-RU', { timeZone:'Asia/Yekaterinburg', dateStyle:'short', timeStyle:'medium' });
   const portObservationTime = new Intl.DateTimeFormat('ru-RU', {
     timeZone: 'Asia/Yekaterinburg', hour: '2-digit', minute: '2-digit', second: '2-digit',
   });
@@ -273,6 +274,11 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const time = health.checkedAt ? ' · ' + formatTime(health.checkedAt) : '';
     row.append(make('small', prefix + label + time));
   }
+  function appendPortStateChange(parent, port, label = '') {
+    if (!port.stateSince) return;
+    parent.append(make('small', [label, 'Последняя смена состояния по SNMP', portChangeTime.format(new Date(port.stateSince))]
+      .filter(Boolean).join(' · ')));
+  }
   function confirmedPortPairRow({a, b, nameA, nameB, portA, portB, evidence, portStates = {}, portHistory = {}, linkHealth}) {
     const row = make('li');
     row.append(portPairEndpoint(a, nameA, portA), ' ↔ ', portPairEndpoint(b, nameB, portB));
@@ -291,6 +297,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       const label = side === 'a' ? portA : portB;
       row.append(make('small', [`${name} ${label}`, portLabels[port.state], formatPortSpeed(port.speedBps),
         port.source, formatTime(port.speedCheckedAt ?? port.checkedAt)].filter(Boolean).join(' · ')));
+      appendPortStateChange(row, port, `${name} ${label}`);
     }
     appendPairHistory(row, portHistory, {a: `${nameA} ${portA}`, b: `${nameB} ${portB}`});
     for (const {source, checkedAt, expiresAt, windowsAdapter} of evidence) {
@@ -481,6 +488,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       const reading = [label, portLabels[port.state], formatPortSpeed(port.speedBps), formatTime(port.speedCheckedAt ?? port.checkedAt)];
       if (port.rxSilence) reading.push(formatRxSilence(port.rxSilence));
       item.append(make('small', reading.filter(Boolean).join(' · ')));
+      appendPortStateChange(item, port, label);
       const counterChanges = port.telemetry && formatPortCounterChanges(port.telemetry);
       if (counterChanges) item.append(make('small', `${label} · ${counterChanges}`));
       if (port.rxErrorCounters) appendRxErrorCounters(item, port.rxErrorCounters, label);
@@ -2320,9 +2328,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           name.addEventListener('click', () => selectPort(id, port.name));
         }
         row.append(name, make('small', status));
-        if (selectedPort && port.stateSince) {
-          row.append(make('small', 'Последняя смена состояния по SNMP · ' + formatTime(port.stateSince)));
-        }
+        if (selectedPort) appendPortStateChange(row, port);
         if (selectedPort && port.history) {
           row.append(portHistoryLink(port.history, 'История порта за 24 часа'));
         }
