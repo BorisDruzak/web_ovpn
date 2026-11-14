@@ -8497,6 +8497,45 @@ def test_sip_tcp_waits_for_a_complete_transaction_reply(monkeypatch, truncated):
                       {"state": "reachable", "reason": "sip_response", "responseCode": 200})
 
 
+@pytest.mark.parametrize("stage", ["connect", "protocol"])
+def test_sip_tcp_reports_timeout_stage(monkeypatch, stage):
+    from app import infrastructure_service_probes as probes
+    from app.infrastructure_map import _attachment_probe_location, _public_service_check
+
+    class Stream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def settimeout(self, timeout):
+            pass
+
+        def getsockname(self):
+            return "192.0.2.14", 12345
+
+        def sendall(self, request):
+            pass
+
+        def recv(self, size):
+            raise TimeoutError
+
+    def connect(*args, **kwargs):
+        if stage == "connect":
+            raise TimeoutError
+        return Stream()
+
+    monkeypatch.setattr(probes.socket, "create_connection", connect)
+    node = {"id": "sip", "kind": "Сервис"}
+    probes.apply_service_probes([node], {"sip": [{"type": "sip_options", "ip": "192.0.2.13", "port": 5060,
+                                                 "transport": "tcp"}]})
+    check = _public_service_check(node["serviceChecks"][0], datetime.now(timezone.utc))
+    assert check["state"] == "unknown" and check["reason"] == "timeout"
+    assert check["timeoutStage"] == stage
+    assert _attachment_probe_location(check)["timeoutStage"] == stage
+
+
 def test_sip_options_validates_transaction_and_treats_silence_as_unknown(monkeypatch):
     import ipaddress
     import struct

@@ -1354,8 +1354,10 @@ def _sip_tcp(ip: str, port: int, *, source: str | None = None) -> dict:
     transaction = uuid.uuid4().hex
     deadline = monotonic() + TIMEOUT
     incomplete = {"state": "unknown", "reason": "unexpected_response"}
+    timeout_stage = "connect"
     try:
         with socket.create_connection((ip, port), timeout=TIMEOUT, source_address=(source, 0) if source else None) as connection:
+            timeout_stage = "protocol"
             connection.settimeout(max(0.001, deadline - monotonic()))
             connection.sendall(_sip_request(connection, ip, port, transaction, "TCP"))
             buffer = b""
@@ -1384,7 +1386,7 @@ def _sip_tcp(ip: str, port: int, *, source: str | None = None) -> dict:
     except ConnectionRefusedError:
         return {"state": "unreachable", "reason": "tcp_connection_refused"}
     except TimeoutError:
-        return {"state": "unknown", "reason": "timeout"}
+        return {"state": "unknown", "reason": "timeout", "timeoutStage": timeout_stage}
     except OSError:
         return {"state": "unknown", "reason": "transport_error"}
 

@@ -893,8 +893,8 @@ def _public_service_check(check: dict, now: datetime) -> dict:
             result["tlsVersion"] = version
         if tls_state == "failed" and reason == "postgresql_tls_handshake":
             result["reason"] = reason
-    if (result["method"] in ("RDP Negotiation", "SMB2", "WinRM HTTP")
-            and result.get("reason") == "timeout" and check.get("timeoutStage") in ("connect", "protocol")):
+    if (result["method"] in ("RDP Negotiation", "SMB2", "WinRM HTTP", "SIP OPTIONS (TCP)")
+            and reason == "timeout" and not result["stale"] and check.get("timeoutStage") in ("connect", "protocol")):
         result["timeoutStage"] = check["timeoutStage"]
     if result["method"] == "SMB2":
         dialect = check.get("smbDialect")
@@ -3779,6 +3779,8 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime, *, endpoint_
                 issue = {"state": check["state"], "reason": reason}
                 if error_source := check.get("errorSource"):
                     issue["errorSource"] = error_source
+                if stage := check.get("timeoutStage"):
+                    issue["timeoutStage"] = stage
                 issues = probe.setdefault("issues", [])
                 if issue not in issues:
                     issues.append(issue)

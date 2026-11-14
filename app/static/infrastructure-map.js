@@ -3109,8 +3109,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
               `${address}${probe.port ? ':' + probe.port : ''}${probe.path ?? ''}`, ...states,
               probe.roundTripSamplesMs?.length && `RTT ${probe.roundTripSamplesMs.map(value =>
                 value.toLocaleString('ru-RU', {maximumFractionDigits: 3})).join(', ')} мс`,
-              ...(probe.issues ?? []).map(({reason, errorSource}) => [serviceCheckReasons[reason],
-                errorSource && `Отказ от ${errorSource}`].filter(Boolean).join(' · ')),
+              ...(probe.issues ?? []).map(issue => [serviceCheckReason(issue),
+                issue.errorSource && `Отказ от ${issue.errorSource}`].filter(Boolean).join(' · ')),
               probe.responseCodes?.length && `Ответ ${probe.responseCodes.join(', ')}`,
               probe.dnsResponseCodes?.length && `Ответ DNS ${probe.dnsResponseCodes.join(', ')}`,
               probe.rdpSecurityModes?.join(', '),
