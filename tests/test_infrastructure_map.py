@@ -9761,6 +9761,9 @@ def test_reciprocal_mac_path_shows_fresh_stp_evidence_without_confirming_cable(t
     assert graph["pendingPortPairs"][0]["stpPaths"] == proof["stpPaths"]
     confirmed, = summarize_topology(graph)["topologyAudit"]["currentPairs"]
     assert pending["stpBridgeConnections"] == [confirmed]
+    assert pending["confirmationGaps"] == ["stp_other_designated_bridge"]
+    assert graph["pendingPortPairs"][0]["confirmationGaps"] == pending["confirmationGaps"]
+    assert summarize_topology(graph)["topologyAudit"]["confirmationGapCounts"] == {"stp_other_designated_bridge": 1}
     switch["ports"][0]["telemetry"] = {"checkedAt": stamp, "intervalSeconds": 300, "rxBps": 1900, "txBps": 1000}
     raw = json.loads(path.read_text(encoding="utf-8"))
     raw["nodes"][0] = switch
@@ -9803,6 +9806,7 @@ def test_reciprocal_mac_path_shows_fresh_stp_evidence_without_confirming_cable(t
     assert summarize_topology(graph, node_id="root", port_name="ge22")["topologyAudit"]["stpRelatedPending"] == []
     assert graph["pendingPortPairs"][0]["stpBridgeConnections"] == [confirmed]
     assert read(now + timedelta(minutes=6))["pendingPortPairs"][0]["stpPaths"] == []
+    assert "stp_other_designated_bridge" not in read(now + timedelta(minutes=6))["pendingPortPairs"][0]["confirmationGaps"]
     assert "stpPaths" not in read(now + timedelta(minutes=6))["links"][1]["portEvidence"][0]
     observed["a"] = "Port14"
     assert "stpPaths" not in read()["links"][1]["portEvidence"][0]

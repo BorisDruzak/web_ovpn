@@ -2569,6 +2569,11 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
             gaps.append("shared_switch_port")
         if row.get("multiMacPortSides"):
             gaps.append("multiple_learned_macs")
+        if any(
+            stp.get("bridgeDeviceId") and stp["bridgeDeviceId"] not in (row["a"], row["b"])
+            for reading in row["observedPaths"] for stp in reading.get("stpPaths", ())
+        ):
+            gaps.append("stp_other_designated_bridge")
         if not row["observedPaths"] and not row.get("identifiedPeerSides"):
             gaps.append("no_live_peer_identity")
         if stopped_endpoints:

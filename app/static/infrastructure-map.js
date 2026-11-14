@@ -425,6 +425,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       archived_port: 'есть порт только из архива',
       shared_switch_port: 'за портом видно несколько устройств',
       multiple_learned_macs: 'на порту изучено несколько MAC',
+      stp_other_designated_bridge: 'STP указывает на другой назначенный мост',
       no_live_peer_identity: 'сосед не опознан по свежим данным',
       physical_pair_unconfirmed: 'нет свежего подтверждения прямой пары',
       conflicting_port_pairs: 'свежие наблюдения указывают на разных соседей одного порта',
