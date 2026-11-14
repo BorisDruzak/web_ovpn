@@ -3078,6 +3078,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           router_arp: 'Подключённый маршрут и ARP', router_mac: 'ARP и FDB маршрутизатора',
           wan_gateway: 'Шлюз WAN на этом порту',
           switch_mac: 'Адрес проверен по ARP и FDB', lldp_peer: 'Сосед по LLDP',
+          redfish_interface: 'Интерфейс BMC подтверждён по Redfish',
           endpoint_mac: 'MAC станции подтверждён на порту'};
         const priority = {critical: 0, warn: 1, unknown: 2, ok: 3};
         const ordered = [...serviceGroup.services].sort((a, b) =>

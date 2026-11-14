@@ -3761,6 +3761,11 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime, *, endpoint_
                 switch, port = attachment["switchId"], attachment["port"]
                 record(switch, port, service, "switch_mac")
                 path_checks[switch, port_label_key(port), service].add(check_key(path))
+                pair = attachment.get("physicalPair", {})
+                if pair.get("source") == REDFISH_PAIR_SOURCE and nodes[pair["hostId"]]["kind"] == "Контроллер управления":
+                    controller, interface = pair["hostId"], pair["hostPort"]
+                    record(controller, interface, service, "redfish_interface")
+                    path_checks[controller, port_label_key(interface), service].add(check_key(path))
                 continue
             if attachment := path.get("lacpAttachment"):
                 switch = attachment["switchId"]

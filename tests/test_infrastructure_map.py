@@ -8930,7 +8930,7 @@ def test_port_includes_fresh_layer2_check_for_current_lldp_neighbor(tmp_path):
 
 
 def test_attachment_includes_controller_path_without_attributing_it_to_the_server(tmp_path):
-    from app.infrastructure_map import load_infrastructure_map, summarize_guest_attachment
+    from app.infrastructure_map import REDFISH_PAIR_SOURCE, load_infrastructure_map, summarize_guest_attachment, summarize_topology
 
     stamp = datetime.now(timezone.utc).isoformat()
     telemetry = {"checkedAt": stamp, "intervalSeconds": 300, "rxErrors": 12}
@@ -8950,7 +8950,8 @@ def test_attachment_includes_controller_path_without_attributing_it_to_the_serve
         path.write_text(json.dumps({"schema": 1, "snapshotAt": stamp, "links": links, "nodes": [
             {"id": "server", "name": "Server", "kind": "Сервер", "reachability": {
                 "state": "reachable", "source": "UI_VPN", "method": "ICMP", "checkedAt": stamp}},
-            {"id": "bmc", "name": "BMC", "kind": "Контроллер управления", "serviceChecks": [
+            {"id": "bmc", "name": "BMC", "kind": "Контроллер управления", "ports": [
+                {"name": "eth0", "state": "up", "checkedAt": stamp, "source": "Redfish"}], "serviceChecks": [
                 {"method": "ICMP · ARP + FDB", "source": "UI_VPN", "state": "reachable", "checkedAt": stamp,
                  "identityCheckedAt": stamp, "target": "192.0.2.31"}]},
             {"id": "sw", "name": "Switch", "kind": "Коммутатор", "ports": [
@@ -8998,6 +8999,20 @@ def test_attachment_includes_controller_path_without_attributing_it_to_the_serve
     assert (pair["a"], pair["portA"], pair["b"], pair["portB"]) == ("sw", "ge13", "bmc", "eth0")
     assert controller["pendingPortPairTotal"] == 0
     assert host["connections"] == []
+    def controller_services():
+        graph = load_infrastructure_map(path, include_service_ports=True)
+        return summarize_topology(graph, node_id="bmc", port_name="eth0")["topologyAudit"]["servicePorts"]
+
+    assert controller_services() == []
+    links[2]["portEvidence"].append({"a": "ge13", "b": "eth0", "source": REDFISH_PAIR_SOURCE,
+                                     "at": stamp, "confirmed": True})
+    read()
+    group, = controller_services()
+    assert group["port"] == "eth0"
+    services = {item["id"]: item for item in group["services"]}
+    assert set(services) == {"bmc", "redfish"}
+    probe, = services["redfish"]["probeEndpoints"]
+    assert (probe["method"], probe["target"], probe["responseCodes"]) == ("HTTPS", "192.0.2.31", [200])
 
 
 def test_attachment_view_includes_physical_service_hosts_and_distinguishes_port_evidence(tmp_path, monkeypatch):
