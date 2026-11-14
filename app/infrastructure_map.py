@@ -2447,7 +2447,13 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
     for pair in verified_pairs:
         for side, field in (("a", "portA"), ("b", "portB")):
             by_port[pair[side], port_key(pair[side], pair[field])].append(pair)
+    shared_fdb_ports = {
+        (row["switchId"], port_key(row["switchId"], row["port"]))
+        for row in _summarize_shared_ports(list(pending.values())) if len(row["liveFdbPeerIds"]) >= 2
+    }
     for row in pending.values():
+        if (row["a"], port_key(row["a"], row["portA"])) in shared_fdb_ports:
+            row["sharedPort"] = True
         attach_history(row)
         ports = row.get("portObservations", {})
         row["linkHealth"] = _compare_link_ports(ports) or _link_ports_down(ports) or {"state": "unconfirmed"}
@@ -4942,7 +4948,7 @@ def load_infrastructure_map(
                                              "inventoryPeerPorts", "lldpPeers", "lldpObservations", "unconfirmedLldpCandidates", "multiMacPortSides",
                                              "stpBridgeConnections", "stpBridgeMacObservations", "arpDiagnostics",
                                              "trafficComparison", "stateChangeGapSeconds", "stoppedEndpoints", "conflictingPortSides",
-                                             "logicalPeerInterfaces", "lldpNoRxSides", "portHistory") if key in row}}
+                                             "logicalPeerInterfaces", "lldpNoRxSides", "portHistory", "sharedPort") if key in row}}
                 for row in pending[:64]
             ],
             lacpPartnerInterfaceGapTotal=len(lacp_gaps),

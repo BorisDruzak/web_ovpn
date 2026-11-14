@@ -4234,6 +4234,16 @@ def test_shared_lldp_ports_publish_paths_and_require_live_port_and_unique_chassi
                                 "fdbMacs": [combined_row["observedPaths"][0]["learnedEndpoint"]["mac"]],
                                 "lldpChassisMacs": [combined_row["lldpPeers"]["a"][0]["chassisId"]]},
                            ]}
+    inferred = {**combined, "links": [
+        link for link in combined["links"] if link["kind"] == "Путь по MAC-таблице"
+    ]}
+    inferred_audit = summarize_topology(inferred, node_id="switch", port_name="Gi1/0/48")["topologyAudit"]
+    assert inferred_audit["currentPairTotal"] == 0
+    assert inferred_audit["confirmationGapCounts"]["shared_switch_port"] == 2
+    assert all(row["sharedPort"] and not row["portB"] for row in inferred_audit["pending"])
+    inferred["links"].pop()
+    single = summarize_topology(inferred, node_id="switch", port_name="Gi1/0/48")["topologyAudit"]
+    assert "shared_switch_port" not in single["confirmationGapCounts"]
     assert firmware()["two"] == {**provenance, "product": "RouterOS", "version": "7.19.6"}
     neighbors[0]["last_seen_at"] = (now - timedelta(hours=1)).isoformat()
     assert not read()["two"]["confirmed"]
