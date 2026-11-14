@@ -349,6 +349,31 @@ def read_operator_person(person_id: UUID, response: Response, db: Db) -> dict:
     return {**_person_detail(person, response, db), **_contacts(person)}
 
 
+@helpdesk_router.get("/registration-search", dependencies=[Depends(_helpdesk)])
+def search_registration_people(q: Annotated[str, Query(max_length=120)], response: Response, db: Db) -> dict:
+    term = _search_key(q)
+    parts = term.split()
+    if (len(parts) < 2 or len(parts[0]) < 3 or len(parts[1]) < 2
+            or any(not (ch.isalpha() or ch in " -") for ch in term)):
+        raise HTTPException(422, "Enter the surname and at least two letters of the given name")
+    matches = list(db.scalars(select(InventoryPerson)
+        .where(InventoryPerson.search_key.startswith(term, autoescape=True))
+        .order_by(InventoryPerson.search_key, InventoryPerson.id).limit(6)))
+    response.headers["Cache-Control"] = "no-store"
+    if len(matches) > 5:
+        return {"people": [], "refine": True}
+    with_agent = {
+        person_id for person_id, assignment in _assignment_views(
+            db, InventoryPersonAssignment.person_id.in_([person.id for person in matches]), utcnow()
+        )
+        if assignment["endpoint_binding_state"] == "confirmed"
+    }
+    return {"people": [
+        {"full_name": person.full_name, "department": person.department, "has_agent": person.id in with_agent}
+        for person in matches
+    ]}
+
+
 @helpdesk_router.get("/{person_id}", dependencies=[Depends(_helpdesk)])
 def read_person(person_id: UUID, response: Response, db: Db) -> dict:
     return _person_detail(_person(db, person_id), response, db)
