@@ -9076,7 +9076,12 @@ def test_inventory_port_sources_are_dated_and_kept_separate_from_live_checks(tmp
     assert browser["currentPortPairs"] == []
     raw = json.loads(path.read_text(encoding="utf-8"))
     switch = next(node for node in raw["nodes"] if node["id"] == "a")
-    switch["ports"] = [{"name": "ge1", "linkCheck": {
+    collection_stamp = (now - timedelta(seconds=1)).isoformat()
+    telemetry = {"checkedAt": collection_stamp, "intervalSeconds": 60, "rxErrors": 9}
+    switch["properties"] = {"Источник сбора": "switch-test"}
+    switch["ports"] = [{"name": "ge1", "key": "ifindex:1", "state": "up",
+                        "checkedAt": collection_stamp,
+                        "telemetry": telemetry, "linkCheck": {
         "state": "up", "speedBps": 10**9, "checkedAt": now.isoformat(),
     }}]
     learned = {"switchId": "a", "deviceId": "b", "mac": "02:00:00:00:00:01"}
@@ -9094,12 +9099,16 @@ def test_inventory_port_sources_are_dated_and_kept_separate_from_live_checks(tmp
     assert pair["portStates"] == {"a": {"state": "up", "speedBps": 10**9,
                                       "checkedAt": now.isoformat(), "source": "SNMP"}}
     assert measured["inventoryPairs"] == [pair]
+    assert pair["portDiagnostics"] == {"a": {
+        "telemetry": telemetry, "history": {"source": "switch-test", "interface": "ifindex:1"},
+    }}
     assert pair["fdbObservations"] == [{
         **learned, "port": "ge1", "checkedAt": now.isoformat(), "managementAddress": "192.0.2.2",
     }]
     assert scoped["currentPairTotal"] == 0
-    expired = load_infrastructure_map(path, now + timedelta(minutes=11), include_guest_attachments=True)
+    expired = load_infrastructure_map(path, now + timedelta(minutes=26), include_guest_attachments=True)
     assert "portStates" not in expired["inventoryPairs"][0]
+    assert "portDiagnostics" not in expired["inventoryPairs"][0]
 
 
 def test_topology_withholds_conflicting_live_pairs_even_without_inventory(tmp_path):

@@ -2101,11 +2101,20 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
         for report in inventory:
             endpoint_macs = {}
             port_states = {}
+            port_diagnostics = {}
             for side, peer in (("a", "b"), ("b", "a")):
                 state = report.get("portStates", {}).get(side, {})
                 if state and not state["stale"] and state["state"] != "unknown":
                     port_states[side] = {key: state[key] for key in
                                          ("state", "speedBps", "checkedAt", "source", "speedCheckedAt") if key in state}
+                    telemetry = state.get("telemetry", {})
+                    if any(telemetry.get(key, 0) > 0 for key in PORT_COUNTER_KEYS):
+                        diagnostics = {"telemetry": telemetry}
+                        if counters := state.get("rxErrorCounters"):
+                            diagnostics["rxErrorCounters"] = counters
+                        if history := histories.get((link[side], port_key(link[side], report[side]))):
+                            diagnostics["history"] = history
+                        port_diagnostics[side] = diagnostics
                 endpoint = state.get("endpointMac")
                 if (state.get("state") == "up" and not state["stale"]
                         and endpoint and endpoint["deviceId"] == link[peer]):
@@ -2129,6 +2138,7 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
                 "a": a, "b": b, "portA": report["a"], "portB": report["b"],
                 "inventorySources": report.get("inventorySources", []),
                 **({"portStates": port_states} if port_states else {}),
+                **({"portDiagnostics": port_diagnostics} if port_diagnostics else {}),
                 **({"fdbObservations": fdb_observations[:8]} if fdb_observations else {}),
                 **({"endpointMacObservations": endpoint_macs} if endpoint_macs else {}),
             })

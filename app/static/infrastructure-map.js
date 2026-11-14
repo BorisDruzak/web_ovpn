@@ -1502,7 +1502,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     panel.dataset.section = 'inventory-port-pairs';
     const list = make('ul', null, 'map-detail-list');
     for (const {a, b, portA, portB, inventorySources, portStates = {}, endpointMacObservations = {},
-      fdbObservations = []} of pairs) {
+      fdbObservations = [], portDiagnostics = {}} of pairs) {
       const row = make('li');
       row.append(portPairEndpoint(a, byId.get(a)?.name ?? a, portA), ' ↔ ',
         portPairEndpoint(b, byId.get(b)?.name ?? b, portB));
@@ -1511,6 +1511,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         row.append(make('small', [`${byId.get(device)?.name ?? device} ${name}`, portLabels[state.state],
           formatPortSpeed(state.speedBps), state.source, formatTime(state.speedCheckedAt ?? state.checkedAt)]
           .filter(Boolean).join(' · ')));
+        if (portDiagnostics[side]) appendManagementPortErrors(row, portDiagnostics[side]);
       }
       for (const [side, endpoint] of Object.entries(endpointMacObservations)) {
         const [device, port] = side === 'a' ? [a, portA] : [b, portB];
