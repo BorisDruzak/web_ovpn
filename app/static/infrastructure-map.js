@@ -2730,6 +2730,15 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           open.type = 'button';
           open.addEventListener('click', () => select(member));
           row.append(open, make('small', label));
+          const resources = {root: 'Доступно на разделе /', swap: 'Занято в swap', memory: 'Доступная память'};
+          for (const alert of node.clusterResourceAlerts ?? []) {
+            if (alert.nodeId !== member) continue;
+            row.append(make('small', [
+              resources[alert.resource] + ' ' + observerNumber.format(alert.percent) + '%',
+              'порог ' + observerNumber.format(alert.thresholdPercent) + '%',
+              alert.source, formatTime(alert.checkedAt),
+            ].join(' · ')));
+          }
           list.append(row);
         }
       }

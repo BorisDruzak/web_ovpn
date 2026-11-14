@@ -792,6 +792,12 @@ def test_cluster_health_distinguishes_quorum_members_and_api(tmp_path):
     degraded = read()
     assert degraded["mapStatus"] == "warn" and degraded["reachability"]["state"] == "reachable"
     assert degraded["clusterMemberHealth"]["warn"] == ["pve2"]
+    assert degraded["clusterResourceAlerts"] == [{
+        "nodeId": "pve2", "resource": "memory", "percent": 5, "thresholdPercent": 10,
+        "source": "Endpoint Agent", "checkedAt": now.isoformat(),
+    }]
+    assert summarize_guest_attachment(load_infrastructure_map(path, now), healthy["id"])[
+        "attachment"]["clusterResourceAlerts"] == degraded["clusterResourceAlerts"]
     assert all(check["state"] == "reachable" for check in degraded["serviceChecks"])
     capacity.clear()
     cluster["quorate"] = 0
