@@ -64,7 +64,7 @@ def _read_power(spec: dict, credential: Path | None) -> dict:
     return result
 
 
-def _confirm_management_pair(graph, nodes, controller_id, spec, credential, now):
+def _confirm_management_pair(graph, nodes, controller_id, spec, credential, now, service_checks):
     path = spec.get("interface_path")
     if not isinstance(path, str) or not re.fullmatch(
         r"/redfish/v1/Managers/[A-Za-z0-9_-]{1,64}/EthernetInterfaces/[A-Za-z0-9_-]{1,64}", path,
@@ -76,16 +76,25 @@ def _confirm_management_pair(graph, nodes, controller_id, spec, credential, now)
     addresses = reading.get("IPv4Addresses")
     speed = reading.get("SpeedMbps")
     enabled = reading.get("InterfaceEnabled")
-    if (reading.get("Id") != name or type(enabled) is not bool
-            or not re.fullmatch(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}", mac) or not isinstance(addresses, list)
-            or not any(isinstance(row, dict) and row.get("Address") == spec["ip"] for row in addresses)):
+    identity_matches = (reading.get("Id") == name and type(enabled) is bool
+                        and bool(re.fullmatch(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}", mac)) and isinstance(addresses, list)
+                        and any(isinstance(row, dict) and row.get("Address") == spec["ip"] for row in addresses))
+    checked_at = datetime.now(timezone.utc).isoformat()
+    if service_checks is not None:
+        service_checks.append({
+            "state": "reachable" if identity_matches else "unknown",
+            "source": "UI_VPN", "method": "Redfish · EthernetInterface",
+            "target": spec["ip"], "port": 443, "path": path, "checkedAt": checked_at,
+            "identityCheckedAt": nodes[controller_id]["probeTargetIdentityAt"],
+            "required": True, "component": True,
+        })
+    if not identity_matches:
         return
     link_status = reading.get("LinkStatus")
     state = "disabled" if not enabled else {
         "LinkUp": "up", "LinkDown": "down", "NoLink": "down",
     }.get(link_status if isinstance(link_status, str) else "", "unknown")
     speed_bps = speed * 1_000_000 if state == "up" and type(speed) is int and 1 <= speed <= 1_000_000 else None
-    checked_at = datetime.now(timezone.utc).isoformat()
     nodes[controller_id].setdefault("ports", []).append({
         "name": name, "state": state, "speedBps": speed_bps, "checkedAt": checked_at, "source": "Redfish",
     })
@@ -155,14 +164,16 @@ def collect_redfish_power(graph: dict, specs: dict, credentials: Path | None, no
                                      "checkedAt": checked_at}
         service_id = spec.get("service_id")
         service = nodes.get(service_id, {}) if isinstance(service_id, str) else {}
+        service_checks = None
         if (service.get("kind") == "Сервис"
                 and any(edge["a"] == controller_id and edge["b"] == service_id
                         and edge["kind"] == "Размещение" and edge["confirmed"] for edge in graph["links"])):
-            service.setdefault("serviceChecks", []).append({
+            service_checks = service.setdefault("serviceChecks", [])
+            service_checks.append({
                 "state": "reachable" if power else "unknown",
                 "source": "UI_VPN", "method": "Redfish · ComputerSystem",
                 "target": spec["ip"], "port": 443, "path": spec.get("path"),
                 "checkedAt": checked_at, "identityCheckedAt": controller["probeTargetIdentityAt"],
                 "required": True, "component": True,
             })
-        _confirm_management_pair(graph, nodes, controller_id, spec, credential, now)
+        _confirm_management_pair(graph, nodes, controller_id, spec, credential, now, service_checks)

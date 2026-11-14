@@ -143,6 +143,7 @@ def test_redfish_service_reports_authenticated_system_read(monkeypatch, valid_sy
     now = datetime.now(timezone.utc)
     stamp = now.isoformat()
     path = "/redfish/v1/Systems/system"
+    interface_path = "/redfish/v1/Managers/bmc/EthernetInterfaces/eth0"
     ip = "192.0.2.31"
     service = {"id": "redfish", "kind": "Сервис"}
     host = {"id": "server", "kind": "Сервер"}
@@ -151,19 +152,29 @@ def test_redfish_service_reports_authenticated_system_read(monkeypatch, valid_sy
         {"a": "bmc", "b": "server", "kind": "Управление оборудованием", "confirmed": True},
         {"a": "bmc", "b": "redfish", "kind": "Размещение", "confirmed": confirmed},
     ]}
-    monkeypatch.setattr(redfish, "_read_resource", lambda *_: {"PowerState": "Off"} if valid_system else None)
+    def read_resource(_, __, resource):
+        if resource == interface_path:
+            return {"Id": "eth0", "InterfaceEnabled": True, "MACAddress": "02:00:00:00:00:31",
+                    "IPv4Addresses": [{"Address": ip}]} if valid_system else None
+        return {"PowerState": "Off"} if valid_system else None
+
+    monkeypatch.setattr(redfish, "_read_resource", read_resource)
     redfish.collect_redfish_power(graph, {
-        "bmc": {"ip": ip, "path": path, "service_id": "redfish"},
+        "bmc": {"ip": ip, "path": path, "service_id": "redfish", "interface_path": interface_path},
     }, None, now)
     checks = _public_node(service, datetime.now(timezone.utc))["serviceChecks"]
     if state is None:
         assert checks == []
     else:
-        check, = checks
+        check, interface = checks
         assert check["method"] == "Redfish · ComputerSystem"
         assert check["component"] and check["required"]
         assert check["target"] == ip and check["path"] == path and check["identityCheckedAt"] == stamp
         assert check["state"] == state
+        assert interface["method"] == "Redfish · EthernetInterface"
+        assert interface["component"] and interface["required"]
+        assert interface["target"] == ip and interface["path"] == interface_path
+        assert interface["state"] == state
 
 
 @pytest.mark.parametrize("failure", [None, "mac", "stale", "shared", "speed", "down", "disabled", "address"])
