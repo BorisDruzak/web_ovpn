@@ -7383,8 +7383,41 @@ def test_pppoe_internet_probe_requires_configured_public_targets_and_active_sess
     assert len(calls) == 1
 
 
-def test_static_wan_requires_fresh_matching_route_arp_and_port(tmp_path):
-    from app.infrastructure_collect import build_graph
+def test_routeros_wan_ping_verifies_source_and_requires_matching_reply(monkeypatch):
+    from netctl.drivers.mikrotik_api import MikroTikApiDriver
+
+    calls = []
+    address = {"address": "192.0.2.2/24", "interface": "ether9", "disabled": "false", "invalid": "false"}
+    response = {"host": "1.1.1.1", "sent": "1", "received": "1"}
+
+    class Api:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def call(self, words):
+            calls.append(words)
+            return [address] if words[0] == "/ip/address/print" else [response]
+
+    driver = MikroTikApiDriver({}, {})
+    monkeypatch.setattr(driver, "_client", Api)
+    assert driver.ping_wan_ipv4("1.1.1.1", "ether9", "192.0.2.2/24") is True
+    assert calls[-1] == ["/ping", "=address=1.1.1.1", "=interface=ether9", "=src-address=192.0.2.2", "=count=1"]
+    response.update(received="0", status="timeout")
+    assert driver.ping_wan_ipv4("1.1.1.1", "ether9", "192.0.2.2/24") is False
+    response["host"] = "8.8.8.8"
+    assert driver.ping_wan_ipv4("1.1.1.1", "ether9", "192.0.2.2/24") is None
+    address["interface"] = "ether10"
+    assert driver.ping_wan_ipv4("1.1.1.1", "ether9", "192.0.2.2/24") is None
+    assert calls[-1][0] == "/ip/address/print"
+
+
+def test_static_wan_requires_fresh_matching_route_arp_and_port(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from app.infrastructure_collect import _attach_wan_internet, build_graph
     from app.infrastructure_map import load_infrastructure_map
 
     now = datetime.now(timezone.utc)
@@ -7405,7 +7438,9 @@ def test_static_wan_requires_fresh_matching_route_arp_and_port(tmp_path):
     path = tmp_path / "map.json"
 
     def read(public_at=now):
-        path.write_text(json.dumps(build_graph(context, network, {}, {}, binding, now)), encoding="utf-8")
+        graph = build_graph(context, network, {}, {}, binding, now)
+        _attach_wan_internet(graph, context, network, binding)
+        path.write_text(json.dumps(graph), encoding="utf-8")
         result = load_infrastructure_map(path, public_at, include_service_ports=True)
         return next(n for n in result["nodes"] if n["id"] == "wan:isp"), result
 
@@ -7417,6 +7452,26 @@ def test_static_wan_requires_fresh_matching_route_arp_and_port(tmp_path):
     assert port["port"] == "ether9"
     endpoint, = port["services"][0]["probeEndpoints"]
     assert endpoint["target"] == "192.0.2.1" and endpoint["passed"] == 1
+    binding["wan_internet_checks"] = {"isp": ["1.1.1.1"]}
+    calls = []
+    monkeypatch.setattr("app.infrastructure_collect.load_secrets", lambda: {})
+    monkeypatch.setattr("app.infrastructure_collect.legacy_driver_for", lambda *_: SimpleNamespace(
+        ping_wan_ipv4=lambda *args: calls.append(args) or False,
+    ))
+    service, result = read(now + timedelta(seconds=5))
+    assert calls == [("1.1.1.1", "ether9", "192.0.2.2/24")]
+    assert service["mapStatus"] == "warn"
+    internet = service["serviceChecks"][1]
+    assert (internet["method"], internet["state"], internet["reason"]) == (
+        "ICMP через WAN-порт", "unreachable", "icmp_no_echo_reply",
+    )
+    assert any(p["target"] == "1.1.1.1" and p["failed"] == 1
+               for p in result["servicePorts"]["rb"][0]["services"][0]["probeEndpoints"])
+    route["active"] = 0
+    assert read(now + timedelta(seconds=5))[0]["serviceChecks"][1]["reason"] == "icmp_route_unconfirmed"
+    assert len(calls) == 1
+    route["active"] = 1
+    binding.pop("wan_internet_checks")
     assert not result.get("currentPortPairs")
     stale, _ = read(now + timedelta(minutes=11))
     assert stale["mapStatus"] == "unknown"

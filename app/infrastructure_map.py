@@ -61,6 +61,7 @@ PPPOE_INTERNET_METHOD = "ICMP через PPPoE"
 PPPOE_SOURCE = "RouterOS · PPPoE"
 PPPOE_PARENT_LINK_MAX_AGE = timedelta(minutes=10)
 WAN_GATEWAY_METHOD = "Шлюз WAN · маршрут и ARP"
+WAN_INTERNET_METHOD = "ICMP через WAN-порт"
 WAN_GATEWAY_SOURCE = "RouterOS · WAN"
 WAN_GATEWAY_MAX_AGE = timedelta(minutes=10)
 RESOURCE_CAPACITY_MAX_AGE = timedelta(minutes=5)
@@ -630,7 +631,7 @@ def _public_service_check(check: dict, now: datetime) -> dict:
     pbs_storage = check.get("method") == PBS_STORAGE_METHOD and check.get("source") == "Proxmox"
     local_storage = check.get("method") == LOCAL_STORAGE_METHOD and check.get("source") == "Proxmox"
     current_probe = (check.get("source") == "UI_VPN" and check.get("required") is True
-                     or check.get("source") == "RouterOS" and check.get("method") == PPPOE_INTERNET_METHOD)
+                     or check.get("source") == "RouterOS" and check.get("method") in (PPPOE_INTERNET_METHOD, WAN_INTERNET_METHOD))
     windows_probe = check.get("source") == WINDOWS_PROBE_SOURCE and check.get("method") in ("DNS", "HTTP")
     max_age = (ROUTE_RECEIPT_MAX_AGE if windows_probe else SERVICE_PROBE_MAX_AGE
                if backup or pbs_storage or local_storage or current_probe else MAX_AGE)
@@ -777,7 +778,9 @@ def _public_service_check(check: dict, now: datetime) -> dict:
                 code = ntp.get("kissCode")
                 if stratum == 0 and code in ("RATE", "DENY", "RSTR"):
                     result["ntp"]["kissCode"] = code
-    icmp = identified_icmp or result["method"] in ("ICMP", "ICMP адреса из инвентаря", "ICMP · VLAN", PPPOE_INTERNET_METHOD)
+    icmp = identified_icmp or result["method"] in (
+        "ICMP", "ICMP адреса из инвентаря", "ICMP · VLAN", PPPOE_INTERNET_METHOD, WAN_INTERNET_METHOD,
+    )
     if icmp or (result["method"] == "IPMI LAN (UDP)" and result["source"] == "UI_VPN"
                 and result["state"] == "reachable" and not result["stale"]):
         round_trip = check.get("roundTripMs")
@@ -3665,7 +3668,8 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime, *, endpoint_
                     if report["confirmed"] and report["source"] == WAN_GATEWAY_SOURCE and report["a"] and not report["b"]:
                         record(router, report["a"], service, "wan_gateway")
                         path_checks[router, port_label_key(report["a"]), service].update(
-                            check_key(check) for check in nodes[service]["serviceChecks"] if check["method"] == WAN_GATEWAY_METHOD
+                            check_key(check) for check in nodes[service]["serviceChecks"]
+                            if check["method"] in (WAN_GATEWAY_METHOD, WAN_INTERNET_METHOD)
                         )
         if not edge["confirmed"] or edge["kind"] != "Сетевое соединение":
             continue
@@ -3746,7 +3750,8 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime, *, endpoint_
             route = method == "Маршрут" and check["source"] == "Network Observer"
             if (not target or (number is None and not selected_path)
                     or not method or not checked_at or check["stale"] or check.get("skipped")
-                    or (check["source"] != "UI_VPN" and not route and not (selected_path and method == "ARP · L2"))
+                    or (check["source"] != "UI_VPN" and not route
+                        and not (selected_path and method in ("ARP · L2", WAN_INTERNET_METHOD)))
                     or not (selected_path or (physical and not local and not route))):
                 continue
             transport = "UDP" if local else transport

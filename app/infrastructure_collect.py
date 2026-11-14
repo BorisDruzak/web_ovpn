@@ -57,7 +57,7 @@ from .infrastructure_map import (
     PPPOE_INTERNET_METHOD, PPPOE_METHOD, PPPOE_SOURCE, PVE_DISK_DEVICE, PVE_STORAGE_ID, RECIPROCAL_MAC_SOURCE,
     RX_SILENCE_MAX_INTERVALS, RX_SILENCE_MAX_WINDOW, SERVICE_PROBE_MAX_AGE, SHARED_LLDP_KIND, SHARED_LLDP_SOURCE,
     SNMP_COLLECTION_METHOD, STP_ROOT_PATH_MAX_AGE,
-    TRANSCEIVER_MAX_AGE, WAN_GATEWAY_MAX_AGE, WAN_GATEWAY_METHOD, WAN_GATEWAY_SOURCE, WINDOWS_PROBE_SOURCE,
+    TRANSCEIVER_MAX_AGE, WAN_GATEWAY_MAX_AGE, WAN_GATEWAY_METHOD, WAN_GATEWAY_SOURCE, WAN_INTERNET_METHOD, WINDOWS_PROBE_SOURCE,
     _public_service_check, _service_reachability, index_port_states, inventory_link_sources,
     _public_resource_capacity, _summarize_agent_audit,
     observation_is_fresh, port_label_key, public_probe_transition,
@@ -1087,6 +1087,67 @@ def _wan_gateway_check(network: dict, source: str, port: dict, gateway: str, tab
     return "reachable", min(datetime.fromisoformat(stamp) for stamp in (
         port["checkedAt"], routes[0]["last_seen_at"], neighbors[0]["last_seen_at"],
     )).isoformat()
+
+
+def _attach_wan_internet(graph: dict, context: dict, network: dict, bindings: dict) -> None:
+    configured = bindings.get("wan_internet_checks")
+    if not isinstance(configured, dict):
+        return
+    nodes = {node["id"]: node for node in graph["nodes"]}
+    sources = {source["name"]: source for source in network.get("sources", [])
+               if source.get("enabled") and source.get("driver") == "mikrotik_api"}
+    wan_sources = bindings.get("wan_gateway_sources")
+    if not isinstance(wan_sources, dict):
+        return
+    jobs = []
+    for wan in context.get("wan", []):
+        wan_id = wan.get("id")
+        if not isinstance(wan_id, str):
+            continue
+        item = nodes.get(f"wan:{wan_id}")
+        name = wan_sources.get(wan_id)
+        targets = configured.get(wan_id)
+        if (not item or not isinstance(name, str) or name not in sources or not isinstance(targets, list)
+                or not 1 <= len(targets) <= 2 or not all(isinstance(ip, str) for ip in targets)):
+            continue
+        try:
+            addresses = [ipaddress.IPv4Address(ip) for ip in targets]
+        except ValueError:
+            continue
+        if len(set(addresses)) == len(addresses) and all(ip.is_global and not ip.is_multicast for ip in addresses):
+            jobs.append((wan, item, sources[name], addresses))
+    if not jobs:
+        return
+    try:
+        secrets = load_secrets()
+    except (OSError, ValueError):
+        secrets = None
+
+    def read(job):
+        wan, item, source, addresses = job
+        now = datetime.now(timezone.utc)
+        gateway = item["reachability"]
+        ready = gateway["state"] == "reachable" and observation_is_fresh(
+            gateway["checkedAt"], now, max_age=WAN_GATEWAY_MAX_AGE,
+        )
+        for address in addresses:
+            target = str(address)
+            received = None
+            if ready and secrets is not None:
+                try:
+                    received = legacy_driver_for(source, secrets).ping_wan_ipv4(target, wan["interface"], wan["local_address"])
+                except (OSError, RuntimeError, ValueError):
+                    pass
+            state = "reachable" if received is True else "unreachable" if received is False else "unknown"
+            reason = "icmp_no_echo_reply" if received is False else "icmp_probe_error" if ready else "icmp_route_unconfirmed"
+            item["serviceChecks"].append({
+                **_observation(state, "RouterOS", WAN_INTERNET_METHOD, datetime.now(timezone.utc).isoformat()),
+                "target": target, "required": True, "component": True,
+                **({"reason": reason} if received is not True else {}),
+            })
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(read, jobs))
 
 
 def _collect_router_link_modes(network: dict, configured: object) -> dict:
@@ -4024,6 +4085,7 @@ def main() -> int:
         wireguard_probes = _wireguard_probe_specs(context, bindings.get("wireguard_policy_checks"), local_vlan_probes)
         graph = build_graph(context, network, server, pve, bindings, now,
                             local_vlan_probes=local_vlan_probes, wireguard_probes=wireguard_probes)
+        _attach_wan_internet(graph, context, network, bindings)
         if server.get("collected_at"):
             graph["serverObserverAt"] = server["collected_at"]
         probes = {**bindings.get("service_probes", {}),

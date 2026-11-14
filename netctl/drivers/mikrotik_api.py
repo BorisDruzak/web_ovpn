@@ -575,6 +575,30 @@ class MikroTikApiDriver(NetworkDriver):
                     readings[name] = rows[0]
         return readings
 
+    def ping_wan_ipv4(self, address: str, interface: str, local_address: str) -> bool | None:
+        target = ipaddress.IPv4Address(address)
+        local = ipaddress.IPv4Interface(local_address)
+        if (not target.is_global or target.is_multicast or target in local.network
+                or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}", interface)):
+            raise ValueError("WAN ping requires an external public IPv4 address and an interface name")
+        client = self._client()
+        client.timeout = 3
+        with client as api:
+            assigned = api.call(["/ip/address/print", "=.proplist=address,interface,disabled,invalid",
+                                 f"?address={local}", f"?interface={interface}"])
+            if assigned != [{"address": str(local), "interface": interface, "disabled": "false", "invalid": "false"}]:
+                return None
+            rows = api.call(["/ping", f"=address={target}", f"=interface={interface}",
+                             f"=src-address={local.ip}", "=count=1"])
+        if len(rows) != 1 or rows[0].get("host") != str(target) or rows[0].get("sent") != "1":
+            return None
+        row = rows[0]
+        if row.get("received") == "1" and not row.get("status"):
+            return True
+        if row.get("received") == "0" and row.get("status") == "timeout":
+            return False
+        return None
+
     def test(self) -> dict[str, Any]:
         with self._client() as api:
             identity = self._query(api, "/system/identity/print", ["name"])
