@@ -10654,6 +10654,23 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
         "serviceId": "ssh", "localService": "sshd", "method": "SSH", "target": "192.0.2.10",
         "port": 22, "state": "reachable", "checkedAt": at,
     }]
+    remote = {"id": "remote", "name": "Remote", "kind": "Сервис", "serviceChecks": [
+        {"source": "UI_VPN", "method": "WinRM HTTP", "target": ip, "port": 5985,
+         "state": "unknown", "checkedAt": at, "reason": "timeout", "timeoutStage": "connect", "required": True}
+        for ip in ("192.0.2.10", "192.0.2.11")
+    ]}
+    snapshot["nodes"].append(remote)
+    snapshot["links"].append({"a": "vm:1", "b": "remote", "kind": "Цель проверки", "confirmed": True})
+    path.write_text(json.dumps(snapshot), encoding="utf-8")
+    agent = client.get("/api/v1/network/infrastructure?view=agents&node_id=vm:1", headers=headers).json()[
+        "infrastructure"]["agentAudit"]["guests"][0]
+    remote_check, = agent["remoteAccessChecks"]
+    assert remote_check == {"serviceId": "remote", "method": "WinRM HTTP", "target": "192.0.2.10", "port": 5985,
+                            "state": "unknown", "checkedAt": at, "reason": "timeout", "timeoutStage": "connect",
+                            "switchId": "switch", "physicalPair": agent["ipv4Comparison"]["matchedPaths"][0]["physicalPair"]}
+    assert Adapter.reads.pop() == Adapter.reads[0]
+    snapshot["nodes"].pop()
+    snapshot["links"].pop()
     snapshot["links"].append({"a": "web", "b": "ssh", "kind": "Зависимость сервиса", "confirmed": True})
     snapshot["nodes"][-1]["reachability"] = {
         "state": "unreachable", "source": "Проверка сервиса", "method": "SSH", "checkedAt": at,

@@ -4472,11 +4472,27 @@ def load_infrastructure_agent_audit(path: Path, *, node_id: str | None = None) -
                 continue
             if comparison := _agent_ipv4_comparison(network, attachment):
                 entry["ipv4Comparison"] = comparison
+                service_ids = {edge["b"] for edge in graph["links"]
+                               if edge["a"] == entry["id"] and _is_service_attachment(edge)}
+                guests = {guest["guest"]["id"]: guest for guest in attachment["guests"]}
+                remote_checks = []
+                for service in graph["nodes"]:
+                    if service["id"] not in service_ids or service["kind"] != "Сервис":
+                        continue
+                    for check in _service_attachment_paths(service, guests):
+                        if (check.get("guestId") != entry["id"] or "gateway" in check
+                                or check["target"] not in comparison["matched"]
+                                or check["method"] not in {"RDP Negotiation", "SMB2", "WinRM HTTP"}):
+                            continue
+                        remote_checks.append({"serviceId": service["id"], **{
+                            key: check[key] for key in ("method", "target", "port", "state", "checkedAt",
+                                                       "reason", "timeoutStage", "switchId", "physicalPair")
+                            if key in check
+                        }})
+                if remote_checks:
+                    entry["remoteAccessChecks"] = remote_checks[:16]
                 local_services = entry.get("health", {}).get("services", [])
                 if any(service["name"] == "sshd" for service in local_services):
-                    service_ids = {edge["b"] for edge in graph["links"]
-                                   if edge["a"] == entry["id"] and _is_service_attachment(edge)}
-                    guests = {guest["guest"]["id"]: guest for guest in attachment["guests"]}
                     checks = [
                         {"serviceId": service["id"], "localService": "sshd",
                          **{key: check[key] for key in ("method", "target", "port", "state", "checkedAt", "reason")
