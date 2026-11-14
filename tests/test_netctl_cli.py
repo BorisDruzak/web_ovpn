@@ -2051,6 +2051,29 @@ def test_sources_validate_name_and_hide_secret(tmp_path, capsys):
     assert "password" not in json.dumps(inspected).lower()
 
 
+def test_sources_list_reads_committed_inventory_during_collection(tmp_path, capsys, monkeypatch):
+    from netctl.db import connect, sync_config_sources
+
+    config_path = tmp_path / "netctl.yaml"
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    write_mock_source(config_path)
+    writer = connect(db_url)
+    try:
+        sync_config_sources(writer, config_path)
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute("UPDATE network_sources SET enabled = 0")
+        monkeypatch.setattr("netctl.cli.prepare_conn",
+                            lambda _args: pytest.fail("source listing tried to synchronize configuration"))
+        rc, result = run_cli(
+            ["--json", "--config", str(config_path), "--db", db_url, "sources", "list"], capsys,
+        )
+        assert rc == 0
+        source, = result["sources"]
+        assert source["enabled"] is True
+    finally:
+        writer.close()
+
+
 def test_sources_test_returns_json_error_on_driver_failure(tmp_path, capsys, monkeypatch):
     import netctl.cli as cli
 

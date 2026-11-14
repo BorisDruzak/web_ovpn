@@ -129,6 +129,8 @@ sudo /usr/local/sbin/netctl --json runtime-assets status
 sudo /usr/local/sbin/netctl --json ipsec status
 ```
 
+`sources list` reads the last committed source inventory from the initialized database. Collection and source-management commands synchronize configured sources.
+
 Main files:
 
 - `/usr/local/sbin/netctl` - CLI wrapper.

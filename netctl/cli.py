@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 from dataclasses import asdict
 import hashlib
 import ipaddress
@@ -243,10 +244,11 @@ def prepare_conn(args: argparse.Namespace):
 
 
 def cmd_sources(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    if args.sources_command == "list":
+        with closing(connect_read_only(args.db)) as conn:
+            return 0, ok(sources=[source_public(source) for source in list_sources(conn)])
     conn = prepare_conn(args)
     try:
-        if args.sources_command == "list":
-            return 0, ok(sources=[source_public(source) for source in list_sources(conn)])
         if args.sources_command == "inspect":
             validate_source_name(args.source)
             source = get_source(conn, args.source)
