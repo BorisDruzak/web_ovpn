@@ -1535,12 +1535,30 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     return panel;
   }
 
+  function pairUsesPort(pair, id, keys) {
+    return (pair.a === id && (!keys || keys.includes(portKey(pair.portA)))) ||
+      (pair.b === id && (!keys || keys.includes(portKey(pair.portB))));
+  }
+
+  function renderRelatedStpPairs(node, port) {
+    const keys = port ? portKeys(port) : null;
+    const pairs = (data.pendingPortPairs ?? []).filter(pair => !pairUsesPort(pair, node.id, keys) && (
+      pair.stpBridgeConnections?.some(connection => pairUsesPort(connection, node.id, keys)) ||
+      pair.stpBridgeMacObservations?.some(observation => observation.switchId === node.id &&
+        (!keys || keys.includes(portKey(observation.port))))));
+    if (!pairs.length) return null;
+    const panel = make('details', null, 'map-port-panel');
+    panel.dataset.section = 'related-stp-port-pairs';
+    const list = make('ul', null, 'map-detail-list');
+    list.append(...pairs.map(pendingPortPairRow));
+    panel.append(make('summary', `Связанные по STP пары без подтверждения (${pairs.length})`), list);
+    return panel;
+  }
+
   function renderHostPortPairs(host, pending = false, port = null) {
     const records = pending ? data.pendingPortPairs : data.currentPortPairs;
     const keys = port ? portKeys(port) : null;
-    const pairs = (records ?? []).filter(pair =>
-      (pair.a === host.id && (!keys || keys.includes(portKey(pair.portA)))) ||
-      (pair.b === host.id && (!keys || keys.includes(portKey(pair.portB)))));
+    const pairs = (records ?? []).filter(pair => pairUsesPort(pair, host.id, keys));
     if (!pairs.length) return null;
     const panel = make('details', null, 'map-port-panel');
     panel.dataset.section = pending ? 'service-host-pending-port-pairs' : 'service-host-port-pairs';
@@ -2086,6 +2104,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       for (const pending of [false, true]) {
         const pairs = renderHostPortPairs(node, pending, chosenPort);
         if (pairs) propertiesSection.append(pairs);
+      }
+      if (node.kind === 'Коммутатор') {
+        const relatedStpPairs = renderRelatedStpPairs(node, chosenPort);
+        if (relatedStpPairs) propertiesSection.append(relatedStpPairs);
       }
       const inventoryPairs = renderInventoryPortPairs(node, chosenPort);
       if (inventoryPairs) propertiesSection.append(inventoryPairs);
