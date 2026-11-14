@@ -9237,7 +9237,9 @@ def test_service_audit_shares_map_status_and_reports_required_check_gaps(tmp_pat
     assert with_dependency["serviceAvailability"] == {"unavailable": [], "degraded": [], "unknown": ["vipnet"]}
     assert with_dependency["dependencyTotal"] == 1
     assert with_dependency["dependencies"] == [
-        {"id": "vipnet", "name": "ViPNet", "kind": "Сервис", "mapStatus": "unknown"},
+        {"id": "vipnet", "name": "ViPNet", "kind": "Сервис", "mapStatus": "unknown",
+         "serviceChecks": [check for check in full["nodes"][2]["serviceChecks"]
+                           if check.get("reason") == "icmp_no_echo_reply"]},
     ]
     from app.infrastructure_map import summarize_services
 

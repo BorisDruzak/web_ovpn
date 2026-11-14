@@ -3806,7 +3806,15 @@ def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
                                  and edge["kind"] in SERVICE_LINKS and nodes[edge["b"]]["kind"] == "Сервис"})
         detail["serviceAvailability"] = anchor["serviceAvailability"]
         detail["dependencyTotal"] = len(dependency_ids)
-        detail["dependencies"] = [_attachment_node(nodes[key]) for key in dependency_ids[:24]]
+        detail["dependencies"] = []
+        for key in dependency_ids[:24]:
+            dependency = nodes[key]
+            row = _attachment_node(dependency)
+            issues = [check for check in dependency["serviceChecks"] if _service_check_status(check) != "ok"
+                      and (check.get("required") or (dependency["mapStatus"] == "unknown" and check.get("supplemental")))]
+            if issues:
+                row["serviceChecks"] = issues
+            detail["dependencies"].append(row)
         if "probeTransition" in anchor:
             detail["probeTransition"] = anchor["probeTransition"]
     if anchor and anchor["kind"] == "Сервис" and len(guest_ids) <= 12:
