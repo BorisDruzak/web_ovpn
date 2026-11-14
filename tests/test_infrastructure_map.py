@@ -1815,7 +1815,20 @@ def test_dns_probe_requires_an_answer_to_the_actual_query(monkeypatch):
     detail = _public_service_check(node["serviceChecks"][0], datetime.now(timezone.utc))
     assert detail["state"] == "unreachable" and detail["reason"] == "dns_address_mismatch"
     assert detail["dns"] == {"name": "service.example.", "record": "A", "rcode": "NOERROR",
+                             "expectedAddresses": ["192.0.2.10", "192.0.2.11"],
                              "transport": "UDP", "addresses": ["192.0.2.10", "192.0.2.11", "192.0.2.12"]}
+
+    def missing_record(query, *args, **kwargs):
+        response = dns.message.make_response(query)
+        response.set_rcode(dns.rcode.NXDOMAIN)
+        return response, False
+
+    monkeypatch.setattr(probes.dns.query, "udp_with_fallback", missing_record)
+    probes.apply_service_probes([node], {"dns": [spec]})
+    detail = _public_service_check(node["serviceChecks"][-1], datetime.now(timezone.utc))
+    assert detail["state"] == "unreachable"
+    assert detail["dns"]["rcode"] == "NXDOMAIN"
+    assert detail["dns"]["expectedAddresses"] == ["192.0.2.10", "192.0.2.11"]
     spec["expected_addresses"] = ["2001:db8::10"]
     assert check(alias, ("host.example.", "A", ["192.0.2.10"])) == "unknown"
 

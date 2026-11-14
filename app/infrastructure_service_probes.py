@@ -520,6 +520,8 @@ def _dns(spec: dict, *, source: str | None = None) -> dict:
         return {"state": "unknown"}
     record = spec["record"]
     diagnostic = {"name": query.question[0].name.to_text(), "record": record}
+    if expected:
+        diagnostic["expectedAddresses"] = [str(address) for address in sorted(expected)]
     if transport != "auto":
         diagnostic["transport"] = transport.upper()
     result = {"state": "unknown", "dns": diagnostic}

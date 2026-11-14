@@ -580,6 +580,12 @@ def _public_dns_check(value: object) -> dict:
     rcode, transport = value.get("rcode"), value.get("transport")
     if transport in ("UDP", "TCP"):
         result["transport"] = transport
+    expected = value.get("expectedAddresses")
+    if record in ("A", "AAAA") and isinstance(expected, list):
+        addresses = [address for item in expected[:16] if (address := _network_address(item))
+                     and "/" not in address and (":" in address) == (record == "AAAA")]
+        if addresses:
+            result["expectedAddresses"] = addresses
     if isinstance(rcode, str) and re.fullmatch(r"[A-Z0-9]{1,16}", rcode) and "transport" in result:
         result["rcode"] = rcode
         addresses = value.get("addresses")
