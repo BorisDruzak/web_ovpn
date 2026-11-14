@@ -3979,31 +3979,45 @@ def summarize_guest_attachment_audit(graph: dict) -> dict:
             guest_services[edge["a"]].add(edge["b"])
     service_coverage = {"withFreshResult": 0, "withoutFreshResult": 0, "withoutService": 0}
     service_gaps = []
+    required_coverage = dict.fromkeys(("complete", "partial", "withoutResult", "withoutRequiredChecks", "withoutService"), 0)
+    required_gaps = []
     for guest_id, attachment in sorted(guests.items()):
         if attachment["power"] != "running":
             continue
-        services = guest_services[guest_id]
+        services = []
+        for service_id in sorted(guest_services[guest_id]):
+            service = nodes[service_id]
+            probes = [check for check in service["serviceChecks"] if check.get("required")]
+            observer = [check for check in service["checks"] if check.get("required")]
+            fresh = sum(not check["stale"] and check["state"] in {"reachable", "unreachable"} for check in probes)
+            fresh += sum(not check["stale"] and check["status"] in {"ok", "warn", "critical"} for check in observer)
+            services.append({"id": service_id, "required": len(probes) + len(observer), "withResult": fresh})
+        missing = [row for row in services if not row["required"] or row["withResult"] < row["required"]]
         if not services:
-            service_coverage["withoutService"] += 1
-            state = "without_service"
-        elif any(
-            check.get("required") and not check["stale"] and check["state"] in {"reachable", "unreachable"}
-            for service_id in services for check in nodes[service_id]["serviceChecks"]
-        ) or any(
-            check.get("required") and not check["stale"] and check["status"] in {"ok", "warn", "critical"}
-            for service_id in services for check in nodes[service_id]["checks"]
-        ):
-            service_coverage["withFreshResult"] += 1
-            continue
+            state, coverage, legacy = "without_service", "withoutService", "withoutService"
+        elif not missing:
+            state, coverage, legacy = "complete", "complete", "withFreshResult"
+        elif any(row["withResult"] for row in services):
+            state, coverage, legacy = "partial", "partial", "withFreshResult"
+        elif any(row["required"] for row in services):
+            state, coverage, legacy = "without_result", "withoutResult", "withoutFreshResult"
         else:
-            service_coverage["withoutFreshResult"] += 1
-            state = "without_fresh_result"
-        service_gaps.append({"guest": attachment["guest"], "state": state})
+            state, coverage, legacy = "without_required_checks", "withoutRequiredChecks", "withoutFreshResult"
+        service_coverage[legacy] += 1
+        required_coverage[coverage] += 1
+        if legacy != "withFreshResult":
+            service_gaps.append({"guest": attachment["guest"],
+                                 "state": "without_service" if not services else "without_fresh_result"})
+        if coverage != "complete":
+            required_gaps.append({"guest": attachment["guest"], "state": state,
+                                  "serviceTotal": len(missing), "services": missing[:16]})
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
     return {**metadata, "attachmentAudit": {"guestCounts": guest_counts, "interfaceCounts": interface_counts,
                                             "runningNetworkCoverage": running_coverage,
                                             "runningServiceCoverage": service_coverage,
                                             "runningServiceGaps": service_gaps[:64],
+                                            "runningRequiredCheckCoverage": required_coverage,
+                                            "runningRequiredCheckGaps": required_gaps[:64],
                                             "gapTotal": len(gaps), "gaps": gaps[:64],
                                             **_confirmed_guest_uplinks(guests),
                                             **without_network}}
