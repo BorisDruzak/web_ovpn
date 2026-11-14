@@ -9722,6 +9722,10 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
         "guests": {"fresh": 1, "stale": 0, "unconfirmed": 0},
         "hypervisors": {"fresh": 0, "stale": 0, "unconfirmed": 0},
     }
+    assert result["presenceCoverage"] == {
+        "guests": {"online": 1, "unconfirmed": 0, "onlineWithFreshHealth": 1},
+        "hypervisors": {"online": 0, "unconfirmed": 0, "onlineWithFreshHealth": 0},
+    }
     matched, ambiguous, unmatched, stopped, disabled, unknown_network = result["guests"]
     assert matched == {"id": "vm:1", "name": "VM 1", "vmid": 1, "state": "matched",
                        "registrations": 1, "presence": "online", "lastSeenAt": at, "healthProfileState": "fresh",
@@ -10226,6 +10230,7 @@ def test_agent_audit_explains_unconfirmed_presence_even_with_recent_health(tmp_p
             "matched", "unconfirmed", reason, "fresh",
         )
         assert "lastSeenAt" not in entry and "health" not in entry
+        assert audit["presenceCoverage"]["guests"] == {"online": 0, "unconfirmed": 1, "onlineWithFreshHealth": 0}
 
     identity["id"] = "3218eb22-423b-43a4-8f97-a0a00f21a4bd"
     identity["baseline_collected_at"] = stale

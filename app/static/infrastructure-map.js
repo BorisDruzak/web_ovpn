@@ -1075,6 +1075,19 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       label.append(row);
     }
     const health = entry?.health;
+    if (entry?.state === 'matched' && !health) {
+      const unavailable = {
+        stale: 'Показатели ОС устарели',
+        unconfirmed: 'Нет подтверждённого отчёта о состоянии ОС',
+        fresh: 'Показатели ОС из свежего отчёта недоступны',
+      };
+      const message = unavailable[entry.healthProfileState];
+      if (message) {
+        const row = make('div');
+        row.append(make('small', message));
+        label.append(row);
+      }
+    }
     if (health) {
       const row = make('div');
       const metrics = [];

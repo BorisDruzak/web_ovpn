@@ -4446,13 +4446,20 @@ def _summarize_agent_audit(nodes: dict, keys: dict, conflicts: set[str], identit
         entries.append(entry)
     counts = Counter(row["state"] for row in guests)
     health_coverage = {}
+    presence_coverage = {}
     for name, entries in (("guests", guests), ("hypervisors", hypervisors)):
-        states = Counter(row["healthProfileState"] for row in entries if row["state"] == "matched")
+        matched = [row for row in entries if row["state"] == "matched"]
+        states = Counter(row["healthProfileState"] for row in matched)
         health_coverage[name] = {state: states[state] for state in ("fresh", "stale", "unconfirmed")}
+        online = [row for row in matched if row["presence"] == "online"]
+        presence_coverage[name] = {
+            "online": len(online), "unconfirmed": len(matched) - len(online),
+            "onlineWithFreshHealth": sum(row["healthProfileState"] == "fresh" for row in online),
+        }
     return {"sourceState": "ready", "total": len(guests), "eligible": len(guests) - counts["not_eligible"],
             "matched": counts["matched"], "ambiguous": counts["ambiguous"], "unmatched": counts["unmatched"],
             "notEligible": counts["not_eligible"],
-            "healthProfileCoverage": health_coverage,
+            "healthProfileCoverage": health_coverage, "presenceCoverage": presence_coverage,
             "guests": sorted((row for row in guests if selected_node is None or row["id"] == selected_node),
                              key=lambda row: (row["vmid"], row["id"])),
             "hypervisors": sorted((row for row in hypervisors if selected_node is None or row["id"] == selected_node),
