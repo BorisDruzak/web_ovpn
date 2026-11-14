@@ -2664,9 +2664,13 @@ def _summarize_shared_ports(pending: list[dict]) -> list[dict]:
                     observation[key] = max(latest, observation.get(key, ""))
             values = {"fdbMacs": {path["learnedEndpoint"]["mac"] for path in fdb_readings
                                   if path["learnedEndpoint"].get("mac")}}
+            candidates = row.get("unconfirmedLldpCandidates", [])
+            values["lldpCandidateDifferentFdbMacs"] = {
+                mac for candidate in candidates for mac in candidate.get("differentFdbMacs", [])
+            }
             for prefix, advertisements in (
                 ("lldp", row.get("lldpPeers", {}).get("a", [])),
-                ("lldpCandidate", row.get("unconfirmedLldpCandidates", [])),
+                ("lldpCandidate", candidates),
             ):
                 values[prefix + "PortIds"] = {item["portId"] for item in advertisements
                                               if item.get("portIdSubtype") == "interface_name" and item.get("portId")}

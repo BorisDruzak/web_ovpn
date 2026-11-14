@@ -4357,6 +4357,8 @@ def test_shared_lldp_ports_publish_paths_and_require_live_port_and_unique_chassi
     mismatched = summarize_topology(combined, node_id="switch", port_name="Gi1/0/48")["topologyAudit"]
     mismatched_peer = next(row for row in mismatched["pending"] if row["b"] == "one")
     assert mismatched_peer["unconfirmedLldpCandidates"] == [{**candidate, "differentFdbMacs": ["02:00:00:00:00:99"]}]
+    mismatch_observation = next(item for item in mismatched["sharedPorts"][0]["peerObservations"] if item["id"] == "one")
+    assert mismatch_observation["lldpCandidateDifferentFdbMacs"] == ["02:00:00:00:00:99"]
     assert mismatched_peer["portB"] == "" and mismatched["currentPairTotal"] == 0
     mismatched_report["learnedEndpoint"]["mac"] = first
     raw = json.loads(path.read_text(encoding="utf-8"))
