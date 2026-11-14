@@ -9484,11 +9484,18 @@ def test_reciprocal_mac_path_shows_fresh_stp_evidence_without_confirming_cable(t
     raw["nodes"][1]["ports"] = [{"name": "Gi1/22", "state": "up", "checkedAt": stamp,
                                     "telemetry": {"checkedAt": stamp, "intervalSeconds": 300,
                                                   "rxBps": 1000, "txBps": 2000}}]
+    for node, age in zip(raw["nodes"], (42, 43.36)):
+        node["ports"][0]["linkCheck"] = {"state": "up", "stateAgeSeconds": age,
+                                            "checkedAt": (now - timedelta(seconds=1)).isoformat()}
+        node["ports"][0]["checkedAt"] = (now - timedelta(seconds=2)).isoformat()
+        node["ports"][0]["telemetry"]["checkedAt"] = node["ports"][0]["checkedAt"]
     path.write_text(json.dumps(raw), encoding="utf-8")
     comparison_graph = load_infrastructure_map(path, now, include_guest_attachments=True)
     comparison, = summarize_topology(comparison_graph)["topologyAudit"]["pending"]
     assert comparison["trafficComparison"]["overlapSeconds"] == 300
-    assert comparison["linkHealth"] == {"state": "both_up", "checkedAt": stamp}
+    assert comparison["linkHealth"] == {"state": "both_up", "checkedAt": (now - timedelta(seconds=1)).isoformat()}
+    assert comparison["stateChangeGapSeconds"] == 1.36
+    assert comparison_graph["pendingPortPairs"][0]["stateChangeGapSeconds"] == 1.36
     assert comparison_graph["pendingPortPairs"][0]["linkHealth"] == comparison["linkHealth"]
     assert summarize_topology(comparison_graph)["topologyAudit"]["pendingPairLinkCounts"] == {"both_up": 1}
     scoped = summarize_topology(comparison_graph, node_id=comparison["a"],

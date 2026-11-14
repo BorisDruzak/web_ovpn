@@ -385,7 +385,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       observedSourceTimes = {}, identifiedPeerSides = [], archivedPortSides = [], inventoryPortSides = [],
       portObservations = {}, stpPaths = [], stpBridgeConnections = [], stpBridgeMacObservations = [], lldpPeers = {},
       archivedPortAt = {}, inventorySources = [], inventoryPeerPorts = [], arpDiagnostics = {}, observedPaths = [],
-      multiMacPortSides = [], unconfirmedLldpCandidates = [], confirmationGaps = [], trafficComparison, linkHealth,
+      multiMacPortSides = [], unconfirmedLldpCandidates = [], confirmationGaps = [], trafficComparison, linkHealth, stateChangeGapSeconds,
       stoppedEndpoints = {}, logicalPeerInterfaces = {}, lldpNoRxSides = [], portHistory = {}, lldpObservations = {}}) {
     const item = make('li');
     const provenance = key => archivedPortSides.includes(key) ? ' (по архиву)' :
@@ -412,6 +412,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       }
     }
     appendLinkComparison(item, linkHealth, 'Замеры портов · ');
+    if (Number.isFinite(stateChangeGapSeconds)) {
+      item.append(make('small', `Разница отметок смены состояния по SNMP · ${stateChangeGapSeconds.toLocaleString('ru-RU')} с`));
+    }
     appendPairHistory(item, portHistory, {a: `${nameA} ${portA}`, b: `${nameB} ${portB}`});
     for (const [side, checkedAt] of Object.entries(archivedPortAt)) {
       if (checkedAt) item.append(make('small', `Архив · ${side === 'a' ? nameA : nameB} · ${formatTime(checkedAt)}`));

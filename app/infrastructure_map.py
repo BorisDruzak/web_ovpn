@@ -2399,6 +2399,11 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
         if any(path["source"] == RECIPROCAL_MAC_SOURCE for path in row["observedPaths"]):
             if traffic := _compare_port_traffic(ports):
                 row["trafficComparison"] = traffic
+            if row["linkHealth"]["state"] == "both_up":
+                first = _time(ports["a"].get("stateSince"))
+                second = _time(ports["b"].get("stateSince"))
+                if first is not None and second is not None:
+                    row["stateChangeGapSeconds"] = round(abs((first - second).total_seconds()), 2)
         if row.get("sharedPort") and not any(path["source"] == SHARED_LLDP_SOURCE for path in row["observedPaths"]):
             port = shared_lldp_ports.get((row["a"], port_key(row["a"], row["portA"])), {})
             name = row["nameB"].casefold()
@@ -4825,7 +4830,7 @@ def load_infrastructure_map(
                  **{key: row[key] for key in ("archivedPortSides", "archivedPortAt", "inventoryPortSides", "inventorySources",
                                              "inventoryPeerPorts", "lldpPeers", "lldpObservations", "unconfirmedLldpCandidates", "multiMacPortSides",
                                              "stpBridgeConnections", "stpBridgeMacObservations", "arpDiagnostics",
-                                             "trafficComparison", "stoppedEndpoints", "conflictingPortSides",
+                                             "trafficComparison", "stateChangeGapSeconds", "stoppedEndpoints", "conflictingPortSides",
                                              "logicalPeerInterfaces", "lldpNoRxSides", "portHistory") if key in row}}
                 for row in pending[:64]
             ],
