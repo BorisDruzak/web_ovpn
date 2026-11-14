@@ -2763,10 +2763,11 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
             "observedViaSharedPorts": [
                 {**{key: row[key] for key in ("switchId", "port", "peerTotal")}, "observation": peer}
                 for row in shared_ports for peer in row["peerObservations"] if peer["id"] == node_id
-                and (not port_name or (
-                    peer.get("lldpCheckedAt") and any(
-                        port_label_key(label) in keys for label in peer.get("lldpPortIds", ())
+                and (not port_name or any(
+                    peer.get(f"{source}CheckedAt") and any(
+                        port_label_key(label) in keys for label in peer.get(f"{source}PortIds", ())
                     )
+                    for source in ("lldp", "lldpCandidate")
                 ))
             ][:64] if node else [],
             "lacpPartnerInterfaceGapTotal": len(partner_gaps), "lacpPartnerInterfaceGaps": partner_gaps[:64],
