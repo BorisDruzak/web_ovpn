@@ -66,20 +66,31 @@ def _valid_http_hostname(value: object) -> bool:
     )
 
 
-class _ScriptReferences(HTMLParser):
-    def __init__(self, prefix: str, directory: str):
+class _AssetReferences(HTMLParser):
+    def __init__(self, prefix: str, directory: str, *, stylesheet: bool):
         super().__init__()
-        self.filename = re.compile(re.escape(directory + prefix) + r"[A-Za-z0-9_-][A-Za-z0-9._-]{0,100}\.js")
+        self.stylesheet = stylesheet
+        suffix = ".css" if stylesheet else ".js"
+        self.filename = re.compile(
+            re.escape(directory + prefix) + r"[A-Za-z0-9_-][A-Za-z0-9._-]{0,100}" + re.escape(suffix)
+        )
         self.matches = []
         self.has_base = False
 
     def handle_starttag(self, tag, attrs):
         if tag == "base":
             self.has_base |= any(name == "href" for name, _ in attrs)
-        if tag == "script":
-            sources = [value for name, value in attrs if name == "src"]
-            if len(sources) == 1 and sources[0] and self.filename.fullmatch(sources[0]):
-                self.matches.append(sources[0])
+        if self.stylesheet:
+            if tag != "link" or [value.lower() for name, value in attrs if name == "rel" and value] != ["stylesheet"]:
+                return
+            attribute = "href"
+        else:
+            if tag != "script":
+                return
+            attribute = "src"
+        sources = [value for name, value in attrs if name == attribute]
+        if len(sources) == 1 and sources[0] and self.filename.fullmatch(sources[0]):
+            self.matches.append(sources[0])
 
 
 def _matches_json_fields(document: dict, fields: dict) -> bool:
@@ -143,8 +154,8 @@ def _is_digest_challenge(value: str) -> bool:
     return all(seen.get(name, "").startswith('"') and len(seen[name]) > 2 for name in ("realm", "nonce"))
 
 
-def _http(ip: str, port: int, spec: dict, *, scripts: _ScriptReferences | None = None,
-          javascript: bool = False) -> dict:
+def _http(ip: str, port: int, spec: dict, *, references: _AssetReferences | None = None,
+          asset_type: str | None = None) -> dict:
     path = _http_path(spec.get("path"))
     body_expected = spec.get("body")
     body_marker = spec.get("body_contains")
@@ -158,10 +169,10 @@ def _http(ip: str, port: int, spec: dict, *, scripts: _ScriptReferences | None =
     redirect_port = spec.get("https_redirect_port")
     allow_gzip = spec.get("allow_gzip", False)
     tls = spec["type"] == "https"
-    if scripts is not None:
+    if references is not None:
         content_type = "text/html"
-    if javascript:
-        content_type = "text/javascript"
+    if asset_type is not None:
+        content_type = asset_type
     if type(redfish_root) is not bool or (redfish_root and (
         not tls or path != "/redfish/v1/"
         or any(value is not None for value in (body_expected, body_marker, json_fields, json_unavailable))
@@ -293,7 +304,7 @@ def _http(ip: str, port: int, spec: dict, *, scripts: _ScriptReferences | None =
             actual_type = response.getheader("Content-Type", "").split(";", 1)[0].strip().lower()
             allowed_types = (
                 ("text/javascript", "application/javascript", "application/x-javascript")
-                if javascript else (content_type,)
+                if asset_type == "text/javascript" else (content_type,)
             )
             if actual_type not in allowed_types:
                 return {**observed, "state": "unknown", "reason": "http_content_type"}
@@ -314,13 +325,13 @@ def _http(ip: str, port: int, spec: dict, *, scripts: _ScriptReferences | None =
                 read = io.BytesIO(decoded).read
             elif encoding not in ("", "identity"):
                 return {**observed, "state": "unknown", "reason": "http_content_encoding"}
-        if scripts is not None:
+        if references is not None:
             payload = read(HTTP_BODY_LIMIT + 1)
             if len(payload) > HTTP_BODY_LIMIT:
                 return {**observed, "state": "unknown", "reason": "http_body_limit"}
-            scripts.feed(payload.decode("utf-8", errors="replace"))
-            scripts.close()
-            if scripts.has_base or len(scripts.matches) != 1:
+            references.feed(payload.decode("utf-8", errors="replace"))
+            references.close()
+            if references.has_base or len(references.matches) != 1:
                 return {**observed, "state": "unreachable", "reason": "http_payload_mismatch"}
             return {**observed, "state": "reachable"}
         if json_fields is not None or redfish_root or oidc_jwks:
@@ -375,8 +386,11 @@ def _http(ip: str, port: int, spec: dict, *, scripts: _ScriptReferences | None =
         connection.close()
 
 
-def _http_script_probe(address: str, port: int, spec: dict) -> dict:
-    prefix = spec["script_src_prefix"]
+def _http_asset_probe(address: str, port: int, spec: dict) -> dict:
+    stylesheet = "stylesheet_href_prefix" in spec
+    if stylesheet and ("script_src_prefix" in spec or "script_src_directory" in spec):
+        raise ValueError("conflicting HTTP asset probe settings")
+    prefix = spec["stylesheet_href_prefix" if stylesheet else "script_src_prefix"]
     path = _http_path(spec.get("path"))
     directory = _http_path(spec["script_src_directory"]) if "script_src_directory" in spec else ""
     if (not isinstance(prefix, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,31}\.?", prefix)
@@ -384,14 +398,16 @@ def _http_script_probe(address: str, port: int, spec: dict) -> dict:
             or any(part in (".", "..") for candidate in (path, directory) for part in candidate.split("/"))
             or any(key in spec for key in ("body", "body_contains", "content_type", "json_fields",
                                            "json_unavailable", "basic_auth_realm", "digest_auth_challenge",
-                                           "redfish_service_root", "oidc_rs256_jwks", "allow_gzip"))):
-        raise ValueError("invalid HTTP script probe contract")
-    scripts = _ScriptReferences(prefix, directory)
-    result = _http(address, port, spec, scripts=scripts)
+                                           "redfish_service_root", "oidc_rs256_jwks", "allow_gzip",
+                                           "https_redirect_port"))):
+        raise ValueError("invalid HTTP asset probe contract")
+    references = _AssetReferences(prefix, directory, stylesheet=stylesheet)
+    result = _http(address, port, spec, references=references)
     if result["state"] != "reachable":
         return result
-    asset_path = _http_path(scripts.matches[0] if directory else path + scripts.matches[0])
-    asset = _http(address, port, {**spec, "path": asset_path}, javascript=True)
+    asset_path = _http_path(references.matches[0] if directory else path + references.matches[0])
+    asset_type = "text/css" if stylesheet else "text/javascript"
+    asset = _http(address, port, {**spec, "path": asset_path}, asset_type=asset_type)
     if (asset.get("httpStatus") in (404, 410)
             or asset.get("reason") in ("http_content_type", "http_payload_mismatch")):
         asset["state"] = "unreachable"
@@ -407,8 +423,8 @@ def _http_probe(spec: dict) -> dict:
         if type(retry_refused) is not bool:
             raise ValueError("retry_connection_refused requires a boolean")
         address = str(ipaddress.ip_address(spec["ip"]))
-        if "script_src_prefix" in spec:
-            return _http_script_probe(address, port, spec)
+        if "script_src_prefix" in spec or "stylesheet_href_prefix" in spec:
+            return _http_asset_probe(address, port, spec)
         result = _http(address, port, spec)
         if retry_refused and result.get("reason") == "http_connection_refused":
             sleep(2)

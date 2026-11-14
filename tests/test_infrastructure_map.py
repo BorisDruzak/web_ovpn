@@ -1402,6 +1402,25 @@ def test_http_script_probe_follows_only_the_unique_relative_build_asset(monkeypa
         assert requests == ["/Client/"]
     assert _http_probe({**absolute_spec, "script_src_directory": "/assets/../"})["reason"] == "http_configuration"
 
+    style_spec = {key: value for key, value in spec.items() if key != "script_src_prefix"}
+    style_spec["stylesheet_href_prefix"] = "appStyles_"
+    asset_content_type = "text/css"
+    page = b'<link rel="stylesheet" href="appStyles_2.0_a1.css">'
+    requests.clear()
+    assert _http_probe(style_spec) == {
+        "state": "reachable", "httpStatus": 200, "path": "/Client/appStyles_2.0_a1.css",
+        "httpHost": "directum.example.test",
+    }
+    assert requests == ["/Client/", "/Client/appStyles_2.0_a1.css"]
+    for page in (
+        b'<link rel="preload" href="appStyles_2.0_a1.css">',
+        b'<link rel="stylesheet" href="//foreign.test/appStyles_2.0_a1.css">',
+    ):
+        requests.clear()
+        assert _http_probe(style_spec)["state"] == "unreachable"
+        assert requests == ["/Client/"]
+    asset_content_type = "text/javascript"
+
     firmware_spec = {**spec, "path": "/", "script_src_prefix": "main.", "script_src_directory": "/"}
     page = b'<script src="/main.82fba5ef.js"></script><!-- <script src="/main.js"></script> -->'
     requests.clear()
