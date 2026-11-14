@@ -2171,6 +2171,10 @@ def _migration_31(conn: sqlite3.Connection) -> None:
         conn.execute(f"CREATE INDEX {table}_{column}_idx ON {table}({column})")
 
 
+def _migration_32(conn: sqlite3.Connection) -> None:
+    conn.execute("ALTER TABLE switch_port_counter_samples ADD COLUMN link_state TEXT")
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1),
     (2, _migration_2),
@@ -2203,6 +2207,7 @@ MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (29, _migration_29),
     (30, _migration_30),
     (31, _migration_31),
+    (32, _migration_32),
 )
 
 

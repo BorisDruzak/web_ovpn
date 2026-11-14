@@ -1471,10 +1471,12 @@ def _persist_counter_telemetry(
             )
         return
 
-    speeds = {port.port_key: port.speed_bps for port in snapshot.ports}
+    ports = {port.port_key: port for port in snapshot.ports}
     observed_time = _parse_started_at(observed_at)
     sampled_port_keys: set[str] = set()
     for sample in snapshot.counter_samples:
+        port = ports[sample.port_key]
+        link_state = port.oper_status if port.admin_status == "up" and port.oper_status in {"up", "down"} else None
         sampled_port_keys.add(sample.port_key)
         previous_row = conn.execute(
             """
@@ -1496,8 +1498,8 @@ def _persist_counter_telemetry(
                 source_id, collector_run_id, port_key, if_index, observed_at,
                 sys_uptime_ticks, octet_counter_bits, in_octets, out_octets,
                 in_errors, out_errors, in_discards, out_discards, speed_bps,
-                in_broadcast_packets, out_broadcast_packets, counter_discontinuity_ticks
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                in_broadcast_packets, out_broadcast_packets, counter_discontinuity_ticks, link_state
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 source_id,
@@ -1513,17 +1515,18 @@ def _persist_counter_telemetry(
                 sample.out_errors,
                 sample.in_discards,
                 sample.out_discards,
-                speeds[sample.port_key],
+                port.speed_bps,
                 str(sample.in_broadcast_packets) if sample.in_broadcast_packets is not None else None,
                 str(sample.out_broadcast_packets) if sample.out_broadcast_packets is not None else None,
                 sample.counter_discontinuity_ticks,
+                link_state,
             ),
         )
         telemetry = derive_port_telemetry(
             sample,
             previous,
             elapsed_seconds=elapsed_seconds,
-            port_speed_bps=speeds[sample.port_key],
+            port_speed_bps=port.speed_bps,
         )
         _upsert_telemetry_row(
             conn,

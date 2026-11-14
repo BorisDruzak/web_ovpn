@@ -506,6 +506,17 @@ def test_counter_samples_are_persisted_and_current_rates_are_derived(
     assert current["in_discards_delta"] == 3
     assert current["out_discards_delta"] == 6
     assert current["telemetry_state"] == "ok"
+    from datetime import datetime, timezone
+    from netctl.network_diagnostics import read_diagnostics
+
+    down = replace(second, ports=tuple(replace(port, oper_status="down") for port in second.ports))
+    collect_and_save_switch(switch_conn, source, _FakeDriver(down), "2026-08-09T10:00:20Z")
+    collect_and_save_switch(switch_conn, source, _FakeDriver(second), "2026-08-09T10:00:30Z")
+    switch_conn.execute("UPDATE network_sources SET enabled = 1 WHERE id = ?", (source["id"],))
+    history = read_diagnostics(switch_conn, source["name"], "ifindex:1",
+                               now=datetime(2026, 8, 9, 10, 1, tzinfo=timezone.utc))
+    assert [point["link_state"] for point in history["points"]] == ["up", "up", "down", "up"]
+    assert history["link_state_summary"] == {"measured_intervals": 3, "observed_down": 1, "observed_up": 1}
 
 
 def test_successful_counter_snapshot_marks_an_omitted_port_unsupported(

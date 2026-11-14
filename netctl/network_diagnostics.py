@@ -144,11 +144,29 @@ def _traffic_points(rows: list[sqlite3.Row], *, switch: bool, unreliable_broadca
         }
         if switch:
             point.update(in_broadcast_pps=broadcast.get("in_pps"), out_broadcast_pps=broadcast.get("out_pps"))
+            if "link_state" in row.keys() and row["link_state"] in {"up", "down"}:
+                point["link_state"] = row["link_state"]
         elif "link_downs_delta" in metrics:
             point["link_downs_delta"] = metrics["link_downs_delta"]
         points.append(point)
         previous = observed, row
     return points
+
+
+def _link_state_summary(rows: list[sqlite3.Row], points: list[dict]) -> dict:
+    summary = {"measured_intervals": 0, "observed_down": 0, "observed_up": 0}
+    ordered = list(reversed(rows))
+    for previous, current, point in zip(ordered, ordered[1:], points[1:]):
+        if (not 0 < point["interval_seconds"] <= MAX_INTERVAL_SECONDS
+                or current["if_index"] is None or current["if_index"] != previous["if_index"]
+                or current["sys_uptime_ticks"] is None or previous["sys_uptime_ticks"] is None
+                or current["sys_uptime_ticks"] < previous["sys_uptime_ticks"]
+                or "link_state" not in point or previous["link_state"] not in {"up", "down"}):
+            continue
+        summary["measured_intervals"] += 1
+        if point["link_state"] != previous["link_state"]:
+            summary[f"observed_{point['link_state']}"] += 1
+    return summary
 
 
 def _broadcast_coverage(rows: list[sqlite3.Row], points: list[dict]) -> dict:
@@ -279,6 +297,7 @@ def read_diagnostics(
                 }
         result["port_counter_summary"] = summary
         if switch:
+            result["link_state_summary"] = _link_state_summary(rows, result["points"])
             result["broadcast_coverage"] = (
                 {"status": "unreliable_counters", "valid_intervals": 0}
                 if unreliable else _broadcast_coverage(rows, result["points"])

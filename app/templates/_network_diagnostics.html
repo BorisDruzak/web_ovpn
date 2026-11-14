@@ -34,6 +34,10 @@
     {% if diagnostics.selected %}
       {% set is_switch = diagnostics.source.driver == 'snmp_switch' %}
       {% set has_error_counters = is_switch or diagnostics.source.driver == 'mikrotik_api' %}
+      {% if diagnostics.link_state_summary is defined %}
+      {% set links = diagnostics.link_state_summary %}
+      <p>Состояние линка по SNMP · {% if links.measured_intervals %}падений {{ links.observed_down }}, восстановлений {{ links.observed_up }} за {{ links.measured_intervals }} измеренных интервалов. Краткие обрывы между опросами могут быть пропущены.{% else %}пока нет сопоставимых замеров.{% endif %}</p>
+      {% endif %}
       {% if diagnostics.port_counter_summary %}
       <p><strong>Счётчики за 24 часа</strong>
         {% for key, label in [('in_errors', 'Ошибки RX'), ('out_errors', 'Ошибки TX'), ('in_discards', 'Отброшено RX'), ('out_discards', 'Отброшено TX')] %}
@@ -76,6 +80,7 @@
                 <th>Ошибки RX / TX</th><th>Отброшено RX / TX</th>
                 {% endif %}
                 {% if is_switch %}
+                <th>Линк по SNMP</th>
                 <th>Широковещание RX / TX, пакетов/с</th>
                 {% endif %}
               </tr>
@@ -92,6 +97,7 @@
                 <td>{{ point.in_discards_delta if point.in_discards_delta is not none else '—' }} / {{ point.out_discards_delta if point.out_discards_delta is not none else '—' }}</td>
                 {% endif %}
                 {% if is_switch %}
+                <td>{{ {'up': 'Поднят', 'down': 'Опущен'}.get(point.get('link_state'), '—') }}</td>
                 <td>{{ '%.2f' | format(point.in_broadcast_pps) if point.in_broadcast_pps is defined and point.in_broadcast_pps is not none else '—' }} /
                     {{ '%.2f' | format(point.out_broadcast_pps) if point.out_broadcast_pps is defined and point.out_broadcast_pps is not none else '—' }}</td>
                 {% endif %}
