@@ -2173,8 +2173,16 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
                 ports = bridge_mac_ports[bridge, learned["mac"]]
                 key = switch, port_key(switch, port)
                 if key not in ports or ports[key]["checkedAt"] < report["at"]:
-                    ports[key] = {"bridgeDeviceId": bridge, "switchId": switch, "port": port,
-                                  "checkedAt": report["at"]}
+                    entry = {"bridgeDeviceId": bridge, "switchId": switch, "port": port,
+                             "checkedAt": report["at"]}
+                    interfaces = {(peer["portId"], peer["checkedAt"])
+                                  for peer in report.get("lldpPeers", {}).get(side, [])
+                                  if peer.get("chassisId") == learned["mac"]
+                                  and peer.get("portIdSubtype") == "interface_name" and peer.get("portId")}
+                    if interfaces:
+                        entry["lldpInterfaces"] = [{"name": name, "checkedAt": stamp}
+                                                   for name, stamp in sorted(interfaces)[:8]]
+                    ports[key] = entry
 
     counts = {"current": 0, "verifiedInventory": 0, "unconfirmed": 0}
     pending = {}

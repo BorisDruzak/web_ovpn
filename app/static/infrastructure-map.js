@@ -518,10 +518,11 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       list.append(...stpBridgeConnections.map(confirmedPortPairRow));
       item.append(make('small', 'Подтверждённые пары на порту моста STP'), list);
     }
-    for (const {bridgeDeviceId, switchId, port, checkedAt} of stpBridgeMacObservations) {
+    for (const {bridgeDeviceId, switchId, port, checkedAt, lldpInterfaces = []} of stpBridgeMacObservations) {
       const bridge = byId.get(bridgeDeviceId)?.name ?? bridgeDeviceId;
       const row = make('small', `MAC моста STP ${bridge} виден на `);
       row.append(portPairEndpoint(switchId, byId.get(switchId)?.name ?? switchId, port), ` · ${formatTime(checkedAt)}`);
+      for (const reading of lldpInterfaces) row.append(` · LLDP ${reading.name} · ${formatTime(reading.checkedAt)}`);
       item.append(row);
     }
     for (const [side, readings] of Object.entries(arpDiagnostics)) {

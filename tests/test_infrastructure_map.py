@@ -10373,7 +10373,10 @@ def test_pending_switch_pair_links_stp_bridge_to_observed_fdb_port(tmp_path):
              "ports": [{"name": "Port13", "state": "up", "checkedAt": stamp}]},
             {"id": "ito", "name": "ITO", "kind": "Коммутатор"},
             {"id": "school", "name": "School", "kind": "Коммутатор",
-             "ports": [{"name": "ge48", "state": "up", "checkedAt": stamp}]},
+             "ports": [{"name": "ge48", "state": "up", "checkedAt": stamp, "lldpNeighborCount": 1,
+                        "lldpNeighbors": [{"systemName": "Router", "inventoryDeviceId": "router",
+                                           "chassisId": mac, "portId": "bridge/ether3",
+                                           "portIdSubtype": "interface_name"}]}]},
             {"id": "router", "name": "Router", "kind": "Маршрутизатор"},
         ], "links": [
             {"a": "css", "b": "ito", "kind": "Сетевое соединение", "portEvidence": [
@@ -10389,7 +10392,8 @@ def test_pending_switch_pair_links_stp_bridge_to_observed_fdb_port(tmp_path):
         return [next(row for row in rows if row["a"] == "css")
                 for rows in (graph["pendingPortPairs"], topology["pending"])]
 
-    expected = [{"bridgeDeviceId": "router", "switchId": "school", "port": "ge48", "checkedAt": stamp}]
+    expected = [{"bridgeDeviceId": "router", "switchId": "school", "port": "ge48", "checkedAt": stamp,
+                 "lldpInterfaces": [{"name": "bridge/ether3", "checkedAt": stamp}]}]
     assert all(row["stpBridgeMacObservations"] == expected for row in read())
     observed["learnedEndpoint"]["mac"] = "02:00:00:00:00:04"
     assert all("stpBridgeMacObservations" not in row for row in read())
