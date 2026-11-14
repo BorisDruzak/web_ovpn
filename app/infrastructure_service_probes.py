@@ -277,6 +277,7 @@ def _http(ip: str, port: int, spec: dict, *, references: _AssetReferences | None
     connection = (http.client.HTTPSConnection(server_name or ip, port, timeout=TIMEOUT, context=context) if tls
                   else http.client.HTTPConnection(ip, port, timeout=TIMEOUT))
     observed = {}
+    request_sent = False
     headers = {"Accept-Encoding": "gzip, identity" if allow_gzip else "identity"}
     if http_host is not None:
         observed["httpHost"] = http_host
@@ -302,6 +303,7 @@ def _http(ip: str, port: int, spec: dict, *, references: _AssetReferences | None
                 return {"state": "unknown", "reason": "http_certificate_pin"}
         request_started = monotonic() if spec.get("measure_headers") is True else None
         connection.request("GET", path, headers=headers)
+        request_sent = True
         response = connection.getresponse()
         observed["httpStatus"] = response.status
         if request_started is not None:
@@ -412,7 +414,10 @@ def _http(ip: str, port: int, spec: dict, *, references: _AssetReferences | None
     except http.client.HTTPException:
         return {**observed, "state": "unknown", "reason": "http_bad_response"}
     except TimeoutError:
-        return {**observed, "state": "unknown", "reason": "timeout"}
+        result = {**observed, "state": "unknown", "reason": "timeout"}
+        if not tls:
+            result["timeoutStage"] = "protocol" if request_sent or connection.sock is not None else "connect"
+        return result
     except ConnectionRefusedError:
         return {**observed, "state": "unreachable", "reason": "http_connection_refused"}
     except ConnectionResetError:
@@ -1178,7 +1183,7 @@ def _read_ssh_identification(spec: dict) -> dict:
             while budget:
                 remaining = deadline - monotonic()
                 if remaining <= 0:
-                    return {"state": "unknown", "reason": "timeout", **connected}
+                    return {"state": "unknown", "reason": "timeout", "timeoutStage": "protocol", **connected}
                 connection.settimeout(remaining)
                 chunk = connection.recv(budget)
                 if not chunk:
@@ -1196,7 +1201,7 @@ def _read_ssh_identification(spec: dict) -> dict:
                         )
                         return {"state": "reachable", **connected} if valid else invalid
     except TimeoutError:
-        return {"state": "unknown", "reason": "timeout", **connected}
+        return {"state": "unknown", "reason": "timeout", "timeoutStage": "protocol" if connected else "connect", **connected}
     except ConnectionRefusedError:
         if not connected:
             return {"state": "unreachable", "reason": "ssh_connection_refused"}

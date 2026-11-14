@@ -896,7 +896,7 @@ def _public_service_check(check: dict, now: datetime) -> dict:
             result["tlsVersion"] = version
         if tls_state == "failed" and reason == "postgresql_tls_handshake":
             result["reason"] = reason
-    if (result["method"] in ("RDP Negotiation", "SMB2", "WinRM HTTP", "SIP OPTIONS (TCP)")
+    if (result["method"] in ("RDP Negotiation", "SMB2", "WinRM HTTP", "SIP OPTIONS (TCP)", "HTTP", "SSH")
             and reason == "timeout" and not result["stale"] and check.get("timeoutStage") in ("connect", "protocol")):
         result["timeoutStage"] = check["timeoutStage"]
     if result["method"] == "SMB2":

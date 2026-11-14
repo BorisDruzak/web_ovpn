@@ -8648,6 +8648,58 @@ def test_sip_tcp_reports_timeout_stage(monkeypatch, stage):
     assert _attachment_probe_location(check)["timeoutStage"] == stage
 
 
+@pytest.mark.parametrize("stage", ["connect", "protocol"])
+def test_http_and_ssh_report_timeout_stage(monkeypatch, stage):
+    from app import infrastructure_service_probes as probes
+    from app.infrastructure_map import _attachment_probe_location, _public_service_check
+
+    class Connection:
+        sock = None
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def request(self, *args, **kwargs):
+            if stage == "connect":
+                raise TimeoutError
+
+        def getresponse(self):
+            raise TimeoutError
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def settimeout(self, timeout):
+            pass
+
+        def recv(self, size):
+            raise TimeoutError
+
+        def close(self):
+            pass
+
+    def connect(*args, **kwargs):
+        if stage == "connect":
+            raise TimeoutError
+        return Connection()
+
+    monkeypatch.setattr(probes.socket, "create_connection", connect)
+    monkeypatch.setattr(probes.http.client, "HTTPConnection", Connection)
+    address = {"ip": "192.0.2.10", "port": 80}
+    for method, raw in (
+        ("HTTP", probes._http_probe({**address, "type": "http", "path": "/", "content_type": "text/html"})),
+        ("SSH", probes._ssh_identification({**address, "port": 22})),
+    ):
+        now = datetime.now(timezone.utc)
+        check = _public_service_check({**raw, "source": "UI_VPN", "method": method,
+                                       "checkedAt": now.isoformat()}, now)
+        assert (check["state"], check["reason"], check["timeoutStage"]) == ("unknown", "timeout", stage)
+        assert _attachment_probe_location(check)["timeoutStage"] == stage
+
+
 def test_sip_options_validates_transaction_and_treats_silence_as_unknown(monkeypatch):
     import ipaddress
     import struct
