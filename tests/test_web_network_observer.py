@@ -2348,6 +2348,8 @@ def test_network_interfaces_shows_history_for_selected_source(tmp_path, monkeypa
     assert "Недостаточно данных для графика" in page.text
     assert "Ошибка опроса" in page.text
     assert 'value="ether1" selected' in page.text
+    assert "Ошибки RX 0 (интервалы с ростом — 0 из 1)" in page.text
+    assert "Ошибки TX 2 (интервалы с ростом — 1 из 1)" in page.text
     assert "Ошибки RX / TX" in page.text
     assert "Отброшено RX / TX" in page.text
     assert "<td>0 / 2</td>" in page.text

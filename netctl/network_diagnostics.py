@@ -259,6 +259,17 @@ def read_diagnostics(
         ).fetchone() if switch else None
         unreliable = model is not None and broadcast_counters_unreliable(model["profile_id"], model["sys_descr"])
         result["points"] = _traffic_points(rows, switch=switch, unreliable_broadcast=unreliable)
+        summary = {}
+        for key in PORT_COUNTERS:
+            deltas = [point[f"{key}_delta"] for point in result["points"]
+                      if point[f"{key}_delta"] is not None]
+            if deltas:
+                summary[key] = {
+                    "total": sum(deltas),
+                    "measured_intervals": len(deltas),
+                    "affected_intervals": sum(delta > 0 for delta in deltas),
+                }
+        result["port_counter_summary"] = summary
         if switch:
             result["broadcast_coverage"] = (
                 {"status": "unreliable_counters", "valid_intervals": 0}

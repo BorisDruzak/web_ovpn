@@ -39,6 +39,7 @@ def test_router_history_uses_valid_deltas_and_leaves_a_gap_after_reset(tmp_path,
         result = read_diagnostics(conn, "router", "wan", now=datetime(2026, 11, 12, 12, 16, tzinfo=UTC))
 
     assert result["interfaces"][0]["key"] == "wan"
+    assert result["port_counter_summary"] == {}
     assert [(point["rx_bps"], point["tx_bps"]) for point in result["points"]] == [
         (None, None), (8, 16), (None, None), (None, None),
     ]
@@ -92,6 +93,12 @@ def test_router_history_keeps_error_deltas_only_between_valid_samples(tmp_path, 
         (None, None, None, None),
     ]
     assert [point["rx_bps"] for point in result["points"]] == [None, 8, 8, 8, 8, None]
+    assert result["port_counter_summary"] == {
+        "in_errors": {"total": 0, "measured_intervals": 1, "affected_intervals": 0},
+        "out_errors": {"total": 1, "measured_intervals": 2, "affected_intervals": 1},
+        "in_discards": {"total": 2, "measured_intervals": 2, "affected_intervals": 2},
+        "out_discards": {"total": 2, "measured_intervals": 1, "affected_intervals": 1},
+    }
 
 
 def test_switch_history_derives_errors_and_records_only_stp_changes(tmp_path):

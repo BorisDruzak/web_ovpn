@@ -34,6 +34,14 @@
     {% if diagnostics.selected %}
       {% set is_switch = diagnostics.source.driver == 'snmp_switch' %}
       {% set has_error_counters = is_switch or diagnostics.source.driver == 'mikrotik_api' %}
+      {% if diagnostics.port_counter_summary %}
+      <p><strong>Счётчики за 24 часа</strong>
+        {% for key, label in [('in_errors', 'Ошибки RX'), ('out_errors', 'Ошибки TX'), ('in_discards', 'Отброшено RX'), ('out_discards', 'Отброшено TX')] %}
+        {% set counter = diagnostics.port_counter_summary.get(key) %}
+        · {{ label }} {% if counter %}{{ counter.total }} (интервалы с ростом — {{ counter.affected_intervals }} из {{ counter.measured_intervals }}){% else %}— нет замеров{% endif %}
+        {% endfor %}
+      </p>
+      {% endif %}
       {% if diagnostics.points | rejectattr("rx_bps", "none") | list %}
       <p>Средний трафик между опросами, Мбит/с · время UTC · <span class="network-rx">RX входящий</span> · <span class="network-tx">TX исходящий</span></p>
       <canvas id="interface-history-chart" role="img" aria-label="График трафика за 24 часа в Мбит/с. Значения доступны в таблице измерений."></canvas>
