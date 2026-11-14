@@ -2992,6 +2992,10 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         confirmed = [member for member in matching if peer_counts[member["partner_port"]] == 1]
         checked_at = min(arp_at, datetime.fromisoformat(report["at"])).isoformat()
         if confirmed and (asset, report["source"], report["aggregate"]) in lacp_identity_sources:
+            if (asset_ip_checks.get(asset) == address and not nodes[asset].get("guest")
+                    and "probeTargetIdentityAt" not in nodes[asset] and not (devices_by_mac.get(mac, set()) - {asset})):
+                nodes[asset].update(probeTargetIP=address, probeTargetIdentityAt=checked_at,
+                                    probeTargetIdentityMethod="ICMP · LACP + ARP")
             for service in identity_services.get(asset, []):
                 if service.get("probeTargetIP") is None:
                     service.update(probeTargetIP=address, probeTargetIdentityAt=checked_at)

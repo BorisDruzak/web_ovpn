@@ -2003,7 +2003,7 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
         blocked = []
         management_observation = None
         identity_method = node.get("probeTargetIdentityMethod")
-        if identity_method != "ICMP · ARP + FDB":
+        if identity_method not in ("ICMP · ARP + FDB", "ICMP · LACP + ARP"):
             identity_method = "ICMP · LLDP + ARP" if node["kind"] == "Коммутатор" else None
         identity_at = node.get("probeTargetIdentityAt") if service or identity_method else None
         for spec in specs:

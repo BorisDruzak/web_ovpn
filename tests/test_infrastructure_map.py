@@ -4416,9 +4416,10 @@ def test_matching_fdb_attachment_adds_evidence_and_supplemental_ip_check(monkeyp
     assert skipped["skipped"] and skipped["supplemental"] and skipped["reason"] == "probe_target_unconfirmed"
 
 
-def test_lacp_confirms_only_ports_whose_partner_matches_fresh_arp(tmp_path):
+def test_lacp_confirms_only_ports_whose_partner_matches_fresh_arp(tmp_path, monkeypatch):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map
+    from app import infrastructure_service_probes as probes
 
     now = datetime.now(timezone.utc)
     at = now.isoformat()
@@ -4440,18 +4441,31 @@ def test_lacp_confirms_only_ports_whose_partner_matches_fresh_arp(tmp_path):
                               {"port": "ge7", "partner_port": 2, "mac": "02:00:00:00:00:99"}]}],
     }
     path = tmp_path / "map.json"
+    monkeypatch.setattr(probes, "_icmp_check", lambda ip: {"state": "reachable", "roundTripMs": 1.0})
 
     def link(stamp=now):
         graph = build_graph(context, network, {}, {}, {
             "asset_services": {"pbs-ssh": {"asset": "pbs", "label": "PBS SSH", "require_network_identity": True}},
+            "asset_ip_checks": {"pbs": address},
             "lacp_links": [{"source": "snr", "asset": "pbs", "aggregate": "po1", "members": ["ge6", "ge7"]}],
         }, now)
         ssh = next(node for node in graph["nodes"] if node["id"] == "pbs-ssh")
         verified = len(network["arp"]) == 1
         assert ssh["probeTargetIP"] == (address if verified else None)
         assert ssh.get("probeTargetIdentityAt") == (at if verified else None)
+        probes.apply_service_probes(graph["nodes"], {"pbs": [{"type": "icmp", "ip": address}]})
         path.write_text(json.dumps(graph), encoding="utf-8")
-        return next(e for e in load_infrastructure_map(path, stamp)["links"] if {e["a"], e["b"]} == {"sw", "pbs"})
+        public = load_infrastructure_map(path, stamp + timedelta(seconds=1))
+        pbs = next(node for node in public["nodes"] if node["id"] == "pbs")
+        check, = pbs["serviceChecks"]
+        if verified and stamp == now:
+            assert (check["state"], check["method"], check["identityCheckedAt"], check["roundTripMs"]) == (
+                "reachable", "ICMP · LACP + ARP", at, 1.0,
+            )
+            assert pbs["reachability"]["state"] == "reachable"
+        elif not verified:
+            assert check["skipped"] and check["reason"] == "probe_target_unconfirmed"
+        return next(e for e in public["links"] if {e["a"], e["b"]} == {"sw", "pbs"})
 
     result = link()
     assert result["confirmed"] and result["source"] == "SNMP LACP + ARP"
