@@ -10246,6 +10246,8 @@ def test_reciprocal_mac_path_shows_fresh_stp_evidence_without_confirming_cable(t
            "designatedPortId": "80:03", "checkedAt": stamp, "bridgeDeviceId": "root",
            "designatedPortName": "ge21", "designatedPortCheckedAt": stamp}
     switch = {"id": "css", "name": "CSS", "kind": "Коммутатор", "stpRootPath": stp,
+              "stpRoot": {"localPort": "Port13", "rootBridgeMac": stp["designatedBridgeMac"],
+                          "rootDeviceId": "root", "checkedAt": stamp},
               "ports": [{"name": "Port13", "state": "up", "checkedAt": stamp,
                          "stpPort": {"state": "forwarding", "enabled": True, "checkedAt": stamp},
                          "fdbVlans": {"checkedAt": stamp, "vlans": [{"id": 1, "learnedMacCount": 5}]}}]}
@@ -10324,6 +10326,11 @@ def test_reciprocal_mac_path_shows_fresh_stp_evidence_without_confirming_cable(t
     assert upstream["currentPairs"] == [confirmed] and upstream["pendingTotal"] == 0
     assert upstream["pendingPairLinkCounts"] == {}
     assert upstream["stpRelatedPending"] == [pending]
+    assert upstream["stpRootObservers"] == []
+    assert upstream["stpDesignatedObservers"] == [{"id": "css", "name": "CSS", **stp}]
+    root = summarize_topology(graph, node_id="root")["topologyAudit"]
+    assert root["stpRootObservers"] == [{"id": "css", "name": "CSS", **switch["stpRoot"]}]
+    assert not summarize_topology(read(now + timedelta(minutes=6)), node_id="root")["topologyAudit"]["stpRootObservers"]
     assert summarize_topology(graph, node_id="root", port_name="ge22")["topologyAudit"]["stpRelatedPending"] == []
     assert graph["pendingPortPairs"][0]["stpBridgeConnections"] == [confirmed]
     assert read(now + timedelta(minutes=6))["pendingPortPairs"][0]["stpPaths"] == []

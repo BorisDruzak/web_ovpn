@@ -2518,6 +2518,29 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       list.append(row);
       propertiesSection.append(make('h3', 'Корневой порт STP'), list);
     }
+    if (!observedPort) {
+      const observers = data.nodes.filter(item => item.stpRoot?.rootDeviceId === id || item.stpRootPath?.bridgeDeviceId === id);
+      if (observers.length) {
+        const panel = make('details', null, 'map-port-panel');
+        panel.append(make('summary', `Наблюдения STP с других узлов (${observers.length})`));
+        const list = make('ul', null, 'map-detail-list');
+        for (const item of observers) {
+          const row = make('li');
+          if (item.stpRoot?.rootDeviceId === id) {
+            const {localPort, checkedAt} = item.stpRoot;
+            const link = make('a', `${item.name} · ${localPort}`);
+            link.href = '?' + new URLSearchParams({node: item.id, port: localPort});
+            row.append(link, make('small', `Корневой мост · ${formatTime(checkedAt)}`));
+          }
+          if (item.stpRootPath?.bridgeDeviceId === id) {
+            appendStpPath(row, {...item.stpRootPath, deviceId: item.id});
+          }
+          list.append(row);
+        }
+        panel.append(list);
+        propertiesSection.append(panel);
+      }
+    }
     if (!observedPort && node.ports?.length) {
       const panel = make('details', null, 'map-port-panel');
       panel.dataset.section = 'ports';

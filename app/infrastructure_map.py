@@ -2744,6 +2744,9 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
         gaps = [row for row in pending if matches(row)]
         stp_related_gaps = [row for row in pending if not matches(row) and (
             any(matches(pair) for pair in row.get("stpBridgeConnections", []))
+            or any(path.get("bridgeDeviceId") == node_id
+                   and (not port_name or port_label_key(path.get("designatedPortName", "")) in keys)
+                   for path in row.get("stpPaths", []))
             or any(observation["switchId"] == node_id
                    and (not port_name or port_label_key(observation["port"]) in keys)
                    for observation in row.get("stpBridgeMacObservations", []))
@@ -2785,6 +2788,15 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
             "pendingPairLinkCounts": dict(Counter(row["linkHealth"]["state"] for row in gaps)),
             "confirmationGapCounts": dict(Counter(reason for row in gaps for reason in row["confirmationGaps"])),
             "stpRelatedPendingTotal": len(stp_related_gaps), "stpRelatedPending": stp_related_gaps[:64],
+            "stpRootObservers": [
+                {"id": item["id"], "name": item["name"], **root}
+                for item in nodes.values() if not port_name and (root := item.get("stpRoot", {})).get("rootDeviceId") == node_id
+            ][:64],
+            "stpDesignatedObservers": [
+                {"id": item["id"], "name": item["name"], **path}
+                for item in nodes.values() if (path := item.get("stpRootPath", {})).get("bridgeDeviceId") == node_id
+                and (not port_name or port_label_key(path.get("designatedPortName", "")) in keys)
+            ][:64],
             "portAlertTotal": len(port_alerts), "portAlerts": port_alerts[:64],
             "portCounterAudit": _summarize_port_counters(
                 nodes, topology_pairs, port_nodes=scoped_nodes, service_ports=graph.get("servicePorts")),
