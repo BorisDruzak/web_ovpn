@@ -9746,6 +9746,7 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
     selected = client.get("/api/v1/network/infrastructure?view=agents&node_id=vm:1", headers=headers)
     assert selected.status_code == 200
     context = selected.json()["infrastructure"]
+    assert "presenceCoverage" not in context["agentAudit"]
     detail, = context["agentAudit"]["guests"]
     attachment = client.get("/api/v1/network/infrastructure?view=attachment&node_id=vm:1", headers=headers)
     assert context["attachment"] == attachment.json()["infrastructure"]["attachment"]
