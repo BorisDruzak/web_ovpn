@@ -662,8 +662,11 @@ def _public_service_check(check: dict, now: datetime) -> dict:
             link = pppoe.get("parentLink")
             if (isinstance(link, dict) and link.get("state") in ("up", "down", "disabled")
                     and observation_is_fresh(link.get("checkedAt"), now, max_age=PPPOE_PARENT_LINK_MAX_AGE)):
-                result["pppoe"]["parentLink"] = {"state": link["state"], "source": "RouterOS",
-                                                 "checkedAt": _time(link["checkedAt"]).isoformat()}
+                port = _public_port({"name": parent, "source": "RouterOS", "state": link["state"],
+                                     "checkedAt": link["checkedAt"], "routerLink": link.get("routerLink")}, now)
+                result["pppoe"]["parentLink"] = {key: port[key] for key in (
+                    "state", "source", "checkedAt", "speedBps", "speedCheckedAt", "linkMode",
+                ) if port.get(key) is not None}
     reason = check.get("reason")
     storage_field = "pbsStorage" if pbs_storage else "localStorage" if local_storage else ""
     if storage_field and isinstance(detail := check.get(storage_field), dict):

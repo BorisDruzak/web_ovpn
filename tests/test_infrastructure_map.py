@@ -7414,6 +7414,17 @@ def test_pppoe_wan_uses_live_session_and_keeps_physical_confirmation_separate(tm
         "session": "pppoe-out1", "parent": "ether1-wan", "state": "connected",
         "parentLink": {"state": "up", "source": "RouterOS", "checkedAt": at},
     }
+    speed_at = (now - timedelta(seconds=30)).isoformat()
+    mode = {"checkedAt": speed_at, "speedBps": 100_000_000, "duplex": "full", "autoNegotiation": True}
+    network["router_link_modes"] = {("router", "ether1-wan"): mode}
+    assert read()[0]["serviceChecks"][0]["pppoe"]["parentLink"] == {
+        "state": "up", "source": "RouterOS", "checkedAt": at, "speedBps": 100_000_000,
+        "speedCheckedAt": speed_at,
+        "linkMode": {"checkedAt": speed_at, "duplex": "full", "autoNegotiation": True},
+    }
+    mode["checkedAt"] = (now - timedelta(minutes=6)).isoformat()
+    assert read()[0]["serviceChecks"][0]["pppoe"]["parentLink"] == check["pppoe"]["parentLink"]
+    mode["checkedAt"] = speed_at
     assert (positive["method"], positive["target"], positive["state"]) == ("ICMP через PPPoE", "1.1.1.1", "reachable")
     assert (silent["target"], silent["state"], silent["reason"]) == ("8.8.8.8", "unknown", "icmp_no_echo_reply")
     assert any(r["a"] == "ether1-wan" and r["b"] == "pppoe-out1" for e in links for r in e["portEvidence"])
@@ -7424,7 +7435,9 @@ def test_pppoe_wan_uses_live_session_and_keeps_physical_confirmation_separate(tm
     session["running"] = False
     service, _ = read()
     assert service["mapStatus"] == "critical"
-    assert service["serviceChecks"][0]["pppoe"]["parentLink"]["state"] == "down"
+    assert service["serviceChecks"][0]["pppoe"]["parentLink"] == {
+        "state": "down", "source": "RouterOS", "checkedAt": at,
+    }
     assert len(service["serviceChecks"]) == 1
     session["disabled"] = True
     service, _ = read()

@@ -129,7 +129,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       const {duplex, autoNegotiation, checkedAt} = port.linkMode;
       const configured = {true: 'Автосогласование включено', false: 'Автосогласование выключено'};
       const mode = {full: 'Полный дуплекс', half: 'Полудуплекс'};
-      row.append(make('small', [label, mode[duplex], configured[autoNegotiation], 'SNMP · ' + formatTime(checkedAt)]
+      row.append(make('small', [label, mode[duplex], configured[autoNegotiation], `${port.source ?? 'SNMP'} · ${formatTime(checkedAt)}`]
         .filter(Boolean).join(' · ')));
     }
     if (port.transceiver) {
@@ -2758,9 +2758,11 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           row.append(make('small', arpResult + ' · ' + arp.address + ' · из ' + arp.sourceIP + ' · ' + arp.interface));
         }
         if (pppoe?.parentLink) {
-          const {state, source, checkedAt} = pppoe.parentLink;
+          const {state, source, checkedAt, speedBps, speedCheckedAt} = pppoe.parentLink;
           const link = {up: 'Линк поднят', down: 'Линк опущен', disabled: 'Порт отключён'}[state];
-          row.append(make('small', [pppoe.parent, link, source, formatTime(checkedAt)].join(' · ')));
+          row.append(make('small', [pppoe.parent, link, formatPortSpeed(speedBps), source,
+            formatTime(speedCheckedAt ?? checkedAt)].filter(Boolean).join(' · ')));
+          appendPortLinkDetails(row, pppoe.parentLink, pppoe.parent);
         }
         list.append(row);
       }

@@ -2192,7 +2192,9 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             session_details = {"session": session, "parent": parent, "state": status}
             ports = [port for port in router_ports.get(source_name, []) if port["name"] == parent]
             if len(ports) == 1:
-                session_details["parentLink"] = {key: ports[0][key] for key in ("state", "checkedAt")}
+                port, = ports
+                session_details["parentLink"] = {key: port[key] for key in ("state", "checkedAt", "routerLink")
+                                                 if key in port}
             check.update(state="reachable" if status == "connected" else "unreachable", checkedAt=checked_at,
                          pppoe=session_details)
             edge(router, item["id"], "Цель проверки", PPPOE_SOURCE, ports=(parent, session), at=checked_at)
