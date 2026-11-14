@@ -1497,7 +1497,22 @@ def _attach_backup_scope(nodes: dict) -> None:
     gaps = [{**{key: node[key] for key in ("id", "name", "vmid")}, "state": node["backupCoverage"]["state"]}
             for node in running if node["backupCoverage"]["state"] != "scheduled"]
     gaps.sort(key=lambda row: (row["state"] != "not_scheduled", row["vmid"], row["id"]))
-    service["backupScope"] = {"storage": storage, **scope(guests), "running": scope(running), "runningGaps": gaps[:64]}
+    states = defaultdict(set)
+    for check in service["serviceChecks"]:
+        if (check["method"] == BACKUP_PROBE_METHOD and check["source"] == "Proxmox"
+                and check.get("required") and not check["stale"] and "backupVmid" in check
+                and "backupMaxAgeHours" in check):
+            state = check["state"]
+            if state == "reachable" and "backupCompletedAt" not in check:
+                state = "unknown"
+            states[check["backupVmid"]].add(state)
+    scheduled = [node for node in running if node["backupCoverage"]["state"] == "scheduled"]
+    passed = sum(states[node["vmid"]] == {"reachable"} for node in scheduled)
+    failed = sum(states[node["vmid"]] == {"unreachable"} for node in scheduled)
+    service["backupScope"] = {
+        "storage": storage, **scope(guests), "running": scope(running), "runningGaps": gaps[:64],
+        "runningResults": {"passed": passed, "failed": failed, "unconfirmed": len(scheduled) - passed - failed},
+    }
 
 
 def _service_check_status(check: dict) -> str:

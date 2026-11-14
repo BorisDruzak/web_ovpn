@@ -3255,11 +3255,17 @@ def test_guest_backup_coverage_is_scoped_and_failures_apply_to_the_right_guest(t
         assert backup["backupScope"] == node["backupScope"]
         return node["backupScope"], node["mapStatus"]
 
-    pve["backup"]["results"][102]["successful"] = True
+    failed_scope, _ = read_scope()
+    assert failed_scope["runningResults"] == {"passed": 1, "failed": 1, "unconfirmed": 0}
+    pve["backup"]["results"].pop(102)
+    unconfirmed_scope, _ = read_scope()
+    assert unconfirmed_scope["runningResults"] == {"passed": 1, "failed": 0, "unconfirmed": 1}
+    pve["backup"]["results"][102] = {"successful": True, "completedAt": now}
     pve["backup"].pop("incomplete")
     scope, status = read_scope()
     assert status == "warn"
     assert scope["running"] == {"total": 3, "scheduled": 2, "notScheduled": 1, "unknown": 0}
+    assert scope["runningResults"] == {"passed": 2, "failed": 0, "unconfirmed": 0}
     assert scope["runningGaps"] == [{"id": "pve-guest:103", "name": "vm-103", "vmid": 103,
                                      "state": "not_scheduled"}]
     pve["guests"][1]["status"] = "stopped"
@@ -4470,6 +4476,7 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
         assert backup["backupScope"] == {"storage": "pbs", "total": 3, "scheduled": 1,
                                          "notScheduled": 1, "unknown": 1,
                                          "running": {"total": 0, "scheduled": 0, "notScheduled": 0, "unknown": 0},
+                                         "runningResults": {"passed": 0, "failed": 0, "unconfirmed": 0},
                                          "runningGaps": []}
         assert "probeEndpoints" not in backup
     network["arp"][0]["last_seen_at"] = (now - timedelta(minutes=6)).isoformat()

@@ -2197,7 +2197,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       propertiesSection.append(panel);
     }
     if (node.backupScope) {
-      const {storage, total, scheduled, notScheduled, unknown, running, runningGaps = []} = node.backupScope;
+      const {storage, total, scheduled, notScheduled, unknown, running, runningResults, runningGaps = []} = node.backupScope;
       const list = make('dl');
       list.append(make('dt', 'Хранилище'), make('dd', storage),
         make('dt', 'В расписании'), make('dd', `${scheduled} из ${total}`),
@@ -2206,6 +2206,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       const panel = make('section');
       panel.dataset.section = 'backup-scope';
       panel.append(make('h3', 'Расписание копирования ВМ и контейнеров'), list);
+      if (runningResults && running?.scheduled) {
+        list.append(make('dt', 'Копии запущенных ВМ и контейнеров в расписании'),
+          make('dd', `Свежие ${runningResults.passed} из ${running.scheduled} · Сбой или просрочка ${runningResults.failed} · Без результата ${runningResults.unconfirmed}`));
+      }
       if (running && runningGaps.length) {
         const review = make('details');
         const count = running.notScheduled + running.unknown;
