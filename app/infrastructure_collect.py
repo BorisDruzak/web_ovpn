@@ -75,7 +75,7 @@ KINDS = {
     "switch": NETWORK_KINDS[0], "router": NETWORK_KINDS[1],
     "wireless_access_point": NETWORK_KINDS[2], "hypervisor": "Гипервизор",
     "endpoint": "Рабочая станция", "firewall_dns_host": "Межсетевой экран и DNS",
-    "security_gateway": "Шлюз", "ip_pbx": "АТС", "fxs_gateway": "Телефонный шлюз",
+    "security_gateway": "Шлюз", "ip_pbx": "АТС", "fxs_gateway": "Телефонный шлюз", "ip_phone": "IP-телефон",
     "management_controller": "Контроллер управления",
     "video_recorder": "Видеорегистратор",
 }
