@@ -1331,6 +1331,7 @@ def test_http_script_probe_follows_only_the_unique_relative_build_asset(monkeypa
     page = b'<script src="app_2.0_a1.js"></script>'
     requests = []
     asset_status = 200
+    asset_content_type = "application/x-javascript"
 
     class Response:
         def __init__(self, path):
@@ -1339,7 +1340,7 @@ def test_http_script_probe_follows_only_the_unique_relative_build_asset(monkeypa
 
         def getheader(self, name, default):
             if name == "Content-Type":
-                return "text/html" if self.page else "text/javascript"
+                return "text/html" if self.page else asset_content_type
             return default
 
         def read(self, limit):
@@ -1365,6 +1366,9 @@ def test_http_script_probe_follows_only_the_unique_relative_build_asset(monkeypa
             "http_host": "directum.example.test", "script_src_prefix": "app_"}
     assert _http_probe(spec)["state"] == "reachable"
     assert requests == ["/Client/", "/Client/app_2.0_a1.js"]
+    asset_content_type = "text/html"
+    assert _http_probe(spec)["reason"] == "http_content_type"
+    asset_content_type = "text/javascript"
     page = b'<script src="app_3_b2.js"></script>'
     asset_status = 404
     result = _http_probe(spec)

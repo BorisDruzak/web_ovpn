@@ -291,7 +291,10 @@ def _http(ip: str, port: int, spec: dict, *, scripts: _ScriptReferences | None =
             return {**observed, "state": "unknown", "reason": "http_status"}
         if content_type:
             actual_type = response.getheader("Content-Type", "").split(";", 1)[0].strip().lower()
-            allowed_types = ("text/javascript", "application/javascript") if javascript else (content_type,)
+            allowed_types = (
+                ("text/javascript", "application/javascript", "application/x-javascript")
+                if javascript else (content_type,)
+            )
             if actual_type not in allowed_types:
                 return {**observed, "state": "unknown", "reason": "http_content_type"}
         read = response.read
