@@ -298,7 +298,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const label = linkComparisonLabels[health?.state];
     if (!label) return;
     const time = health.checkedAt ? ' · ' + formatTime(health.checkedAt) : '';
-    row.append(make('small', prefix + label + time));
+    const speed = {missing_speed: ' · не хватает замеров скорости',
+      samples_apart: ' · замеры скорости разнесены по времени'}[health.speedComparison] ?? '';
+    row.append(make('small', prefix + label + speed + time));
   }
   function appendPortStateChange(parent, port, label = '') {
     if (!port.stateSince) return;

@@ -1840,9 +1840,9 @@ def _compare_link_ports(ports: dict) -> dict:
     if last - first > timedelta(minutes=2):
         return {}
     if up_count == 2:
-        state = "both_up"
-    else:
-        state = "one_down" if up_count else "both_down"
+        return {"state": "both_up", "checkedAt": first.isoformat(),
+                "speedComparison": "samples_apart" if a["speedBps"] and b["speedBps"] else "missing_speed"}
+    state = "one_down" if up_count else "both_down"
     return {"state": state, "checkedAt": first.isoformat()}
 
 

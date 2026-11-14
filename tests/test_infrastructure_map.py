@@ -2918,6 +2918,9 @@ def test_direct_link_compares_contemporaneous_port_samples(tmp_path):
     assert comparison() == {"state": "both_up", "checkedAt": stamp}
     nodes[1]["ports"][0]["speedBps"] = 100_000_000
     assert comparison()["state"] == "speed_mismatch"
+    del nodes[1]["ports"][0]["speedBps"]
+    assert comparison() == {"state": "both_up", "checkedAt": stamp, "speedComparison": "missing_speed"}
+    nodes[1]["ports"][0]["speedBps"] = 100_000_000
     nodes[1]["ports"][0]["state"] = "down"
     assert comparison()["state"] == "one_down"
     nodes[0]["ports"][0]["state"] = "disabled"
@@ -6183,7 +6186,7 @@ def test_port_comparison_uses_speed_measurement_times():
     ports["a"]["speedCheckedAt"] = older
     assert _compare_link_ports(ports) == {}
     ports["a"]["checkedAt"] = recent
-    assert _compare_link_ports(ports) == {"state": "both_up", "checkedAt": recent}
+    assert _compare_link_ports(ports) == {"state": "both_up", "checkedAt": recent, "speedComparison": "samples_apart"}
     ports["a"].update(state="down", speedCheckedAt=older)
     assert _compare_link_ports(ports) == {"state": "one_down", "checkedAt": recent}
 
@@ -9658,7 +9661,8 @@ def test_reciprocal_mac_path_shows_fresh_stp_evidence_without_confirming_cable(t
     comparison_graph = load_infrastructure_map(path, now, include_guest_attachments=True)
     comparison, = summarize_topology(comparison_graph)["topologyAudit"]["pending"]
     assert comparison["trafficComparison"]["overlapSeconds"] == 300
-    assert comparison["linkHealth"] == {"state": "both_up", "checkedAt": (now - timedelta(seconds=1)).isoformat()}
+    assert comparison["linkHealth"] == {"state": "both_up", "checkedAt": (now - timedelta(seconds=1)).isoformat(),
+                                        "speedComparison": "missing_speed"}
     assert comparison["stateChangeGapSeconds"] == 1.36
     assert comparison_graph["pendingPortPairs"][0]["stateChangeGapSeconds"] == 1.36
     assert comparison_graph["pendingPortPairs"][0]["linkHealth"] == comparison["linkHealth"]
