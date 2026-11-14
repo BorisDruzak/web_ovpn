@@ -1418,6 +1418,17 @@ def test_http_script_probe_follows_only_the_unique_relative_build_asset(monkeypa
     requests.clear()
     assert _http_probe(style_spec)["path"] == "/Client/appStyles_3.0_b2.css"
     assert requests == ["/Client/", "/Client/appStyles_3.0_b2.css"]
+    absolute_style = {**style_spec, "stylesheet_href_directory": "/assets/"}
+    page = b'<link rel="stylesheet" href="/assets/appStyles_3.0_b2.css">'
+    requests.clear()
+    assert _http_probe(absolute_style)["path"] == "/assets/appStyles_3.0_b2.css"
+    assert requests == ["/Client/", "/assets/appStyles_3.0_b2.css"]
+    assert _http_probe({**absolute_style, "stylesheet_href_directory": "/assets/../"})["reason"] == "http_configuration"
+    for href in ("/other/appStyles_a.css", "//foreign.test/assets/appStyles_a.css", "/assets/appStyles_a.css?x=1"):
+        page = f'<link rel="stylesheet" href="{href}">'.encode()
+        requests.clear()
+        assert _http_probe(absolute_style)["state"] == "unreachable"
+        assert requests == ["/Client/"]
     for page in (
         b'<link rel="preload" href="appStyles_2.0_a1.css">',
         b'<link rel="stylesheet" href="//foreign.test/appStyles_2.0_a1.css">',

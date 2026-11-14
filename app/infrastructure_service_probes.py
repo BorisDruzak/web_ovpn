@@ -408,11 +408,13 @@ def _http(ip: str, port: int, spec: dict, *, references: _AssetReferences | None
 
 def _http_asset_probe(address: str, port: int, spec: dict) -> dict:
     stylesheet = "stylesheet_href_prefix" in spec
-    if stylesheet and ("script_src_prefix" in spec or "script_src_directory" in spec):
+    if ((stylesheet and ("script_src_prefix" in spec or "script_src_directory" in spec))
+            or (not stylesheet and "stylesheet_href_directory" in spec)):
         raise ValueError("conflicting HTTP asset probe settings")
     prefix = spec["stylesheet_href_prefix" if stylesheet else "script_src_prefix"]
     path = _http_path(spec.get("path"))
-    directory = _http_path(spec["script_src_directory"]) if "script_src_directory" in spec else ""
+    directory_key = "stylesheet_href_directory" if stylesheet else "script_src_directory"
+    directory = _http_path(spec[directory_key]) if directory_key in spec else ""
     if (not isinstance(prefix, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,31}\.?", prefix)
             or not (directory or path).endswith("/")
             or any(part in (".", "..") for candidate in (path, directory) for part in candidate.split("/"))
@@ -443,7 +445,7 @@ def _http_probe(spec: dict) -> dict:
         if type(retry_refused) is not bool:
             raise ValueError("retry_connection_refused requires a boolean")
         address = str(ipaddress.ip_address(spec["ip"]))
-        if "script_src_prefix" in spec or "stylesheet_href_prefix" in spec:
+        if any(key in spec for key in ("script_src_prefix", "stylesheet_href_prefix", "stylesheet_href_directory")):
             return _http_asset_probe(address, port, spec)
         result = _http(address, port, spec)
         if retry_refused and result.get("reason") == "http_connection_refused":
