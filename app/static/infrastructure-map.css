@@ -81,26 +81,40 @@
 #infra-map-review .map-viewport.map-dragging { cursor: grabbing; user-select: none; }
 #infra-map-review .map-stage { margin-inline: auto; overflow: clip; }
 #infra-map-review .map-graph { position: relative; transform-origin: top left; }
-#infra-map-review .map-ring {
-  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-  border: 1px dashed var(--map-border); border-radius: 50%; pointer-events: none;
+#infra-map-review .map-placement {
+  position: absolute; pointer-events: none; border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--map-active) 36%, var(--map-border));
+  background: color-mix(in srgb, var(--map-active) 5%, var(--map-paper));
+}
+#infra-map-review .map-placement[data-depth="1"] { background: color-mix(in srgb, var(--map-active) 9%, var(--map-paper)); }
+#infra-map-review .map-placement[data-depth="2"] {
+  background: var(--map-paper);
+  border-color: var(--map-border);
 }
 #infra-map-review .map-node {
   position: absolute; z-index: 1; transform: translate(-50%, -50%);
   width: var(--map-node-width); height: var(--map-node-height);
-  display: flex; align-items: center; gap: 7px; padding: 5px 8px;
+  display: grid; grid-template-columns: 8px minmax(0, 1fr); align-content: center; align-items: center; gap: 2px 6px; padding: 5px 8px;
   text-align: left; border: 1px solid color-mix(in srgb, var(--node-color) 50%, var(--map-border));
   border-radius: 7px; background: color-mix(in srgb, var(--node-color) 7%, var(--map-paper)); cursor: pointer;
 }
 #infra-map-review .map-node span {
-  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
   overflow-wrap: anywhere; font-size: 12px; line-height: 1.2; font-weight: 600;
 }
+#infra-map-review .map-node small { grid-column: 2; font-size: 9px; color: var(--map-muted); }
+#infra-map-review .map-service span { -webkit-line-clamp: 3; }
 #infra-map-review .map-node:hover, #infra-map-review .map-node[aria-pressed="true"] { outline: 2px solid var(--map-active); outline-offset: 1px; }
 #infra-map-review .map-wires { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
 #infra-map-review .map-wires path { stroke: var(--map-wire); fill: none; stroke-width: 1.2; }
+#infra-map-review .map-wires path.map-placement-wire { stroke: var(--map-active); opacity: .62; }
+#infra-map-review .map-wires path.map-service-wire { opacity: .30; }
+#infra-map-review .map-wires path.map-dependency-wire { stroke-dasharray: 5 4; opacity: .55; }
+#infra-map-review .map-wires.map-has-selection path:not(.active) { opacity: .22; }
 #infra-map-review .map-wires path.active { stroke: var(--map-active); stroke-width: 2.3; }
-#infra-map-review .map-wires path.port-alert { stroke: var(--map-warn); stroke-width: 2.3; stroke-dasharray: 8 3 2 3; }
+#infra-map-review .map-wires path.active.map-placement-wire,
+#infra-map-review .map-wires path.active.map-dependency-wire { opacity: 1; }
+#infra-map-review .map-wires path.port-alert { stroke: var(--map-warn); stroke-width: 2.3; stroke-dasharray: 8 3 2 3; opacity: 1; }
 #infra-map-review #map-details, #infra-map-review #map-related {
   border: 1px solid var(--map-border);
   padding: 13px 14px;

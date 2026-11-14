@@ -45,7 +45,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     if (node.id === data.clusterId && color === 'warn') label = 'Кластер доступен, есть сбои';
     return {label, color};
   };
-  let byId, incident, connected, networkKinds, primary, anchors, networkDistance;
+  let byId, incident, connected, networkKinds, primary, placement;
   const buttons = new Map();
   const graphs = [];
   const mapNodeWidth = 136;
@@ -54,7 +54,6 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   let view = 'overview';
   let selected = null;
   let selectedPort = null;
-  let focusedRanks = null;
   const make = (tag, text, className) => {
     const element = document.createElement(tag);
     if (text) element.textContent = text;
@@ -94,7 +93,6 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     invalid: 'Снимок инфраструктуры недоступен.',
     stale: 'Снимок устарел. Связи показаны по последним доступным данным.',
   };
-  const proxmoxUnavailable = () => data.collectionIssues?.includes('proxmox');
   const collectionMessages = {
     snapshot_delayed: 'Сбор карты задерживается. Последний снимок опубликован более трёх минут назад.',
     proxmox: 'Опрос Proxmox завершился ошибкой. Текущее состояние и размещение ВМ не подтверждены.',
@@ -617,28 +615,25 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     button.dataset.state = availability.color;
     button.setAttribute('aria-label', node.name + ', ' + availability.label);
     button.setAttribute('aria-pressed', 'false');
-    const label = node.guest && focusedRanks ? 'ВМ ' + node.vmid : node.name;
-    button.append(make('i'), make('span', label));
+    button.append(make('i'), make('span', node.name));
     button.firstChild.dataset.state = availability.color;
     button.addEventListener('click', () => select(id));
     buttons.set(id, button);
     return button;
   }
-  function traversal(seed, seen, visible) {
-    const distance = new Map([[seed, 0]]);
-    const queue = [seed];
-    for (const id of queue) {
-      seen.add(id);
-      for (const peer of connected.get(id)) {
-        if (distance.has(peer) || !visible.has(peer)) continue;
-        distance.set(peer, distance.get(id) + 1);
-        queue.push(peer);
-      }
-    }
-    return distance;
-  }
   const nameOrder = (a, b) => byId.get(a).name.localeCompare(byId.get(b).name, 'ru');
-  const onBackbone = node => node.id !== data.clusterId && (!node.guest || data.overviewGuests.includes(node.id));
+  const servicePlacement = new Set(['Размещение', 'Цель проверки']);
+
+  function placementPriority({a, b, kind}) {
+    const host = byId.get(a);
+    const child = byId.get(b);
+    if (kind === 'Узел кластера' && a === data.clusterId && child.kind === 'Гипервизор') return 1;
+    if (kind === 'Размещение ВМ' && host.kind === 'Гипервизор' && child.guest) return a === child.pveHost ? 2 : 1;
+    if (!servicePlacement.has(kind) || child.kind !== 'Сервис' || host.kind === 'Сервис') return 0;
+    if (kind === 'Размещение') return host.guest ? 4 : 3;
+    return host.guest ? 2 : 1;
+  }
+
   function indexSnapshot() {
     byId = new Map(data.nodes.map(node => [node.id, node]));
     incident = new Map(data.nodes.map(node => [node.id, []]));
@@ -652,37 +647,22 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       }
     }
     networkKinds = new Set(data.switchKinds);
-    const roots = data.nodes.filter(node => networkKinds.has(node.kind)).map(node => node.id);
-    primary = roots.sort((a, b) => connected.get(b).length - connected.get(a).length || nameOrder(a, b))[0];
-    anchors = [primary, ...data.overviewGuests].filter(Boolean);
-    const backboneIds = new Set(data.nodes.filter(onBackbone).map(node => node.id));
-    networkDistance = primary ? traversal(primary, new Set(), backboneIds) : new Map();
-  }
-
-  function focusedTopology(id) {
-    const path = [id];
-    let current = id;
-    const host = byId.get(id).pveHost;
-    if (!networkDistance.has(id) && connected.get(id).includes(host)) {
-      path.unshift(host);
-      current = host;
+    primary = data.nodes.filter(node => networkKinds.has(node.kind)).map(node => node.id)
+      .sort((a, b) => connected.get(b).length - connected.get(a).length || nameOrder(a, b))[0];
+    placement = new Map();
+    for (const [id, edges] of incident) {
+      let best = 0;
+      const hosts = new Set();
+      for (const edge of edges) {
+        if (!edge.confirmed || edge.b !== id) continue;
+        const priority = placementPriority(edge);
+        if (!priority || priority < best) continue;
+        if (priority > best) hosts.clear();
+        hosts.add(edge.a);
+        best = priority;
+      }
+      if (hosts.size === 1) placement.set(id, hosts.values().next().value);
     }
-    while (networkDistance.get(current) > 0) {
-      const parent = connected.get(current).find(peer => networkDistance.get(peer) === networkDistance.get(current) - 1);
-      if (!parent) break;
-      path.unshift(parent);
-      current = parent;
-    }
-    if (path.length === 1) {
-      const incoming = incident.get(id).find(edge => edge.confirmed && edge.b === id &&
-        ['Размещение', 'Размещение ВМ', 'Цель проверки'].includes(edge.kind));
-      if (incoming) path.unshift(incoming.a);
-    }
-    const ranks = new Map(path.map((nodeId, rank) => [nodeId, rank]));
-    for (const peer of connected.get(id)) {
-      if (!ranks.has(peer)) ranks.set(peer, path.length);
-    }
-    return ranks;
   }
   function enableMapDrag(viewport) {
     let drag = null;
@@ -763,52 +743,95 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       save() {
         return {scale, fitted, left: viewport.scrollLeft, top: viewport.scrollTop};
       },
-      restore(state, unlinked) {
+      restore(state) {
         if (state?.fitted) {
           fit();
           return;
         }
         if (state) setScale(state.scale);
-        viewport.scrollTo(state?.left ?? (viewport.scrollWidth - viewport.clientWidth) / 2,
-          state?.top ?? (unlinked ? 0 : (viewport.scrollHeight - viewport.clientHeight) / 2));
+        viewport.scrollTo(state?.left ?? 0, state?.top ?? 0);
       },
     };
   }
 
-  function radialLayout(ranks) {
-    const positions = new Map();
-    const rings = [];
-    let radius = 0;
-    for (const row of ranks) {
-      const angles = row.map((_, index) => 2 * Math.PI * index / row.length - Math.PI / 2);
-      if (radius || row.length > 1 || positions.size) {
-        radius += mapNodeWidth + 22;
-        for (let index = 0; index < row.length && row.length > 1; index++) {
-          const angle = angles[index];
-          const next = angles[(index + 1) % row.length];
-          const spacing = Math.max(
-            Math.abs(Math.cos(angle) - Math.cos(next)) / (mapNodeWidth + 16),
-            Math.abs(Math.sin(angle) - Math.sin(next)) / (mapNodeHeight + 16),
-          );
-          radius = Math.max(radius, Math.ceil(1 / spacing));
-        }
-        rings.push(radius);
+  function packGroups(items, gap) {
+    const area = items.reduce((sum, item) => sum + (item.width + gap) * (item.height + gap), 0);
+    const rowWidth = Math.max(...items.map(item => item.width), Math.ceil(Math.sqrt(area * 1.55)));
+    let x = 0, y = 0, rowHeight = 0, width = 0;
+    for (const item of items) {
+      if (x && x + item.width > rowWidth) {
+        x = 0;
+        y += rowHeight + gap;
+        rowHeight = 0;
       }
-      row.forEach((id, index) => positions.set(id, {
-        x: radius * Math.cos(angles[index]),
-        y: radius * Math.sin(angles[index]),
-      }));
+      item.x = x;
+      item.y = y;
+      rowHeight = Math.max(rowHeight, item.height);
+      width = Math.max(width, x + item.width);
+      x += item.width + gap;
     }
-    const width = 2 * radius + mapNodeWidth + 40;
-    const height = 2 * radius + mapNodeHeight + 40;
-    for (const point of positions.values()) {
-      point.x += width / 2;
-      point.y += height / 2;
-    }
-    return {positions, rings, width, height};
+    return {width, height: y + rowHeight};
   }
 
-  function addGraph(title, components, focus = null, unlinked = []) {
+  function topologyLayout(ids, edges) {
+    const children = new Map([...ids].map(id => [id, []]));
+    const parent = id => ids.has(placement.get(id)) ? placement.get(id) : undefined;
+    const roots = [];
+    for (const id of [...ids].sort(nameOrder)) {
+      const owner = parent(id);
+      if (owner) children.get(owner).push(id);
+      else roots.push(id);
+    }
+    const rootFor = id => parent(id) ? rootFor(parent(id)) : id;
+    const neighbors = new Map(roots.map(id => [id, new Set()]));
+    for (const {a, b} of edges) {
+      const first = rootFor(a);
+      const second = rootFor(b);
+      if (first === second) continue;
+      neighbors.get(first).add(second);
+      neighbors.get(second).add(first);
+    }
+    const ordered = new Set();
+    // Keep roots with confirmed links in the same neighborhood.
+    for (const seed of [data.clusterId, primary, ...roots]) {
+      if (!neighbors.has(seed) || ordered.has(seed)) continue;
+      const queue = [seed];
+      ordered.add(seed);
+      for (const id of queue) {
+        for (const peer of [...neighbors.get(id)].sort(nameOrder)) {
+          if (ordered.has(peer)) continue;
+          queue.push(peer);
+          ordered.add(peer);
+        }
+      }
+    }
+
+    function measure(id) {
+      const entries = children.get(id).map(measure);
+      if (!entries.length) return {id, entries, width: mapNodeWidth, height: mapNodeHeight};
+      entries.sort((a, b) => b.height - a.height || b.width - a.width || nameOrder(a.id, b.id));
+      const packed = packGroups(entries, 14);
+      return {id, entries, width: packed.width + 32, height: mapNodeHeight + packed.height + 48};
+    }
+    const items = [...ordered].map(measure);
+    const {width, height} = packGroups(items, 46);
+    const positions = new Map();
+    const panels = [];
+    function place(item, offsetX, offsetY, depth) {
+      const x = item.x + offsetX;
+      const y = item.y + offsetY;
+      if (item.entries.length) {
+        panels.push({x, y, width: item.width, height: item.height, depth});
+      }
+      const inset = item.entries.length ? 16 : 0;
+      positions.set(item.id, {x: x + inset + mapNodeWidth / 2, y: y + inset + mapNodeHeight / 2});
+      for (const child of item.entries) place(child, x + 16, y + mapNodeHeight + 32, depth + 1);
+    }
+    for (const item of items) place(item, 24, 24, 0);
+    return {positions, panels, width: width + 48, height: height + 48};
+  }
+
+  function addGraph(title, ids) {
     const section = group(title);
     const stage = make('div', null, 'map-stage');
     const viewport = make('div', null, 'map-viewport');
@@ -820,41 +843,32 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.classList.add('map-wires');
     svg.setAttribute('aria-hidden', 'true');
-    const ranks = [];
-    const layoutComponents = focus ? [traversal(focus, new Set(), new Set(components[0].keys()))] : components;
-    for (const component of layoutComponents) {
-      for (const [id, rank] of component) {
-        (ranks[rank] ??= []).push(id);
-      }
-    }
-    let previous = new Map();
-    for (const row of ranks) {
-      const parentIndex = id => Math.min(...connected.get(id).filter(peer => previous.has(peer)).map(peer => previous.get(peer)), Infinity);
-      row.sort((a, b) => parentIndex(a) - parentIndex(b) || nameOrder(a, b));
-      previous = new Map(row.map((id, index) => [id, index]));
-    }
-    if (unlinked.length) ranks.push(unlinked);
-    const {positions, rings, width, height} = radialLayout(ranks);
+    const edges = data.links.filter(edge => edge.confirmed && ids.has(edge.a) && ids.has(edge.b));
+    const {positions, panels, width, height} = topologyLayout(ids, edges);
     graph.style.width = `${width}px`;
     graph.style.height = `${height}px`;
     graph.style.setProperty('--map-node-width', `${mapNodeWidth}px`);
     graph.style.setProperty('--map-node-height', `${mapNodeHeight}px`);
-    for (const radius of rings) {
-      const guide = make('div', null, 'map-ring');
-      guide.style.width = guide.style.height = `${2 * radius}px`;
-      guide.setAttribute('aria-hidden', 'true');
-      graph.append(guide);
+    for (const {x, y, width, height, depth} of panels) {
+      const panel = make('div', null, 'map-placement');
+      panel.dataset.depth = depth;
+      Object.assign(panel.style, {left: `${x}px`, top: `${y}px`, width: `${width}px`, height: `${height}px`});
+      panel.setAttribute('aria-hidden', 'true');
+      graph.append(panel);
     }
     graph.append(svg);
     for (const [id, {x, y}] of positions) {
       const button = nodeButton(id);
-      button.title = byId.get(id).name;
+      const node = byId.get(id);
+      button.title = `${node.name} · ${node.kind}`;
+      if (node.kind === 'Сервис') button.classList.add('map-service');
+      else button.append(make('small', node.guest && node.vmid ? `ВМ ${node.vmid}` : node.kind));
       button.style.left = `${x}px`;
       button.style.top = `${y}px`;
       graph.append(button);
     }
     let fitButton;
-    if (rings.length) {
+    if (ids.size > 1) {
       fitButton = make('button', 'Показать всю карту', 'map-fit');
       fitButton.type = 'button';
       const heading = section.firstElementChild;
@@ -867,21 +881,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     stage.append(graph);
     enableMapDrag(viewport);
     const zoom = mapZoom(viewport, stage, graph, width, height, fitButton);
-    graphs.push({
-      title, viewport, graph, svg, components, positions, zoom, fitButton, unlinked: Boolean(unlinked.length),
-      edges: unlinked.length ? [] : data.links.filter(edge => edge.confirmed && positions.has(edge.a) && positions.has(edge.b)),
-    });
-  }
-  function addGuestGroups(guests) {
-    const hosts = new Map();
-    for (const guest of guests) {
-      if (!hosts.has(guest.pveHost)) hosts.set(guest.pveHost, []);
-      hosts.get(guest.pveHost).push(guest);
-    }
-    for (const [host, entries] of hosts) {
-      addGraph((host || 'Размещение не подтверждено') + ' · ВМ и контейнеры (' + entries.length + ')', [], null,
-              entries.sort((a,b) => a.vmid - b.vmid).map(node => node.id));
-    }
+    graphs.push({title, viewport, graph, svg, positions, zoom, fitButton, edges});
   }
   function refitMaps() {
     for (const {zoom} of graphs) zoom.fitIfActive();
@@ -889,77 +889,50 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   new ResizeObserver(refitMaps).observe(groups);
   window.addEventListener('resize', refitMaps);
 
-  function renderView(mode, focus=null, mapPositions = new Map()) {
+  function renderView(mode, mapPositions = new Map()) {
     if (selected) clearSelection();
     graphs.length = 0;
     groups.replaceChildren();
     buttons.clear();
     view = mode;
     renderPortPairSummary();
-    focusedRanks = focus ? focusedTopology(focus) : null;
     viewButtons.forEach(button => button.setAttribute('aria-pressed', String(button.dataset.view === mode)));
     navigationHint.hidden = !data.nodes.length;
     if (!data.nodes.length) return;
-    if (focusedRanks) {
-      addGraph('Схема связей', [focusedRanks], focus);
-    } else if (mode === 'cluster') {
-      if (byId.has(data.clusterId) && data.nodeOrder.length) {
-        addGraph('Кластер и узлы', [new Map([[data.clusterId, 0], ...data.nodeOrder.map(id => [id, 1])])]);
-      } else {
-        group('Нет данных о кластере');
+    const titles = {overview: 'Сеть, виртуализация и службы', cluster: 'Кластер, ВМ и службы', switches: 'Сетевые устройства'};
+    const visible = new Set(data.nodes.filter(node => {
+      if (mode === 'overview') return true;
+      if (mode === 'switches') return networkKinds.has(node.kind);
+      let id = node.id;
+      while (id) {
+        const owner = byId.get(id);
+        if (owner.guest || owner.kind === 'Гипервизор' || id === data.clusterId) return true;
+        id = placement.get(id);
       }
-      for (const id of data.nodeOrder) {
-        const guests = data.nodes.filter(node => node.pveHost === id).sort((a,b) => a.vmid - b.vmid);
-        if (guests.length) addGraph(id + ' · ВМ (' + guests.length + ')', [], null, guests.map(node => node.id));
-        else if (!proxmoxUnavailable()) group(id + ' · ВМ отсутствуют');
-      }
-      if (proxmoxUnavailable()) addGuestGroups(data.nodes.filter(node => node.guest && !node.pveHost));
-    } else {
-      const isOverview = mode === 'overview';
-      const visible = new Set(data.nodes.filter(node => isOverview
-        ? onBackbone(node)
-        : networkKinds.has(node.kind)).map(node => node.id));
-      const order = [...new Set([...anchors.filter(id => visible.has(id)), ...visible])];
-      const components = new Map();
-      const seen = new Set();
-      const isolated = [];
-      for (const seed of order) {
-        if (seen.has(seed)) continue;
-        const component = traversal(seed, seen, visible);
-        if (component.size === 1) isolated.push(seed);
-        else components.set(seed, component);
-      }
-      const main = components.get(primary);
-      if (main) addGraph(isOverview ? 'Сеть и виртуализация' : 'Схема соединений', [main]);
-      const other = [...components].filter(([seed]) => seed !== primary).map(([,component]) => component);
-      if (other.length) addGraph(isOverview ? 'Серверы и сервисы' : 'Другие подтверждённые соединения', other);
-      if (isolated.length) addGraph('Узлы без подтверждённых связей в этом разделе', [], null, isolated.sort(nameOrder));
-      if (isOverview) {
-        if (byId.has(data.clusterId)) addGraph('Кластер Proxmox', [], null, [data.clusterId]);
-        addGuestGroups(data.nodes.filter(node => node.guest && !visible.has(node.id)));
-      }
+      return false;
+    }).map(node => node.id));
+    if (!visible.size) {
+      group(mode === 'cluster' ? 'Нет данных о кластере' : 'Нет данных о сетевых устройствах');
+      return;
     }
-    for (const {title, zoom, unlinked} of graphs) {
-      zoom.restore(mapPositions.get(title), unlinked);
+    addGraph(titles[mode], visible);
+    for (const {title, zoom} of graphs) {
+      zoom.restore(mapPositions.get(title));
     }
     requestAnimationFrame(draw);
   }
   function draw() {
-    for (const {svg, edges, components, positions} of graphs) {
+    for (const {svg, edges, positions} of graphs) {
       const affectedPairs = new Set(edges.filter(edge => edge.portAlerts?.length).map(edge => edgeKey(edge.a, edge.b)));
       const drawn = new Set();
       const active = new Set();
-      const ranksByNode = components.find(component => component.has(selected));
-      if (ranksByNode) {
+      if (positions.has(selected)) {
         for (const peer of connected.get(selected)) active.add(edgeKey(selected, peer));
-        let child = selected;
-        while (ranksByNode.get(child) > 0) {
-          const parent = connected.get(child).find(peer => ranksByNode.get(peer) === ranksByNode.get(child) - 1);
-          if (!parent) break;
-          active.add(edgeKey(child, parent));
-          child = parent;
+        for (let child = selected, owner; positions.has(owner = placement.get(child)); child = owner) {
+          active.add(edgeKey(child, owner));
         }
       }
+      svg.classList.toggle('map-has-selection', active.size > 0);
       svg.replaceChildren();
       for (const edge of edges) {
         const pair = edgeKey(edge.a, edge.b);
@@ -968,10 +941,23 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const start = positions.get(edge.a);
         const end = positions.get(edge.b);
         const path = document.createElementNS('http://www.w3.org/2000/svg','path');
-        path.setAttribute('d', `M ${start.x} ${start.y} L ${end.x} ${end.y}`);
+        const forward = placement.get(edge.b) === edge.a;
+        if (forward || placement.get(edge.a) === edge.b) {
+          const owner = forward ? start : end;
+          const child = forward ? end : start;
+          const from = owner.y + mapNodeHeight / 2;
+          const to = child.y - mapNodeHeight / 2;
+          const mid = (from + to) / 2;
+          path.setAttribute('d', `M ${owner.x} ${from} C ${owner.x} ${mid}, ${child.x} ${mid}, ${child.x} ${to}`);
+          path.classList.add('map-placement-wire');
+          if (byId.get(forward ? edge.b : edge.a).kind === 'Сервис') path.classList.add('map-service-wire');
+        } else {
+          path.setAttribute('d', `M ${start.x} ${start.y} L ${end.x} ${end.y}`);
+        }
         if (affectedPairs.has(pair)) path.classList.add('port-alert');
         else if (edge.kind === 'Транзитный сегмент') path.setAttribute('stroke-dasharray', '2 3');
         else if (pathKinds.has(edge.kind)) path.setAttribute('stroke-dasharray', '5 4');
+        else if (edge.kind === 'Зависимость сервиса') path.classList.add('map-dependency-wire');
         if (active.has(pair)) path.classList.add('active');
         svg.append(path);
       }
@@ -1081,15 +1067,14 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
 
   function closeSelection() {
     const previous = selected;
-    if (focusedRanks) renderView(view);
-    else clearSelection();
+    clearSelection();
     buttons.get(previous)?.focus({preventScroll: true});
     requestAnimationFrame(draw);
   }
 
   function renderRelated(id) {
     const ids = new Set([id]);
-    if (focusedRanks) for (const peer of focusedRanks.keys()) ids.add(peer);
+    for (let owner = placement.get(id); owner; owner = placement.get(owner)) ids.add(owner);
     for (const peer of connected.get(id)) ids.add(peer);
     const list = make('ul', null, 'map-related-list');
     for (const peerId of ids) {
@@ -1115,14 +1100,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   }
 
   function select(id, reveal=true) {
-    const target = byId.get(id);
-    if (!target) return;
-    if (view === 'overview') {
-      renderView('overview', id);
-    } else if (!buttons.has(id)) {
-      const clusterItem = target.guest || data.nodeOrder.includes(id) || id === data.clusterId;
-      renderView(clusterItem ? 'cluster' : 'overview', clusterItem ? null : id);
-    }
+    if (!byId.has(id)) return;
+    if (!buttons.has(id)) renderView('overview');
     if (!buttons.has(id)) return;
     renderSelection(id, reveal);
   }
@@ -3399,7 +3378,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     if (event.key === 'Escape' && selected) closeSelection();
   });
   viewButtons.forEach(button => button.addEventListener('click', () => {
-    if (button.dataset.view !== view || focusedRanks) renderView(button.dataset.view);
+    if (button.dataset.view !== view) renderView(button.dataset.view);
   }));
   function displaySnapshot(graph) {
     const params = new URLSearchParams(window.location.search);
@@ -3417,8 +3396,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     data = graph;
     indexSnapshot();
     renderSnapshotHeader();
-    const focus = view === 'overview' && byId.has(wanted) ? wanted : null;
-    renderView(view, focus, mapPositions);
+    renderView(view, mapPositions);
     if (buttons.has(wanted)) {
       renderSelection(wanted, false, wantedPort);
       for (const panel of details.querySelectorAll('details')) {
@@ -3482,7 +3460,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         const availability = availabilityOf(node);
         nodes.push({
           x: left + x - mapNodeWidth / 2, y: height + y - mapNodeHeight / 2,
-          width: mapNodeWidth, height: mapNodeHeight, id, text: buttons.get(id).textContent,
+          width: mapNodeWidth, height: mapNodeHeight, id, text: node.name,
           status: availability.color, name: node.name, state: availability.label,
         });
       }
