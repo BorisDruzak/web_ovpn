@@ -718,6 +718,7 @@ def test_guest_network_reports_an_empty_configuration_only_after_a_successful_re
     assert [(row["guest"]["vmid"], row["guestNetwork"]) for row in audit["runningWithoutNetwork"]] == [
         (127, node["guestNetwork"]),
     ]
+    assert audit["runningWithoutNetwork"][0]["reachability"] == node["reachability"]
     assert audit["runningNetworkCoverage"] == {"confirmed": 0, "incomplete": 0, "withoutNetwork": 1}
     assert audit["gapTotal"] == 0
     assert node["mapStatus"] == "unknown"

@@ -2803,13 +2803,15 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       const list = make('ul', null, 'map-detail-list');
       const panel = make('details', null, 'map-port-panel');
       panel.dataset.section = 'guests-without-network';
-      for (const {guest, hypervisor, guestNetwork} of data.runningWithoutNetwork) {
+      for (const {guest, hypervisor, guestNetwork, reachability} of data.runningWithoutNetwork) {
         const row = make('li');
         const open = make('button', `ВМ/КТ ${guest.vmid} · ${guest.name}`);
         open.type = 'button';
         open.addEventListener('click', () => select(guest.id));
         const reason = guestNetwork.configured ? 'Все адаптеры отключены' : 'Адаптеры не заданы';
-        row.append(open, make('small', [hypervisor?.name, reason, formatTime(guestNetwork.checkedAt)].filter(Boolean).join(' · ')));
+        const status = reachability?.state === 'unreachable' ? 'Недоступна по сети' :
+          reachability?.state === 'unknown' ? 'Доступность по сети не подтверждена' : '';
+        row.append(open, make('small', [hypervisor?.name, reason, status, formatTime(guestNetwork.checkedAt)].filter(Boolean).join(' · ')));
         list.append(row);
       }
       panel.append(make('summary', `Запущены без сети Proxmox · ${data.runningWithoutNetworkTotal}`), list);

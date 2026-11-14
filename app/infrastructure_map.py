@@ -3878,9 +3878,11 @@ def _has_no_guest_network(attachment: dict, network: dict) -> bool:
 def _running_without_network(nodes: dict, guests: dict) -> dict:
     rows = []
     for guest_id, attachment in guests.items():
-        network = nodes[guest_id].get("guestNetwork")
+        node = nodes[guest_id]
+        network = node.get("guestNetwork")
         if network and _has_no_guest_network(attachment, network):
-            rows.append({"guest": attachment["guest"], "hypervisor": attachment["hypervisor"], "guestNetwork": network})
+            rows.append({"guest": attachment["guest"], "hypervisor": attachment["hypervisor"],
+                         "guestNetwork": network, "reachability": node["reachability"]})
     rows.sort(key=lambda row: (row["guest"]["vmid"], row["guest"]["id"]))
     return {"runningWithoutNetworkTotal": len(rows), "runningWithoutNetwork": rows[:64]}
 
