@@ -8439,13 +8439,19 @@ def test_node_search_aliases_follow_fresh_address_evidence(tmp_path):
 def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path, monkeypatch):
     path = tmp_path / "infrastructure.json"
     monkeypatch.setenv("INFRASTRUCTURE_MAP_SNAPSHOT_PATH", str(path))
-    stamp = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(timezone.utc)
+    stamp = now.isoformat()
+    state_since = (now - timedelta(seconds=42)).isoformat()
     vlan_ports = {
         "host": {"name": "ens7", "state": "up", "source": "Proxmox · sysfs", "checkedAt": stamp, "speedBps": 10**10},
         "switch": {"name": "xe3", "key": "ifindex:5027", "state": "up", "checkedAt": stamp, "speedBps": 10**10},
     }
+    vlan_ports["switch"]["linkCheck"] = {
+        "state": "up", "speedBps": 10**10, "checkedAt": stamp, "stateAgeSeconds": 42,
+    }
+    vlan_ports["switch"]["checkedAt"] = (now - timedelta(seconds=1)).isoformat()
     for port in vlan_ports.values():
-        port["vlanMemberships"] = {"checkedAt": stamp, "vlans": [
+        port["vlanMemberships"] = {"checkedAt": port["checkedAt"], "vlans": [
             {"id": 1, "egress": "untagged", "pvid": True},
             {"id": 20, "egress": "tagged", "pvid": False},
             {"id": 50, "egress": "tagged", "pvid": False},
@@ -8502,7 +8508,8 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
                                       "source": "netctl FDB + Proxmox", "checkedAt": stamp}
     port_links = {
         "host": {"state": "up", "speedBps": 10**10, "checkedAt": stamp, "source": "Proxmox · sysfs"},
-        "switch": {"state": "up", "speedBps": 10**10, "checkedAt": stamp},
+        "switch": {"state": "up", "speedBps": 10**10, "checkedAt": stamp,
+                   "stateSince": state_since, "source": "SNMP"},
     }
     assert match["uplinkPortLinks"] == port_links
     assert match["uplinkLinkHealth"] == {"state": "both_up", "checkedAt": stamp}
@@ -8550,7 +8557,8 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     vlan_evidence = match["vlanMemberships"]
     assert vlan_evidence == {"id": 1, "basis": "guest_mac", "ports": {
         "host": {"egress": "untagged", "pvid": True, "source": "Proxmox · sysfs", "checkedAt": stamp},
-        "switch": {"egress": "untagged", "pvid": True, "source": "SNMP", "checkedAt": stamp},
+        "switch": {"egress": "untagged", "pvid": True, "source": "SNMP",
+                   "checkedAt": vlan_ports["switch"]["checkedAt"]},
     }}
     old = (datetime.fromisoformat(stamp) - timedelta(minutes=11)).isoformat()
     from app import infrastructure_service_probes as probes
@@ -8572,14 +8580,18 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
                             "destinationVlan": vlan_evidence, "uplinkPortLinks": port_links,
                             "uplinkLinkHealth": match["uplinkLinkHealth"], "switchPortHistory": match["switchPortHistory"]}
     switch_port = vlan_ports["switch"]
-    speed = switch_port["speedBps"]
-    switch_port["speedBps"] = 10**9
+    link_check = switch_port["linkCheck"]
+    speed = link_check["speedBps"]
+    link_check["speedBps"] = 10**9
     assert read()["servicePaths"][0]["uplinkLinkHealth"] == {"state": "speed_mismatch", "checkedAt": stamp}
-    switch_port["speedBps"] = speed
+    link_check["speedBps"] = speed
+    switch_port.pop("linkCheck")
     switch_port["checkedAt"] = (datetime.fromisoformat(stamp) - timedelta(minutes=3)).isoformat()
     assert read()["servicePaths"][0]["uplinkLinkHealth"] == {"state": "unconfirmed"}
-    switch_port["checkedAt"] = stamp
-    telemetry = {"checkedAt": stamp, "intervalSeconds": 300, "rxBps": 1024, "txBps": 2048, "rxDiscards": 3}
+    switch_port["checkedAt"] = switch_port["vlanMemberships"]["checkedAt"]
+    switch_port["linkCheck"] = link_check
+    telemetry = {"checkedAt": switch_port["checkedAt"], "intervalSeconds": 300,
+                 "rxBps": 1024, "txBps": 2048, "rxDiscards": 3}
     vlan_ports["switch"]["telemetry"] = telemetry
     measured = read()["servicePaths"][0]
     assert measured["switchPortTelemetry"] == telemetry

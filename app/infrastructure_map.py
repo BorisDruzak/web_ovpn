@@ -2835,7 +2835,8 @@ def _guest_attachments(nodes: dict, links: list[dict], guest_ids: list[str], now
                             observation["switchPortHistory"] = history
                         port_links = {
                             side: {field: port[field] for field in
-                                   ("state", "speedBps", "checkedAt", "speedCheckedAt", "source") if field in port}
+                                   ("state", "speedBps", "checkedAt", "speedCheckedAt", "stateSince", "source")
+                                   if field in port}
                             for side, port in pair["portStates"].items() if port.get("state") == "up"
                         }
                         if port_links:

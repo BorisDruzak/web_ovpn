@@ -1595,6 +1595,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       row.append(make('small', [label, portLabels[link.state], formatPortSpeed(link.speedBps),
         link.source ?? (side === 'switch' ? 'SNMP' : ''),
         formatTime(link.speedCheckedAt ?? link.checkedAt)].filter(Boolean).join(' · ')));
+      appendPortStateChange(row, link, label);
     }
   }
 
