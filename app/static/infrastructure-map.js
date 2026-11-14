@@ -1521,10 +1521,15 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     panel.dataset.section = 'inventory-port-pairs';
     const list = make('ul', null, 'map-detail-list');
     for (const {a, b, portA, portB, inventorySources, portStates = {}, endpointMacObservations = {},
-      fdbObservations = [], portDiagnostics = {}} of pairs) {
+      fdbObservations = [], portDiagnostics = {}, unmeasuredSides = []} of pairs) {
       const row = make('li');
       row.append(portPairEndpoint(a, byId.get(a)?.name ?? a, portA), ' ↔ ',
         portPairEndpoint(b, byId.get(b)?.name ?? b, portB));
+      if (unmeasuredSides.length) {
+        const ends = unmeasuredSides.map(side => side === 'a'
+          ? `${byId.get(a)?.name ?? a} ${portA}` : `${byId.get(b)?.name ?? b} ${portB}`);
+        row.append(make('small', 'Нет свежего замера · ' + ends.join(', ')));
+      }
       for (const [side, state] of Object.entries(portStates)) {
         const [device, name] = side === 'a' ? [a, portA] : [b, portB];
         row.append(make('small', [`${byId.get(device)?.name ?? device} ${name}`, portLabels[state.state],

@@ -9082,7 +9082,7 @@ def test_inventory_port_sources_are_dated_and_kept_separate_from_live_checks(tmp
     audit = summarize_topology(graph)["topologyAudit"]
     assert audit["pending"][0]["inventorySources"] == expected
     assert audit["inventoryPairs"] == [{"a": "a", "b": "b", "portA": "ge1", "portB": "eth0",
-                                         "inventorySources": expected}]
+                                         "inventorySources": expected, "unmeasuredSides": ["a", "b"]}]
     assert audit["inventoryOnlyPairTotal"] == 1
     assert audit["inventoryOnlyPairs"] == audit["inventoryPairs"]
     current_graph = {**graph, "links": [*graph["links"], {
@@ -9129,6 +9129,7 @@ def test_inventory_port_sources_are_dated_and_kept_separate_from_live_checks(tmp
     measured = load_infrastructure_map(path, now, include_guest_attachments=True)
     scoped = summarize_topology(measured, node_id="a", port_name="ge1")["topologyAudit"]
     pair, = scoped["inventoryOnlyPairs"]
+    assert pair["unmeasuredSides"] == ["b"]
     assert pair["portStates"] == {"a": {"state": "up", "speedBps": 10**9,
                                       "checkedAt": now.isoformat(), "source": "SNMP"}}
     assert measured["inventoryPairs"] == [pair]
@@ -9140,6 +9141,7 @@ def test_inventory_port_sources_are_dated_and_kept_separate_from_live_checks(tmp
     }]
     assert scoped["currentPairTotal"] == 0
     expired = load_infrastructure_map(path, now + timedelta(minutes=26), include_guest_attachments=True)
+    assert expired["inventoryPairs"][0]["unmeasuredSides"] == ["a", "b"]
     assert "portStates" not in expired["inventoryPairs"][0]
     assert "portDiagnostics" not in expired["inventoryPairs"][0]
 

@@ -2149,6 +2149,7 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
             inventory_pairs.append({
                 "a": a, "b": b, "portA": report["a"], "portB": report["b"],
                 "inventorySources": report.get("inventorySources", []),
+                "unmeasuredSides": [side for side in ("a", "b") if side not in port_states],
                 **({"portStates": port_states} if port_states else {}),
                 **({"portDiagnostics": port_diagnostics} if port_diagnostics else {}),
                 **({"fdbObservations": fdb_observations[:8]} if fdb_observations else {}),
