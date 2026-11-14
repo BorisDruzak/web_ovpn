@@ -6854,7 +6854,10 @@ def test_management_path_includes_both_ports_only_for_unique_current_cable(tmp_p
                         {"chassisId": "02:00:00:00:00:15", "inventoryDeviceId": "other",
                          "portId": "eth1", "portIdSubtype": "interface_name"},
                     ]}]},
-        {"id": "host", "name": "Host", "kind": "Коммутатор"},
+        {"id": "host", "name": "Host", "kind": "Коммутатор", "serviceChecks": [
+            {"method": "ICMP · LLDP + ARP", "state": "reachable", "source": "UI_VPN", "supplemental": True,
+             "checkedAt": at, "identityCheckedAt": at, "target": address},
+        ]},
         {"id": "other", "name": "Other switch", "kind": "Коммутатор"},
         {"id": "web", "name": "Web", "kind": "Сервис", "serviceChecks": [
             {"method": "HTTP", "state": "reachable", "source": "UI_VPN", "required": True,
@@ -6880,6 +6883,15 @@ def test_management_path_includes_both_ports_only_for_unique_current_cable(tmp_p
         graph = load_infrastructure_map(snapshot, now, include_guest_attachments=True)
         service, = summarize_guest_attachment(graph, "web")["attachment"]["servicePaths"]
         assert graph["servicePaths"]["web"] == [service]
+        host_paths = summarize_guest_attachment(graph, "host")["attachment"].get("servicePaths", [])
+        if "physicalPair" in service["switchAttachment"]:
+            host_path, = host_paths
+            assert host_path["switchAttachment"]["physicalPair"] == service["switchAttachment"]["physicalPair"]
+            port, = graph["servicePorts"]["upstream"]
+            probe, = next(row for row in port["services"] if row["id"] == "host")["probeEndpoints"]
+            assert probe["method"] == "ICMP · LLDP + ARP" and probe["passed"] == 1
+        else:
+            assert host_paths == []
         return service["switchAttachment"]
 
     direct = cable("host", "LLDP · двустороннее")

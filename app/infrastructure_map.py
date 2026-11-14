@@ -3550,12 +3550,17 @@ def _management_service_paths(service: dict, host: str, management: dict, observ
                               "management": True, "hypervisorId": host, "switchId": switch, "physicalPair": pair})
         elif attachment := observed_ports.get((host, check["target"])):
             observation, = attachment.values()
-            asset_probe = (service["kind"] != "Сервис" and (check["method"], observation["source"]) in {
+            lldp_switch_probe = (
+                service["kind"] == NETWORK_KINDS[0] and check["method"] == "ICMP · LLDP + ARP"
+                and observation["source"] == "netctl FDB" and "physicalPair" in observation
+            )
+            asset_probe = (service["kind"] != "Сервис" and (lldp_switch_probe or
+                           (check["method"], observation["source"]) in {
                               ("ICMP · ARP + FDB", "netctl FDB"),
                               ("ICMP · ARP + FDB", "MikroTik · ARP + FDB"),
                               ("ICMP · LACP + ARP", "SNMP LACP + ARP"),
                               ("ARP · L2", "netctl FDB"),
-                          }
+                          })
                           and check.get("identityCheckedAt") == observation["checkedAt"])
             service_probe = service["kind"] == "Сервис" and (
                 check["port"] is not None or (check["method"] == "ICMP" and observation["source"] == "MikroTik · ARP")
