@@ -2871,8 +2871,9 @@ def test_live_snmp_poll_rechecks_ifindex_name_for_declared_ports(monkeypatch):
     import asyncio
 
     from app import infrastructure_collect as collector
+    from app.infrastructure_map import index_port_states
     from netctl.snmp.models import CapabilityResult, SnmpVarBind
-    from netctl.snmp.oids import IF_ADMIN_STATUS, IF_HIGH_SPEED, IF_NAME, IF_OPER_STATUS
+    from netctl.snmp.oids import IF_ADMIN_STATUS, IF_HIGH_SPEED, IF_NAME, IF_OPER_STATUS, SYS_UPTIME
     from netctl.snmp.outcomes import SnmpOutcome
 
     now = datetime.now(timezone.utc)
@@ -2889,9 +2890,12 @@ def test_live_snmp_poll_rechecks_ifindex_name_for_declared_ports(monkeypatch):
         async def get(self, oid):
             calls.append(oid)
             column, index = oid[:-1], oid[-1]
+            if oid == SYS_UPTIME:
+                return CapabilityResult("", SnmpOutcome.SUCCESS_WITH_ROWS, (SnmpVarBind(oid, "time_ticks", 12000),))
             kind, value = {
                 IF_NAME: ("octet_string", names[index]), IF_ADMIN_STATUS: ("integer", 1),
                 IF_OPER_STATUS: ("integer", 1), IF_HIGH_SPEED: ("gauge32", 10_000),
+                (*IF_OPER_STATUS[:-1], 9): ("time_ticks", 10000 if index == 5 else 0),
             }[column]
             return CapabilityResult("", SnmpOutcome.SUCCESS_WITH_ROWS, (SnmpVarBind(oid, kind, value),))
 
@@ -2914,8 +2918,13 @@ def test_live_snmp_poll_rechecks_ifindex_name_for_declared_ports(monkeypatch):
     first, second, third = network["ports"]
     assert first["linkCheck"]["state"] == "up" and first["linkCheck"]["speedBps"] == 10**10
     assert "linkCheck" not in second and third["linkCheck"]["state"] == "up"
-    assert calls == [(*column, index) for index in (5, 6, 7)
-                     for column in ((IF_NAME,) if index == 6 else (IF_NAME, IF_ADMIN_STATUS, IF_OPER_STATUS, IF_HIGH_SPEED))]
+    assert first["linkCheck"]["stateAgeSeconds"] == 20
+    assert "stateAgeSeconds" not in third["linkCheck"]
+    observed = datetime.fromisoformat(first["linkCheck"]["checkedAt"])
+    public = index_port_states([first, third], observed + timedelta(seconds=1))
+    assert public["xe1"]["stateSince"] == (observed - timedelta(seconds=20)).isoformat()
+    assert "stateSince" not in public["xe3"]
+    assert [oid for oid in calls if oid[:-1] == IF_NAME] == [IF_NAME + (index,) for index in (5, 6, 7)]
 
 
 def test_declared_switch_port_checks_cover_unverified_sides_and_exclude_retired_paths(monkeypatch):

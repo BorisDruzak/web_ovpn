@@ -470,6 +470,9 @@ def _apply_port_link_check(port: dict, row: dict, now: datetime) -> None:
     speed = sample.get("speedBps")
     port.update(state=state, source="SNMP", checkedAt=stamp.isoformat(), stale=False,
                 speedBps=speed if state == "up" and type(speed) is int and 0 < speed <= 10**15 else None)
+    age = sample.get("stateAgeSeconds")
+    if state != "disabled" and type(age) in (int, float) and 0 <= age < 2**32 / 100:
+        port["stateSince"] = (stamp - timedelta(seconds=age)).isoformat()
     endpoint = sample.get("endpointMac")
     if state == "up" and isinstance(endpoint, dict):
         device, mac = _text(endpoint.get("deviceId"), 160), _text(endpoint.get("mac"), 17)
@@ -2065,7 +2068,7 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
 
     def observations(report):
         return {
-            side: {key: port[key] for key in ("name", "state", "speedBps", "speedCheckedAt", "checkedAt", "source", "linkMode",
+            side: {key: port[key] for key in ("name", "state", "speedBps", "speedCheckedAt", "checkedAt", "stateSince", "source", "linkMode",
                                               "stpPort", "telemetry", "rxErrorCounters", "rxSilence", "fdbLearned", "transceiver",
                                               "configuredLabel", "lldpPort") if key in port}
             for side, port in report.get("portStates", {}).items() if port["state"] != "unknown"
@@ -2099,7 +2102,7 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
                 states = pair.setdefault("portStates", {})
                 if state["checkedAt"] > states.get(pair_side, {}).get("checkedAt", ""):
                     states[pair_side] = {key: state[key] for key in
-                                         ("state", "speedBps", "checkedAt", "source", "speedCheckedAt") if key in state}
+                                         ("state", "speedBps", "checkedAt", "stateSince", "source", "speedCheckedAt") if key in state}
             if source not in sources or at > sources[source]["checkedAt"]:
                 expires = _time(at) + PORT_EVIDENCE_MAX_AGE.get(source, MAX_AGE)
                 sources[source] = {"source": source, "checkedAt": at, "expiresAt": expires.isoformat()}
@@ -2118,7 +2121,7 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
                 state = report.get("portStates", {}).get(side, {})
                 if state and not state["stale"] and state["state"] != "unknown":
                     port_states[side] = {key: state[key] for key in
-                                         ("state", "speedBps", "checkedAt", "source", "speedCheckedAt") if key in state}
+                                         ("state", "speedBps", "checkedAt", "stateSince", "source", "speedCheckedAt") if key in state}
                     telemetry = state.get("telemetry", {})
                     if any(telemetry.get(key, 0) > 0 for key in PORT_COUNTER_KEYS):
                         diagnostics = {"telemetry": telemetry}
@@ -4766,7 +4769,7 @@ def load_infrastructure_map(
                  "lldpPortIds": sorted({peer["portId"] for peers in row.get("lldpPeers", {}).values()
                                         for peer in peers if peer.get("portId")}),
                  "portObservations": {
-                     side: {key: port[key] for key in ("name", "state", "speedBps", "speedCheckedAt", "checkedAt", "rxSilence",
+                     side: {key: port[key] for key in ("name", "state", "speedBps", "speedCheckedAt", "checkedAt", "stateSince", "rxSilence",
                                                        "fdbLearned", "lldpPort", "telemetry", "rxErrorCounters",
                                                        "linkMode", "transceiver") if key in port}
                      for side, port in row.get("portObservations", {}).items()

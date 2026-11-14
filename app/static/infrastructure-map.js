@@ -2320,6 +2320,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           name.addEventListener('click', () => selectPort(id, port.name));
         }
         row.append(name, make('small', status));
+        if (selectedPort && port.stateSince) {
+          row.append(make('small', 'Последняя смена состояния по SNMP · ' + formatTime(port.stateSince)));
+        }
         if (selectedPort && port.history) {
           row.append(portHistoryLink(port.history, 'История порта за 24 часа'));
         }

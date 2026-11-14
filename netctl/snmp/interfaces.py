@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import Iterable, Mapping
 
@@ -14,6 +15,7 @@ from .oids import (
     IF_HIGH_SPEED,
     IF_IN_ERRORS,
     IF_INDEX,
+    IF_LAST_CHANGE,
     IF_NAME,
     IF_OPER_STATUS,
     IF_PHYS_ADDRESS,
@@ -23,6 +25,7 @@ from .oids import (
     LLDP_PORT_ADMIN_STATUS,
     LLDP_PORT_RX_FRAMES,
     LLDP_PORT_TX_FRAMES,
+    SYS_UPTIME,
 )
 from .outcomes import SnmpOutcome
 
@@ -284,13 +287,26 @@ async def read_interface_link(transport, if_index: int, expected_name: str) -> d
     if oper is None:
         return {}
     status = _integer(oper, "ifOperStatus", value_type="integer")
-    if status in (2, 7):
-        return {"state": "down"}
-    if status != 1:
+    if status not in (1, 2, 7):
         return {}
-    speed = await scalar(IF_HIGH_SPEED)
-    mbps = _integer(speed, "ifHighSpeed", value_type="gauge32") if speed else 0
-    return {"state": "up", "speedBps": mbps * 1_000_000 if 0 < mbps <= 1_000_000 else None}
+    result = {"state": "down"}
+    if status == 1:
+        speed = await scalar(IF_HIGH_SPEED)
+        mbps = _integer(speed, "ifHighSpeed", value_type="gauge32") if speed else 0
+        result = {"state": "up", "speedBps": mbps * 1_000_000 if 0 < mbps <= 1_000_000 else None}
+    try:
+        async with asyncio.timeout(0.4):
+            changed = await scalar(IF_LAST_CHANGE)
+            if changed and (ticks := _integer(changed, "ifLastChange", value_type="time_ticks")):
+                uptime = await transport.get(SYS_UPTIME)
+                if (uptime.outcome is SnmpOutcome.SUCCESS_WITH_ROWS and len(uptime.rows) == 1
+                        and uptime.rows[0].oid == SYS_UPTIME):
+                    current = _integer(uptime.rows[0], "sysUpTime", value_type="time_ticks")
+                    if current >= ticks:
+                        result["stateAgeSeconds"] = (current - ticks) / 100
+    except (TimeoutError, OSError, ValueError):
+        pass
+    return result
 
 
 def _rows(values: Iterable[SnmpVarBind | CapabilityResult]) -> Iterable[SnmpVarBind]:
