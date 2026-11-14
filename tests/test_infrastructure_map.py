@@ -807,12 +807,20 @@ def test_cluster_health_distinguishes_quorum_members_and_api(tmp_path):
         {"a": "pve1", "b": "management", "kind": "Размещение", "confirmed": True},
         {"a": "management", "b": "dns", "kind": "Зависимость сервиса", "confirmed": True},
     ])
+    snapshot["nodes"][-1]["serviceChecks"] = [{
+        "method": "DNS", "source": "UI_VPN", "state": "unreachable", "required": True,
+        "checkedAt": now.isoformat(), "target": "192.0.2.53", "port": 53,
+        "dns": {"name": "management.example.", "record": "A", "transport": "UDP", "rcode": "NXDOMAIN"},
+    }]
     path.write_text(json.dumps(snapshot), encoding="utf-8")
     attachment = summarize_guest_attachment(load_infrastructure_map(path, now), healthy["id"])["attachment"]
-    assert attachment["clusterServiceAlerts"] == [{
-        "nodeId": "pve1", "serviceId": "management", "state": "degraded",
-        "dependencies": [{"serviceId": "dns", "state": "unavailable"}],
-    }]
+    alert, = attachment["clusterServiceAlerts"]
+    assert (alert["nodeId"], alert["serviceId"], alert["state"]) == ("pve1", "management", "degraded")
+    dependency, = alert["dependencies"]
+    assert (dependency["serviceId"], dependency["state"]) == ("dns", "unavailable")
+    assert dependency["issue"]["reason"] == "dns_name_not_found"
+    assert dependency["issue"]["dns"]["rcode"] == "NXDOMAIN"
+    assert "portObservation" not in dependency["issue"]
     capacity.clear()
     cluster["quorate"] = 0
     no_quorum = read()

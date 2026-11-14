@@ -3744,8 +3744,25 @@ def summarize_guest_attachment(graph: dict, node_id: str) -> dict:
                                and edge["kind"] == "Узел кластера" and nodes[edge["b"]]["kind"] == "Гипервизор"})
         detail.update({key: anchor[key] for key in (
             "resourceCapacity", "hardwareDisks", "zfsPools", "lvmThinPools", "clusterMemberHealth",
-            "clusterResourceAlerts", "clusterServiceAlerts",
+            "clusterResourceAlerts",
         ) if key in anchor})
+        if alerts := anchor.get("clusterServiceAlerts"):
+            service_ids = {entry["serviceId"] for alert in alerts for entry in [alert, *alert["dependencies"]]}
+            issues = {}
+            offset = 0
+            while offset is not None:
+                audit = summarize_services(graph, service_ids=service_ids, offset=offset)["serviceAudit"]
+                issues.update((row["id"], row["issues"][0]) for row in audit["services"] if row["issues"])
+                offset = audit["nextOffset"]
+
+            def with_issue(entry):
+                issue = issues.get(entry["serviceId"])
+                return {**entry, "issue": issue} if issue else entry.copy()
+
+            detail["clusterServiceAlerts"] = [
+                {**with_issue(alert), "dependencies": [with_issue(entry) for entry in alert["dependencies"]]}
+                for alert in alerts
+            ]
         members = set(host_ids)
         candidates = {edge["b"] for edge in links if edge["a"] in members
                       and edge["confirmed"] and edge["kind"] == "Размещение ВМ" and nodes[edge["b"]]["guest"]}
