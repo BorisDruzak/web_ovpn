@@ -2330,6 +2330,10 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
         and port["state"] == "up" and not port["stale"] and port.get("lldpCheckedAt")
     }
     device_names = Counter(node["name"].casefold() for node in nodes.values())
+    ports_by_label = {
+        (node_id, port_label_key(port["name"])): port
+        for node_id, node in nodes.items() for port in node["ports"]
+    }
     verified_pairs = []
     def attach_history(pair):
         history = {}
@@ -2343,8 +2347,23 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
     for _, (pair, sources) in sorted(current_pairs.items()):
         attach_history(pair)
         ports = pair.get("portStates", {})
+        missing = {}
+        for side, field in (("a", "portA"), ("b", "portB")):
+            if side in ports:
+                continue
+            node_id = pair[side]
+            sample = ports_by_label.get((node_id, port_key(node_id, pair[field])))
+            if not nodes[node_id]["ports"]:
+                missing[side] = "no_device_port_data"
+            elif sample is None:
+                missing[side] = "port_not_in_samples"
+            elif sample.get("stale") and sample.get("checkedAt"):
+                missing[side] = "stale_port_sample"
+            else:
+                missing[side] = "port_state_unavailable"
         health = _compare_link_ports(ports) or _link_ports_down(ports) or {"state": "unconfirmed"}
         verified_pairs.append({**pair, "linkHealth": health,
+                               **({"missingReasons": missing} if missing else {}),
                                "evidence": [sources[source] for source in sorted(sources)]})
     by_port = defaultdict(list)
     for pair in verified_pairs:
@@ -2519,7 +2538,8 @@ def _summarize_pair_measurement_gaps(pairs: list[dict]) -> dict:
     for pair in pairs:
         missing = sorted({"a", "b"} - pair.get("portStates", {}).keys())
         if missing:
-            gaps.append({**{key: pair[key] for key in ("a", "b", "portA", "portB")}, "missingSides": missing})
+            gaps.append({**{key: pair[key] for key in ("a", "b", "portA", "portB")},
+                         "missingSides": missing, "missingReasons": pair["missingReasons"]})
     return {"currentPairMeasurementGapTotal": len(gaps), "currentPairMeasurementGaps": gaps[:64]}
 
 

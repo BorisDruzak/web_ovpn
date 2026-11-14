@@ -3820,7 +3820,8 @@ def test_topology_port_alerts_require_confirmed_pairs_and_fresh_states(tmp_path)
             assert pair["linkHealth"]["checkedAt"] == stamp
             assert audit["currentPairLinkCounts"][expected_state] == 1
             assert scoped["currentPairMeasurementGaps"] == ([
-                {"a": "a", "b": "b", "portA": "ge1", "portB": "ge2", "missingSides": ["a"]},
+                {"a": "a", "b": "b", "portA": "ge1", "portB": "ge2", "missingSides": ["a"],
+                 "missingReasons": {"a": "stale_port_sample"}},
             ] if expected_state == "port_down" else [])
             assert pair["portStates"]["b"]["state"] == b["ports"][0]["state"]
             expected_speed = b["ports"][0]["speedBps"] if b["ports"][0]["state"] == "up" else None
@@ -3830,7 +3831,8 @@ def test_topology_port_alerts_require_confirmed_pairs_and_fresh_states(tmp_path)
             assert "portStates" not in scoped["currentPairs"][0]
             assert scoped["currentPairs"][0]["linkHealth"] == {"state": "unconfirmed"}
             assert audit["currentPairMeasurementGaps"] == [
-                {"a": "a", "b": "b", "portA": "ge1", "portB": "ge2", "missingSides": ["a", "b"]},
+                {"a": "a", "b": "b", "portA": "ge1", "portB": "ge2", "missingSides": ["a", "b"],
+                 "missingReasons": {"a": "stale_port_sample", "b": "stale_port_sample"}},
             ]
         browser = load_infrastructure_map(path, now, include_guest_attachments=True)
         assert browser["currentPairMeasurementGapTotal"] == audit["currentPairMeasurementGapTotal"]
@@ -9325,6 +9327,7 @@ def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_pa
     assert audit["currentPairLinkCounts"] == {"unconfirmed": 1}
     assert audit["currentPairs"] == [{"a": "snr", "b": "pve", "nameA": "SNR", "nameB": "pve1",
                                      "linkHealth": {"state": "unconfirmed"},
+                                     "missingReasons": {"a": "stale_port_sample", "b": "port_not_in_samples"},
                                      "portA": "xe3", "portB": "ens7f1", "evidence": [
                                          {"source": "LLDP · двустороннее", "checkedAt": now,
                                           "expiresAt": (datetime.fromisoformat(now) + timedelta(minutes=25)).isoformat()},

@@ -279,18 +279,23 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     parent.append(make('small', [label, 'Последняя смена состояния по SNMP', portChangeTime.format(new Date(port.stateSince))]
       .filter(Boolean).join(' · ')));
   }
-  function confirmedPortPairRow({a, b, nameA, nameB, portA, portB, evidence, portStates = {}, portHistory = {}, linkHealth}) {
+  const portMeasurementGapLabels = {
+    no_device_port_data: 'Нет данных об интерфейсах устройства',
+    port_not_in_samples: 'Порт отсутствует в данных устройства',
+    stale_port_sample: 'Замер устарел',
+    port_state_unavailable: 'Состояние порта не получено',
+  };
+  function confirmedPortPairRow({a, b, nameA, nameB, portA, portB, evidence, portStates = {}, portHistory = {}, linkHealth,
+    missingReasons = {}}) {
     const row = make('li');
     row.append(portPairEndpoint(a, nameA, portA), ' ↔ ', portPairEndpoint(b, nameB, portB));
-    const missingPorts = [];
-    if (!portStates.a) missingPorts.push(`${nameA} ${portA}`);
-    if (!portStates.b) missingPorts.push(`${nameB} ${portB}`);
+    const missingPorts = [['a', nameA, portA], ['b', nameB, portB]].filter(([side]) => !portStates[side]);
     if (!missingPorts.length || linkHealth?.state !== 'unconfirmed') {
       appendLinkComparison(row, linkHealth);
     }
-    if (missingPorts.length) {
-      const label = missingPorts.length === 1 ? 'Нет свежего замера' : 'Нет свежих замеров';
-      row.append(make('small', label + ': ' + missingPorts.join(', ')));
+    for (const [side, name, port] of missingPorts) {
+      const reason = portMeasurementGapLabels[missingReasons[side]] ?? 'Нет свежего замера';
+      row.append(make('small', `${name} ${port} · ${reason}`));
     }
     for (const [side, port] of Object.entries(portStates)) {
       const name = side === 'a' ? nameA : nameB;
