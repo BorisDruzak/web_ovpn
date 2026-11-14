@@ -585,6 +585,19 @@ def test_opnsense_probe_checks_running_processes_not_rc_service_status():
     assert "pgrep -x AdGuardHome" in probe
     assert "pgrep -x unbound" in probe
     assert "service unbound onestatus" not in probe
+    assert "df -Pk /" in probe
+
+
+def test_opnsense_reports_root_disk_when_measured():
+    payload = healthy_payload()
+    payload["root_free_percent"] = 4.5
+    checks = server_observer._checks_from_payload("opnsense_dns", "gateway", payload, 1.0)
+    disk = next(check for check in checks if check["name"] == "root_disk_free")
+    assert (disk["observed"], disk["status"]) == (4.5, "critical")
+    payload["root_free_percent"] = None
+    checks = server_observer._checks_from_payload("opnsense_dns", "gateway", payload, 1.0)
+    assert "root_disk_free" not in {check["name"] for check in checks}
+    assert "unbound_active" in {check["name"] for check in checks}
 
 
 def test_windows_probes_hide_role_markers_inside_encoded_bodies():

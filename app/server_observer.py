@@ -14,6 +14,7 @@ import math
 import os
 from pathlib import Path
 import re
+import shlex
 import stat
 import subprocess
 import sys
@@ -266,14 +267,19 @@ _ROLE_PROBES = {
         "# server_observer:onlyoffice"
     ),
     "opnsense_dns": (
-        "sh -c 'printf \"{\\\"adguard_listener\\\":%s,\\\"adguard_query\\\":%s,\\\"services\\\":{\\\"unbound\\\":%s},"
-        "\\\"internal_dns\\\":%s,\\\"external_dns\\\":%s}\\n\" "
+        "sh -c " + shlex.quote(
+        "root_free=$(LC_ALL=C df -Pk / 2>/dev/null | "
+        "awk 'NR == 2 && $2 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/ && $2 > 0 && $4 <= $2 "
+        "{printf \"%.2f\", 100*$4/$2}'); "
+        "printf \"{\\\"adguard_listener\\\":%s,\\\"adguard_query\\\":%s,\\\"services\\\":{\\\"unbound\\\":%s},"
+        "\\\"internal_dns\\\":%s,\\\"external_dns\\\":%s,\\\"root_free_percent\\\":%s}\\n\" "
         "\"$(pgrep -x AdGuardHome >/dev/null && printf true || printf false)\" "
         "\"$(drill @127.0.0.1 example.com >/dev/null 2>&1 && printf true || printf false)\" "
         "\"$(pgrep -x unbound >/dev/null && printf true || printf false)\" "
         "\"$(drill @127.0.0.1 localhost >/dev/null 2>&1 && printf true || printf false)\" "
-        "\"$(drill @127.0.0.1 example.com >/dev/null 2>&1 && printf true || printf false)\"' "
-        "# server_observer:opnsense_dns"
+        "\"$(drill @127.0.0.1 example.com >/dev/null 2>&1 && printf true || printf false)\" "
+        "\"${root_free:-null}\""
+        ) + " # server_observer:opnsense_dns"
     ),
 }
 
@@ -769,6 +775,9 @@ def _checks_from_payload(
         _append_service_check(checks, source, payload, "unbound", "unbound_active", latency_ms)
         _append_boolean_check(checks, source, payload, "internal_dns", "internal_dns", latency_ms)
         _append_boolean_check(checks, source, payload, "external_dns", "external_dns", latency_ms)
+        free = payload.get("root_free_percent")
+        if _is_safe_nonnegative_number(free) and free <= 100:
+            _append_disk_check(checks, source, payload, "root_free_percent", "root_disk_free", latency_ms)
     if not checks:
         raise _ProbeFailure("unexpected_response")
     if os_name := _MEMORY_ROLES.get(role):
