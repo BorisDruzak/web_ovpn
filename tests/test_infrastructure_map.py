@@ -6335,14 +6335,15 @@ def test_routeros_speed_has_its_own_freshness_and_preserves_telemetry():
     assert _public_port({**row, "checkedAt": now.isoformat()}, now)["speedBps"] == 10**9
 
 
-def test_routeros_link_modes_poll_only_configured_active_ethernet(monkeypatch):
+@pytest.mark.parametrize(("driver", "duplex"), [("mikrotik_api", "true"), ("mikrotik_ssh", "yes")])
+def test_routeros_link_modes_poll_only_configured_active_ethernet(monkeypatch, driver, duplex):
     from types import SimpleNamespace
 
     from app import infrastructure_collect as collector
 
     now = datetime.now(timezone.utc)
     network = {
-        "sources": [{"name": "main", "driver": "mikrotik_api", "enabled": 1}],
+        "sources": [{"name": "main", "driver": driver, "enabled": 1}],
         "router_interfaces": [
             {"source": "main", "name": name, "type": kind, "running": running,
              "disabled": 0, "last_seen_at": now.isoformat()}
@@ -6354,7 +6355,7 @@ def test_routeros_link_modes_poll_only_configured_active_ethernet(monkeypatch):
 
     def read(names):
         assert names == ["ether6"]
-        return {"ether6": {"rate": "2.5Gbps", "full-duplex": "true", "auto-negotiation": "done"}}
+        return {"ether6": {"rate": "2.5Gbps", "full-duplex": duplex, "auto-negotiation": "done"}}
 
     monkeypatch.setattr(collector, "load_secrets", lambda: {})
     monkeypatch.setattr(collector, "legacy_driver_for", lambda *_: SimpleNamespace(read_ethernet_link_modes=read))
@@ -6362,6 +6363,33 @@ def test_routeros_link_modes_poll_only_configured_active_ethernet(monkeypatch):
     sample = modes.pop(("main", "ether6"))
     assert not modes and datetime.fromisoformat(sample.pop("checkedAt")) >= now
     assert sample == {"speedBps": 2_500_000_000, "duplex": "full", "autoNegotiation": True}
+
+
+def test_routeros_ssh_link_modes_require_one_matching_live_port(monkeypatch):
+    from netctl.drivers.mikrotik_ssh import MikroTikSshDriver
+
+    driver = MikroTikSshDriver({"host": "192.0.2.1", "username": "observer"}, {})
+    calls = []
+    report = "name: ether1-wan\n status: link-ok\n rate: 1Gbps\n full-duplex: yes\n auto-negotiation: done"
+    output = report
+
+    def read(command, *, timeout):
+        calls.append(command)
+        assert timeout > 0
+        return output
+
+    monkeypatch.setattr(driver, "_run_read", read)
+    with pytest.raises(ValueError, match="invalid RouterOS Ethernet interfaces"):
+        driver.read_ethernet_link_modes(["ether1-wan", "ether2; reboot"])
+    assert not calls
+    assert driver.read_ethernet_link_modes(["ether1-wan"]) == {
+        "ether1-wan": {"name": "ether1-wan", "status": "link-ok", "rate": "1Gbps",
+                       "full-duplex": "yes", "auto-negotiation": "done"},
+    }
+    assert calls == ["/interface ethernet monitor ether1-wan once"]
+    for output in (report + "\n rate: 100Mbps", report.replace("link-ok", "no-link"),
+                   report.replace("ether1-wan", "ether2")):
+        assert driver.read_ethernet_link_modes(["ether1-wan"]) == {}
 
 
 def test_transit_port_requires_direct_route_running_ethernet_and_neighbor_arp(tmp_path):

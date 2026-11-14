@@ -135,6 +135,30 @@ class MikroTikSshDriver(NetworkDriver):
             raise failure((completed.stderr or completed.stdout or "ssh command failed").strip())
         return completed.stdout
 
+    def read_ethernet_link_modes(self, names: list[str]) -> dict[str, dict[str, str]]:
+        if len(names) > 8 or any(not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}", name) for name in names):
+            raise ValueError("invalid RouterOS Ethernet interfaces")
+        fields = {"name", "status", "rate", "full-duplex", "auto-negotiation"}
+        timeout = int(self.source.get("ssh_connect_timeout") or 8) + 3
+        readings = {}
+        for name in names:
+            try:
+                output = self._run_read(f"/interface ethernet monitor {name} once", timeout=timeout)
+            except (OSError, subprocess.TimeoutExpired, RuntimeError):
+                break
+            row = {}
+            for line in output.splitlines():
+                key, sep, value = line.strip().partition(":")
+                if not sep or key not in fields:
+                    continue
+                if key in row:
+                    break
+                row[key] = value.strip()
+            else:
+                if row.get("name") == name and row.get("status") == "link-ok":
+                    readings[name] = row
+        return readings
+
     def _interface_counters(self) -> dict[str, dict[str, str]]:
         counters = {}
         for line in self._run_read(INTERFACE_COUNTER_COMMAND).splitlines():

@@ -1071,7 +1071,7 @@ def _collect_router_link_modes(network: dict, configured: object) -> dict:
     targets = []
     for source in network.get("sources", []):
         names = configured.get(source["name"])
-        if (source.get("enabled") and source.get("driver") == "mikrotik_api" and isinstance(names, list)
+        if (source.get("enabled") and source.get("driver") in ("mikrotik_api", "mikrotik_ssh") and isinstance(names, list)
                 and 1 <= len(names) <= 8 and all(isinstance(name, str) for name in names)):
             selected = sorted({name for name in names if (source["name"], name) in active})
             if selected:
@@ -1097,8 +1097,8 @@ def _collect_router_link_modes(network: dict, configured: object) -> dict:
                 continue
             speed = int(Decimal(rate[1]) * (10**9 if rate[2] == "G" else 10**6))
             sample = {"checkedAt": stamp, "speedBps": speed}
-            if (duplex := row.get("full-duplex")) in ("true", "false"):
-                sample["duplex"] = "full" if duplex == "true" else "half"
+            if (duplex := row.get("full-duplex")) in ("true", "false", "yes", "no"):
+                sample["duplex"] = "full" if duplex in ("true", "yes") else "half"
             if (negotiation := row.get("auto-negotiation")) in ("done", "disabled"):
                 sample["autoNegotiation"] = negotiation == "done"
             samples[source["name"], name] = sample
