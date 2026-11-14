@@ -2267,7 +2267,7 @@ def test_http_digest_challenge_requires_401_realm_and_nonce(monkeypatch):
             pass
 
         def request(self, method, path, headers):
-            assert (method, path) == ("GET", "/ISAPI/System/deviceInfo")
+            assert (method, path) == ("GET", spec["path"])
             assert "Authorization" not in headers
 
         def getresponse(self):
@@ -2292,6 +2292,12 @@ def test_http_digest_challenge_requires_401_realm_and_nonce(monkeypatch):
     response.status = 200
     assert _http_probe(spec) == {"state": "unknown", "httpStatus": 200, "reason": "http_status"}
     assert _http_probe({**spec, "body": "hello"})["reason"] == "http_configuration"
+    response.status = 401
+    challenge = 'Digest realm="CSS326-24G-2S+", qop="auth", nonce="token", stale=FALSE'
+    spec["path"] = "/!dhost.b"
+    assert _http_probe(spec) == {"state": "reachable", "httpStatus": 401, "httpAuthChallenge": "Digest"}
+    assert _public_service_check({**check, "path": spec["path"]}, now)["path"] == spec["path"]
+    assert _http_probe({**spec, "path": "/!dhost.b?write=1"})["reason"] == "http_configuration"
 
 
 def test_zabbix_version_checks_matching_json_rpc_response():
