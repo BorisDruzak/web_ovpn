@@ -1497,21 +1497,29 @@ def _attach_backup_scope(nodes: dict) -> None:
     gaps = [{**{key: node[key] for key in ("id", "name", "vmid")}, "state": node["backupCoverage"]["state"]}
             for node in running if node["backupCoverage"]["state"] != "scheduled"]
     gaps.sort(key=lambda row: (row["state"] != "not_scheduled", row["vmid"], row["id"]))
-    states = defaultdict(set)
+    checks_by_guest = defaultdict(list)
     for check in service["serviceChecks"]:
         if (check["method"] == BACKUP_PROBE_METHOD and check["source"] == "Proxmox"
                 and check.get("required") and not check["stale"] and "backupVmid" in check
                 and "backupMaxAgeHours" in check):
-            state = check["state"]
-            if state == "reachable" and "backupCompletedAt" not in check:
-                state = "unknown"
-            states[check["backupVmid"]].add(state)
+            checks_by_guest[check["backupVmid"]].append(check)
     scheduled = [node for node in running if node["backupCoverage"]["state"] == "scheduled"]
-    passed = sum(states[node["vmid"]] == {"reachable"} for node in scheduled)
-    failed = sum(states[node["vmid"]] == {"unreachable"} for node in scheduled)
+    results = []
+    for node in scheduled:
+        checks = checks_by_guest[node["vmid"]]
+        states = {"unknown" if check["state"] == "reachable" and "backupCompletedAt" not in check else check["state"]
+                  for check in checks}
+        result = {"id": node["id"], "name": node["name"], "vmid": node["vmid"],
+                  "result": "passed" if states == {"reachable"} else "failed" if states == {"unreachable"} else "unconfirmed"}
+        if len(checks) == 1:
+            result.update({key: checks[0][key] for key in ("reason", "checkedAt", "backupCompletedAt") if key in checks[0]})
+        results.append(result)
+    counts = Counter(row["result"] for row in results)
+    results.sort(key=lambda row: (row["result"] == "passed", row["vmid"], row["id"]))
     service["backupScope"] = {
         "storage": storage, **scope(guests), "running": scope(running), "runningGaps": gaps[:64],
-        "runningResults": {"passed": passed, "failed": failed, "unconfirmed": len(scheduled) - passed - failed},
+        "runningResults": {result: counts[result] for result in ("passed", "failed", "unconfirmed")},
+        "runningResultGuests": results[:64],
     }
 
 

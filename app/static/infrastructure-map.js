@@ -2197,7 +2197,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       propertiesSection.append(panel);
     }
     if (node.backupScope) {
-      const {storage, total, scheduled, notScheduled, unknown, running, runningResults, runningGaps = []} = node.backupScope;
+      const {storage, total, scheduled, notScheduled, unknown, running, runningResults,
+        runningResultGuests = [], runningGaps = []} = node.backupScope;
       const list = make('dl');
       list.append(make('dt', 'Хранилище'), make('dd', storage),
         make('dt', 'В расписании'), make('dd', `${scheduled} из ${total}`),
@@ -2209,6 +2210,25 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       if (runningResults && running?.scheduled) {
         list.append(make('dt', 'Копии запущенных ВМ и контейнеров в расписании'),
           make('dd', `Свежие ${runningResults.passed} из ${running.scheduled} · Сбой или просрочка ${runningResults.failed} · Без результата ${runningResults.unconfirmed}`));
+      }
+      if (runningResultGuests.length) {
+        const review = make('details');
+        const guests = make('ul', null, 'map-detail-list');
+        const labels = {passed: 'Свежая копия', failed: 'Сбой или просрочка', unconfirmed: 'Результат не подтверждён'};
+        for (const {id, name, vmid, result, reason, backupCompletedAt} of runningResultGuests) {
+          const row = make('li');
+          const open = make('button', `ВМ/КТ ${vmid} · ${name}`);
+          open.type = 'button';
+          open.addEventListener('click', () => select(id));
+          const completed = backupCompletedAt ? formatTime(backupCompletedAt) : '';
+          row.append(open, make('small', [serviceCheckReasons[reason] ?? labels[result], completed].filter(Boolean).join(' · ')));
+          guests.append(row);
+        }
+        review.append(make('summary', `Результаты копирования по ВМ и контейнерам · ${running.scheduled}`), guests);
+        if (running.scheduled > runningResultGuests.length) {
+          review.append(make('small', `Показано ${runningResultGuests.length} из ${running.scheduled}`));
+        }
+        panel.append(review);
       }
       if (running && runningGaps.length) {
         const review = make('details');
