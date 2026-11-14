@@ -3502,6 +3502,9 @@ def _attach_management_ports(nodes: dict, links: list[dict]) -> None:
 def _management_service_paths(service: dict, host: str, management: dict, observed_ports: dict,
                               nodes: dict | None = None) -> list[dict]:
     paths = []
+    routes = [(ipaddress.ip_network(check["target"], strict=False), check)
+              for check in service["serviceChecks"]
+              if check["method"] == "Маршрут" and check["source"] == "Network Observer" and "/" in check["target"]]
     for check in service["serviceChecks"]:
         if not check["checkedAt"] or check["stale"] or check.get("skipped"):
             continue
@@ -3516,6 +3519,26 @@ def _management_service_paths(service: dict, host: str, management: dict, observ
                      and check["state"] == "reachable")
         if check["source"] != "UI_VPN" and not arp_probe:
             continue
+        local_route = check.get("localRoute", {})
+        if (nodes is not None and routes and check["method"] == "ICMP"
+                and local_route.get("state") == "reachable" and check["target"] and "/" not in check["target"]):
+            target = ipaddress.ip_address(check["target"])
+            matching = [(prefix.prefixlen, route) for prefix, route in routes if target in prefix]
+            if matching:
+                longest = max(length for length, _ in matching)
+                best = [route for length, route in matching if length == longest]
+                if len(best) == 1:
+                    route, = best
+                    router = observed_ports.get((host, route["via"]), {}).get("routerAttachment")
+                    if (router and route.get("routeSource") and route["state"] == "reachable" and not route["stale"]
+                            and route["checkedAt"] and _time(route["checkedAt"]) <= _time(check["checkedAt"])):
+                        props = nodes[router["routerId"]]["properties"]
+                        if (route.get("routeSource") == props.get("Источник сбора")
+                                and local_route["gateway"] == props.get("Адрес управления")):
+                            paths.append({**_attachment_probe_location(check), "via": route["via"],
+                                          "routePrefix": route["target"], "routeCheckedAt": route["checkedAt"],
+                                          "addressCheckedAt": router["checkedAt"], "routerAttachment": router})
+                continue
         if not arp_probe and (matched := management.get((host, check["target"]))):
             switch, pair = matched
             paths.append({**_attachment_probe_location(check), "addressCheckedAt": pair["checkedAt"],

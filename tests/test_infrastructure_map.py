@@ -7130,6 +7130,29 @@ def test_transit_peer_management_port_requires_fresh_arp_fdb_and_active_ethernet
     ports = summarize_guest_attachment(routed, "rb")["attachment"]["servicePorts"]
     routing = next(item for item in ports[0]["services"] if item["id"] == "routing")
     assert [probe["target"] for probe in routing["probeEndpoints"]] == [route["target"]]
+    raw["nodes"][0].setdefault("properties", {})["Адрес управления"] = "192.0.2.1"
+    echo = {"method": "ICMP", "source": "UI_VPN", "state": "unknown", "reason": "icmp_no_echo_reply",
+            "checkedAt": at, "target": "203.0.113.7", "supplemental": True,
+            "localRoute": {"state": "reachable", "expectedGateway": "192.0.2.1", "gateway": "192.0.2.1",
+                           "sourceIP": "192.0.2.10", "interface": "ens18"}}
+    exact = {**route, "target": "203.0.113.7/32"}
+    for exact_route, expected_prefix in ((exact, exact["target"]), ({**exact, "state": "unreachable"}, None),
+                                         ({**exact, "routeSource": "other"}, None)):
+        raw["nodes"][-1]["serviceChecks"] = [route, exact_route, echo]
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        routed = load_infrastructure_map(path, now, include_guest_attachments=True)
+        paths = summarize_guest_attachment(routed, "routing")["attachment"]["servicePaths"]
+        icmp = [row for row in paths if row["method"] == "ICMP"]
+        if expected_prefix:
+            reading, = icmp
+            assert (reading["routePrefix"], reading["routeCheckedAt"], reading["via"]) == (expected_prefix, at, address)
+            assert reading["routerAttachment"] == route_path["routerAttachment"]
+            assert reading["state"] == "unknown"
+            port, = routed["servicePorts"]["rb"]
+            entry = next(item for item in port["services"] if item["id"] == "routing")
+            assert next(p for p in entry["probeEndpoints"] if p["method"] == "ICMP")["unconfirmed"] == 1
+        else:
+            assert icmp == []
     path.write_text(json.dumps({**raw, "nodes": raw["nodes"][:-1], "links": raw["links"][:-1]}), encoding="utf-8")
     expired_audit = summarize_topology(load_infrastructure_map(path, now + timedelta(hours=1)))["topologyAudit"]
     assert expired_audit["pendingTotal"] == 0
