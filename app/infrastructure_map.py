@@ -854,6 +854,10 @@ def _public_service_check(check: dict, now: datetime) -> dict:
         status = check.get("httpStatus")
         if type(status) is int and 100 <= status <= 599 and (not windows_probe or not result["stale"]):
             result["httpStatus"] = status
+        duration = check.get("httpDurationMs")
+        if (result["method"] in ("HTTP", "HTTPS") and result["source"] == "UI_VPN" and not result["stale"]
+                and "httpStatus" in result and type(duration) in (int, float) and 0 <= duration <= 300_000):
+            result["httpDurationMs"] = duration
         if (result["method"] in ("HTTP", "HTTPS") and result["source"] == "UI_VPN"
                 and status == 401 and result["state"] == "reachable" and not result["stale"]
                 and check.get("httpAuthChallenge") == "Digest"):
@@ -3175,7 +3179,7 @@ def _attachment_probe_location(check: dict) -> dict:
     return {"target": check["target"], "port": check["port"], "method": check["method"],
             "checkedAt": check["checkedAt"], "state": check["state"],
             **({"path": check["path"]} if check.get("path") else {}),
-            **{key: check[key] for key in ("reason", "errorSource", "roundTripMs", "httpStatus", "responseCode", "rtspStatus", "dns", "ntp",
+            **{key: check[key] for key in ("reason", "errorSource", "roundTripMs", "httpStatus", "httpDurationMs", "responseCode", "rtspStatus", "dns", "ntp",
                                            "rdpSecurity", "rdpFailureCode", "tlsExpiresAt", "tlsVersion", "zabbixVersion",
                                            "smbDialect", "smbSigningRequired", "postgresqlTls", "redfishVersion", "ftpReply",
                                            "sshTcpConnected", "localRoute", "httpAuthChallenge", "timeoutStage")

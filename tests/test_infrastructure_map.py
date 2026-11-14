@@ -1736,6 +1736,25 @@ def test_malformed_service_probe_config_cannot_leave_observer_green():
         assert public["serviceChecks"][0]["reason"] == "probe_configuration"
 
 
+def test_http_probe_duration_reaches_service_and_attachment_until_stale(monkeypatch):
+    from app import infrastructure_service_probes as probes
+    from app.infrastructure_map import _attachment_probe_location, _public_service_check
+
+    node = {"id": "service", "kind": "Сервис", "probeTargetIP": "192.0.2.10"}
+    spec = {"type": "http", "ip": "192.0.2.10", "port": 80, "path": "/ready", "body": "Healthy"}
+    clock = iter([10.0, 10.042])
+    monkeypatch.setattr(probes, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(probes, "_http_probe", lambda spec: {"state": "reachable", "httpStatus": 200})
+    probes.apply_service_probes([node], {"service": [spec]})
+    raw, = node["serviceChecks"]
+    now = datetime.now(timezone.utc)
+    check = _public_service_check(raw, now)
+    assert check["httpDurationMs"] == 42.0
+    assert _attachment_probe_location(check)["httpDurationMs"] == 42.0
+    assert "httpDurationMs" not in _public_service_check(raw, now + timedelta(minutes=6))
+    assert "httpDurationMs" not in _public_service_check({**raw, "httpDurationMs": True}, now)
+
+
 def test_service_probe_list_keeps_all_dns_components(monkeypatch):
     from app import infrastructure_service_probes as probes
     from app.infrastructure_map import _map_statuses, _public_node

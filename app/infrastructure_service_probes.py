@@ -2050,10 +2050,13 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
                 details = _ssh_identification(spec)
             elif protocol in {"tcp_connect", "http", "https"}:
                 probe = _tcp_connect if protocol == "tcp_connect" else _http_probe
+                started = monotonic() if protocol != "tcp_connect" else None
                 details = probe(spec)
                 if (spec.get("retry_timeout") is True and details.get("reason") == "timeout"
                         and "attempts" not in details):
                     details = {**probe(spec), "attempts": 2, "firstAttemptReason": "timeout"}
+                if started is not None and "httpStatus" in details:
+                    details = {**details, "httpDurationMs": round((monotonic() - started) * 1000, 2)}
             elif protocol == "rdp_negotiation":
                 details = _rdp_negotiation(spec)
             elif protocol == "zabbix_api":
