@@ -15,13 +15,16 @@ INTERFACE_COUNTER_COMMAND = (
     ':foreach row in=[/interface print stats as-value] do={:put (($row->"name") . "|" . '
     '($row->"rx-byte") . "|" . ($row->"tx-byte") . "|" . ($row->"rx-packet") . "|" . ($row->"tx-packet"))}'
 )
+ARP_FLAGS = {"dynamic": "D", "complete": "C"}
+BRIDGE_HOST_FLAGS = {"dynamic": "D", "local": "L"}
 
 
 class RouterOSSshTransportError(RuntimeError):
     """OpenSSH could not complete the remote session."""
 
 
-def parse_routeros_terse(output: str, *, interface_flags: bool = False) -> list[dict[str, str]]:
+def parse_routeros_terse(output: str, *, interface_flags: bool = False,
+                         row_flags: dict[str, str] | None = None) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     scalar: dict[str, str] = {}
     for line in output.splitlines():
@@ -40,14 +43,17 @@ def parse_routeros_terse(output: str, *, interface_flags: bool = False) -> list[
             key, value = token.split("=", 1)
             row[key] = value
         if row:
-            if interface_flags and tokens[0].isdigit():
+            if (interface_flags or row_flags) and tokens[0].isdigit():
                 flags = ""
                 for token in tokens[1:]:
-                    if not re.fullmatch(r"[XDRS]+", token):
+                    if not re.fullmatch(r"[A-Z]+", token):
                         break
                     flags += token
-                row.setdefault("running", "yes" if "R" in flags else "no")
-                row.setdefault("disabled", "yes" if "X" in flags else "no")
+                if interface_flags:
+                    row.setdefault("running", "yes" if "R" in flags else "no")
+                    row.setdefault("disabled", "yes" if "X" in flags else "no")
+                for field, flag in (row_flags or {}).items():
+                    row.setdefault(field, "yes" if flag in flags else "no")
             rows.append(row)
     if not rows and scalar:
         rows.append(scalar)
@@ -117,7 +123,8 @@ class MikroTikSshDriver(NetworkDriver):
         if terse:
             routeros_command += " terse"
         output = self._run_read(routeros_command)
-        return parse_routeros_terse(output, interface_flags=terse and path == "/interface")
+        row_flags = {"/ip arp": ARP_FLAGS, "/interface bridge host": BRIDGE_HOST_FLAGS}.get(path) if terse else None
+        return parse_routeros_terse(output, interface_flags=terse and path == "/interface", row_flags=row_flags)
 
     def _run_read(self, routeros_command: str, *, timeout: float | None = None) -> str:
         target = f"{self.source['username']}@{self.source['host']}"

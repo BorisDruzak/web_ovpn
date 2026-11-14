@@ -3131,6 +3131,29 @@ def test_mikrotik_api_ipsec_report_checks_local_sa_address(monkeypatch, address_
     assert [p.get("local_sa_address_status") for p in report["policies"]] == expected
 
 
+def test_mikrotik_ssh_routeros6_retains_arp_and_bridge_flags(monkeypatch):
+    from netctl.drivers.mikrotik_api import MikroTikApiDriver
+    from netctl.drivers.mikrotik_ssh import MikroTikSshDriver
+
+    driver = MikroTikSshDriver({}, {})
+    replies = {
+        "/ip arp print terse": (
+            "10 DC address=192.0.2.18 mac-address=02:00:00:00:00:01 interface=bridge-lan published=no\n"
+            "11 D address=192.0.2.19 interface=bridge-lan published=no\n"
+            "12 C address=192.0.2.20 mac-address=02:00:00:00:00:03 interface=bridge-lan published=no\n"
+        ),
+        "/interface bridge host print terse": (
+            "14 D mac-address=02:00:00:00:00:01 interface=ether3 bridge=bridge-lan age=34s\n"
+            "15 D L mac-address=02:00:00:00:00:02 interface=bridge-lan bridge=bridge-lan\n"
+        ),
+    }
+    monkeypatch.setattr(driver, "_run_read", replies.__getitem__)
+    arp = MikroTikApiDriver.normalize_arp_rows(driver._run_print("/ip arp"))
+    assert [(row["dynamic"], row["complete"]) for row in arp] == [(True, True), (True, False), (False, True)]
+    hosts = MikroTikApiDriver.normalize_bridge_rows(driver._run_print("/interface bridge host"))
+    assert [(row["dynamic"], row["local"]) for row in hosts] == [(True, False), (True, True)]
+
+
 def test_mikrotik_ssh_driver_tests_routeros6_scalar_sections(monkeypatch):
     import subprocess
 
