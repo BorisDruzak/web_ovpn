@@ -2011,6 +2011,23 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       if (observedPorts) propertiesSection.append(observedPorts);
     }
     if (node.kind !== 'Сервис' && !node.guest) {
+      const relatedRxSilence = (data.portRxSilenceAudit?.ports ?? []).filter(reading =>
+        reading.deviceId !== node.id && reading.pendingPeers?.some(peer =>
+          peer.id === node.id && (!chosenPort || portKeys(chosenPort).includes(portKey(peer.port)))));
+      if (relatedRxSilence.length) {
+        const panel = make('section');
+        panel.dataset.section = 'related-port-rx-silence';
+        const list = make('ul', null, 'map-detail-list');
+        for (const {deviceId, deviceName, port, rxSilence} of relatedRxSilence) {
+          const row = make('li');
+          row.append(portPairEndpoint(deviceId, deviceName, port),
+            make('small', formatRxSilence(rxSilence)),
+            make('small', 'Неподтверждённая пара портов'));
+          list.append(row);
+        }
+        panel.append(make('h3', 'Передача без приёма на порту коммутатора'), list);
+        propertiesSection.append(panel);
+      }
       if (!chosenPort) {
         for (const shared of data.sharedPorts ?? []) {
           const peer = shared.peerObservations?.find(item => item.id === node.id);
