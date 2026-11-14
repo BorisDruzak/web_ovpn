@@ -5541,6 +5541,12 @@ def test_switch_collection_check_keeps_failed_fdb_separate_from_host_reachabilit
 
     _, check, _ = read(now + timedelta(minutes=26))
     assert check["stale"] and check["state"] == "unknown" and "reason" not in check
+    recent_snapshot = json.loads(path.read_text(encoding="utf-8"))
+    recent_snapshot["snapshotAt"] = (now + timedelta(minutes=26)).isoformat()
+    path.write_text(json.dumps(recent_snapshot), encoding="utf-8")
+    stale_graph = load_infrastructure_map(path, now + timedelta(minutes=26))
+    assert stale_graph["availability"] == "ready"
+    assert stale_graph["collectionIssues"] == ["switch_observer_stale"]
     report.update(status="partial", error_class="", outcomes_json=json.dumps({
         "fdb": "success_with_rows", "lldp_remote": "success_with_rows",
         "lldp_remote_management_address": "timeout", "pvid": "unsupported_no_such_object",
@@ -5554,6 +5560,7 @@ def test_switch_collection_check_keeps_failed_fdb_separate_from_host_reachabilit
     report.update(status="success")
     node, check, issues = read()
     assert node["mapStatus"] == "ok" and check["state"] == "reachable" and issues == []
+    assert "collectionIssues" not in load_infrastructure_map(path, now)
 
 
 def test_guest_placement_includes_current_bridge_and_configured_members(tmp_path):

@@ -4945,6 +4945,11 @@ def load_infrastructure_map(
     raw_issues = raw.get("collectionIssues")
     known_issues = ("proxmox", "network_observer", "server_observer_unavailable", "server_observer_stale")
     issues = [name for name in known_issues if isinstance(raw_issues, list) and name in raw_issues]
+    if "network_observer" not in issues and any(
+        check["method"] == SNMP_COLLECTION_METHOD and check["stale"] and check["checkedAt"]
+        for node in nodes.values() for check in node["serviceChecks"]
+    ):
+        issues.append("switch_observer_stale")
     observer_at = _time(raw.get("serverObserverAt"))
     if (observer_at and now - observer_at > SERVER_OBSERVER_MAX_AGE
             and not {"server_observer_stale", "server_observer_unavailable"}.intersection(issues)):
