@@ -628,6 +628,16 @@
 
 Карточка `yadro-os-ssh` проверяет TCP/22 на адресе Astra Linux `192.168.100.120` после той же сверки ARP и FDB SNR, что и `yadro-findface-web`. При отсутствии подтверждения адреса сборщик пропускает запрос. Веб-интерфейс FindFace и Redfish на отдельном адресе BMC имеют собственные проверки. [Инвентарь YADRO VEGMAN](https://github.com/BorisDruzak/network_configuration/blob/main/docs/devices/yadro-vegman-r220-g2-videoanalytics.md)
 
+На YADRO используйте три отдельные карточки в `asset_services` с `asset: yadro-vegman-r220-g2-videoanalytics` и `require_network_identity: true`. Все проверки ниже используют адрес `192.168.100.120` после сверки ARP и FDB.
+
+| Карточка | Проверки в `service_probes` |
+| --- | --- |
+| `yadro-findface-ntls` | `http` на `3185`, путь `/license.json`, `content_type: application/json`. Обязательный компонент `tcp_connect` на `3133` с `component: true`. Связь `used_by: [yadro-findface-web]` показывает зависимость FindFace от локального лицензирования. |
+| `yadro-k3s-tls` | `tls_handshake` на `6443`. Подтверждает согласование TLS на порту API. Готовность K3s проверяется отдельно. |
+| `yadro-registry-tcp` | `tcp_connect` на `5000`. Подтверждает, что порт принимает соединения. Чтение и выдача образов требуют отдельных проверок. |
+
+Проверка NTLS подтверждает HTTP-ответ локального ресурса и доступность порта API. Состояние лицензии и синхронизация с поставщиком требуют отдельных наблюдений. [Восстановление FindFace и проверка лицензирования](https://github.com/BorisDruzak/network_configuration/blob/main/docs/runbooks/yadro-videoanalytics-k3s-cold-boot-recovery.md)
+
 Карточка `tplink-ito-management-ssh` проверяет TCP/22 коммутатора ИТО. Сборщик принимает наблюдавшийся у этого TP-Link формат версии `IPSSH-<major>.<minor>.<patch>` и завершает соединение после строки идентификации.
 
 Карточка `tplink-shkol7-management-ssh` проверяет TCP/22 по адресу управления из сетевого контекста. Параметр `confirm_early_close: true` повторяет проверку один раз, если TCP-соединение закрыто без данных. Два таких закрытия показывают недоступность SSH из UI_VPN. Если повторная попытка получает идентификацию SSH, проверка проходит. При другом результате повтора остаётся статус без подтверждения. В API и MCP видны причина, `sshTcpConnected` и число попыток. Веб-панель и SNMP проверяются отдельно.
