@@ -9843,8 +9843,10 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     }
     raw["nodes"][0]["serviceChecks"].append({
         "method": "HTTP", "state": "unknown", "source": "UI_VPN", "checkedAt": stamp,
-        "required": True, "reason": "timeout",
+        "required": True, "reason": "timeout", "target": address["address"], "port": 80,
     })
+    virtual["ipv4Observations"] = [address]
+    virtual["switchPorts"] = [virtual["switchUplink"]]
     read()
     audit = read_audit()
     assert audit["runningServiceCoverage"]["withFreshResult"] == 1
@@ -9852,7 +9854,17 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     gap, = audit["runningRequiredCheckGaps"]
     assert gap["state"] == "partial" and gap["guest"]["id"] == "vm"
     assert gap["services"] == [{"id": raw["nodes"][0]["id"], "required": 4, "withResult": 3,
-                                "issues": [{"check": "HTTP", "reason": "timeout", "checkedAt": stamp}]}]
+                                "issues": [{"check": "HTTP", "reason": "timeout", "checkedAt": stamp,
+                                            "target": address["address"], "port": 80,
+                                            "guestUplink": {key: transit_path[key] for key in (
+                                                "guestPort", "bridge", "hypervisorId", "switchId", "physicalPair",
+                                            )}}]}]
+    virtual["switchPorts"].append({"id": "snr", "port": "ge12", "at": stamp, "vlan": 1})
+    read()
+    unresolved = read_audit()["runningRequiredCheckGaps"][0]["services"][0]["issues"][0]
+    assert unresolved["reason"] == "timeout" and "guestUplink" not in unresolved
+    virtual.pop("ipv4Observations")
+    virtual.pop("switchPorts")
     raw["nodes"][0]["serviceChecks"].pop()
     service_checks = raw["nodes"][0].pop("serviceChecks")
     observer_checks = raw["nodes"][0].pop("checks")

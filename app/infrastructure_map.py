@@ -4120,9 +4120,11 @@ def summarize_guest_attachment_audit(graph: dict) -> dict:
     running_coverage = {"confirmed": guest_counts["running"] - incomplete_running - disconnected_running,
                         "incomplete": incomplete_running, "withoutNetwork": disconnected_running}
     guest_services = defaultdict(set)
+    service_guests = defaultdict(dict)
     for edge in graph["links"]:
         if edge["a"] in guests and _is_service_attachment(edge) and nodes[edge["b"]]["kind"] == "Сервис":
             guest_services[edge["a"]].add(edge["b"])
+            service_guests[edge["b"]][edge["a"]] = guests[edge["a"]]
     service_coverage = {"withFreshResult": 0, "withoutFreshResult": 0, "withoutService": 0}
     service_gaps = []
     required_coverage = dict.fromkeys(("complete", "partial", "withoutResult", "withoutRequiredChecks", "withoutService"), 0)
@@ -4140,12 +4142,17 @@ def summarize_guest_attachment_audit(graph: dict) -> dict:
             fresh += sum(not check["stale"] and check["status"] in {"ok", "warn", "critical"} for check in observer)
             row = {"id": service_id, "required": len(probes) + len(observer), "withResult": fresh}
             if unresolved:
-                row["issues"] = [
-                    {"check": check["method"], **{key: check[key] for key in (
+                row["issues"] = []
+                for check in unresolved[:6]:
+                    issue = {"check": check["method"], **{key: check[key] for key in (
                         "checkedAt", "reason", "timeoutStage", "port", "target",
                     ) if check.get(key)}, **({"stale": True} if check["stale"] else {})}
-                    for check in unresolved[:6]
-                ]
+                    paths = _service_attachment_paths({"serviceChecks": [check]}, service_guests[service_id])
+                    if len(paths) == 1 and paths[0].get("guestId") == guest_id:
+                        issue["guestUplink"] = {key: paths[0][key] for key in (
+                            "guestPort", "bridge", "hypervisorId", "switchId", "physicalPair",
+                        )}
+                    row["issues"].append(issue)
             services.append(row)
         missing = [row for row in services if not row["required"] or row["withResult"] < row["required"]]
         if not services:
