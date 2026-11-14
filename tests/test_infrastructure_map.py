@@ -4979,6 +4979,10 @@ def test_proxmox_management_port_joins_unique_fdb_and_active_bridge(tmp_path):
     assert summarize_guest_attachment(graph, "management")["attachment"]["servicePaths"] == [management]
     assert graph["servicePorts"]["sw"][0]["services"][0]["basis"] == ["host_management"]
     host = next(node for node in snapshot["nodes"] if node["id"] == "pve3")
+    earlier_cable = (now - timedelta(minutes=2)).isoformat()
+    management_report["at"] = earlier_cable
+    snapshot["links"].append({**direct, "kind": "Путь по MAC-таблице",
+                              "portEvidence": [{**management_report, "at": at}]})
     host.setdefault("serviceChecks", []).append({
         "source": "UI_VPN", "method": "ICMP · ARP + FDB", "target": address, "state": "reachable",
         "checkedAt": at, "identityCheckedAt": at, "supplemental": True, "roundTripMs": 0.4,
@@ -4986,7 +4990,8 @@ def test_proxmox_management_port_joins_unique_fdb_and_active_bridge(tmp_path):
     path.write_text(json.dumps(snapshot), encoding="utf-8")
     graph = load_infrastructure_map(path, now, include_guest_attachments=True)
     host_path, = summarize_guest_attachment(graph, "pve3")["attachment"]["servicePaths"]
-    assert host_path["physicalPair"] == management["physicalPair"] and host_path["roundTripMs"] == 0.4
+    assert host_path["physicalPair"] == {**management["physicalPair"], "checkedAt": earlier_cable}
+    assert host_path["roundTripMs"] == 0.4
     assert graph["servicePaths"]["pve3"] == [host_path]
     port = graph["servicePorts"]["sw"][0]
     probe, = next(item for item in port["services"] if item["id"] == "pve3")["probeEndpoints"]

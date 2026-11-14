@@ -3322,7 +3322,8 @@ def _management_port_paths(nodes: dict, links: list[dict]) -> dict:
             continue
         (key, pair), = pairs.items()
         if physical_at := physical.get((host, key)):
-            confirmed[host, address] = (key[0], {**pair, "checkedAt": min(pair["checkedAt"], physical_at)})
+            confirmed[host, address] = (key[0], {**pair, "checkedAt": min(pair["checkedAt"], physical_at)},
+                                        pair["checkedAt"])
     return confirmed
 
 
@@ -3540,9 +3541,9 @@ def _management_service_paths(service: dict, host: str, management: dict, observ
                                           "addressCheckedAt": router["checkedAt"], "routerAttachment": router})
                 continue
         if not arp_probe and (matched := management.get((host, check["target"]))):
-            switch, pair = matched
+            switch, pair, identity_at = matched
             if service["kind"] == "Сервис" or (
-                check["method"] == "ICMP · ARP + FDB" and check.get("identityCheckedAt") == pair["checkedAt"]
+                check["method"] == "ICMP · ARP + FDB" and check.get("identityCheckedAt") == identity_at
             ):
                 paths.append({**_attachment_probe_location(check), "addressCheckedAt": pair["checkedAt"],
                               "management": True, "hypervisorId": host, "switchId": switch, "physicalPair": pair})
