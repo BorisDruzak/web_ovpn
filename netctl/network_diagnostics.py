@@ -11,6 +11,7 @@ HISTORY_HOURS = 24
 MAX_POINTS = 1440
 MAX_INTERVAL_SECONDS = 900
 PORT_COUNTERS = ("in_errors", "out_errors", "in_discards", "out_discards")
+HISTORY_COUNTERS = (*PORT_COUNTERS, "link_downs")
 
 
 def _counter(value: object) -> str | None:
@@ -127,6 +128,11 @@ def _traffic_points(rows: list[sqlite3.Row], *, switch: bool, unreliable_broadca
         if elapsed is not None and 0 < elapsed <= MAX_INTERVAL_SECONDS:
             metrics = (_switch_rates(row, previous[1], elapsed) if switch
                        else _router_rates(row, previous[1], elapsed))
+            if (not switch and row["interface_type"] == previous[1]["interface_type"] == "ether"
+                    and row["mac"] == previous[1]["mac"]):
+                after, before = row["link_downs"], previous[1]["link_downs"]
+                if after is not None and before is not None and int(after) >= int(before):
+                    metrics["link_downs_delta"] = int(after) - int(before)
             if switch and not unreliable_broadcast:
                 broadcast = derive_broadcast_rates(row, previous[1], elapsed)
         point = {
@@ -138,6 +144,8 @@ def _traffic_points(rows: list[sqlite3.Row], *, switch: bool, unreliable_broadca
         }
         if switch:
             point.update(in_broadcast_pps=broadcast.get("in_pps"), out_broadcast_pps=broadcast.get("out_pps"))
+        elif "link_downs_delta" in metrics:
+            point["link_downs_delta"] = metrics["link_downs_delta"]
         points.append(point)
         previous = observed, row
     return points
@@ -260,9 +268,9 @@ def read_diagnostics(
         unreliable = model is not None and broadcast_counters_unreliable(model["profile_id"], model["sys_descr"])
         result["points"] = _traffic_points(rows, switch=switch, unreliable_broadcast=unreliable)
         summary = {}
-        for key in PORT_COUNTERS:
+        for key in HISTORY_COUNTERS:
             deltas = [point[f"{key}_delta"] for point in result["points"]
-                      if point[f"{key}_delta"] is not None]
+                      if point.get(f"{key}_delta") is not None]
             if deltas:
                 summary[key] = {
                     "total": sum(deltas),

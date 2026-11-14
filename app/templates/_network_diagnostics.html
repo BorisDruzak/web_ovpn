@@ -40,6 +40,10 @@
         {% set counter = diagnostics.port_counter_summary.get(key) %}
         · {{ label }} {% if counter %}{{ counter.total }} (интервалы с ростом — {{ counter.affected_intervals }} из {{ counter.measured_intervals }}){% else %}— нет замеров{% endif %}
         {% endfor %}
+        {% if 'link_downs' in diagnostics.port_counter_summary %}
+        {% set link_downs = diagnostics.port_counter_summary.link_downs %}
+        · Падения линка по RouterOS {{ link_downs.total }} (интервалы с ростом — {{ link_downs.affected_intervals }} из {{ link_downs.measured_intervals }})
+        {% endif %}
       </p>
       {% endif %}
       {% if diagnostics.points | rejectattr("rx_bps", "none") | list %}

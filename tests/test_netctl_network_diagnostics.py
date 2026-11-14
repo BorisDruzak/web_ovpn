@@ -70,7 +70,7 @@ def test_router_history_keeps_error_deltas_only_between_valid_samples(tmp_path, 
             (10, 600, 900, ("2", "5", "7", "10", "1")),
             (15, 900, 1200, ("1", "5", "8", "bad", "1")),
             (20, 1200, 1500, ("3", "6", "9", "11", "2")),
-            (25, 100, 100, ("4", "7", "10", "12", "2")),
+            (25, 100, 100, ("4", "7", "10", "12", "0")),
         ]:
             observed_at = f"2026-11-12T12:{minute:02}:00Z"
             monkeypatch.setattr(store, "utc_now", lambda: observed_at)
@@ -93,7 +93,9 @@ def test_router_history_keeps_error_deltas_only_between_valid_samples(tmp_path, 
         (None, None, None, None),
     ]
     assert [point["rx_bps"] for point in result["points"]] == [None, 8, 8, 8, 8, None]
+    assert [point.get("link_downs_delta") for point in result["points"]] == [None, None, 0, 0, 1, None]
     assert result["port_counter_summary"] == {
+        "link_downs": {"total": 1, "measured_intervals": 3, "affected_intervals": 1},
         "in_errors": {"total": 0, "measured_intervals": 1, "affected_intervals": 0},
         "out_errors": {"total": 1, "measured_intervals": 2, "affected_intervals": 1},
         "in_discards": {"total": 2, "measured_intervals": 2, "affected_intervals": 2},
