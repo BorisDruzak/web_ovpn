@@ -9164,6 +9164,23 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     audit = read_audit()
     assert audit["interfaceCounts"]["local_neighbor_with_physical_pair"] == 1 and audit["gapTotal"] == 0
     assert audit["runningNetworkCoverage"] == {"confirmed": 1, "incomplete": 0, "withoutNetwork": 0}
+    assert audit["runningServiceCoverage"] == {"withFreshResult": 1, "withoutFreshResult": 0, "withoutService": 0}
+    assert audit["runningServiceGaps"] == []
+    service_checks = raw["nodes"][0].pop("serviceChecks")
+    observer_checks = raw["nodes"][0].pop("checks")
+    read()
+    audit = read_audit()
+    assert audit["runningServiceCoverage"]["withoutFreshResult"] == 1
+    assert audit["runningServiceGaps"] == [{"guest": audit["confirmedUplinks"][0]["interfaces"][0]["guest"],
+                                           "state": "without_fresh_result"}]
+    placement = raw["links"].pop(0)
+    read()
+    audit = read_audit()
+    assert audit["runningServiceCoverage"]["withoutService"] == 1
+    assert audit["runningServiceGaps"][0]["state"] == "without_service"
+    raw["links"].insert(0, placement)
+    raw["nodes"][0]["serviceChecks"] = service_checks
+    raw["nodes"][0]["checks"] = observer_checks
     raw["nodes"][0]["serviceChecks"][0]["vlanTransit"]["peer"]["state"] = "mismatch"
     assert "localNeighbor" not in read()["guests"][0]["interfaces"][0]
     assert read()["servicePaths"] == []

@@ -3953,9 +3953,37 @@ def summarize_guest_attachment_audit(graph: dict) -> dict:
     disconnected_running = without_network["runningWithoutNetworkTotal"]
     running_coverage = {"confirmed": guest_counts["running"] - incomplete_running - disconnected_running,
                         "incomplete": incomplete_running, "withoutNetwork": disconnected_running}
+    guest_services = defaultdict(set)
+    for edge in graph["links"]:
+        if edge["a"] in guests and _is_service_attachment(edge) and nodes[edge["b"]]["kind"] == "Сервис":
+            guest_services[edge["a"]].add(edge["b"])
+    service_coverage = {"withFreshResult": 0, "withoutFreshResult": 0, "withoutService": 0}
+    service_gaps = []
+    for guest_id, attachment in sorted(guests.items()):
+        if attachment["power"] != "running":
+            continue
+        services = guest_services[guest_id]
+        if not services:
+            service_coverage["withoutService"] += 1
+            state = "without_service"
+        elif any(
+            check.get("required") and not check["stale"] and check["state"] in {"reachable", "unreachable"}
+            for service_id in services for check in nodes[service_id]["serviceChecks"]
+        ) or any(
+            check.get("required") and not check["stale"] and check["status"] in {"ok", "warn", "critical"}
+            for service_id in services for check in nodes[service_id]["checks"]
+        ):
+            service_coverage["withFreshResult"] += 1
+            continue
+        else:
+            service_coverage["withoutFreshResult"] += 1
+            state = "without_fresh_result"
+        service_gaps.append({"guest": attachment["guest"], "state": state})
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
     return {**metadata, "attachmentAudit": {"guestCounts": guest_counts, "interfaceCounts": interface_counts,
                                             "runningNetworkCoverage": running_coverage,
+                                            "runningServiceCoverage": service_coverage,
+                                            "runningServiceGaps": service_gaps[:64],
                                             "gapTotal": len(gaps), "gaps": gaps[:64],
                                             **_confirmed_guest_uplinks(guests),
                                             **without_network}}
