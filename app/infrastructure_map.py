@@ -2687,13 +2687,23 @@ def _summarize_shared_ports(pending: list[dict]) -> list[dict]:
 
 def _summarize_pair_measurement_gaps(pairs: list[dict]) -> dict:
     gaps = []
+    devices = {}
     for pair in pairs:
         states = pair.get("portStates", {})
         missing = sorted({"a", "b"} - states.keys())
         if missing:
             gaps.append({**{key: pair[key] for key in ("a", "b", "nameA", "nameB", "portA", "portB", "evidence")},
                          "missingSides": missing, "missingReasons": pair["missingReasons"], "portStates": states})
-    return {"currentPairMeasurementGapTotal": len(gaps), "currentPairMeasurementGaps": gaps[:64]}
+            for side in missing:
+                device_id = pair[side]
+                port = pair[f"port{side.upper()}"]
+                device = devices.setdefault(device_id, {"id": device_id, "name": pair[f"name{side.upper()}"], "ports": {}})
+                device["ports"][port] = pair["missingReasons"][side]
+    by_device = [{"id": device["id"], "name": device["name"], "portTotal": len(device["ports"]),
+                  "ports": [{"name": port, "reason": reason} for port, reason in sorted(device["ports"].items())[:64]]}
+                 for _, device in sorted(devices.items())]
+    return {"currentPairMeasurementGapTotal": len(gaps), "currentPairMeasurementGaps": gaps[:64],
+            "currentPairMeasurementGapDeviceTotal": len(by_device), "currentPairMeasurementGapsByDevice": by_device[:64]}
 
 
 def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: str | None = None) -> dict:
@@ -4786,7 +4796,7 @@ def load_infrastructure_map(
             "lacpPartnerInterfaceGaps": []} if include_port_pairs else {}),
         **({"guestAttachments": {}, "servicePaths": {}, "servicePorts": {}, "inventoryPairs": [],
             "currentPortPairTotal": 0, "currentPortPairs": [],
-            "currentPairMeasurementGapTotal": 0, "currentPairMeasurementGaps": [],
+            **_summarize_pair_measurement_gaps([]),
             "pendingPortPairTotal": 0, "pendingPortPairs": [], "pendingPortPairLinkCounts": {},
             "lacpPartnerInterfaceGapTotal": 0, "lacpPartnerInterfaceGaps": []} if include_guest_attachments else {}),
     }

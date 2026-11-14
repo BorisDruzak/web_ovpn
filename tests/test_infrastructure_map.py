@@ -10155,6 +10155,11 @@ def test_topology_audit_surfaces_pending_declared_ports_without_promoting_mac_pa
     browser_graph = load_infrastructure_map(path, include_guest_attachments=True)
     assert browser_graph["currentPortPairTotal"] == audit["currentPairTotal"]
     assert browser_graph["currentPortPairs"] == audit["currentPairs"]
+    assert audit["currentPairMeasurementGapDeviceTotal"] == 2
+    assert {item["id"]: item["ports"] for item in audit["currentPairMeasurementGapsByDevice"]} == {
+        "snr": [{"name": "xe3", "reason": "stale_port_sample"}],
+        "pve": [{"name": "ens7f1", "reason": "port_not_in_samples"}],
+    }
     assert audit["pendingTotal"] == 3
     pending, mismatch, recorder = audit["pending"]
     assert "missing_port_name" in recorder["confirmationGaps"]
