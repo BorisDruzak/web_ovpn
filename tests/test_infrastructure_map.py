@@ -4605,6 +4605,9 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
     devices = [{"id": "pbs", "name": "PBS", "kind": "backup_server", "management_ip": "192.0.2.14"},
                {"id": "snr", "name": "SNR", "kind": "switch", "management_ip": "192.0.2.254"}]
     bindings = {"lacp_links": [{"source": "switch", "asset": "pbs", "aggregate": "po1", "members": ["ge6", "ge7"]}]}
+    archived_bond = {"name": "bond0", "interfaces": ["enp2s0f0", "enp2s0f1"],
+                     "source": {"path": "evidence/manual/pbs.md", "observedOn": "2026-08-12"}}
+    bindings["lacp_links"][0]["archived_bond"] = archived_bond
     sources = [{"id": 1, "name": "switch", "enabled": True, "driver": "snmp_switch", "host": "192.0.2.254"}]
     ports = [{"source": "switch", "port_key": key, "name": name, "oper_status": "up", "last_seen_at": at,
               "speed_bps": 10**9 if name != "po1" else 2 * 10**9}
@@ -4636,6 +4639,7 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
     assert (color, health["status"]) == ("ok", "ok")
     assert [member["partnerPort"] for member in health["members"]] == [1, 2]
     assert [member["partnerInterfaceState"] for member in health["members"]] == ["unconfirmed"] * 2
+    assert health["archivedBond"] == archived_bond
     assert [member["speedBps"] for member in health["members"]] == [10**9] * 2
     assert [member["linkCheckedAt"] for member in health["members"]] == [at] * 2
     for port in (ports[0], ports[2]):

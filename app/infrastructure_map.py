@@ -1850,9 +1850,19 @@ def _attach_lacp_health(nodes: dict, expectations: dict, links: list[dict], port
             fault = aggregate_link["state"] in {"down", "disabled"}
             states.add(aggregate_link["state"])
             status = "warn" if states & {"down", "disabled"} else "unknown" if "unknown" in states else "ok"
+            archived = {}
+            if isinstance(bond := spec.get("archivedBond"), dict):
+                name, interfaces = bond.get("name"), bond.get("interfaces")
+                sources = inventory_link_sources([bond.get("source")])
+                if (isinstance(name, str) and INTERFACE_NAME.fullmatch(name) and sources
+                        and isinstance(interfaces, list) and 1 <= len(interfaces) <= 16
+                        and all(isinstance(port, str) and INTERFACE_NAME.fullmatch(port) and port != name
+                                for port in interfaces) and len(set(interfaces)) == len(interfaces)):
+                    archived = {"archivedBond": {"name": name, "interfaces": interfaces, "source": sources[0]}}
             nodes[node_id].setdefault("lacpHealth", []).append({
                 "switchId": switch_id, "aggregate": aggregate, "members": members,
                 "status": status, "aggregateLink": aggregate_link,
+                **archived,
                 **({"aggregateLinkFault": aggregate_link} if fault else {}),
             })
 

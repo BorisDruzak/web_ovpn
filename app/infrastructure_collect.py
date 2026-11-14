@@ -3139,6 +3139,7 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         if switch and switch != asset and nodes[switch]["kind"] == NETWORK_KINDS[0]:
             nodes[asset].setdefault("lacpExpectations", []).append({
                 "switchId": switch, "aggregate": aggregate, "members": spec["members"],
+                "archivedBond": spec.get("archived_bond"),
             })
             if source_nodes.get(spec["source"]) == switch:
                 lacp_identity_sources.add((asset, spec["source"], aggregate))
