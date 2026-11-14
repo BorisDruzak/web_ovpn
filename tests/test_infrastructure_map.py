@@ -6096,6 +6096,8 @@ def test_transit_port_requires_direct_route_running_ethernet_and_neighbor_arp(tm
         connection, = host["connections"]
         assert connection["kind"] == "Транзитный сегмент"
         assert all("pairEvidence" not in report for report in connection["ports"])
+        pair, = host["pendingPortPairs"]
+        assert pair["portHistory"] == {"a": {"source": "main", "interface": "ether8"}}
     port, = attachment("rb")["servicePorts"]
     row, = port["services"]
     assert port["port"] == "ether8" and row["basis"] == ["router_arp"]
@@ -6812,7 +6814,10 @@ def test_transit_peer_management_port_requires_fresh_arp_fdb_and_active_ethernet
     expired_audit = summarize_topology(load_infrastructure_map(path, now + timedelta(hours=1)))["topologyAudit"]
     assert expired_audit["pendingTotal"] == 0
     ports = next(node["ports"] for node in load_infrastructure_map(path, now)["nodes"] if node["id"] == "rb")
-    assert ports == [expected, {**expected, "name": "ether9", "state": "disabled"}]
+    assert ports == [
+        {**expected, "history": {"source": "main", "interface": "ether7"}},
+        {**expected, "name": "ether9", "state": "disabled", "history": {"source": "main", "interface": "ether9"}},
+    ]
     expired = lan(public_at=now + timedelta(hours=1))[0]
     assert not expired["confirmed"]
     assert "portStates" not in expired["portEvidence"][0]

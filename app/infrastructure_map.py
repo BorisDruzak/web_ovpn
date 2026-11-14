@@ -1282,11 +1282,13 @@ def _public_node(row: dict, now: datetime) -> dict:
     for port, raw_port in zip(ports, port_rows):
         _apply_port_link_check(port, raw_port, now)
         key = _text(raw_port.get("key"))
-        if (row.get("kind") == NETWORK_KINDS[0] and not port["stale"]
+        if (not port["stale"]
                 and label_counts[port_label_key(port["name"])] == 1
-                and re.fullmatch(r"[A-Za-z0-9._-]{1,128}", history_source)
-                and re.fullmatch(r"(?:ifindex|physical):[1-9][0-9]{0,9}", key)):
-            port["history"] = {"source": history_source, "interface": key}
+                and re.fullmatch(r"[A-Za-z0-9._-]{1,128}", history_source)):
+            if row.get("kind") == NETWORK_KINDS[0] and re.fullmatch(r"(?:ifindex|physical):[1-9][0-9]{0,9}", key):
+                port["history"] = {"source": history_source, "interface": key}
+            elif port.get("source") == "RouterOS" and INTERFACE_NAME.fullmatch(port["name"]):
+                port["history"] = {"source": history_source, "interface": port["name"]}
     observer = next((source for source in sources if source["name"] == "Server Observer"), None)
     aliases = row.get("aliases")
     resources = {}

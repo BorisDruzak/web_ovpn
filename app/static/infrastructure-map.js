@@ -2295,6 +2295,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           name.addEventListener('click', () => selectPort(id, port.name));
         }
         row.append(name, make('small', status));
+        if (selectedPort && port.history) {
+          row.append(portHistoryLink(port.history, 'История порта за 24 часа'));
+        }
         if (selectedPort && port.configuredLabel) {
           const {text, checkedAt} = port.configuredLabel;
           row.append(make('small', `Подпись на коммутаторе · ${text} · ${formatTime(checkedAt)}`));
