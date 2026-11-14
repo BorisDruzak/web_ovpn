@@ -188,6 +188,7 @@ def _http(ip: str, port: int, spec: dict, *, references: _AssetReferences | None
     digest_challenge = spec.get("digest_auth_challenge", False)
     redirect_port = spec.get("https_redirect_port")
     allow_gzip = spec.get("allow_gzip", False)
+    gzip_decoded_limit = spec.get("gzip_decoded_limit", HTTP_BODY_LIMIT)
     tls = spec["type"] == "https"
     if references is not None:
         content_type = "text/html"
@@ -209,6 +210,11 @@ def _http(ip: str, port: int, spec: dict, *, references: _AssetReferences | None
         content_type = "application/json"
     if type(allow_gzip) is not bool:
         raise ValueError("allow_gzip requires a boolean")
+    if "gzip_decoded_limit" in spec and (
+        not allow_gzip or not isinstance(body_marker, str) or not body_marker
+        or type(gzip_decoded_limit) is not int or not HTTP_BODY_LIMIT <= gzip_decoded_limit <= 2 * HTTP_BODY_LIMIT
+    ):
+        raise ValueError("invalid gzip decoded limit for body marker probe")
     if type(digest_challenge) is not bool:
         raise ValueError("digest_auth_challenge requires a boolean")
     if "https_redirect_port" in spec:
@@ -332,6 +338,7 @@ def _http(ip: str, port: int, spec: dict, *, references: _AssetReferences | None
             if actual_type not in allowed_types:
                 return {**observed, "state": "unknown", "reason": "http_content_type"}
         read = response.read
+        body_marker_limit = HTTP_BODY_LIMIT
         if allow_gzip:
             encoding = response.getheader("Content-Encoding", "").strip().lower()
             if encoding == "gzip":
@@ -340,12 +347,13 @@ def _http(ip: str, port: int, spec: dict, *, references: _AssetReferences | None
                     return {**observed, "state": "unknown", "reason": "http_body_limit"}
                 try:
                     with gzip.GzipFile(fileobj=io.BytesIO(compressed)) as stream:
-                        decoded = stream.read(HTTP_BODY_LIMIT + 1)
+                        decoded = stream.read(gzip_decoded_limit + 1)
                 except (gzip.BadGzipFile, EOFError, zlib.error):
                     return {**observed, "state": "unknown", "reason": "http_content_encoding"}
-                if len(decoded) > HTTP_BODY_LIMIT:
+                if len(decoded) > gzip_decoded_limit:
                     return {**observed, "state": "unknown", "reason": "http_body_limit"}
                 read = io.BytesIO(decoded).read
+                body_marker_limit = gzip_decoded_limit
             elif encoding not in ("", "identity"):
                 return {**observed, "state": "unknown", "reason": "http_content_encoding"}
         if references is not None:
@@ -385,7 +393,7 @@ def _http(ip: str, port: int, spec: dict, *, references: _AssetReferences | None
             payload = read(HTTP_BODY_LIMIT + 1)
             matches = payload.strip() == body_expected.encode()
         elif body_marker:
-            matches = body_marker.encode() in read(HTTP_BODY_LIMIT)
+            matches = body_marker.encode() in read(body_marker_limit)
         else:
             matches = bool(read(1))
         if matches:

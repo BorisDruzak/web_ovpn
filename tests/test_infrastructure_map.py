@@ -1695,6 +1695,13 @@ def test_http_probe_accepts_only_bounded_complete_gzip_when_configured(monkeypat
     assert probes._http_probe(spec)["reason"] == "http_content_encoding"
     body = gzip.compress(marker + b" " * probes.HTTP_BODY_LIMIT)
     assert probes._http_probe(spec)["reason"] == "http_body_limit"
+    body = gzip.compress(b" " * 44_000 + marker)
+    spec["gzip_decoded_limit"] = 65536
+    assert probes._http_probe(spec)["state"] == "reachable"
+    body = gzip.compress(marker + b" " * 65_536)
+    assert probes._http_probe(spec)["reason"] == "http_body_limit"
+    spec["gzip_decoded_limit"] = 65537
+    assert probes._http_probe(spec)["reason"] == "http_configuration"
 
 
 def test_http_probe_checks_nested_boolean_health_fields(monkeypatch):
