@@ -7011,9 +7011,10 @@ def test_hypervisor_fdb_path_reports_management_interface_without_claiming_direc
     assert proof(None)["b"] == ""
 
 
-def test_transit_peer_management_port_requires_fresh_arp_fdb_and_active_ethernet(tmp_path):
+def test_transit_peer_management_port_requires_fresh_arp_fdb_and_active_ethernet(tmp_path, monkeypatch):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map, summarize_guest_attachment, summarize_services, summarize_topology
+    from app import infrastructure_service_probes as probes
 
     now = datetime.now(timezone.utc)
     at = now.isoformat()
@@ -7069,6 +7070,29 @@ def test_transit_peer_management_port_requires_fresh_arp_fdb_and_active_ethernet
     network["router_bridge_hosts"].append({**learned, "interface": "ether9"})
     assert target_identity() == (None, None)
     network["router_bridge_hosts"].pop()
+    bindings["asset_ip_checks"] = {"coordinator": address}
+    monkeypatch.setattr(probes, "_icmp_check", lambda ip: {"state": "reachable", "roundTripMs": 0.4})
+    for port, extra, available in (("ether7", [], True), ("ether9", [], False),
+                                   ("ether7", [{**learned, "interface": "ether9"}], False)):
+        bindings["transit_links"]["transit"]["lan_port"] = port
+        network["router_bridge_hosts"] = [learned, *extra]
+        graph = build_graph(context, network, {}, {}, bindings, now)
+        probes.apply_service_probes(graph["nodes"], {"coordinator": [{"type": "icmp", "ip": address}]})
+        path.write_text(json.dumps(graph), encoding="utf-8")
+        projected = load_infrastructure_map(path, now + timedelta(seconds=1), include_service_ports=True)
+        node = summarize_guest_attachment(projected, "coordinator")["attachment"]
+        check, = node["serviceChecks"]
+        if available:
+            assert (check["method"], check["state"], check["identityCheckedAt"]) == ("ICMP · ARP + FDB", "reachable", at)
+            reading, = node["servicePaths"]
+            assert reading["routerAttachment"]["port"] == "ether7" and reading["roundTripMs"] == 0.4
+            row, = projected["servicePorts"]["rb"]
+            endpoint, = next(item for item in row["services"] if item["id"] == "coordinator")["probeEndpoints"]
+            assert endpoint["passed"] == 1
+        else:
+            assert check["skipped"] and "servicePaths" not in node
+    network["router_bridge_hosts"] = [learned]
+    bindings.pop("asset_ip_checks")
     link, = lan()
     assert link["kind"] == "Путь по MAC-таблице" and link["confirmed"]
     expected = {"name": "ether7", "source": "RouterOS", "state": "up",

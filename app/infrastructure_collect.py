@@ -2266,6 +2266,9 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                         and declared_devices_by_mac.get(mac, set()) <= {asset}):
                     for service in identity_services.get(asset, []):
                         service.update(probeTargetIP=address, probeTargetIdentityAt=observed)
+                    if asset_ip_checks.get(asset) == address and "probeTargetIdentityAt" not in nodes[asset]:
+                        nodes[asset].update(probeTargetIP=address, probeTargetIdentityAt=observed,
+                                            probeTargetIdentityMethod="ICMP · ARP + FDB")
                 if archived := _inventory_ipv4_interface(devices[asset], address, now):
                     name, checked_at, references = archived
                     edge(router, asset, "Путь по MAC-таблице", "GitHub", False, ports=("", name), at=checked_at,

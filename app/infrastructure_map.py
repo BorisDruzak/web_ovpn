@@ -3547,6 +3547,7 @@ def _management_service_paths(service: dict, host: str, management: dict, observ
             observation, = attachment.values()
             asset_probe = (service["kind"] != "Сервис" and (check["method"], observation["source"]) in {
                               ("ICMP · ARP + FDB", "netctl FDB"),
+                              ("ICMP · ARP + FDB", "MikroTik · ARP + FDB"),
                               ("ICMP · LACP + ARP", "SNMP LACP + ARP"),
                               ("ARP · L2", "netctl FDB"),
                           }
