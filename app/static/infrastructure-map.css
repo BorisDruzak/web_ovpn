@@ -66,16 +66,21 @@
 #infra-map-review .map-group { border-top: 1px solid var(--map-border); padding: 12px 0; }
 #infra-map-review .map-group:last-child { padding-bottom: 0; }
 #infra-map-review .map-group h2 { margin-bottom: 9px; }
+#infra-map-review .map-group-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; margin-bottom: 9px; }
+#infra-map-review .map-group-heading h2 { margin: 0; }
+#infra-map-review .map-fit { min-height: 36px; padding: 4px 10px; border: 1px solid var(--map-border); border-radius: 6px; background: var(--map-paper); cursor: pointer; }
+#infra-map-review .map-fit:hover { border-color: var(--map-active); }
 #infra-map-review #map-navigation-hint { margin-bottom: 8px; color: var(--map-muted); font-size: 12px; }
 #infra-map-review .map-viewport {
-  max-height: clamp(280px, 64vh, 620px); overflow: auto;
+  max-height: clamp(280px, 64vh, 620px); overflow: auto; overflow-anchor: none;
   border: 1px solid var(--map-border); border-radius: 9px;
   background: radial-gradient(circle, var(--map-border) 1px, transparent 1px) 0 0 / 18px 18px;
   cursor: grab;
 }
 #infra-map-review .map-viewport:focus-visible { outline: 2px solid var(--map-active); outline-offset: 2px; }
 #infra-map-review .map-viewport.map-dragging { cursor: grabbing; user-select: none; }
-#infra-map-review .map-graph { position: relative; margin-inline: auto; }
+#infra-map-review .map-stage { margin-inline: auto; overflow: clip; }
+#infra-map-review .map-graph { position: relative; transform-origin: top left; }
 #infra-map-review .map-ring {
   position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
   border: 1px dashed var(--map-border); border-radius: 50%; pointer-events: none;
@@ -144,5 +149,5 @@
   }
 }
 @media (pointer: coarse) {
-  #infra-map-review .map-node, #infra-map-review input, #infra-map-review #map-search button, #infra-map-review .map-close { min-height: 44px; }
+  #infra-map-review .map-node, #infra-map-review input, #infra-map-review #map-search button, #infra-map-review .map-close, #infra-map-review .map-fit { min-height: 44px; }
 }

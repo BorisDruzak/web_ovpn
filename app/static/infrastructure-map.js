@@ -86,7 +86,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   };
   const source = root.querySelector('#map-sources');
   const availability = root.querySelector('#map-availability');
-  const navigationHint = make('p', 'Прокручивайте карту, перетаскивайте её за фон или проведите пальцем.');
+  const navigationHint = make('p', 'Колёсико меняет масштаб. Перетаскивайте карту за фон или проведите пальцем.');
   navigationHint.id = 'map-navigation-hint';
   availability.after(navigationHint);
   const availabilityLabels = {
@@ -684,23 +684,95 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     }
     return ranks;
   }
-  function enableMapDrag(viewport, graph) {
+  function enableMapDrag(viewport) {
     let drag = null;
-    graph.addEventListener('pointerdown', event => {
+    viewport.addEventListener('pointerdown', event => {
       if (event.pointerType !== 'mouse' || event.button !== 0 || event.target.closest('button')) return;
+      const bounds = viewport.getBoundingClientRect();
+      if (event.clientX >= bounds.left + viewport.clientLeft + viewport.clientWidth ||
+          event.clientY >= bounds.top + viewport.clientTop + viewport.clientHeight) return;
       if (viewport.scrollWidth <= viewport.clientWidth && viewport.scrollHeight <= viewport.clientHeight) return;
       event.preventDefault();
       drag = {x: event.clientX + viewport.scrollLeft, y: event.clientY + viewport.scrollTop};
-      graph.setPointerCapture(event.pointerId);
+      viewport.focus({preventScroll: true});
+      viewport.setPointerCapture(event.pointerId);
       viewport.classList.add('map-dragging');
     });
-    graph.addEventListener('pointermove', event => {
+    viewport.addEventListener('pointermove', event => {
       if (drag) viewport.scrollTo(drag.x - event.clientX, drag.y - event.clientY);
     });
-    graph.addEventListener('lostpointercapture', () => {
+    viewport.addEventListener('lostpointercapture', () => {
       drag = null;
       viewport.classList.remove('map-dragging');
     });
+  }
+
+  function mapZoom(viewport, stage, graph, width, height, fitButton) {
+    let scale;
+    let fitted = false;
+    const fitScale = () => {
+      const style = getComputedStyle(viewport);
+      const innerWidth = viewport.getBoundingClientRect().width -
+        parseFloat(style.borderLeftWidth) - parseFloat(style.borderRightWidth);
+      const innerHeight = parseFloat(style.maxHeight) -
+        parseFloat(style.borderTopWidth) - parseFloat(style.borderBottomWidth);
+      return Math.min(1, Math.floor(innerWidth) / width, Math.floor(innerHeight) / height);
+    };
+    function setScale(nextScale) {
+      if (nextScale === scale) return;
+      scale = nextScale;
+      stage.style.width = `${width * scale}px`;
+      stage.style.height = `${height * scale}px`;
+      graph.style.transform = `scale(${scale})`;
+    }
+    setScale(1);
+    function fit() {
+      fitted = true;
+      setScale(fitScale());
+      viewport.scrollTo(0, 0);
+    }
+    function zoomAt(factor, x, y) {
+      const nextScale = Math.max(fitScale(), Math.min(2.5, scale * factor));
+      if (nextScale === scale) return;
+      const before = stage.getBoundingClientRect();
+      const relativeX = (x - before.left) / scale;
+      const relativeY = (y - before.top) / scale;
+      fitted = false;
+      setScale(nextScale);
+      const after = stage.getBoundingClientRect();
+      viewport.scrollBy(after.left + relativeX * scale - x, after.top + relativeY * scale - y);
+    }
+    viewport.addEventListener('wheel', event => {
+      if (!event.deltaY || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      event.preventDefault();
+      const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? viewport.clientHeight : 1;
+      const delta = Math.max(-200, Math.min(200, event.deltaY * unit));
+      zoomAt(Math.exp(-delta / 250), event.clientX, event.clientY);
+    }, {passive: false});
+    viewport.addEventListener('keydown', event => {
+      if (event.target !== viewport || !['+', '=', '-'].includes(event.key) || event.ctrlKey || event.metaKey) return;
+      event.preventDefault();
+      const rect = viewport.getBoundingClientRect();
+      zoomAt(event.key === '-' ? 0.8 : 1.25, rect.left + rect.width / 2, rect.top + rect.height / 2);
+    });
+    fitButton?.addEventListener('click', fit);
+    return {
+      fitIfActive() {
+        if (fitted) fit();
+      },
+      save() {
+        return {scale, fitted, left: viewport.scrollLeft, top: viewport.scrollTop};
+      },
+      restore(state, unlinked) {
+        if (state?.fitted) {
+          fit();
+          return;
+        }
+        if (state) setScale(state.scale);
+        viewport.scrollTo(state?.left ?? (viewport.scrollWidth - viewport.clientWidth) / 2,
+          state?.top ?? (unlinked ? 0 : (viewport.scrollHeight - viewport.clientHeight) / 2));
+      },
+    };
   }
 
   function radialLayout(ranks) {
@@ -738,6 +810,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
 
   function addGraph(title, components, focus = null, unlinked = []) {
     const section = group(title);
+    const stage = make('div', null, 'map-stage');
     const viewport = make('div', null, 'map-viewport');
     viewport.tabIndex = 0;
     viewport.setAttribute('role', 'region');
@@ -780,11 +853,22 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       button.style.top = `${y}px`;
       graph.append(button);
     }
+    let fitButton;
+    if (rings.length) {
+      fitButton = make('button', 'Показать всю карту', 'map-fit');
+      fitButton.type = 'button';
+      const heading = section.firstElementChild;
+      const tools = make('div', null, 'map-group-heading');
+      heading.replaceWith(tools);
+      tools.append(heading, fitButton);
+    }
     section.append(viewport);
-    viewport.append(graph);
-    enableMapDrag(viewport, graph);
+    viewport.append(stage);
+    stage.append(graph);
+    enableMapDrag(viewport);
+    const zoom = mapZoom(viewport, stage, graph, width, height, fitButton);
     graphs.push({
-      title, viewport, graph, svg, components, positions, unlinked: Boolean(unlinked.length),
+      title, viewport, graph, svg, components, positions, zoom, fitButton, unlinked: Boolean(unlinked.length),
       edges: unlinked.length ? [] : data.links.filter(edge => edge.confirmed && positions.has(edge.a) && positions.has(edge.b)),
     });
   }
@@ -799,7 +883,13 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
               entries.sort((a,b) => a.vmid - b.vmid).map(node => node.id));
     }
   }
-  function renderView(mode, focus=null, scrollPositions = new Map()) {
+  function refitMaps() {
+    for (const {zoom} of graphs) zoom.fitIfActive();
+  }
+  new ResizeObserver(refitMaps).observe(groups);
+  window.addEventListener('resize', refitMaps);
+
+  function renderView(mode, focus=null, mapPositions = new Map()) {
     if (selected) clearSelection();
     graphs.length = 0;
     groups.replaceChildren();
@@ -849,10 +939,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         addGuestGroups(data.nodes.filter(node => node.guest && !visible.has(node.id)));
       }
     }
-    for (const {title, viewport, unlinked} of graphs) {
-      const position = scrollPositions.get(title);
-      viewport.scrollTo(position?.left ?? (viewport.scrollWidth - viewport.clientWidth) / 2,
-        position?.top ?? (unlinked ? 0 : (viewport.scrollHeight - viewport.clientHeight) / 2));
+    for (const {title, zoom, unlinked} of graphs) {
+      zoom.restore(mapPositions.get(title), unlinked);
     }
     requestAnimationFrame(draw);
   }
@@ -3321,9 +3409,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       panel => [panel.dataset.section, panel.open]));
     const active = document.activeElement;
     const activeNode = [...buttons].find(([, button]) => button === active)?.[0];
-    const activeViewport = graphs.find(({viewport}) => viewport === active)?.title;
-    const scrollPositions = new Map(graphs.map(({title, viewport}) =>
-      [title, {left: viewport.scrollLeft, top: viewport.scrollTop}]));
+    const activeGraph = graphs.find(({viewport, fitButton}) => viewport === active || fitButton === active);
+    const mapPositions = new Map(graphs.map(({title, zoom}) => [title, zoom.save()]));
     const activePanel = active?.closest('summary')?.parentElement.dataset.section;
     const activePort = active?.dataset.port;
     const inCard = details.contains(active) || related.contains(active);
@@ -3331,7 +3418,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     indexSnapshot();
     renderSnapshotHeader();
     const focus = view === 'overview' && byId.has(wanted) ? wanted : null;
-    renderView(view, focus, scrollPositions);
+    renderView(view, focus, mapPositions);
     if (buttons.has(wanted)) {
       renderSelection(wanted, false, wantedPort);
       for (const panel of details.querySelectorAll('details')) {
@@ -3341,8 +3428,9 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     const summary = activePanel && details.querySelector(`[data-section="${activePanel}"] summary`);
     const portControl = activePort === undefined ? null : [...details.querySelectorAll('button[data-port]')]
       .find(button => button.dataset.port === activePort);
-    const replacement = summary || portControl || buttons.get(activeNode ?? (inCard ? wanted : null)) ||
-      graphs.find(({title}) => title === activeViewport)?.viewport;
+    const updatedGraph = graphs.find(({title}) => title === activeGraph?.title);
+    const mapControl = active === activeGraph?.fitButton ? updatedGraph?.fitButton : updatedGraph?.viewport;
+    const replacement = summary || portControl || buttons.get(activeNode ?? (inCard ? wanted : null)) || mapControl;
     replacement?.focus({preventScroll: true});
   }
 
