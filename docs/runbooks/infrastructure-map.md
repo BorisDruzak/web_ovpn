@@ -542,6 +542,8 @@
 
 У `storage-console-web` два обязательных компонента HTTPS проверяют JavaScript и CSS интерфейса по ссылкам из `/`. Используйте `script_src_prefix: index-`, `script_src_directory: /assets/` для JavaScript и `stylesheet_href_prefix: index-`, `stylesheet_href_directory: /assets/` для CSS. Оба компонента используют имя TLS и доверенный CA из `/ready`. Карточка и MCP показывают фактические пути файлов и подтверждённый аплинк ВМ, если доступны свежие наблюдения.
 
+Для `helpdesk-production-health` и `helpdesk-staging-health` обязательная проверка CSS читает ссылки из `/app/login` с `stylesheet_href_prefix: index-` и `stylesheet_href_directory: /assets/`. Для `sonarqube-health` две обязательные проверки CSS читают `/sessions/new` с префиксами `main-` и `echoes-` в `/css/`. Используйте имя TLS и доверенный CA соответствующей страницы входа. Сборщик ожидает HTTP 200, тип `text/css` и непустое содержимое.
+
 В `ucm6302-web` добавьте обязательный компонент `type: https` с `component: true`, `path: /SIPml-api.js`, `content_type: text/javascript` и `body_contains: var __b_release_mode`. Используйте тот же IP, порт 8089 и отпечаток TLS, что у проверки страницы `/`. Компонент проверяет выдачу скрипта, на который ссылается веб-панель. Ответ SIP OPTIONS по UDP/5060 проверяет отдельная карточка `ucm6302-pbx-sip`.
 
 Для файлов текущей прошивки UCM6302 задайте два обязательных компонента HTTPS с `path: /`, `script_src_directory: /` и префиксами `script_src_prefix: vendor.` и `script_src_prefix: main.`. Сборщик читает актуальные ссылки из страницы и запрашивает каждый файл по тому же IP, порту и отпечатку TLS. Проверка подтверждает тип JavaScript и наличие содержимого файла.
