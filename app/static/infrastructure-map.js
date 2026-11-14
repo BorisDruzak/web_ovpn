@@ -1169,6 +1169,26 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       }
       label.append(row);
     }
+    if (entry?.remoteAccessChecks?.length) {
+      const panel = make('div');
+      panel.dataset.section = 'agent-remote-access';
+      panel.append(make('small', 'Удалённый доступ из UI_VPN'));
+      const outcomes = {reachable: 'отвечает', unreachable: 'недоступен', unknown: 'нет подтверждения'};
+      for (const check of entry.remoteAccessChecks) {
+        const {method, target, port, state, checkedAt, serviceId, switchId, physicalPair} = check;
+        const service = make('a', method);
+        service.href = '?' + new URLSearchParams({node: serviceId});
+        const reading = make('small');
+        reading.append(service, ' · ' + [
+          `${target}:${port}`, outcomes[state], serviceCheckReason(check), formatTime(checkedAt),
+        ].filter(Boolean).join(' · '));
+        if (physicalPair) {
+          reading.append(' · ', portPairEndpoint(switchId, byId.get(switchId)?.name ?? switchId, physicalPair.switchPort));
+        }
+        panel.append(reading);
+      }
+      label.append(panel);
+    }
     const profileLabels = {health_v1: 'Состояние', network_v1: 'Сеть', inventory_v1: 'Инвентарь'};
     const displayedProfiles = {inventory_v1: system?.collectedAt, network_v1: network?.snapshotAt ?? network?.checkedAt};
     for (const {profile, collectedAt} of entry?.contextProfiles ?? []) {
