@@ -1988,6 +1988,12 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         if raw in {"ok", "success"} and row.get("enabled") and observation_is_fresh(collected_at, now):
             method = "SNMP" if row.get("driver") == "snmp_switch" else "Опрос устройства"
             item["reachability"] = _observation("reachable", "Network Observer", method, collected_at)
+            if (item["kind"] == NETWORK_KINDS[1] and row.get("driver") in {"mikrotik_api", "mikrotik_ssh"}
+                    and bindings.get("router_management_icmp_sources", {}).get(key) == name
+                    and row.get("host") and row["host"] == asset_ip_checks.get(key) == address_by_asset.get(key)
+                    and candidates == [key]):
+                item.update(probeTargetIP=row["host"], probeTargetIdentityAt=collected_at,
+                            probeTargetIdentityMethod="ICMP · опрос RouterOS")
         elif direct:
             item["reachability"] = direct
         if row.get("enabled") and row.get("driver") == "snmp_switch" and "switch_collection" in network:

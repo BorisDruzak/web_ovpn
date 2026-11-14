@@ -5582,6 +5582,37 @@ def test_router_management_address_uses_only_fresh_matching_mac():
     assert public["properties"]["Адрес управления"] == address
 
 
+def test_router_icmp_requires_fresh_management_source(monkeypatch):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import _public_service_check
+    from app.infrastructure_service_probes import apply_service_probes
+
+    now = datetime.now(timezone.utc)
+    address = "192.0.2.15"
+    context = {"devices": [{"id": "router", "name": "Router", "kind": "router", "management_ip": address}]}
+    source = {"name": "branch", "driver": "mikrotik_ssh", "enabled": True, "host": address,
+              "last_status": "ok", "last_collect_at": now.isoformat()}
+    bindings = {"asset_ip_checks": {"router": address}, "router_management_icmp_sources": {"router": "branch"}}
+    monkeypatch.setattr("app.infrastructure_service_probes._icmp_check",
+                        lambda ip: {"state": "reachable", "roundTripMs": 0.5})
+    for changes in ({}, {"last_collect_at": (now - timedelta(hours=1)).isoformat()},
+                    {"host": "192.0.2.16", "driver_options": {"intent_stable_id": "router"}},
+                    {"enabled": False}, {"last_status": "error"}, {"name": "other"}):
+        graph = build_graph(context, {"sources": [{**source, **changes}]}, {}, {}, bindings, now)
+        apply_service_probes(graph["nodes"], {"router": [{"type": "icmp", "ip": address}]})
+        node = next(row for row in graph["nodes"] if row["id"] == "router")
+        check, = node["serviceChecks"]
+        public = _public_service_check(check, now + timedelta(seconds=1))
+        if changes:
+            assert public["skipped"] and public["reason"] == "probe_target_unconfirmed"
+        else:
+            assert (public["method"], public["state"], public["roundTripMs"]) == (
+                "ICMP · опрос RouterOS", "reachable", 0.5,
+            )
+            assert public["identityCheckedAt"] == now.isoformat()
+    assert not graph["links"]
+
+
 def test_switch_ports_expose_fresh_link_state_and_age(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map
