@@ -3417,6 +3417,7 @@ def _observed_management_ports(links: list[dict], nodes: dict) -> dict:
                     if not report["b"] and (archived := _archived_router_peer(edge)):
                         attachment["archivedPeer"] = archived
                 if field == "switchAttachment":
+                    attachment.update({key: port_state[key] for key in ("fdbLearned", "fdbVlans") if key in port_state})
                     if history := histories.get((device, port_label_key(port_state["name"]))):
                         attachment["history"] = history
                     if counters := port_state.get("rxErrorCounters"):

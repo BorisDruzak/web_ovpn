@@ -6559,9 +6559,17 @@ def test_configured_asset_fdb_path_is_scoped_and_requires_a_unique_live_port(mon
     assert evidence["portStates"]["a"]["telemetry"]["rxErrors"] == 3
     assert evidence["learnedEndpoint"] == learned
     assert "pairEvidence" not in evidence
+    observed_port = next(node["ports"][0] for node in graph["nodes"] if node["id"] == "observer:access")
+    observed_port["fdbLearned"] = {"checkedAt": at, "learnedMacCount": 3, "partial": False}
+    observed_port["fdbVlans"] = {"checkedAt": at, "vlans": [{"id": 1, "learnedMacCount": 3}]}
+    snapshot.write_text(json.dumps(graph), encoding="utf-8")
+    public = load_infrastructure_map(snapshot)
     host = summarize_guest_attachment(public, "gateway")["attachment"]
     observation, = host["servicePaths"]
     assert observation["switchAttachment"]["port"] == "Gi1/0/23"
+    assert observation["switchAttachment"]["fdbLearned"] == observed_port["fdbLearned"]
+    assert observation["switchAttachment"]["fdbVlans"] == observed_port["fdbVlans"]
+    assert "physicalPair" not in observation["switchAttachment"]
     assert observation["state"] == "reachable" and observation["roundTripMs"] == 0.5
     gateway["serviceChecks"][0].update(state="unknown", reason="icmp_no_echo_reply")
     gateway["serviceChecks"][0].pop("roundTripMs")
