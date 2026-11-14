@@ -6741,20 +6741,25 @@ def test_switch_management_interface_requires_matching_arp_and_snmp(tmp_path, mo
     port = {"source": "core-snmp", "port_key": "ifindex:15", "name": "vlan1", "oper_status": "up",
             "mac": mac, "last_seen_at": stamp}
     network = {"sources": [source], "ports": [port], "arp": [{"ip": ip, "mac": mac, "last_seen_at": stamp}]}
-    bindings = {"switch_management_interfaces": {"core": "vlan1"},
+    bindings = {"switch_management_interfaces": {"core": "vlan1"}, "asset_ip_checks": {"core": ip},
                 "asset_services": {"ssh": {"asset": "core", "label": "SSH", "require_network_identity": True}}}
     monkeypatch.setattr("app.infrastructure_service_probes._ssh_identification", lambda _: {"state": "reachable"})
+    monkeypatch.setattr("app.infrastructure_service_probes._icmp_check", lambda _: {"state": "reachable", "roundTripMs": 0.5})
     path = tmp_path / "map.json"
 
     def check():
         graph = build_graph(context, network, {}, {}, bindings, now)
-        apply_service_probes(graph["nodes"], {"ssh": [{"type": "ssh_identification", "ip": ip, "port": 22}]})
+        apply_service_probes(graph["nodes"], {"ssh": [{"type": "ssh_identification", "ip": ip, "port": 22}],
+                                               "core": [{"type": "icmp", "ip": ip}]})
         path.write_text(json.dumps(graph), encoding="utf-8")
-        return next(n for n in load_infrastructure_map(path)["nodes"] if n["id"] == "ssh")["serviceChecks"][0]
+        return {n["id"]: n["serviceChecks"][-1] for n in load_infrastructure_map(path)["nodes"]}
 
-    assert check()["managementInterface"] == {"name": "vlan1", "source": "SNMP · ARP"}
+    checks = check()
+    assert checks["ssh"]["managementInterface"] == {"name": "vlan1", "source": "SNMP · ARP"}
+    assert checks["core"]["managementInterface"] == checks["ssh"]["managementInterface"]
+    assert (checks["core"]["method"], checks["core"]["roundTripMs"]) == ("ICMP · SNMP + ARP", 0.5)
     port["mac"] = "02:00:00:00:00:23"
-    assert check()["reason"] == "probe_target_unconfirmed"
+    assert all(row["reason"] == "probe_target_unconfirmed" for row in check().values())
 
 
 @pytest.mark.parametrize("canonical", (False, True))

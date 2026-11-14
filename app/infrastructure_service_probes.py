@@ -2003,7 +2003,7 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
         blocked = []
         management_observation = None
         identity_method = node.get("probeTargetIdentityMethod")
-        if identity_method not in ("ICMP · ARP + FDB", "ICMP · LACP + ARP"):
+        if identity_method not in ("ICMP · ARP + FDB", "ICMP · LACP + ARP", "ICMP · SNMP + ARP"):
             identity_method = "ICMP · LLDP + ARP" if node["kind"] == "Коммутатор" else None
         identity_at = node.get("probeTargetIdentityAt") if service or identity_method else None
         for spec in specs:
@@ -2104,7 +2104,7 @@ def apply_service_probes(nodes: list[dict], configured: dict) -> None:
             }
             if identity_at and not skip_reason and (service or protocol == "icmp"):
                 observation["identityCheckedAt"] = identity_at
-                if service and (interface := node.get("probeTargetManagementInterface")):
+                if interface := node.get("probeTargetManagementInterface"):
                     observation["managementInterface"] = {"name": interface, "source": "SNMP · ARP"}
                 if not service and details["state"] == "reachable":
                     management_observation = {"state": "reachable", "source": "UI_VPN", "method": method,

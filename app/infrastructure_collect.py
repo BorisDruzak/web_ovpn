@@ -2910,6 +2910,10 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
         for item in identity_services.get(asset, []):
             item.update(probeTargetIP=address, probeTargetIdentityAt=checked,
                         probeTargetManagementInterface=port["name"])
+        if asset_ip_checks.get(asset) == address:
+            nodes[asset].update(probeTargetIP=address, probeTargetIdentityAt=checked,
+                                probeTargetManagementInterface=port["name"],
+                                probeTargetIdentityMethod="ICMP · SNMP + ARP")
     asset_arp_path_times = {}
     for asset, switch_source in bindings.get("asset_fdb_paths", {}).items():
         address = address_by_asset.get(asset)

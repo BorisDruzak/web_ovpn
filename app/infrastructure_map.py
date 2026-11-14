@@ -749,7 +749,8 @@ def _public_service_check(check: dict, now: datetime) -> dict:
                 and (arp := _public_arp_details(check.get("arpDiagnostic")))):
             result["arpDiagnostic"] = arp
         return {**result, "target": "", "skipped": True, "reason": reason}
-    identified_icmp = result["method"] in ("ICMP · LLDP + ARP", "ICMP · ARP + FDB", "ICMP · LACP + ARP")
+    identified_icmp = result["method"] in ("ICMP · LLDP + ARP", "ICMP · ARP + FDB",
+                                           "ICMP · LACP + ARP", "ICMP · SNMP + ARP")
     if identified_icmp or ((result["source"] == "UI_VPN" or result["method"] == "ARP · L2")
                            and "identityCheckedAt" in check):
         identity_at = check.get("identityCheckedAt")
