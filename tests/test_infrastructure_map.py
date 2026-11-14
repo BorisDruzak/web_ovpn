@@ -10752,6 +10752,17 @@ def test_router_layer2_checks_follow_inventory_and_guest_arp_identity(monkeypatc
     assert checked["ap"]["method"] == "ARP · L2"
     assert checked["ap"]["target"] == "192.0.2.24"
     assert calls[-1] == ("bridge-lan", ap_mac, "192.0.2.24")
+    legacy = {"state": "offline", "reason": "active_negative_no_passive_evidence", "run_status": "success",
+              "checked_at": now.isoformat()}
+    network["hosts"] = [{"ip": spec["address"], "mac": ap_mac, "availability": legacy}]
+    network["asset_mac_checks"] = checked
+    arp_at = datetime.fromisoformat(checked["ap"]["checkedAt"])
+    for timestamp, expected in ((arp_at - timedelta(minutes=2), "ARP · L2"),
+                                (arp_at + timedelta(seconds=1), "Активная проверка")):
+        legacy["checked_at"] = timestamp.isoformat()
+        graph = collector.build_graph(context, network, {}, {}, bindings, arp_at + timedelta(seconds=2))
+        ap = next(row for row in graph["nodes"] if row["id"] == "ap")
+        assert ap["reachability"]["method"] == expected
     spec["address"] = ip
     assert collector._collect_asset_mac_probes(context, [source], bindings["asset_mac_probes"]) == {}
     spec["address"] = "192.0.2.24"

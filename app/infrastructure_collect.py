@@ -3006,8 +3006,13 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                  lacp_polled_at=report["at"], management_address=address)
     for key, observation in network.get("asset_mac_checks", {}).items():
         if key in nodes and observation_is_fresh(observation["checkedAt"], now):
-            nodes[key].setdefault("reachability", observation)
-            nodes[key].setdefault("serviceChecks", []).append(observation)
+            item = nodes[key]
+            current = item.setdefault("reachability", observation)
+            if (current["source"] == "netctl" and observation["method"] == "ARP · L2"
+                    and observation.get("target") == address_by_asset.get(key)
+                    and datetime.fromisoformat(observation["checkedAt"]) > datetime.fromisoformat(current["checkedAt"])):
+                item["reachability"] = observation
+            item.setdefault("serviceChecks", []).append(observation)
     _reconcile_fdb_ports(edges.values())
     _corroborate_fdb_ports(edges.values(), nodes, now)
     _corroborate_stp_ports(edges.values(), nodes, shared_ports, now)
