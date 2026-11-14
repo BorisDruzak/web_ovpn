@@ -2043,6 +2043,40 @@ def test_pinned_https_probe_checks_redfish_authentication_challenge(monkeypatch)
     assert _http_probe({**spec, "tls_sha256": None})["reason"] == "http_configuration"
 
 
+def test_http_probe_checks_same_address_https_redirect_without_following(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.infrastructure_service_probes import _http_probe
+
+    response = SimpleNamespace(status=301)
+    response.getheaders = lambda: locations
+    locations = [("Location", "https://192.0.2.5:8089/")]
+    requests = []
+
+    class Connection:
+        def __init__(self, host, port, **kwargs):
+            assert (host, port) == ("192.0.2.5", 80)
+
+        def request(self, method, path, headers):
+            requests.append((method, path))
+
+        def getresponse(self):
+            return response
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("app.infrastructure_service_probes.http.client.HTTPConnection", Connection)
+    spec = {"type": "http", "ip": "192.0.2.5", "port": 80, "path": "/", "https_redirect_port": 8089}
+    assert _http_probe(spec) == {"state": "reachable", "httpStatus": 301}
+    assert requests == [("GET", "/")]
+    for locations in ([("Location", "https://192.0.2.6:8089/")], [], locations * 2):
+        assert _http_probe(spec) == {"state": "unreachable", "httpStatus": 301, "reason": "http_payload_mismatch"}
+    response.status = 200
+    assert _http_probe(spec) == {"state": "unreachable", "httpStatus": 200, "reason": "http_status"}
+    assert _http_probe({**spec, "https_redirect_port": True})["reason"] == "http_configuration"
+
+
 def test_http_digest_challenge_requires_401_realm_and_nonce(monkeypatch):
     from types import SimpleNamespace
 

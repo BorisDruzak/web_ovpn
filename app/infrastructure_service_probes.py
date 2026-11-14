@@ -155,6 +155,7 @@ def _http(ip: str, port: int, spec: dict, *, scripts: _ScriptReferences | None =
     oidc_jwks = spec.get("oidc_rs256_jwks", False)
     basic_auth_realm = spec.get("basic_auth_realm")
     digest_challenge = spec.get("digest_auth_challenge", False)
+    redirect_port = spec.get("https_redirect_port")
     allow_gzip = spec.get("allow_gzip", False)
     tls = spec["type"] == "https"
     if scripts is not None:
@@ -179,7 +180,13 @@ def _http(ip: str, port: int, spec: dict, *, scripts: _ScriptReferences | None =
         raise ValueError("allow_gzip requires a boolean")
     if type(digest_challenge) is not bool:
         raise ValueError("digest_auth_challenge requires a boolean")
-    if digest_challenge:
+    if "https_redirect_port" in spec:
+        if (type(redirect_port) is not int or not 1 <= redirect_port <= 65535 or tls
+                or digest_challenge or redfish_root or oidc_jwks
+                or any(value is not None for value in (body_expected, body_marker, content_type, json_fields,
+                                                       json_unavailable, basic_auth_realm, spec.get("http_host")))):
+            raise ValueError("invalid same-address HTTPS redirect contract")
+    elif digest_challenge:
         if any(value is not None for value in (body_expected, body_marker, content_type, json_fields,
                                                 json_unavailable, basic_auth_realm)):
             raise ValueError("invalid HTTP Digest authentication challenge contract")
@@ -258,6 +265,15 @@ def _http(ip: str, port: int, spec: dict, *, scripts: _ScriptReferences | None =
         observed["httpStatus"] = response.status
         if 500 <= response.status < 600:
             return {**observed, "state": "unreachable", "reason": "http_status"}
+        if redirect_port is not None:
+            if response.status not in (301, 302, 303, 307, 308):
+                return {**observed, "state": "unreachable", "reason": "http_status"}
+            host = f"[{ip}]" if ":" in ip else ip
+            authority = host if redirect_port == 443 else f"{host}:{redirect_port}"
+            locations = [value.strip() for name, value in response.getheaders() if name.lower() == "location"]
+            if locations != [f"https://{authority}{path}"]:
+                return {**observed, "state": "unreachable", "reason": "http_payload_mismatch"}
+            return {**observed, "state": "reachable"}
         if digest_challenge or basic_auth_realm is not None:
             if response.status != 401:
                 return {**observed, "state": "unknown", "reason": "http_status"}
