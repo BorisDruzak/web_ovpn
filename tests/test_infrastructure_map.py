@@ -1655,6 +1655,35 @@ def test_http_probe_retries_one_connection_refusal_when_enabled(monkeypatch):
         assert list(pending) == [] and waiting == waits
 
 
+def test_http_probe_reports_duplicate_status_line_as_unreachable(monkeypatch):
+    from http.client import HTTPResponse
+    from io import BytesIO
+    from types import SimpleNamespace
+
+    from app import infrastructure_service_probes as probes
+
+    class Connection:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def request(self, *args, **kwargs):
+            pass
+
+        def getresponse(self):
+            stream = BytesIO(b"HTTP/1.0 200 OK\r\nHTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<form>")
+            response = HTTPResponse(SimpleNamespace(makefile=lambda *args: stream))
+            response.begin()
+            return response
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(probes.http.client, "HTTPConnection", Connection)
+    result = probes._http_probe({"type": "http", "ip": "192.0.2.10", "port": 80,
+                                 "path": "/cgi-bin/login", "content_type": "text/html"})
+    assert result == {"state": "unreachable", "reason": "http_bad_response", "httpStatus": 200}
+
+
 def test_http_probe_accepts_only_bounded_complete_gzip_when_configured(monkeypatch):
     import gzip
     from io import BytesIO

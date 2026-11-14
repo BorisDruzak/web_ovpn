@@ -20,6 +20,7 @@ import zlib
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from datetime import datetime, timezone
+from email.errors import MissingHeaderBodySeparatorDefect
 from html.parser import HTMLParser
 from time import monotonic, sleep, time
 
@@ -305,6 +306,9 @@ def _http(ip: str, port: int, spec: dict, *, references: _AssetReferences | None
         observed["httpStatus"] = response.status
         if request_started is not None:
             observed["httpHeadersMs"] = round((monotonic() - request_started) * 1000, 2)
+        if any(isinstance(defect, MissingHeaderBodySeparatorDefect)
+               for defect in getattr(getattr(response, "headers", None), "defects", ())):
+            return {**observed, "state": "unreachable", "reason": "http_bad_response"}
         if 500 <= response.status < 600:
             return {**observed, "state": "unreachable", "reason": "http_status"}
         if redirect_port is not None:
