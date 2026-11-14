@@ -10330,6 +10330,9 @@ def test_reciprocal_mac_path_shows_fresh_stp_evidence_without_confirming_cable(t
     assert upstream["stpDesignatedObservers"] == [{"id": "css", "name": "CSS", **stp}]
     root = summarize_topology(graph, node_id="root")["topologyAudit"]
     assert root["stpRootObservers"] == [{"id": "css", "name": "CSS", **switch["stpRoot"]}]
+    unresolved = dict(graph)
+    unresolved["links"] = graph["links"][:2]
+    assert summarize_topology(unresolved, node_id="root")["topologyAudit"]["stpRelatedPendingTotal"] == 1
     assert not summarize_topology(read(now + timedelta(minutes=6)), node_id="root")["topologyAudit"]["stpRootObservers"]
     assert summarize_topology(graph, node_id="root", port_name="ge22")["topologyAudit"]["stpRelatedPending"] == []
     assert graph["pendingPortPairs"][0]["stpBridgeConnections"] == [confirmed]

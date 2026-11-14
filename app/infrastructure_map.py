@@ -2746,7 +2746,7 @@ def summarize_topology(graph: dict, *, node_id: str | None = None, port_name: st
             any(matches(pair) for pair in row.get("stpBridgeConnections", []))
             or any(path.get("bridgeDeviceId") == node_id
                    and (not port_name or port_label_key(path.get("designatedPortName", "")) in keys)
-                   for path in row.get("stpPaths", []))
+                   for observation in row.get("observedPaths", []) for path in observation.get("stpPaths", []))
             or any(observation["switchId"] == node_id
                    and (not port_name or port_label_key(observation["port"]) in keys)
                    for observation in row.get("stpBridgeMacObservations", []))
