@@ -6490,6 +6490,7 @@ def test_asset_service_can_require_current_fdb_and_arp_identity(monkeypatch, tmp
     local_port, = [port for port in switch["ports"] if port["name"] == "ge15"]
     assert path["switchAttachment"] == {
         "switchId": "observer:switch", "port": "ge15", "source": "netctl FDB", "checkedAt": observed,
+        "history": {"source": "switch", "interface": "ifindex:15"},
         "portLink": {key: local_port[key] for key in ("state", "speedBps", "checkedAt")},
     }
     assert "physicalPair" not in path and graph["servicePaths"]["recorder-web"] == [path]

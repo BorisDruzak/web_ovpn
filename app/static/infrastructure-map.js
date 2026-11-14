@@ -1379,12 +1379,13 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       const attachment = path.routerAttachment ?? path.switchAttachment;
       if (attachment) {
         const {routerId, switchId, port, source, checkedAt, physicalPair, archivedPeer, portLink,
-          telemetry, rxErrorCounters, lldpPeers = []} = attachment;
+          telemetry, rxErrorCounters, history, lldpPeers = []} = attachment;
         const deviceId = routerId ?? switchId;
         const device = byId.get(deviceId)?.name ?? deviceId;
         const evidence = switchId ? 'ARP + FDB коммутатора' : source;
         row.append(make('small', [evidence, formatTime(checkedAt)].join(' · ')),
           switchPortButton(deviceId, device, port));
+        if (history) row.append(portHistoryLink(history, `История порта ${port}`));
         if (portLink) {
           const reading = [portLabels[portLink.state], formatPortSpeed(portLink.speedBps),
             portLink.source ?? (switchId ? 'SNMP' : 'RouterOS'),

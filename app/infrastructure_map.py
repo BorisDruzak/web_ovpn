@@ -3231,6 +3231,9 @@ def _attach_management_vlan_observations(nodes: dict, links: list[dict], now: da
 def _observed_management_ports(links: list[dict], nodes: dict) -> dict:
     candidates = defaultdict(dict)
     physical = _current_physical_port_pairs(links)
+    histories = {(node_id, port_label_key(port["name"])): port["history"]
+                 for node_id, node in nodes.items() if node["kind"] == NETWORK_KINDS[0]
+                 for port in node["ports"] if "history" in port}
     for edge in links:
         if edge["kind"] not in {"Путь по MAC-таблице", "Транзитный сегмент", "Сетевое соединение"} or not edge["confirmed"]:
             continue
@@ -3286,6 +3289,8 @@ def _observed_management_ports(links: list[dict], nodes: dict) -> dict:
                     if not report["b"] and (archived := _archived_router_peer(edge)):
                         attachment["archivedPeer"] = archived
                 if field == "switchAttachment":
+                    if history := histories.get((device, port_label_key(port_state["name"]))):
+                        attachment["history"] = history
                     if counters := port_state.get("rxErrorCounters"):
                         attachment["rxErrorCounters"] = counters
                     peers = [peer for peer in report.get("lldpPeers", {}).get(side, [])
