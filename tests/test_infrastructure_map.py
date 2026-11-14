@@ -5659,13 +5659,21 @@ def test_router_icmp_requires_fresh_management_source(monkeypatch):
     context = {"devices": [{"id": "router", "name": "Router", "kind": "router", "management_ip": address}]}
     source = {"name": "branch", "driver": "mikrotik_ssh", "enabled": True, "host": address,
               "last_status": "ok", "last_collect_at": now.isoformat()}
-    bindings = {"asset_ip_checks": {"router": address}, "router_management_icmp_sources": {"router": "branch"}}
+    bindings = {"asset_ip_checks": {"router": address}, "router_management_icmp_sources": {"router": "branch"},
+                "asset_services": {"winbox": {"asset": "router", "label": "WinBox", "require_network_identity": True},
+                                   "other": {"asset": "router", "label": "Other", "require_network_identity": True}},
+                "router_management_services": {"router": ["winbox"]}}
     monkeypatch.setattr("app.infrastructure_service_probes._icmp_check",
                         lambda ip: {"state": "reachable", "roundTripMs": 0.5})
     for changes in ({}, {"last_collect_at": (now - timedelta(hours=1)).isoformat()},
                     {"host": "192.0.2.16", "driver_options": {"intent_stable_id": "router"}},
                     {"enabled": False}, {"last_status": "error"}, {"name": "other"}):
         graph = build_graph(context, {"sources": [{**source, **changes}]}, {}, {}, bindings, now)
+        by_id = {row["id"]: row for row in graph["nodes"]}
+        assert by_id["other"]["probeTargetIP"] is None
+        assert by_id["winbox"]["probeTargetIP"] == (None if changes else address)
+        if not changes:
+            assert by_id["winbox"]["probeTargetIdentityAt"] == now.isoformat()
         apply_service_probes(graph["nodes"], {"router": [{"type": "icmp", "ip": address}]})
         node = next(row for row in graph["nodes"] if row["id"] == "router")
         check, = node["serviceChecks"]
@@ -5677,7 +5685,7 @@ def test_router_icmp_requires_fresh_management_source(monkeypatch):
                 "ICMP · опрос RouterOS", "reachable", 0.5,
             )
             assert public["identityCheckedAt"] == now.isoformat()
-    assert not graph["links"]
+    assert {edge["kind"] for edge in graph["links"]} == {"Размещение"}
 
 
 def test_switch_ports_expose_fresh_link_state_and_age(tmp_path):

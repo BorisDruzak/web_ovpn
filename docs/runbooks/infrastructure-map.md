@@ -654,6 +654,8 @@
 
 Для отдельной ICMP-проверки m-arhiv укажите его адрес управления в `asset_ip_checks` и источник `mikrotik-hex` в `router_management_icmp_sources` по ID маршрутизатора. Запрос разрешает свежий успешный опрос этого канонического адреса включённым источником RouterOS. Карточка и MCP показывают задержку и время опроса источника. Физический порт этим способом не определяется.
 
+В `router_management_services` можно указать ID служб, которым разрешено использовать ту же сверку адреса RouterOS. Службы должны быть привязаны к этому маршрутизатору через `asset_services` с `require_network_identity: true`. Для WinBox проверка `tcp_connect` на TCP/8291 подтверждает доступность порта из UI_VPN. Функциональность приложения и вход требуют отдельной проверки.
+
 Карточка `yadro-os-ssh` проверяет TCP/22 на адресе Astra Linux `192.168.100.120` после той же сверки ARP и FDB SNR, что и `yadro-findface-web`. При отсутствии подтверждения адреса сборщик пропускает запрос. Веб-интерфейс FindFace и Redfish на отдельном адресе BMC имеют собственные проверки. [Инвентарь YADRO VEGMAN](https://github.com/BorisDruzak/network_configuration/blob/main/docs/devices/yadro-vegman-r220-g2-videoanalytics.md)
 
 На YADRO используйте три отдельные карточки в `asset_services` с `asset: yadro-vegman-r220-g2-videoanalytics` и `require_network_identity: true`. Все проверки ниже используют адрес `192.168.100.120` после сверки ARP и FDB.

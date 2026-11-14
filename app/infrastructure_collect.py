@@ -2083,6 +2083,12 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
                     and candidates == [key]):
                 item.update(probeTargetIP=row["host"], probeTargetIdentityAt=collected_at,
                             probeTargetIdentityMethod="ICMP · опрос RouterOS")
+                service_bindings = bindings.get("router_management_services")
+                service_ids = service_bindings.get(key) if isinstance(service_bindings, dict) else None
+                if isinstance(service_ids, list):
+                    for service in identity_services.get(key, []):
+                        if service["id"] in service_ids:
+                            service.update(probeTargetIP=row["host"], probeTargetIdentityAt=collected_at)
         elif direct:
             item["reachability"] = direct
         if row.get("enabled") and row.get("driver") == "snmp_switch" and "switch_collection" in network:
