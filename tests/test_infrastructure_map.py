@@ -9396,6 +9396,16 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     assert "linkedServices" not in rows["ge12"]
     scoped = client.get(url_topology + "&node_id=snr&port_name=XE3", headers=headers).json()["infrastructure"]
     assert scoped["topologyAudit"]["portCounterAudit"]["ports"] == [rows["xe3"]]
+    switch_services, = scoped["topologyAudit"]["servicePorts"]
+    host_services, = guests_on_host_port("ENS7")["servicePorts"]
+    assert host_services["port"] == "ens7"
+    assert host_services["services"] == switch_services["services"]
+    assert guests_on_host_port("eno1")["servicePorts"] == []
+    cable_reports.append({**cable_reports[0], "b": "eno1"})
+    read()
+    assert guests_on_host_port("ENS7")["servicePorts"] == []
+    cable_reports.pop()
+    read()
     from app.infrastructure_map import load_infrastructure_map
 
     assert load_infrastructure_map(path, include_guest_attachments=True)["portCounterAudit"] == audit

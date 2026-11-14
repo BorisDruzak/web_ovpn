@@ -3783,9 +3783,14 @@ def _map_attachments(nodes: dict, links: list[dict], now: datetime, *, endpoint_
                 basis = "guest_local_udp"
             else:
                 basis = "guest_path"
-            switch, port = path["switchId"], path["physicalPair"]["switchPort"]
+            pair = path["physicalPair"]
+            switch, port = path["switchId"], pair["switchPort"]
             record(switch, port, service, basis)
             path_checks[switch, port_label_key(port), service].add(check_key(path))
+            if "guestId" in path and "hypervisorId" in path:
+                hypervisor, host_port = path["hypervisorId"], pair["hostPort"]
+                record(hypervisor, host_port, service, basis)
+                path_checks[hypervisor, port_label_key(host_port), service].add(check_key(path))
     evidence = _physical_service_port_evidence(nodes, links)
     for service, hosts in service_hosts.items():
         if len(hosts) == 1:
