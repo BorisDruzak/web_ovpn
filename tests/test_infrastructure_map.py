@@ -5587,8 +5587,8 @@ def test_port_counter_audit_includes_peer_evidence_in_map_and_mcp(tmp_path):
 
     now = datetime.now(timezone.utc)
     at = now.isoformat()
-    nodes = [{"id": "core", "name": "Core", "kind": "Коммутатор", "ports": [
-        {"name": f"ge{index}", "state": "up", "checkedAt": at,
+    nodes = [{"id": "core", "name": "Core", "kind": "Коммутатор", "properties": {"Источник сбора": "core-snmp"}, "ports": [
+        {"name": f"ge{index}", "key": f"ifindex:{index}", "state": "up", "checkedAt": at,
          "telemetry": {"checkedAt": at, "intervalSeconds": 60, "rxErrors": 2}}
         for index in range(1, 5)
     ]}]
@@ -5617,6 +5617,7 @@ def test_port_counter_audit_includes_peer_evidence_in_map_and_mcp(tmp_path):
                                               ("pending", "unconfirmed")), start=1):
         scoped = summarize_topology(graph, node_id="core", port_name=f"ge{index}")["topologyAudit"]
         row = audit["ports"][index - 1]
+        assert row["history"] == {"source": "core-snmp", "interface": f"ifindex:{index}"}
         assert scoped["portCounterAudit"]["ports"] == [row]
         assert row["peers"] == [{"id": peer, "name": peer.title(), "port": "eth1", "evidence": evidence}]
     assert "peers" not in audit["ports"][3]
@@ -5662,7 +5663,7 @@ def test_switch_port_telemetry_requires_matching_current_collection(tmp_path):
                                        "pauseOperMode": "disabled", "rxPauseFrames": 0, "txPauseFrames": 17}
     assert audit == {"measuredPorts": 1, "affectedPorts": 1, "ports": [
         {"deviceId": "sw", "deviceName": "Switch", "port": "Port7", "telemetry": port["telemetry"],
-         "rxErrorCounters": port["rxErrorCounters"]},
+         "rxErrorCounters": port["rxErrorCounters"], "history": {"source": "core", "interface": "physical:7"}},
     ]}
     assert read(now + timedelta(minutes=21))[1] == {"measuredPorts": 0, "affectedPorts": 0, "ports": []}
     assert "rxErrorCounters" not in read(now + timedelta(minutes=6))[0]

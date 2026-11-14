@@ -1854,7 +1854,7 @@ def _summarize_port_counters(nodes: dict, topology_pairs: tuple | None, *,
             if any(telemetry.get(key, 0) for key in PORT_COUNTER_KEYS):
                 row = {"deviceId": node["id"], "deviceName": node["name"], "port": port["name"],
                        "telemetry": telemetry}
-                row.update({key: port[key] for key in ("configuredLabel", "rxErrorCounters") if key in port})
+                row.update({key: port[key] for key in ("configuredLabel", "rxErrorCounters", "history") if key in port})
                 affected.append(row)
                 port_by_key[node["id"], port["name"]] = port
 

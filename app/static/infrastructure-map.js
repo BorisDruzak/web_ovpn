@@ -185,11 +185,14 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       verified_inventory: 'Проверено по инвентарю',
       unconfirmed: 'Пара не подтверждена',
     };
-    list.replaceChildren(...ports.map(({deviceId, deviceName, port, configuredLabel, telemetry, linkedStatusCounts, peers = []}) => {
+    list.replaceChildren(...ports.map(({deviceId, deviceName, port, configuredLabel, telemetry,
+      linkedStatusCounts, rxErrorCounters, history, peers = []}) => {
       const item = make('li');
       const link = make('a', `${deviceName} · ${port}` + (configuredLabel ? ` · ${configuredLabel.text}` : ''));
       link.href = '?' + new URLSearchParams({node: deviceId, port});
       item.append(link, make('small', formatPortCounterChanges(telemetry)));
+      if (rxErrorCounters) appendRxErrorCounters(item, rxErrorCounters);
+      if (history) item.append(portHistoryLink(history, 'История порта за 24 часа'));
       if (linkedStatusCounts) {
         const {critical, warn, unknown, ok} = linkedStatusCounts;
         const counts = [
