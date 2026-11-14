@@ -2366,6 +2366,29 @@ def build_graph(context: dict, network: dict, server: dict, pve: dict, bindings:
             for device in (local_device, remote_device):
                 edge(device, path["id"], "Цель проверки", "Настройки карты")
     arp_mappings = _arp_mappings(network.get("arp", []), now)
+    bridge_paths = bindings.get("router_bridge_asset_paths")
+    for asset, spec in bridge_paths.items() if isinstance(bridge_paths, dict) else ():
+        if not isinstance(spec, dict) or asset not in nodes:
+            continue
+        address = address_by_asset.get(asset)
+        router, source_name, bridge = (spec.get(key) for key in ("router", "source", "bridge"))
+        if (not all(isinstance(value, str) and value for value in (router, source_name, bridge))
+                or router == asset or nodes.get(router, {}).get("kind") != NETWORK_KINDS[1]
+                or source_nodes.get(source_name) != router or addresses.get(address) != [asset]
+                or address not in arp_mappings or nodes[asset].get("guest")):
+            continue
+        mac, _ = arp_mappings[address]
+        if mac not in declared_macs[asset] or declared_devices_by_mac.get(mac) != {asset}:
+            continue
+        if attachment := _bridge_attachment_port(address, source_name, bridge, network, arp_mappings, now):
+            port, observed = attachment
+            edge(router, asset, "Путь по MAC-таблице", "MikroTik · ARP + FDB", ports=(port, ""),
+                 at=observed, management_address=address, details=f"{address} · {bridge}")
+            for service in identity_services.get(asset, []):
+                service.update(probeTargetIP=address, probeTargetIdentityAt=observed)
+            if asset_ip_checks.get(asset) == address:
+                nodes[asset].update(probeTargetIP=address, probeTargetIdentityAt=observed,
+                                    probeTargetIdentityMethod="ICMP · ARP + FDB")
     transit_segments = {segment["id"]: segment for segment in context.get("segments", [])}
     devices = {device["id"]: device for device in context.get("devices", [])}
     for segment_id, spec in bindings.get("transit_links", {}).items():
@@ -4026,12 +4049,16 @@ def main() -> int:
         lacp_links = bindings.get("lacp_links", [])
         transit_links = bindings.get("transit_links", {})
         transit_sources = {spec["source"] for spec in transit_links.values()}
+        bridge_paths = bindings.get("router_bridge_asset_paths")
+        bridge_sources = {spec["source"] for spec in bridge_paths.values() if isinstance(spec, dict)
+                          and isinstance(spec.get("source"), str)} if isinstance(bridge_paths, dict) else set()
         asset_fdb_paths = bindings.get("asset_fdb_paths", {})
         asset_fdb_ips = {device["management_ip"] for device in context.get("devices", [])
                          if device["id"] in asset_fdb_paths and device.get("management_ip")}
         start_stage("Network Observer database and CLI")
         try:
-            network = read_network(guest_macs, route_sources | transit_sources, transit_sources, asset_fdb_ips=asset_fdb_ips,
+            network = read_network(guest_macs, route_sources | transit_sources, transit_sources | bridge_sources,
+                                   asset_fdb_ips=asset_fdb_ips,
                                    local_asset_arp=_collect_local_asset_arp(context, bindings),
                                    downstream_links=_downstream_links(context, bindings.get("downstream_mac_links")))
         except (NetctlError, sqlite3.Error, OSError, ValueError) as exc:

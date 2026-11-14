@@ -7388,6 +7388,48 @@ def test_transit_peer_management_port_requires_fresh_arp_fdb_and_active_ethernet
     assert lan() == []
 
 
+def test_router_bridge_asset_checks_use_unique_arp_and_bridge_path(tmp_path):
+    from app.infrastructure_collect import build_graph
+    from app.infrastructure_map import load_infrastructure_map, summarize_guest_attachment
+
+    now = datetime.now(timezone.utc)
+    at = now.isoformat()
+    ip, mac = "192.0.2.18", "02:00:00:00:00:01"
+    context = {"devices": [{"id": "rb", "name": "Router", "kind": "router"},
+                           {"id": "sw", "name": "Switch", "kind": "switch", "management_ip": ip,
+                            "mac_addresses": [mac]}]}
+    learned = {"source": "branch", "mac": mac, "bridge": "bridge-lan", "interface": "ether3", "last_seen_at": at}
+    network = {"sources": [{"name": "branch", "driver": "mikrotik_ssh", "enabled": True,
+                            "driver_options": {"intent_stable_id": "rb"}}],
+               "arp": [{"source": "branch", "ip": ip, "mac": mac, "interface": "bridge-lan", "last_seen_at": at}],
+               "router_interfaces": [{"source": "branch", "name": "ether3", "type": "ether", "running": 1,
+                                      "disabled": 0, "last_seen_at": at}], "router_bridge_hosts": [learned]}
+    bindings = {"asset_ip_checks": {"sw": ip},
+                "router_bridge_asset_paths": {"sw": {"router": "rb", "source": "branch", "bridge": "bridge-lan"}},
+                "asset_services": {"web": {"asset": "sw", "label": "Web", "require_network_identity": True}}}
+
+    def read():
+        graph = build_graph(context, network, {}, {}, bindings, now)
+        nodes = {n["id"]: n for n in graph["nodes"]}
+        return graph, nodes
+
+    graph, nodes = read()
+    assert nodes["sw"]["probeTargetIP"] == nodes["web"]["probeTargetIP"] == ip
+    nodes["web"]["serviceChecks"] = [{"state": "reachable", "source": "UI_VPN", "method": "HTTP", "target": ip,
+                                     "port": 80, "required": True, "checkedAt": at}]
+    path = tmp_path / "map.json"
+    path.write_text(json.dumps(graph), encoding="utf-8")
+    public = load_infrastructure_map(path, now, include_guest_attachments=True)
+    assert not public["currentPortPairs"]
+    paths = summarize_guest_attachment(public, "web")["attachment"]["servicePaths"]
+    assert paths[0]["routerAttachment"]["port"] == "ether3"
+    network["router_bridge_hosts"].append({**learned, "interface": "ether2"})
+    assert read()[1]["web"]["probeTargetIP"] is None
+    network["router_bridge_hosts"].pop()
+    context["devices"][1]["mac_addresses"] = ["02:00:00:00:00:02"]
+    assert read()[1]["web"]["probeTargetIP"] is None
+
+
 def test_router_neighbor_table_is_scoped_to_one_live_port_and_never_confirms_a_pair(tmp_path):
     from app.infrastructure_collect import build_graph
     from app.infrastructure_map import load_infrastructure_map
