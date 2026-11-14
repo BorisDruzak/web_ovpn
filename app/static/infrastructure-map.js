@@ -199,7 +199,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       unconfirmed: 'Пара не подтверждена',
     };
     list.replaceChildren(...ports.map(({deviceId, deviceName, port, configuredLabel, telemetry,
-      linkedStatusCounts, rxErrorCounters, history, peers = []}) => {
+      linkedStatusCounts, linkedServices = [], rxErrorCounters, history, peers = []}) => {
       const item = make('li');
       const link = make('a', `${deviceName} · ${port}` + (configuredLabel ? ` · ${configuredLabel.text}` : ''));
       link.href = '?' + new URLSearchParams({node: deviceId, port});
@@ -215,6 +215,17 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           ok > 0 && `доступны ${ok}`,
         ].filter(Boolean);
         item.append(make('small', 'Связанные узлы и сервисы · ' + counts.join(' · ')));
+        for (const service of linkedServices) {
+          const line = make('small');
+          const destination = make('a', service.name);
+          destination.href = '?' + new URLSearchParams({node: service.id});
+          line.append(destination, ` · ${availabilityStates[service.mapStatus]}`);
+          item.append(line);
+        }
+        const total = critical + warn + unknown + ok;
+        if (linkedServices.length && linkedServices.length < total) {
+          item.append(make('small', `Показано ${linkedServices.length} из ${total}`));
+        }
       }
       for (const peer of peers) {
         const line = make('small', evidenceLabels[peer.evidence] + ' · ');

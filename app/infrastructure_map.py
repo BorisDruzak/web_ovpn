@@ -1898,16 +1898,22 @@ def _summarize_port_counters(nodes: dict, topology_pairs: tuple | None, *,
     affected.sort(key=severity)
     ports = affected[:64]
     if service_ports:
+        status_rank = {status: rank for rank, status in enumerate(("critical", "warn", "unknown", "ok"))}
         by_port = {
-            (device_id, port_label_key(group["port"])): group["statusCounts"]
+            (device_id, port_label_key(group["port"])): group
             for device_id, groups in service_ports.items() for group in groups
         }
         for row in ports:
             device_id = row["deviceId"]
             port = port_by_key[device_id, row["port"]]
             for label in (port["name"], *port.get("aliases", [])):
-                if counts := by_port.get((device_id, port_label_key(label))):
-                    row["linkedStatusCounts"] = counts
+                if group := by_port.get((device_id, port_label_key(label))):
+                    row["linkedStatusCounts"] = group["statusCounts"]
+                    linked = sorted(group["services"], key=lambda service: status_rank[service["mapStatus"]])
+                    row["linkedServices"] = [
+                        {key: service[key] for key in ("id", "name", "kind", "mapStatus", "basis")}
+                        for service in linked[:8]
+                    ]
                     break
     if ports and topology_pairs:
         _, inventory, _, pending, current = topology_pairs

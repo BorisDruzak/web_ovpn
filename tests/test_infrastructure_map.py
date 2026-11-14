@@ -8669,7 +8669,11 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     audit = client.get(url_topology, headers=headers).json()["infrastructure"]["topologyAudit"]["portCounterAudit"]
     rows = {row["port"]: row for row in audit["ports"]}
     assert rows["xe3"]["linkedStatusCounts"] == {"critical": 1, "warn": 0, "unknown": 0, "ok": 0}
+    assert rows["xe3"]["linkedServices"] == [
+        {"id": "directum", "name": "directum", "kind": "Сервис", "mapStatus": "critical", "basis": ["guest_path"]},
+    ]
     assert "linkedStatusCounts" not in rows["ge12"]
+    assert "linkedServices" not in rows["ge12"]
     scoped = client.get(url_topology + "&node_id=snr&port_name=XE3", headers=headers).json()["infrastructure"]
     assert scoped["topologyAudit"]["portCounterAudit"]["ports"] == [rows["xe3"]]
     from app.infrastructure_map import load_infrastructure_map
