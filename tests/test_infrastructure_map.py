@@ -777,6 +777,8 @@ def test_guest_network_reports_an_empty_configuration_only_after_a_successful_re
         (127, node["guestNetwork"]),
     ]
     assert audit["runningWithoutNetwork"][0]["reachability"] == node["reachability"]
+    assert audit["runningServiceGaps"][0]["guestNetwork"] == node["guestNetwork"]
+    assert audit["runningRequiredCheckGaps"][0]["guestNetwork"] == node["guestNetwork"]
     assert audit["runningNetworkCoverage"] == {"confirmed": 0, "incomplete": 0, "withoutNetwork": 1}
     assert audit["gapTotal"] == 0
     assert node["mapStatus"] == "unknown"
@@ -9849,7 +9851,8 @@ def test_attachment_view_matches_guest_mac_to_the_correct_physical_pair(tmp_path
     assert audit["runningRequiredCheckCoverage"]["partial"] == 1
     gap, = audit["runningRequiredCheckGaps"]
     assert gap["state"] == "partial" and gap["guest"]["id"] == "vm"
-    assert gap["services"] == [{"id": raw["nodes"][0]["id"], "required": 4, "withResult": 3}]
+    assert gap["services"] == [{"id": raw["nodes"][0]["id"], "required": 4, "withResult": 3,
+                                "issues": [{"check": "HTTP", "reason": "timeout", "checkedAt": stamp}]}]
     raw["nodes"][0]["serviceChecks"].pop()
     service_checks = raw["nodes"][0].pop("serviceChecks")
     observer_checks = raw["nodes"][0].pop("checks")

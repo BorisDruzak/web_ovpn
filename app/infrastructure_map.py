@@ -4135,9 +4135,18 @@ def summarize_guest_attachment_audit(graph: dict) -> dict:
             service = nodes[service_id]
             probes = [check for check in service["serviceChecks"] if check.get("required")]
             observer = [check for check in service["checks"] if check.get("required")]
-            fresh = sum(not check["stale"] and check["state"] in {"reachable", "unreachable"} for check in probes)
+            unresolved = [check for check in probes if check["stale"] or check["state"] not in {"reachable", "unreachable"}]
+            fresh = len(probes) - len(unresolved)
             fresh += sum(not check["stale"] and check["status"] in {"ok", "warn", "critical"} for check in observer)
-            services.append({"id": service_id, "required": len(probes) + len(observer), "withResult": fresh})
+            row = {"id": service_id, "required": len(probes) + len(observer), "withResult": fresh}
+            if unresolved:
+                row["issues"] = [
+                    {"check": check["method"], **{key: check[key] for key in (
+                        "checkedAt", "reason", "timeoutStage", "port", "target",
+                    ) if check.get(key)}, **({"stale": True} if check["stale"] else {})}
+                    for check in unresolved[:6]
+                ]
+            services.append(row)
         missing = [row for row in services if not row["required"] or row["withResult"] < row["required"]]
         if not services:
             state, coverage, legacy = "without_service", "withoutService", "withoutService"
@@ -4151,11 +4160,15 @@ def summarize_guest_attachment_audit(graph: dict) -> dict:
             state, coverage, legacy = "without_required_checks", "withoutRequiredChecks", "withoutFreshResult"
         service_coverage[legacy] += 1
         required_coverage[coverage] += 1
+        context = {"guest": attachment["guest"]}
+        node = nodes[guest_id]
+        if (network := node.get("guestNetwork")) and _has_no_guest_network(attachment, network):
+            context.update(guestNetwork=network, reachability=node["reachability"])
         if legacy != "withFreshResult":
-            service_gaps.append({"guest": attachment["guest"],
+            service_gaps.append({**context,
                                  "state": "without_service" if not services else "without_fresh_result"})
         if coverage != "complete":
-            required_gaps.append({"guest": attachment["guest"], "state": state,
+            required_gaps.append({**context, "state": state,
                                   "serviceTotal": len(missing), "services": missing[:16]})
     metadata = {key: graph[key] for key in ("availability", "snapshotAt", "git", "collectionIssues") if key in graph}
     return {**metadata, "attachmentAudit": {"guestCounts": guest_counts, "interfaceCounts": interface_counts,
