@@ -187,12 +187,19 @@ def test_adapter_receipt_requires_matching_route_and_fresh_measurement(tmp_path,
     assert spool.read_adapter_observation(ORIGIN, PROFILE, push_profile, NOW) == {**adapter, "checkedAt": NOW.isoformat()}
     assert spool.read_adapter_observation(ORIGIN, PROFILE, push_profile, NOW + timedelta(minutes=4)) == {}
     adapter["neighbors"] = {"192.0.2.1": "02:00:00:00:00:01", "192.0.2.99": "02:00:00:00:00:02"}
+    adapter["speedBps"] = 10**9
     data["measured_at"] = (NOW + timedelta(milliseconds=500)).isoformat()
     now = NOW + timedelta(milliseconds=500)
     spool.store_receipt(ORIGIN, PROFILE, push_profile, json.dumps(data).encode(), now=now)
     assert spool.read_adapter_observation(ORIGIN, PROFILE, push_profile, now)["neighbors"] == {
         "192.0.2.1": "02:00:00:00:00:01",
     }
+    assert spool.read_adapter_observation(ORIGIN, PROFILE, push_profile, now)["speedBps"] == 10**9
+    adapter["speedBps"] = True
+    now += timedelta(milliseconds=250)
+    data["measured_at"] = now.isoformat()
+    spool.store_receipt(ORIGIN, PROFILE, push_profile, json.dumps(data).encode(), now=now)
+    assert "speedBps" not in spool.read_adapter_observation(ORIGIN, PROFILE, push_profile, now)
     data["measured_at"] = (NOW + timedelta(seconds=1)).isoformat()
     adapter["index"] = 11
     spool.store_receipt(ORIGIN, PROFILE, push_profile, json.dumps(data).encode(), now=NOW + timedelta(seconds=1))
@@ -209,7 +216,7 @@ def test_endpoint_pair_uses_fresh_switch_mac_and_physical_adapter(tmp_path, monk
     at = NOW.isoformat()
     monkeypatch.setattr(ports, "load_probe_profiles", lambda **_: SimpleNamespace(routes={PROFILE: push_profile}))
     monkeypatch.setattr(ports, "read_adapter_observation", lambda *_: {
-        "name": "Ethernet", "mac": mac, "checkedAt": at, "index": 10,
+        "name": "Ethernet", "mac": mac, "checkedAt": at, "index": 10, "speedBps": 10**9,
     })
     inventory = {"a": "Port7", "b": "Ethernet", "source": "GitHub", "confirmed": True}
     link = {"a": "switch", "b": "pc", "kind": "Сетевое соединение", "confirmed": True, "portEvidence": [inventory]}
@@ -237,7 +244,7 @@ def test_endpoint_pair_uses_fresh_switch_mac_and_physical_adapter(tmp_path, monk
         pair = audit["currentPairs"][0]
         side = "a" if pair["a"] == "pc" else "b"
         assert pair["portStates"][side] == {
-            "state": "up", "checkedAt": at, "speedBps": None, "source": "Windows · физический адаптер",
+            "state": "up", "checkedAt": at, "speedBps": 10**9, "source": "Windows · физический адаптер",
         }
     else:
         assert next(node for node in public["nodes"] if node["id"] == "pc")["ports"] == []

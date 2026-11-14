@@ -180,5 +180,6 @@ def confirm_endpoint_ports(graph: dict, bindings: dict, now: datetime) -> None:
             (edge, reading), = matches
             edge["portEvidence"].append(reading)
             node.setdefault("ports", []).append({
-                "name": adapter["name"], "state": "up", "source": WINDOWS_ADAPTER_SOURCE, "checkedAt": reading["at"],
+                "name": adapter["name"], "state": "up", "source": WINDOWS_ADAPTER_SOURCE,
+                "checkedAt": adapter["checkedAt"], "speedBps": adapter.get("speedBps"),
             })
