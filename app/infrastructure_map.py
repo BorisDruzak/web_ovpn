@@ -894,6 +894,10 @@ def _public_service_check(check: dict, now: datetime) -> dict:
             if reason in ("dns_no_answer", "dns_address_mismatch", "dns_srv_mismatch", "dns_unexpected_source",
                           "dns_route_unconfirmed", "dns_route_mismatch", "dns_truncated"):
                 result["reason"] = reason
+            if result["state"] == "unreachable" and "reason" not in result:
+                reply_reason = {"NXDOMAIN": "dns_name_not_found", "SERVFAIL": "dns_server_failure"}
+                if rcode_reason := reply_reason.get(diagnostic.get("rcode")):
+                    result["reason"] = rcode_reason
             if (reason == "dns_unexpected_source" and result["state"] == "unreachable"
                     and diagnostic.get("transport") == "UDP"
                     and isinstance(responder := check["dns"].get("unexpectedResponder"), dict)):

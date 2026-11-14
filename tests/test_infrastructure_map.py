@@ -1858,17 +1858,18 @@ def test_dns_probe_requires_an_answer_to_the_actual_query(monkeypatch):
                              "expectedAddresses": ["192.0.2.10", "192.0.2.11"],
                              "transport": "UDP", "addresses": ["192.0.2.10", "192.0.2.11", "192.0.2.12"]}
 
-    def missing_record(query, *args, **kwargs):
+    def negative_response(query, *args, **kwargs):
         response = dns.message.make_response(query)
-        response.set_rcode(dns.rcode.NXDOMAIN)
+        response.set_rcode(rcode)
         return response, False
 
-    monkeypatch.setattr(probes.dns.query, "udp_with_fallback", missing_record)
-    probes.apply_service_probes([node], {"dns": [spec]})
-    detail = _public_service_check(node["serviceChecks"][-1], datetime.now(timezone.utc))
-    assert detail["state"] == "unreachable"
-    assert detail["dns"]["rcode"] == "NXDOMAIN"
-    assert detail["dns"]["expectedAddresses"] == ["192.0.2.10", "192.0.2.11"]
+    monkeypatch.setattr(probes.dns.query, "udp_with_fallback", negative_response)
+    for rcode, reason in ((dns.rcode.NXDOMAIN, "dns_name_not_found"), (dns.rcode.SERVFAIL, "dns_server_failure")):
+        probes.apply_service_probes([node], {"dns": [spec]})
+        detail = _public_service_check(node["serviceChecks"][-1], datetime.now(timezone.utc))
+        assert detail["state"] == "unreachable" and detail["reason"] == reason
+        assert detail["dns"]["rcode"] == dns.rcode.to_text(rcode)
+        assert detail["dns"]["expectedAddresses"] == ["192.0.2.10", "192.0.2.11"]
     spec["expected_addresses"] = ["2001:db8::10"]
     assert check(alias, ("host.example.", "A", ["192.0.2.10"])) == "unknown"
 

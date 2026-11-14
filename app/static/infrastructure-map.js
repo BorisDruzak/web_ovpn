@@ -1260,6 +1260,8 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     snmp_collection_partial: 'Последний сбор завершился частично',
     snmp_collection_unconfirmed: 'Нет завершённого опроса',
     dns_no_answer: 'Нет записи запрошенного типа', dns_address_mismatch: 'Адреса не совпадают с ожидаемыми',
+    dns_name_not_found: 'DNS-сервер ответил, что имя не существует (NXDOMAIN)',
+    dns_server_failure: 'DNS-сервер ответил ошибкой обработки запроса (SERVFAIL)',
     dns_srv_mismatch: 'Имена или порты SRV не совпадают с ожидаемыми',
     dns_unexpected_source: 'DNS-ответ пришёл с другого адреса или порта',
     dns_truncated: 'UDP-ответ DNS усечён',
