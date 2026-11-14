@@ -1809,6 +1809,24 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
     return panel;
   }
 
+  function appendServiceProbePort(row, serviceId, check) {
+    if (check.stale) return;
+    const path = (data.servicePaths?.[serviceId] ?? []).find(path =>
+      (path.source ?? 'UI_VPN') === check.source && path.target === check.target && path.port === check.port
+      && path.method === check.method && path.checkedAt === check.checkedAt
+      && (path.path ?? '') === (check.path ?? '') && path.dns?.name === check.dns?.name
+      && path.dns?.transport === check.dns?.transport && path.dns?.record === check.dns?.record);
+    const attachment = path?.routerAttachment ?? path?.switchAttachment;
+    const node = byId.get(attachment?.routerId ?? attachment?.switchId ?? path?.switchId);
+    const port = attachment?.port ?? path?.physicalPair?.switchPort;
+    if (!node || !port) return;
+    const detail = make('small', 'Путь проверки · ');
+    const link = make('a', node.name + ' · ' + port);
+    link.href = '?' + new URLSearchParams({node: node.id, port});
+    detail.append(link);
+    row.append(detail);
+  }
+
   function renderSelection(id, reveal, port=null) {
     buttons.get(selected)?.setAttribute('aria-pressed','false');
     selected = id;
@@ -2756,6 +2774,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
               const check = target?.serviceChecks?.find(item => item.required && !item.stale && item.state === 'unreachable');
               if (check?.dns?.rcode) detail.append(' · ' + check.dns.rcode);
               row.append(detail);
+              if (check) appendServiceProbePort(row, dependency.serviceId, check);
             }
           }
           list.append(row);
@@ -2799,21 +2818,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           const result = check.stale ? 'Замер устарел' : serviceCheckReasons[check.reason]
             ?? check.dns?.rcode ?? (check.state === 'unreachable' ? 'Сбой проверки' : 'Нет подтверждения');
           row.append(make('small', [check.method, check.dns?.name, check.dns?.transport, result].filter(Boolean).join(' · ')));
-          const path = (data.servicePaths?.[service] ?? []).find(path =>
-            (path.source ?? 'UI_VPN') === check.source && path.target === check.target && path.port === check.port
-            && path.method === check.method && path.checkedAt === check.checkedAt
-            && (path.path ?? '') === (check.path ?? '') && path.dns?.name === check.dns?.name
-            && path.dns?.transport === check.dns?.transport && path.dns?.record === check.dns?.record);
-          const attachment = path?.switchAttachment ?? path?.routerAttachment;
-          const portNode = byId.get(attachment?.switchId ?? attachment?.routerId ?? path?.switchId);
-          const port = attachment?.port ?? path?.physicalPair?.switchPort;
-          if (portNode && port) {
-            const detail = make('small', 'Путь проверки · ');
-            const link = make('a', portNode.name + ' · ' + port);
-            link.href = '?' + new URLSearchParams({node: portNode.id, port});
-            detail.append(link);
-            row.append(detail);
-          }
+          appendServiceProbePort(row, service, check);
         } else {
           const issue = target.checks?.find(check => check.status === 'critical' || check.status === 'warn');
           if (issue) row.append(make('small', [issue.label || issue.name, observerStates[issue.status],
