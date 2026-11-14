@@ -1715,6 +1715,8 @@ def _attach_lacp_health(nodes: dict, expectations: dict, links: list[dict], port
                     or len({name.casefold() for name in names}) != len(names)):
                 continue
             members = []
+            histories = {port_label_key(label): port["history"] for port in nodes[switch_id]["ports"]
+                         if "history" in port for label in (port["name"], *port.get("aliases", []))}
             for name in names:
                 port = port_states.get(switch_id, {}).get(port_label_key(name), {})
                 sample = forwarding.get((node_id, switch_id, aggregate.casefold(), name.casefold()))
@@ -1731,6 +1733,8 @@ def _attach_lacp_health(nodes: dict, expectations: dict, links: list[dict], port
                     members.append(member)
                 else:
                     members.append({"name": name, "status": "unknown"})
+                if port and (history := histories.get(port_label_key(port["name"]))):
+                    members[-1]["history"] = history
             states = {member["status"] for member in members}
             aggregate_port = port_states.get(switch_id, {}).get(port_label_key(aggregate), {})
             aggregate_link = {"state": "unknown"}

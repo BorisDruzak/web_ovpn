@@ -4275,9 +4275,9 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
                {"id": "snr", "name": "SNR", "kind": "switch", "management_ip": "192.0.2.254"}]
     bindings = {"lacp_links": [{"source": "switch", "asset": "pbs", "aggregate": "po1", "members": ["ge6", "ge7"]}]}
     sources = [{"id": 1, "name": "switch", "enabled": True, "driver": "snmp_switch", "host": "192.0.2.254"}]
-    ports = [{"source": "switch", "port_key": name, "name": name, "oper_status": "up", "last_seen_at": at,
+    ports = [{"source": "switch", "port_key": key, "name": name, "oper_status": "up", "last_seen_at": at,
               "speed_bps": 10**9 if name != "po1" else 2 * 10**9}
-             for name in ("ge6", "ge7", "po1")]
+             for name, key in (("ge6", "ifindex:5006"), ("ge7", "ifindex:5007"), ("po1", "po1"))]
     report = {**bindings["lacp_links"][0], "expected": 2, "at": at, "members": [
         {"port": "ge6", "partner_port": 1, "mac": mac}, {"port": "ge7", "partner_port": 2, "mac": mac}]}
     network = {"sources": sources, "ports": ports, "lacp": [report],
@@ -4307,6 +4307,9 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
     assert [member["partnerInterfaceState"] for member in health["members"]] == ["unconfirmed"] * 2
     assert [member["speedBps"] for member in health["members"]] == [10**9] * 2
     assert [member["linkCheckedAt"] for member in health["members"]] == [at] * 2
+    assert [member["history"] for member in health["members"]] == [
+        {"source": "switch", "interface": f"ifindex:{index}"} for index in (5006, 5007)
+    ]
     assert health["aggregateLink"] == {"state": "up", "checkedAt": at, "speedBps": 2 * 10**9}
 
     def service_paths(stamp=now):
@@ -4424,7 +4427,8 @@ def test_lacp_health_warns_on_explicit_link_failure_and_expires_port_evidence(tm
     ports[1]["oper_status"] = "down"
     color, health = read()
     assert (color, health["status"]) == ("warn", "warn")
-    assert health["members"][1] == {"name": "ge7", "status": "down", "checkedAt": at}
+    assert health["members"][1] == {"name": "ge7", "status": "down", "checkedAt": at,
+                                     "history": {"source": "switch", "interface": "ifindex:5007"}}
     assert service_paths()[0]["lacpAttachment"]["members"] == [health["members"][0]]
     assert service_host()["lacpHealth"] == [health]
     assert [gap["switchPort"] for gap in lacp_gaps()] == ["ge6"]

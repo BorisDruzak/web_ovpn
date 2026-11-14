@@ -1133,13 +1133,14 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
         if (target && !selectedKeys.includes(portKey(port))) row.append(switchPortButton(switchId, sw.name, target.name));
       };
       appendPort(aggregate);
-      for (const {name: port, status, checkedAt, partnerPort, partnerInterfaceState, speedBps, linkCheckedAt} of members) {
+      for (const {name: port, status, checkedAt, partnerPort, partnerInterfaceState, speedBps, linkCheckedAt, history} of members) {
         appendPort(port);
         const fields = [port, labels[status], speedBps && `${formatPortSpeed(speedBps)} · ${formatTime(linkCheckedAt)}`,
           partnerPort && `порт партнёра LACP №${partnerPort}`,
           partnerInterfaceState === 'unconfirmed' && 'Имя интерфейса не сверено',
           checkedAt && `SNMP · ${formatTime(checkedAt)}`];
         row.append(make('small', fields.filter(Boolean).join(' · ')));
+        if (history) row.append(portHistoryLink(history, `История порта ${port}`));
       }
       if (hostedServices.length) {
         const services = make('small', 'Службы хоста · ');
@@ -1366,10 +1367,11 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           const details = [portLabels[state], formatPortSpeed(speedBps), 'SNMP', formatTime(observedAt)];
           row.append(make('small', `Агрегат ${aggregate}: ${details.filter(Boolean).join(' · ')}`));
         }
-        for (const {name, partnerPort, partnerInterfaceState, speedBps, linkCheckedAt} of members) {
+        for (const {name, partnerPort, partnerInterfaceState, speedBps, linkCheckedAt, history} of members) {
           const gap = partnerInterfaceState === 'unconfirmed' ? ' · Имя интерфейса не подтверждено' : '';
           const speed = speedBps ? ` · ${formatPortSpeed(speedBps)} · SNMP · ${formatTime(linkCheckedAt)}` : '';
           row.append(switchPortButton(switchId, device, name), make('small', `Порт партнёра LACP ${partnerPort}${gap}${speed}`));
+          if (history) row.append(portHistoryLink(history, `История порта ${name}`));
         }
         list.append(row);
         continue;
