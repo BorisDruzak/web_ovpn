@@ -2148,7 +2148,7 @@ def _topology_port_pairs(nodes: dict, links: list[dict]) -> tuple:
     def observations(report):
         return {
             side: {key: port[key] for key in ("name", "state", "speedBps", "speedCheckedAt", "checkedAt", "stateSince", "source", "linkMode",
-                                              "stpPort", "telemetry", "rxErrorCounters", "rxSilence", "fdbLearned", "transceiver",
+                                              "stpPort", "telemetry", "rxErrorCounters", "rxSilence", "fdbLearned", "fdbVlans", "transceiver",
                                               "configuredLabel", "lldpPort") if key in port}
             for side, port in report.get("portStates", {}).items() if port["state"] != "unknown"
         }
@@ -4974,7 +4974,7 @@ def load_infrastructure_map(
                                         for peer in peers if peer.get("portId")}),
                  "portObservations": {
                      side: {key: port[key] for key in ("name", "state", "speedBps", "speedCheckedAt", "checkedAt", "stateSince", "rxSilence",
-                                                       "fdbLearned", "lldpPort", "telemetry", "rxErrorCounters",
+                                                       "fdbLearned", "fdbVlans", "stpPort", "lldpPort", "telemetry", "rxErrorCounters",
                                                        "linkMode", "transceiver") if key in port}
                      for side, port in row.get("portObservations", {}).items()
                  },

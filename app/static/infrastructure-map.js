@@ -532,6 +532,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
       if (counterChanges) item.append(make('small', `${label} · ${counterChanges}`));
       if (port.rxErrorCounters) appendRxErrorCounters(item, port.rxErrorCounters, label);
       appendPortLinkDetails(item, port, label);
+      if (port.stpPort) item.append(make('small', `${label} · ${formatStpPort(port.stpPort)}`));
       if (port.fdbLearned) {
         const {learnedMacCount, partial, checkedAt} = port.fdbLearned;
         item.append(make('small', [label, `Изучено MAC ${learnedMacCount}`, partial ? 'неполный опрос' : '',
@@ -540,6 +541,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
           item.append(make('small', `${label} · несколько MAC на порту. Дальний разъём требует сверки.`));
         }
       }
+      if (port.fdbVlans) item.append(make('small', `${label} · ${formatFdbVlans(port.fdbVlans)}`));
       if (port.lldpPort?.delta) {
         const receive = lldpNoRxSides.includes(side) ? ' · Приём LLDP включён' : '';
         item.append(make('small', `${label} · ${formatLldpDelta(port.lldpPort.delta)}${receive} · ${formatTime(port.lldpPort.checkedAt)}`));
@@ -550,6 +552,10 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
   function formatLldpDelta({intervalSeconds, rxFrames, txFrames}) {
     return [`LLDP за ${Math.round(intervalSeconds)} с`, `получено кадров ${rxFrames.toLocaleString('ru-RU')}`,
       `отправлено кадров ${txFrames.toLocaleString('ru-RU')}`].join(' · ');
+  }
+  function formatFdbVlans({vlans, checkedAt}) {
+    return ['MAC по VLAN', ...vlans.map(({id, learnedMacCount}) => `${id} (${learnedMacCount} MAC)`),
+      formatTime(checkedAt)].join(' · ');
   }
   function appendStpPath(parent, {deviceId, localPort, bridgeDeviceId, designatedBridgeMac, designatedPortId,
     designatedPortName, checkedAt}) {
@@ -2571,10 +2577,7 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
             if (selected.length) row.append(make('small', label + ' · ' + selected.map(vlan => vlan.id).join(', ')));
           }
         }
-        if (selectedPort && port.fdbVlans) {
-          const vlans = port.fdbVlans.vlans.map(vlan => `${vlan.id} (${vlan.learnedMacCount} MAC)`);
-          row.append(make('small', 'VLAN по MAC-таблице · ' + vlans.join(', ')));
-        }
+        if (selectedPort && port.fdbVlans) row.append(make('small', formatFdbVlans(port.fdbVlans)));
         if (selectedPort) appendPortLinkDetails(row, port);
         if (selectedPort && port.stpPort) row.append(make('small', formatStpPort(port.stpPort)));
         if (selectedPort && port.endpointMac) row.append(make('small', formatEndpointMac(port.endpointMac)));

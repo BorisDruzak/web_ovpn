@@ -9570,7 +9570,9 @@ def test_reciprocal_mac_path_shows_fresh_stp_evidence_without_confirming_cable(t
            "designatedPortId": "80:03", "checkedAt": stamp, "bridgeDeviceId": "root",
            "designatedPortName": "ge21", "designatedPortCheckedAt": stamp}
     switch = {"id": "css", "name": "CSS", "kind": "Коммутатор", "stpRootPath": stp,
-              "ports": [{"name": "Port13", "state": "up", "checkedAt": stamp}]}
+              "ports": [{"name": "Port13", "state": "up", "checkedAt": stamp,
+                         "stpPort": {"state": "forwarding", "enabled": True, "checkedAt": stamp},
+                         "fdbVlans": {"checkedAt": stamp, "vlans": [{"id": 1, "learnedMacCount": 5}]}}]}
     declared = {"a": "Port13", "b": "Gi1/22", "source": "GitHub", "confirmed": False}
     observed = {**declared, "source": RECIPROCAL_MAC_SOURCE, "confirmed": True, "at": stamp}
     edges = [{"a": "css", "b": "tp", "kind": "Сетевое соединение", "portEvidence": [declared]},
@@ -9596,6 +9598,10 @@ def test_reciprocal_mac_path_shows_fresh_stp_evidence_without_confirming_cable(t
     pending, = summarize_topology(graph)["topologyAudit"]["pending"]
     assert pending["observedPaths"][0]["stpPaths"] == proof["stpPaths"]
     assert pending["identifiedPeerSides"] == ["a", "b"]
+    for row in (pending, graph["pendingPortPairs"][0]):
+        assert row["portObservations"]["a"]["stpPort"] == switch["ports"][0]["stpPort"]
+        assert row["portObservations"]["a"]["fdbVlans"] == switch["ports"][0]["fdbVlans"]
+        assert "fdbVlans" not in row["portObservations"].get("b", {})
     assert graph["pendingPortPairs"][0]["identifiedPeerSides"] == ["a", "b"]
     assert graph["pendingPortPairs"][0]["stpPaths"] == proof["stpPaths"]
     confirmed, = summarize_topology(graph)["topologyAudit"]["currentPairs"]
