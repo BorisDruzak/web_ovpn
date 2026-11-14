@@ -9846,6 +9846,9 @@ def test_agent_audit_keeps_unbound_mac_matches_diagnostic_and_redacts_identity(t
                           "endpointInterface": "Ethernet 2",
                           "addressCheckedAt": at, "switchId": "switch", "switchCheckedAt": at,
                           "physicalPair": {"hostPort": "eth0", "switchPort": "ge3", "source": "LLDP UI_VPN", "checkedAt": at}}],
+        "observedOnlyPaths": [{"address": "192.0.2.11", "guestPort": "net0", "bridge": "vmbr0", "hypervisorId": "pve",
+                               "addressCheckedAt": at, "switchId": "switch", "switchCheckedAt": at,
+                               "physicalPair": {"hostPort": "eth0", "switchPort": "ge3", "source": "LLDP UI_VPN", "checkedAt": at}}],
     }
     assert detail == {**matched, "operatingSystem": system, "network": network, "health": {"checkedAt": at, "uptimeSeconds": 7200,
                                              "memoryAvailableBytes": 2**31, "loadAverage1m": 0.0, "services": [

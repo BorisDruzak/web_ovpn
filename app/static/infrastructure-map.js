@@ -1142,10 +1142,12 @@ import { setupInfrastructureVr } from './infrastructure-xr.js';
                                     ['observedOnly', 'Видны только в наблюдении сети']]) {
           if (comparison[key].length) row.append(make('small', title + ' · ' + comparison[key].join(', ')));
         }
-        for (const {address, endpointInterface, guestPort, bridge, hypervisorId, switchId, physicalPair} of comparison.matchedPaths ?? []) {
+        const paths = [...(comparison.matchedPaths ?? []), ...(comparison.observedOnlyPaths ?? [])];
+        for (const {address, endpointInterface, guestPort, bridge, hypervisorId, switchId, physicalPair} of paths) {
           const host = byId.get(hypervisorId)?.name ?? hypervisorId;
           const chain = [endpointInterface, guestPort, bridge, `${host} ${physicalPair.hostPort}`].filter(Boolean).join(' → ');
-          const path = make('small', `${address} · ${chain} → `);
+          const prefix = comparison.observedOnly.includes(address) ? 'Наблюдение сети · ' : '';
+          const path = make('small', `${prefix}${address} · ${chain} → `);
           path.append(portPairEndpoint(switchId, byId.get(switchId)?.name ?? switchId, physicalPair.switchPort));
           row.append(path);
         }
