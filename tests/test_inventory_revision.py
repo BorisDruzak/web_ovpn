@@ -1,4 +1,6 @@
 """Full-card compare-and-write must guard child facts and retain stale input."""
+import pytest
+
 from tests.test_inventory_api import _client
 from tests.test_inventory_web import _draft_id
 
@@ -47,6 +49,47 @@ def test_child_fact_changes_revision_but_observation_does_not(tmp_path, monkeypa
         assert db.get(InventoryAsset, asset_id).manual_revision == changed
 
 
+@pytest.mark.parametrize("existing_candidate", [False, True])
+def test_html_save_survives_endpoint_auto_binding(tmp_path, monkeypatch, existing_candidate):
+    from app.db import get_sessionmaker
+    from app.inventory.endpoint import InventoryEndpointService
+    from app.inventory.models import InventoryExternalBindingStatus as Status
+    from tests.test_inventory_endpoint_service import DEVICE_A, DEVICE_B, MAC, NOW, identity
+
+    client, headers = _client(tmp_path, monkeypatch)
+    api = "/api/v1/inventory/assets"
+    asset = client.post(api, headers=headers, json={
+        "asset_type": "PC", "custom_name": "Original",
+        "identifiers": [{"identifier_type": "mac", "value": MAC}],
+    }).json()["data"]
+    path = f"/inventory/assets/{asset['id']}"
+    endpoint = InventoryEndpointService()
+    with get_sessionmaker()() as db:
+        if existing_candidate:
+            candidates = endpoint.reconcile_candidates(db, [identity(), identity(DEVICE_B)], NOW)
+            assert len(candidates) == 2
+            assert all(row.status == Status.CANDIDATE for row in candidates)
+        db.commit()
+    page = client.get(path)
+
+    with get_sessionmaker()() as db:
+        binding, = endpoint.reconcile_candidates(db, [identity()], NOW)
+        assert binding.status == Status.CONFIRMED
+        db.commit()
+
+    client.post(path, data={
+        "csrf_token": headers["X-CSRF-Token"],
+        "draft_id": _draft_id(page.text),
+        "expected_revision": asset["manual_revision"],
+        "custom_name": "Saved",
+        "mac_address": MAC,
+    })
+    current = client.get(f"{api}/{asset['id']}", headers=headers).json()["data"]
+    assert current["custom_name"] == "Saved"
+    with get_sessionmaker()() as db:
+        assert endpoint.lookup_confirmed_endpoint(db, DEVICE_A).id == asset["id"]
+
+
 def test_html_stale_input_retains_original_revision(tmp_path, monkeypatch):
     client, headers = _client(tmp_path, monkeypatch)
     asset = client.post("/api/v1/inventory/assets", headers=headers,
@@ -64,6 +107,8 @@ def test_html_stale_input_retains_original_revision(tmp_path, monkeypatch):
     assert 'value="Unsaved"' in restored.text
     assert "Newer" in restored.text
     assert f'name="expected_revision" value="{asset["manual_revision"]}"' in restored.text
+    current = client.get(f"/api/v1/inventory/assets/{asset['id']}", headers=headers).json()["data"]
+    assert current["custom_name"] == "Newer"
 
 
 def test_compare_and_write_is_atomic_between_sessions(tmp_path, monkeypatch):

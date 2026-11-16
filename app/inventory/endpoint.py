@@ -408,6 +408,7 @@ class InventoryEndpointService:
             if auto:
                 row.status = Status.CONFIRMED
                 row.confidence = 100
+                row.evidence_json = {**evidence, "auto_confirmed": True}
             db.flush()
             result.append(row)
         db.flush()

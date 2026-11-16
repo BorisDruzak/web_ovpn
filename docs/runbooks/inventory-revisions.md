@@ -20,7 +20,9 @@ assume an exact increment of one per user action.
 For the existing SQLite deployment, a repeatable additive migration supplies a
 default revision of 1 to old cards. Database triggers advance it for changed manual
 asset fields, detail tables, manual identifiers and workplace relationships.
-Observation inserts and telemetry timestamps do not advance manual revisions.
+Observation inserts, telemetry timestamps and automatic Endpoint Platform
+binding confirmations do not advance manual revisions. Explicit binding
+decisions still advance the revision.
 These SQLite triggers have not been verified on other database engines.
 
 Inventory cards expose `assigned_last_name`, `assigned_first_name`,

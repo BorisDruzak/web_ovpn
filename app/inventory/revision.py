@@ -23,7 +23,7 @@ def claim_revision(db: Session, asset: InventoryAsset, expected: int | None) -> 
     ).values(manual_revision=InventoryAsset.manual_revision + 1)
       .execution_options(synchronize_session=False))
     if result.rowcount != 1:
-        raise InventoryRevisionConflict("Карточка изменена другим пользователем. Ввод сохранён; сравните значения перед повторным сохранением.")
+        raise InventoryRevisionConflict("Карточка изменилась после открытия формы. Ввод сохранён; сравните значения перед повторным сохранением.")
     db.refresh(asset)
 
 
@@ -40,6 +40,7 @@ def migrate_revisions(engine) -> None:
         for table, fields in (("inventory_netctl_bindings", ("asset_id", "network_key", "status", "confirmed_at", "ended_at")),
             ("inventory_external_bindings", ("asset_id", "source", "external_id", "status", "ended_at"))):
             for operation in ("INSERT", "UPDATE", "DELETE"):
+                trigger = f"{table}_decision_revision_{operation.lower()}"
                 row = "OLD" if operation == "DELETE" else "NEW"
                 deliberate = f"({row}.status = 'confirmed' OR {row}.ended_at IS NOT NULL)"
                 ids = f"{row}.asset_id"
@@ -47,7 +48,23 @@ def migrate_revisions(engine) -> None:
                     deliberate = f"({deliberate} OR OLD.status = 'confirmed') AND (" + " OR ".join(
                         f"OLD.{field} IS NOT NEW.{field}" for field in fields) + ")"
                     ids += ",OLD.asset_id"
-                connection.execute(text(f"""CREATE TRIGGER IF NOT EXISTS {table}_decision_revision_{operation.lower()}
+                if table == "inventory_external_bindings" and operation != "DELETE":
+                    # An automatic first confirmation supplies agent context without
+                    # changing any manual facts. Explicit binding decisions still count.
+                    automatic = (
+                        "NEW.source = 'endpoint_platform' AND NEW.status = 'confirmed' "
+                        "AND NEW.ended_at IS NULL "
+                        "AND json_extract(NEW.evidence_json, '$.auto_confirmed') IS 1"
+                    )
+                    if operation == "UPDATE":
+                        automatic += (
+                            " AND OLD.status = 'candidate' AND OLD.ended_at IS NULL"
+                            " AND NEW.asset_id = OLD.asset_id AND NEW.source = OLD.source"
+                            " AND NEW.external_id = OLD.external_id"
+                        )
+                    deliberate = f"({deliberate}) AND NOT ({automatic})"
+                    connection.exec_driver_sql(f"DROP TRIGGER IF EXISTS {trigger}")
+                connection.execute(text(f"""CREATE TRIGGER IF NOT EXISTS {trigger}
                     AFTER {operation} ON {table} WHEN {deliberate}
                     BEGIN UPDATE inventory_assets SET manual_revision=manual_revision+1 WHERE id IN ({ids}); END"""))
         # DB-level guards cover child facts even when written outside the web
