@@ -24,11 +24,13 @@ from ..db import get_db
 from ..models import utcnow
 from ..permissions import check_user_permission
 from . import helpdesk_status
+from .assignment import NAME_FIELDS, split_legacy_name
 from .endpoint import SOURCE, STATE_MAX_AGE, _parsed
 from .lifecycle import lock_active_asset
 from .revision import InventoryRevisionConflict
 from .models import (
     InventoryAsset,
+    InventoryAssetStatus,
     InventoryAssetType,
     InventoryEndpointState,
     InventoryExternalBinding,
@@ -352,26 +354,59 @@ def read_operator_person(person_id: UUID, response: Response, db: Db) -> dict:
 @helpdesk_router.get("/registration-search", dependencies=[Depends(_helpdesk)])
 def search_registration_people(q: Annotated[str, Query(max_length=120)], response: Response, db: Db) -> dict:
     term = _search_key(q)
-    parts = term.split()
-    if (len(parts) < 2 or len(parts[0]) < 3 or len(parts[1]) < 2
-            or any(not (ch.isalpha() or ch in " -") for ch in term)):
-        raise HTTPException(422, "Enter the surname and at least two letters of the given name")
-    matches = list(db.scalars(select(InventoryPerson)
-        .where(InventoryPerson.search_key.startswith(term, autoescape=True))
-        .order_by(InventoryPerson.search_key, InventoryPerson.id).limit(6)))
+    if not term or not term[0].isalpha() or any(not (ch.isalpha() or ch in " -") for ch in term):
+        raise HTTPException(422, "Enter an employee name")
     response.headers["Cache-Control"] = "no-store"
-    if len(matches) > 5:
-        return {"people": [], "refine": True}
-    with_agent = {
-        person_id for person_id, assignment in _assignment_views(
-            db, InventoryPersonAssignment.person_id.in_([person.id for person in matches]), utcnow()
+    parts = term.split()
+
+    def matches(full_name: str, department: str) -> bool:
+        name_words = _search_key(full_name).split()
+        words = name_words + _search_key(department).split()
+        return any(
+            all(word.startswith(prefix) for word, prefix in zip(words[start:], parts))
+            for start in range(min(len(name_words), len(words) - len(parts) + 1))
         )
-        if assignment["endpoint_binding_state"] == "confirmed"
-    }
-    return {"people": [
-        {"full_name": person.full_name, "department": person.department, "has_agent": person.id in with_agent}
-        for person in matches
-    ]}
+
+    directory = list(db.execute(select(InventoryPerson.id, InventoryPerson.full_name, InventoryPerson.department)))
+    people = [person for person in directory if matches(person.full_name, person.department)]
+    if len(people) > 1:
+        return {"people": [], "refine": True}
+
+    owner = InventoryPersonAssignment
+    asset = InventoryAsset
+    has_assignment = select(owner.id).where(owner.asset_id == asset.id, owner.ended_at.is_(None)).exists()
+    cards = db.execute(select(
+        asset.assigned_person_name, asset.assigned_last_name, asset.assigned_first_name,
+        asset.assigned_patronymic, asset.assigned_department, asset.status,
+    ).where(asset.asset_type == InventoryAssetType.PC, asset.deleted_at.is_(None), ~has_assignment))
+    directory_keys = {(_search_key(person.full_name), _search_key(person.department)) for person in directory}
+    directory_names = {name for name, _ in directory_keys}
+    card_matches = {}
+    for legacy, last, first, patronymic, department, status in cards:
+        if status == InventoryAssetStatus.WRITTEN_OFF:
+            continue
+        name = " ".join(part for part in (last, first, patronymic) if part) if last and first else legacy or ""
+        fields = split_legacy_name(name)
+        if not all(fields[field] for field in NAME_FIELDS[:2]):
+            continue
+        full_name = " ".join(value for value in fields.values() if value)
+        department = (department or "").strip()
+        key = _search_key(full_name), _search_key(department)
+        if (key in directory_keys or (not department and key[0] in directory_names)
+                or not matches(full_name, department)):
+            continue
+        card_matches.setdefault(key, {"full_name": full_name, "department": department, "has_agent": False})
+
+    names_with_department = {name for name, department in card_matches if department}
+    suggestions = [entry for (name, department), entry in card_matches.items() if department or name not in names_with_department]
+    if len(people) + len(suggestions) > 1:
+        return {"people": [], "refine": True}
+    if not people:
+        return {"people": suggestions}
+    person, = people
+    has_agent = any(assignment["endpoint_binding_state"] == "confirmed" for _, assignment in
+        _assignment_views(db, owner.person_id == person.id, utcnow()))
+    return {"people": [{"full_name": person.full_name, "department": person.department, "has_agent": has_agent}]}
 
 
 @helpdesk_router.get("/{person_id}", dependencies=[Depends(_helpdesk)])

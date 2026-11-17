@@ -89,7 +89,8 @@ def test_registration_search_uses_employee_records_and_projects_only_agent_avail
     url = f"{INTERNAL}/registration-search"
     params = {"q": "тестовый сотр"}
     assert client.get(url, params=params).status_code == 401
-    assert client.get(url, params={"q": "тестовый"}, headers=service).status_code == 422
+    assert client.get(url, params={"q": "1"}, headers=service).status_code == 422
+    assert client.get(url, params={"q": "т"}, headers=service).json()["people"][0]["full_name"] == "Тестовый Сотрудник"
     response = client.get(url, params=params, headers=service)
     assert response.status_code == 200, response.text
     assert response.headers["cache-control"] == "no-store"
@@ -100,6 +101,38 @@ def test_registration_search_uses_employee_records_and_projects_only_agent_avail
         db.add(InventoryExternalBinding(asset_id=asset, external_id=str(uuid4()),
             status=InventoryExternalBindingStatus.CONFIRMED, binding_method="manual", confidence=100, created_by="fixture"))
     assert client.get(url, params=params, headers=service).json() == {"people": [{**match, "has_agent": True}]}
+
+
+def test_registration_search_from_unassigned_cards_excludes_device_authority(staging):
+    from app.db import session_scope
+    from app.inventory.models import InventoryExternalBinding, InventoryExternalBindingStatus
+
+    client, csrf, service = staging
+    fields = dict(assigned_last_name="Ромашкина", assigned_first_name="Анна",
+        assigned_department="Юридический отдел")
+    asset = _create_asset(**fields)
+    _create_asset(**fields)  # Multiple cards for one name should not make it ambiguous.
+    _create_asset(assigned_person_name="Ромашкин Борис")
+    with session_scope() as db:
+        db.add(InventoryExternalBinding(asset_id=asset, external_id=str(uuid4()),
+            status=InventoryExternalBindingStatus.CONFIRMED, binding_method="manual", confidence=100, created_by="fixture"))
+
+    url = f"{INTERNAL}/registration-search"
+    assert client.get(url, params={"q": "Р"}, headers=service).json() == {"people": [], "refine": True}
+    assert client.get(url, params={"q": "Ром Ан"}, headers=service).json() == {
+        "people": [{"full_name": "Ромашкина Анна", "department": "Юридический отдел", "has_agent": False}],
+    }
+    assert client.get(url, params={"q": "Бо"}, headers=service).json() == {
+        "people": [{"full_name": "Ромашкин Борис", "department": "", "has_agent": False}],
+    }
+
+    person = client.post(OPERATOR, headers=csrf, json={
+        "full_name": "Ромашкина Анна", "department": "Юридический отдел",
+    }).json()["inventory_person_id"]
+    assert _assign(client, csrf, person, asset, "primary").status_code == 200
+    assert client.get(url, params={"q": "Ан"}, headers=service).json() == {
+        "people": [{"full_name": "Ромашкина Анна", "department": "Юридический отдел", "has_agent": True}],
+    }
 
 
 def test_contacts_stay_in_operator_card_and_endpoint_links_require_confirmed_device(staging, monkeypatch):
