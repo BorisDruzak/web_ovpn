@@ -369,9 +369,6 @@ def search_registration_people(q: Annotated[str, Query(max_length=120)], respons
 
     directory = list(db.execute(select(InventoryPerson.id, InventoryPerson.full_name, InventoryPerson.department)))
     people = [person for person in directory if matches(person.full_name, person.department)]
-    if len(people) > 1:
-        return {"people": [], "refine": True}
-
     owner = InventoryPersonAssignment
     asset = InventoryAsset
     has_assignment = select(owner.id).where(owner.asset_id == asset.id, owner.ended_at.is_(None)).exists()
@@ -399,14 +396,25 @@ def search_registration_people(q: Annotated[str, Query(max_length=120)], respons
 
     names_with_department = {name for name, department in card_matches if department}
     suggestions = [entry for (name, department), entry in card_matches.items() if department or name not in names_with_department]
-    if len(people) + len(suggestions) > 1:
-        return {"people": [], "refine": True}
-    if not people:
-        return {"people": suggestions}
-    person, = people
-    has_agent = any(assignment["endpoint_binding_state"] == "confirmed" for _, assignment in
-        _assignment_views(db, owner.person_id == person.id, utcnow()))
-    return {"people": [{"full_name": person.full_name, "department": person.department, "has_agent": has_agent}]}
+    entries = [
+        {"full_name": person.full_name, "department": person.department, "has_agent": False,
+         "inventory_person_id": person.id}
+        for person in people
+    ] + suggestions
+    entries.sort(key=lambda entry: (_search_key(entry["full_name"]), _search_key(entry["department"]),
+                                   entry.get("inventory_person_id", "")))
+    results = entries[:5]
+    person_ids = [entry["inventory_person_id"] for entry in results if "inventory_person_id" in entry]
+    with_agent = {
+        person_id for person_id, assignment in _assignment_views(db, owner.person_id.in_(person_ids), utcnow())
+        if assignment["endpoint_binding_state"] == "confirmed"
+    } if person_ids else set()
+    for entry in results:
+        entry["has_agent"] = entry.get("inventory_person_id") in with_agent
+    payload = {"people": results}
+    if len(entries) > len(results):
+        payload["refine"] = True
+    return payload
 
 
 @helpdesk_router.get("/{person_id}", dependencies=[Depends(_helpdesk)])

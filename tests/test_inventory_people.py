@@ -94,7 +94,7 @@ def test_registration_search_uses_employee_records_and_projects_only_agent_avail
     response = client.get(url, params=params, headers=service)
     assert response.status_code == 200, response.text
     assert response.headers["cache-control"] == "no-store"
-    match = {"full_name": "Тестовый Сотрудник", "department": "Тестовый отдел"}
+    match = {"full_name": "Тестовый Сотрудник", "department": "Тестовый отдел", "inventory_person_id": person}
     assert response.json() == {"people": [{**match, "has_agent": False}]}
 
     with session_scope() as db:
@@ -118,7 +118,9 @@ def test_registration_search_from_unassigned_cards_excludes_device_authority(sta
             status=InventoryExternalBindingStatus.CONFIRMED, binding_method="manual", confidence=100, created_by="fixture"))
 
     url = f"{INTERNAL}/registration-search"
-    assert client.get(url, params={"q": "Р"}, headers=service).json() == {"people": [], "refine": True}
+    broad = client.get(url, params={"q": "Р"}, headers=service).json()
+    assert [row["full_name"] for row in broad["people"]] == ["Ромашкин Борис", "Ромашкина Анна"]
+    assert all(row["has_agent"] is False for row in broad["people"])
     assert client.get(url, params={"q": "Ром Ан"}, headers=service).json() == {
         "people": [{"full_name": "Ромашкина Анна", "department": "Юридический отдел", "has_agent": False}],
     }
@@ -131,8 +133,19 @@ def test_registration_search_from_unassigned_cards_excludes_device_authority(sta
     }).json()["inventory_person_id"]
     assert _assign(client, csrf, person, asset, "primary").status_code == 200
     assert client.get(url, params={"q": "Ан"}, headers=service).json() == {
-        "people": [{"full_name": "Ромашкина Анна", "department": "Юридический отдел", "has_agent": True}],
+        "people": [{"full_name": "Ромашкина Анна", "department": "Юридический отдел", "has_agent": True,
+                    "inventory_person_id": person}],
     }
+
+
+def test_registration_search_returns_a_bounded_list_with_more_hint(staging):
+    client, csrf, service = staging
+    for name in ["Абрамова Анна", "Агеева Анна", "Акимова Анна", "Алексеева Анна", "Андреева Анна", "Анисимова Анна"]:
+        assert client.post(OPERATOR, headers=csrf, json={"full_name": name, "department": "Тестовый отдел"}).status_code == 201
+    result = client.get(f"{INTERNAL}/registration-search", params={"q": "А"}, headers=service).json()
+    assert len(result["people"]) == 5 and result["refine"] is True
+    assert result["people"][0]["full_name"] == "Абрамова Анна"
+    assert all(set(row) == {"full_name", "department", "has_agent", "inventory_person_id"} for row in result["people"])
 
 
 def test_contacts_stay_in_operator_card_and_endpoint_links_require_confirmed_device(staging, monkeypatch):
